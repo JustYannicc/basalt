@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+
+const require = createRequire(new URL("../architecture/package.json", import.meta.url));
+const { parse } = require("yaml");
+
+export const eligibleJobs = (workflow) => Object.keys(workflow.jobs).filter(
+  (id) => id !== "check" && id !== "boat-bundle",
+);
+
+export function selectedJobs(text, workflow) {
+  const ids = [...new Set(text.toLowerCase().split(",").filter(Boolean))];
+  for (const id of ids) assert.ok(eligibleJobs(workflow).includes(id), `Unknown Boat job: ${id}`);
+  return ids;
+}
+
+export function interpolate(value, context) {
+  return String(value).replace(/\$\{\{\s*(.*?)\s*\}\}/g, (_, expression) => {
+    if (expression === "runner.temp") return context.temp;
+    if (expression.startsWith("matrix.")) {
+      const key = expression.slice(7);
+      assert.ok(Object.hasOwn(context.matrix, key), `Missing matrix value: ${key}`);
+      return context.matrix[key];
+    }
+    if (expression.startsWith("env.")) {
+      const key = expression.slice(4);
+      assert.ok(Object.hasOwn(context.env, key), `Missing workflow environment: ${key}`);
+      return context.env[key];
+    }
+    if (["github.event.pull_request.base.sha || github.event.before",
+      "github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before"].includes(expression)) {
+      assert.match(context.baseSha, /^[a-f0-9]{40}$/);
+      return context.baseSha;
+    }
+    throw new Error(`Unsupported bundle expression: ${expression}`);
+  });
+}
+
+const sharedPreparation = (step) => step.run === "npm run prepare:upstream" ||
+  (step["working-directory"] === ".upstream" &&
+    ["bun run e2e:prepare", "bunx playwright install --with-deps chromium"].includes(step.run));
+
+export function suitePlan(workflow, ids) {
+  return ids.flatMap((id) => {
+    const job = workflow.jobs[id];
+    // Only Linux packaging moves; the Windows row stays on its original runner.
+    const rows = id === "client-desktop" ? [{ os: "ubuntu-latest", platform: "linux" }]
+      : job.strategy?.matrix?.include ?? [{}];
+    return rows.map((matrix) => {
+      const key = matrix.scope ? `${id}-${matrix.scope}` : id;
+      const setup = job.steps.find((step) => step.uses?.startsWith("oven-sh/setup-bun@"));
+      assert.ok(setup, `${id}: missing pinned Bun setup`);
+      const bun = interpolate(setup.with["bun-version"], { env: workflow.env, matrix });
+      assert.ok(["1.4.2", "1.4.4"].includes(bun), `${id}: unsupported Bun version ${bun}`);
+      for (const step of job.steps) {
+        if (step.uses) assert.match(step.uses,
+          /^(actions\/(checkout|setup-node|upload-artifact)|oven-sh\/setup-bun)@/);
+        if (step.run) assert.equal(step.if, undefined, `${id}: conditional run steps need explicit support`);
+      }
+      return {
+        id, key, matrix, bun, timeoutMs: job["timeout-minutes"] * 60_000,
+        env: { ...workflow.env, ...job.env },
+        steps: job.steps.filter((step) => step.run && !sharedPreparation(step)),
+        artifacts: job.steps.filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
+          .map((step) => step.with),
+      };
+    });
+  });
+}
+
+export function readWorkflow(root) {
+  const workflow = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
+  assert.ok(workflow?.jobs && workflow.env?.E2E_BUN_VERSION === "1.4.2");
+  return workflow;
+}

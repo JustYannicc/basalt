@@ -13,7 +13,8 @@ env:
 
 jobs:
   client-connection:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-connection,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-connection,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +29,8 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-mobile,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-mobile,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -49,11 +51,8 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - os: windows-latest
-            platform: win
-          - os: ubuntu-latest
-            platform: linux
-    runs-on: ${{ matrix.platform == 'linux' && contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-desktop,') && 'boat' || matrix.os }}
+          ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-desktop,') && fromJSON('[{"os":"windows-latest","platform":"win"}]') || fromJSON('[{"os":"windows-latest","platform":"win"},{"os":"ubuntu-latest","platform":"linux"}]') }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +74,8 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-native-product,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-native-product,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,8 @@ jobs:
             .generated/native-mobile-*/failure*.txt
           if-no-files-found: warn
   slack-health:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',slack-health,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',slack-health,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -133,7 +134,8 @@ jobs:
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
   host-managed-accounts:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',host-managed-accounts,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',host-managed-accounts,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +192,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',oauth-account-regressions,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',oauth-account-regressions,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -224,7 +227,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-account-recovery,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-account-recovery,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -264,7 +268,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   sso-service-binding:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',sso-service-binding,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',sso-service-binding,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -295,7 +300,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -342,7 +348,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-migrations,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-migrations,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -379,11 +386,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
       matrix:
         include:
           - scope: diagnostics
@@ -434,7 +441,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',compiler-diagnostics,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',compiler-diagnostics,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -466,7 +474,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   human-in-the-loop:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',human-in-the-loop,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',human-in-the-loop,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -511,7 +520,8 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',contributed-accounts,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',contributed-accounts,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -558,7 +568,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',personal-data-reporting,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',personal-data-reporting,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -597,7 +608,8 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-inventory,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-inventory,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -627,7 +639,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   dashboard-batch:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',dashboard-batch,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',dashboard-batch,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -688,7 +701,8 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   gitlab-connectors:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',gitlab-connectors,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',gitlab-connectors,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -720,7 +734,8 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
   mcp-apps:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',mcp-apps,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',mcp-apps,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -796,6 +811,8 @@ jobs:
       - name: Verify Cloud startup failure diagnostics
         working-directory: .upstream
         run: bunx vitest run --config e2e/alchemy-dev-output.config.ts
+      - name: Check the Boat bundle runner
+        run: node --test scripts/ci-bundles/*.test.mjs
       - name: Check the pool acceptance runner
         run: node --test scripts/pool-acceptance/*.test.ts
       - name: Check the provider table against the pinned pool backend
@@ -913,7 +930,8 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',account-acquisition,') && 'boat' || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',account-acquisition,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -948,3 +966,270 @@ jobs:
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+
+  boat-bundle:
+    if: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+    runs-on: ${{ vars.BASALT_CI_BOAT_SIZE || 'boat-large' }}
+    timeout-minutes: ${{ fromJSON(vars.BASALT_CI_BOAT_TIMEOUT_MINUTES || '45') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Retain the pinned client Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/basalt-bun/1.4.4"
+          cp "$(command -v bun)" "$RUNNER_TEMP/basalt-bun/1.4.4/bun"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Retain the pinned E2E Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/basalt-bun/1.4.2"
+          cp "$(command -v bun)" "$RUNNER_TEMP/basalt-bun/1.4.2/bun"
+      - run: bun install --cwd scripts/architecture --frozen-lockfile
+      - name: Run every selected suite and retain its resource measurements
+        id: bundle
+        env:
+          BASALT_CI_BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          BASALT_CI_BOAT_MAX_PARALLEL: ${{ vars.BASALT_CI_BOAT_MAX_PARALLEL }}
+          BASALT_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/ci-bundles/run.mjs
+      - name: Retain bundle measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-bundle-measurements
+          path: |
+            ${{ runner.temp }}/basalt-boat/output/bundle.json
+            ${{ runner.temp }}/basalt-boat/output/preparation.log
+          if-no-files-found: warn
+      - name: Retain client-connection
+        if: ${{ always() && steps.bundle.outputs['client-connection'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-client-connection
+          path: ${{ runner.temp }}/basalt-boat/output/client-connection
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain client-mobile
+        if: ${{ always() && steps.bundle.outputs['client-mobile'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-client-mobile
+          path: ${{ runner.temp }}/basalt-boat/output/client-mobile
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain client-desktop
+        if: ${{ always() && steps.bundle.outputs['client-desktop'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-client-desktop
+          path: ${{ runner.temp }}/basalt-boat/output/client-desktop
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain client-native-product
+        if: ${{ always() && steps.bundle.outputs['client-native-product'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-client-native-product
+          path: ${{ runner.temp }}/basalt-boat/output/client-native-product
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain slack-health
+        if: ${{ always() && steps.bundle.outputs['slack-health'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-slack-health
+          path: ${{ runner.temp }}/basalt-boat/output/slack-health
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain host-managed-accounts
+        if: ${{ always() && steps.bundle.outputs['host-managed-accounts'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-host-managed-accounts
+          path: ${{ runner.temp }}/basalt-boat/output/host-managed-accounts
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain oauth-account-regressions
+        if: ${{ always() && steps.bundle.outputs['oauth-account-regressions'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-oauth-account-regressions
+          path: ${{ runner.temp }}/basalt-boat/output/oauth-account-regressions
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain pool-account-recovery
+        if: ${{ always() && steps.bundle.outputs['pool-account-recovery'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-pool-account-recovery
+          path: ${{ runner.temp }}/basalt-boat/output/pool-account-recovery
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain sso-service-binding
+        if: ${{ always() && steps.bundle.outputs['sso-service-binding'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-sso-service-binding
+          path: ${{ runner.temp }}/basalt-boat/output/sso-service-binding
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops
+        if: ${{ always() && steps.bundle.outputs['production-ops'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-migrations
+        if: ${{ always() && steps.bundle.outputs['production-ops-migrations'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-migrations
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-migrations
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-diagnostics
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-diagnostics'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-diagnostics
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-diagnostics
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-credentials
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-credentials'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-credentials
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-credentials
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-host
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-host'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-host
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-host
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-database
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-database'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-database
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-database
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-role
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-role'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-role
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-role
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-physical
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-physical'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-physical
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-physical
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-without-server
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-without-server'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-without-server
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-without-server
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain production-ops-identity-release
+        if: ${{ always() && steps.bundle.outputs['production-ops-identity-release'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-production-ops-identity-release
+          path: ${{ runner.temp }}/basalt-boat/output/production-ops-identity-release
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain compiler-diagnostics
+        if: ${{ always() && steps.bundle.outputs['compiler-diagnostics'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-compiler-diagnostics
+          path: ${{ runner.temp }}/basalt-boat/output/compiler-diagnostics
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain human-in-the-loop
+        if: ${{ always() && steps.bundle.outputs['human-in-the-loop'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-human-in-the-loop
+          path: ${{ runner.temp }}/basalt-boat/output/human-in-the-loop
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain contributed-accounts
+        if: ${{ always() && steps.bundle.outputs['contributed-accounts'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-contributed-accounts
+          path: ${{ runner.temp }}/basalt-boat/output/contributed-accounts
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain personal-data-reporting
+        if: ${{ always() && steps.bundle.outputs['personal-data-reporting'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-personal-data-reporting
+          path: ${{ runner.temp }}/basalt-boat/output/personal-data-reporting
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain pool-inventory
+        if: ${{ always() && steps.bundle.outputs['pool-inventory'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-pool-inventory
+          path: ${{ runner.temp }}/basalt-boat/output/pool-inventory
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain dashboard-batch
+        if: ${{ always() && steps.bundle.outputs['dashboard-batch'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-dashboard-batch
+          path: ${{ runner.temp }}/basalt-boat/output/dashboard-batch
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain gitlab-connectors
+        if: ${{ always() && steps.bundle.outputs['gitlab-connectors'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-gitlab-connectors
+          path: ${{ runner.temp }}/basalt-boat/output/gitlab-connectors
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain mcp-apps
+        if: ${{ always() && steps.bundle.outputs['mcp-apps'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-mcp-apps
+          path: ${{ runner.temp }}/basalt-boat/output/mcp-apps
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Retain account-acquisition
+        if: ${{ always() && steps.bundle.outputs['account-acquisition'] == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-account-acquisition
+          path: ${{ runner.temp }}/basalt-boat/output/account-acquisition
+          include-hidden-files: true
+          if-no-files-found: error
