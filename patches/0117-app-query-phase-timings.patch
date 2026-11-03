@@ -1,0 +1,296 @@
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -1,3 +1,4 @@
++import { queryPhase } from "./app-ui-query-timing.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -446,13 +447,20 @@
+    * Each call runs with the caller's linked accounts, resolved again from their links; the page
+    * names no accounts.
+    */
+-  const dataInput = (payload: typeof UiOperation.Type, current: typeof CurrentAppUi.Service) =>
++  const dataInput = (
++    payload: typeof UiOperation.Type,
++    current: typeof CurrentAppUi.Service,
++    kind?: "query" | "mutate",
++  ) =>
+     Effect.gen(function* () {
+       const version = yield* Schema.decodeUnknownEffect(VersionId)(payload.version).pipe(
+         Effect.mapError(unavailable),
+       );
+       if (version !== current.app.activeVersion) return yield* new UiVersionChanged();
+-      const accounts = yield* callerAccounts(current.app).pipe(
++      const resolveAccounts = callerAccounts(current.app);
++      const accounts = yield* (
++        kind === "query" ? queryPhase("caller_accounts", resolveAccounts) : resolveAccounts
++      ).pipe(
+         Effect.provideService(CurrentOrganization, current.access),
+         Effect.provideService(CurrentAuthorization, fullAuthority),
+         Effect.provideService(CurrentUserId, current.access.userId),
+@@ -472,15 +480,18 @@
+   const data = (kind: "query" | "mutate", payload: typeof UiOperation.Type) =>
+     Effect.gen(function* () {
+       const current = yield* CurrentAppUi;
+-      const { input } = yield* dataInput(payload, current);
+-      const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+-      return yield* executor.appData[kind](input).pipe(
+-        Effect.provideService(CurrentOrganization, current.access),
+-        Effect.provideService(CurrentAuthorization, fullAuthority),
+-        Effect.provideService(CurrentUserId, current.access.userId),
+-        Effect.provideService(CurrentUsage, { source: "app_ui" }),
+-        Effect.mapError(dataFailure),
+-      );
++      const { input } = yield* dataInput(payload, current, kind);
++      const dispatch = Effect.gen(function* () {
++        const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
++        return yield* executor.appData[kind](input).pipe(
++          Effect.provideService(CurrentOrganization, current.access),
++          Effect.provideService(CurrentAuthorization, fullAuthority),
++          Effect.provideService(CurrentUserId, current.access.userId),
++          Effect.provideService(CurrentUsage, { source: "app_ui" }),
++          Effect.mapError(dataFailure),
++        );
++      });
++      return yield* kind === "query" ? queryPhase("dispatch", dispatch) : dispatch;
+     });
+   const calls = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
+     handlers
+@@ -783,12 +794,18 @@
+     ),
+   );
+   const sessionAccess = HttpRouter.middleware<{ provides: CurrentAppUi }>()((response) =>
+-    authorize.pipe(
+-      Effect.matchEffect({
+-        onFailure: (error) => Effect.succeed(failure(error)),
+-        onSuccess: (current) => response.pipe(Effect.provideService(CurrentAppUi, current)),
+-      }),
+-    ),
++    Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const isQuery =
++        request.method === "POST" &&
++        URL.parse(request.url, "http://executor.internal")?.pathname === "/_executor/api/query";
++      return yield* (isQuery ? queryPhase("session_access", authorize) : authorize).pipe(
++        Effect.matchEffect({
++          onFailure: (error) => Effect.succeed(failure(error)),
++          onSuccess: (current) => response.pipe(Effect.provideService(CurrentAppUi, current)),
++        }),
++      );
++    }),
+   );
+   const telemetry = (signal: "traces" | "logs") =>
+     authorize.pipe(
+diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+@@ -0,0 +1,25 @@
++import { Clock, Effect, Option } from "effect";
++
++type QueryPhase = "session_access" | "caller_accounts" | "dispatch";
++
++/** Annotate the request span captured before the operation opens any child spans. */
++export const queryPhase = <A, E, R>(phase: QueryPhase, operation: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const span = yield* Effect.currentSpan.pipe(Effect.option);
++    if (Option.isNone(span)) return yield* operation;
++    const request = span.value;
++    const start = yield* Clock.currentTimeNanos;
++    return yield* operation.pipe(
++      Effect.onExit(() =>
++        Effect.gen(function* () {
++          const elapsed = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
++          request.attribute(`app.ui.query.${phase}.duration_ms`, Math.max(0, elapsed));
++          const order = request.attributes.get("app.ui.query.phase_order");
++          request.attribute(
++            "app.ui.query.phase_order",
++            typeof order === "string" ? `${order},${phase}` : phase,
++          );
++        }),
++      ),
++    );
++  });
+diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.ts
+--- a/packages/telemetry/src/isolate.ts
++++ b/packages/telemetry/src/isolate.ts
+@@ -96,10 +96,29 @@
+           const status = typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+             ? statusCode
+             : undefined;
++          const queryDurations = ["session_access", "caller_accounts", "dispatch"].flatMap(
++            (phase) => {
++              const key = `app.ui.query.${phase}.duration_ms`;
++              const value = attribute(span.attributes, key);
++              const duration = value?.doubleValue ?? value?.intValue;
++              return typeof duration === "number" && Number.isFinite(duration) && duration >= 0
++                ? [{ key, value: { doubleValue: duration } }]
++                : [];
++            },
++          );
++          const phaseOrder = attribute(span.attributes, "app.ui.query.phase_order")?.stringValue;
++          const knownOrder =
++            phaseOrder === "session_access" ||
++            phaseOrder === "session_access,caller_accounts" ||
++            phaseOrder === "session_access,caller_accounts,dispatch";
+           const attributes = [
+             ...(method === undefined ? [] : [{ key: "http.request.method", value: { stringValue: method } }]),
+             ...(route === undefined ? [] : [{ key: "http.route", value: { stringValue: route } }]),
+             ...(status === undefined ? [] : [{ key: "http.response.status_code", value: { intValue: status } }]),
++            ...queryDurations,
++            ...(knownOrder
++              ? [{ key: "app.ui.query.phase_order", value: { stringValue: phaseOrder } }]
++              : []),
+           ];
+           const parentSpanId = traceId(span.parentSpanId, 16) ? span.parentSpanId : undefined;
+           const kind = Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
+diff --git a/e2e/tests/app-query-timing.spec.ts b/e2e/tests/app-query-timing.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-query-timing.spec.ts
+@@ -0,0 +1,123 @@
++/** Delivered request attributes distinguish host work from app execution without new trace IDs. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule } from "effect";
++import { randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { waitForAppUrl } from "../support/app-pages.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++
++layer(HostedLive, { excludeTestServices: true })("App query timing", (it) => {
++  it.effect(scenarios.appQueryTiming.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          telemetry = yield* Telemetry,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Query timing ${randomUUID().slice(0, 8)}`,
++          files: [
++            appsManifest,
++            {
++              path: "index.ts",
++              content: `import { defineApp, query, object, string, router } from "apps";
++export const read = query({ input: object({}), output: string() }, async () => "Query is ready");
++export default defineApp({}, { tools: router({ read }) });`,
++            },
++            {
++              path: "ui/index.html",
++              content:
++                '<!doctype html><html><body><p role="status">Loading</p><script type="module" src="./main.ts"></script></body></html>',
++            },
++            {
++              path: "ui/main.ts",
++              content: `import { string } from "apps";
++import { createAppClient, queryReference } from "apps/client";
++import type { read } from "../index.ts";
++createAppClient().query(queryReference<typeof read>("read"), {}, string()).then(value => {
++  document.querySelector('[role="status"]').textContent = value;
++});`,
++            },
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++        yield* browser.login(actors.owner);
++        const [query] = yield* browser.use("Read through the authenticated app query", (page) =>
++          Promise.all([
++            page
++              .waitForResponse((response) => response.url().endsWith("/_executor/api/query"))
++              .then((response) =>
++                response.headerValue("server-timing").then((timing) => ({
++                  status: response.status(),
++                  trace: response.request().headers()["traceparent"],
++                  timing,
++                })),
++              ),
++            page.goto(url),
++          ]),
++        );
++        expect(query.status).toBe(200);
++        yield* browser.use("The query result is unchanged", (page) =>
++          page.getByRole("status").filter({ hasText: "Query is ready" }).waitFor(),
++        );
++        const traceId = query.trace?.match(/^00-([a-f0-9]{32})-/)?.[1];
++        const serverSpanId = query.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
++        if (traceId === undefined || serverSpanId === undefined)
++          return yield* Effect.die("The query did not preserve its request trace");
++        const delivered = yield* telemetry.query(traceId).pipe(
++          Effect.flatMap((result) =>
++            // A child export can make Motel synthesize its still-undelivered parent with the same ID.
++            result.data.some(
++              ({ span }) =>
++                span.spanId === serverSpanId && !span.operationName.startsWith("[missing parent"),
++            )
++              ? Effect.succeed(result)
++              : Effect.fail(new Error("The request span has not reached the collector")),
++          ),
++          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++        );
++        yield* evidence.json("app-query-timing.json", delivered);
++        const request = delivered.data.find((row) => row.span.spanId === serverSpanId);
++        if (request === undefined) return yield* Effect.die("Missing delivered request span");
++        expect(request.traceId).toBe(traceId);
++        expect(request.span.operationName).toBe("http.server POST");
++        const phases = ["session_access", "caller_accounts", "dispatch"];
++        const attributes = Object.fromEntries(
++          Object.entries(request.span.tags).filter(([key]) => key.startsWith("app.ui.query.")),
++        );
++        expect(Object.keys(attributes).sort()).toEqual(
++          [
++            ...phases.map((phase) => `app.ui.query.${phase}.duration_ms`),
++            "app.ui.query.phase_order",
++          ].sort(),
++        );
++        expect(attributes["app.ui.query.phase_order"]).toBe(phases.join(","));
++        const durations = phases.map((phase) =>
++          Number(attributes[`app.ui.query.${phase}.duration_ms`]),
++        );
++        for (const duration of durations) {
++          expect(Number.isFinite(duration)).toBe(true);
++          expect(duration).toBeGreaterThanOrEqual(0);
++        }
++        // The phases are serial and must fit inside the same request, allowing exporter rounding.
++        expect(durations.reduce((sum, duration) => sum + duration, 0)).toBeLessThanOrEqual(
++          request.span.durationMs + 1,
++        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5886,6 +5886,17 @@
+       local: na(
+         "This scenario uses hosted deploys and app authentication; local shares the workerd compiler.",
+       ),
++    },
++  },
++  appQueryTiming: {
++    fixtures: "actors",
++    file: "app-query-timing.spec.ts",
++    appOrigin: true,
++    title: "app query traces record ordered request phase durations",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("This scenario uses hosted app authentication."),
+     },
+   },
+   appObservability: {
