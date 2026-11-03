@@ -43,6 +43,7 @@ export interface HomeProvider { name: string; keys: { id: string; "api-key": str
 export interface HomeEvent { method: string; path: string; status: number }
 
 export interface SharingFixtureOptions {
+  readonly exposeDatabase?: boolean;
   readonly image?: string;
   readonly failureContent?: string;
   readonly failureResponse?: string;
@@ -73,6 +74,8 @@ export class SharingFixture {
   private imageAttempted = false;
   private cleanupRegistered = false;
   private buildImage: boolean;
+  private exposeDatabase: boolean;
+  database = "";
   private logRedactions = ["fixture-management-key", "fixture-only", fixtureSigningKey];
   private release = () => {};
   private gate = new Promise<void>((resolve) => { this.release = resolve; });
@@ -113,6 +116,7 @@ export class SharingFixture {
   readonly managementKey = "fixture-management-key";
 
   constructor(options: SharingFixtureOptions = {}) {
+    this.exposeDatabase = options.exposeDatabase === true;
     this.name = `${options.resourcePrefix ?? "basalt-usage"}-${process.pid}-${Date.now().toString(36)}`;
     this.image = options.image ?? process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
     this.buildImage = options.image === undefined && !process.env.POOL_TEST_IMAGE;
@@ -181,6 +185,7 @@ export class SharingFixture {
     this.resources.push(postgres);
     this.stage("postgres container start started");
     docker(["run", "--detach", "--name", postgres, "--network", this.network, "--memory", "256m",
+      ...(this.exposeDatabase ? ["--publish", "127.0.0.1::5432"] : []),
       ...(this.postgresDataStorage === "volume"
         ? ["--mount", "type=volume,destination=/var/lib/postgresql/data"]
         : ["--tmpfs", "/var/lib/postgresql/data:rw,size=256m"]),
@@ -195,6 +200,10 @@ export class SharingFixture {
       return result.status === 0;
     }, "isolated Postgres", this.readinessTimeoutMs);
     this.stage("postgres readiness complete");
+    if (this.exposeDatabase) {
+      const address = new URL(this.origin(postgres, 5432));
+      this.database = `postgresql://fixture_admin:fixture-only@${address.host}/basalt_pool`;
+    }
     this.stage("upstream listener start started");
     await new Promise<void>((resolve) => this.upstream.listen(0, "0.0.0.0", resolve));
     this.stage("upstream listener start complete");
