@@ -1,24 +1,20 @@
-import type { Membership } from "./control.ts";
-import type { Json } from "./json.ts";
+import type { Account } from "../../apps/pool/contract.ts";
 import { ChunkStorage, type UsageStorage } from "./usage-storage.ts";
 
 export interface HomeViewData {
-  membership: Membership;
-  credentials: Json[];
-  quota: Json[];
+  accounts: Account[];
   readAt: { membership: string; credentials: string; quota: string };
 }
 type Storage = Pick<UsageStorage, "get" | "put"> & Partial<Omit<UsageStorage, "get" | "put">>;
 interface Revision { all: number; pools: Record<string, number> }
 interface Saved { revision: string; data: HomeViewData }
-interface Revalidation { work: Promise<HomeViewData>; running: boolean; consumed: boolean }
 const revisionsKey = "pool-view-revisions-v1";
 const snapshotKey = (pool: string) => `pool-view-snapshot-v1:${pool}`;
 
-/** Only complete internal results are retained. Caller authority and shaping stay outside this cache. */
+/** Only complete public account data is retained. Caller authority stays outside this cache. */
 export class PoolViewSnapshots {
   private queue: Promise<unknown> = Promise.resolve();
-  private revalidations = new Map<string, Revalidation>();
+  private revalidations = new Map<string, Promise<HomeViewData>>();
   private storage: ChunkStorage;
   private defer: (work: Promise<void>) => void;
   constructor(storage: Storage, defer: (work: Promise<void>) => void) {
@@ -42,7 +38,7 @@ export class PoolViewSnapshots {
   private saved(pool: string): Promise<Saved | undefined> {
     return this.run(async () => {
       const saved = await this.storage.get<Saved>(snapshotKey(pool));
-      return saved?.revision === await this.revision(pool) ? saved : undefined;
+      return saved && Array.isArray(saved.data.accounts) && saved.revision === await this.revision(pool) ? saved : undefined;
     });
   }
   async invalidate(pool?: string): Promise<void> {
@@ -51,18 +47,12 @@ export class PoolViewSnapshots {
       if (pool === undefined) revision.all++;
       else revision.pools[pool] = (revision.pools[pool] ?? 0) + 1;
       await this.storage.put(revisionsKey, revision);
-      for (const [id, entry] of this.revalidations)
-        if (!entry.running && (pool === undefined || pool === id)) this.revalidations.delete(id);
     });
   }
-  private revalidate(pool: string, read: () => Promise<HomeViewData>, consume: boolean): Revalidation {
+  private revalidate(pool: string, read: () => Promise<HomeViewData>): Promise<HomeViewData> {
     const previous = this.revalidations.get(pool);
-    if (previous && (previous.running || consume && !previous.consumed)) {
-      previous.consumed ||= consume;
-      return previous;
-    }
-    const entry: Revalidation = { work: undefined!, running: true, consumed: consume };
-    entry.work = (async () => {
+    if (previous) return previous;
+    const work = (async () => {
       for (;;) {
         const revision = await this.run(() => this.revision(pool));
         const data = await read();
@@ -75,21 +65,20 @@ export class PoolViewSnapshots {
         if (committed) return data;
       }
     })().finally(() => {
-      entry.running = false;
-      if (entry.consumed && this.revalidations.get(pool) === entry) this.revalidations.delete(pool);
+      if (this.revalidations.get(pool) === work) this.revalidations.delete(pool);
     });
-    this.revalidations.set(pool, entry);
-    this.defer(entry.work.then(() => {}, () => {}));
-    return entry;
+    this.revalidations.set(pool, work);
+    this.defer(work.then(() => {}, () => {}));
+    return work;
   }
   async view(pool: string, fresh: boolean, read: () => Promise<HomeViewData>) {
     const saved = fresh ? undefined : await this.saved(pool);
     if (saved && !fresh) {
-      this.revalidate(pool, read, false);
+      this.revalidate(pool, read);
       return { data: saved.data, source: "snapshot" as const, revalidationFailed: false };
     }
     try {
-      const data = await this.revalidate(pool, read, true).work;
+      const data = await this.revalidate(pool, read);
       return { data, source: "live" as const, revalidationFailed: false };
     } catch (error) {
       const retained = await this.saved(pool);

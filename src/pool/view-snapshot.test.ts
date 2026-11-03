@@ -8,8 +8,12 @@ import type { PoolView } from "../../apps/pool/contract.ts";
 
 class MemoryStorage implements ControlStorage {
   values = new Map<string, unknown>();
+  writes: string[] = [];
   async get<T>(key: string) { return structuredClone(this.values.get(key)) as T | undefined; }
-  async put(key: string, value: unknown) { this.values.set(key, structuredClone(value)); }
+  async put(key: string, value: unknown) {
+    this.writes.push(JSON.stringify({ key, value }));
+    this.values.set(key, structuredClone(value));
+  }
   async getAlarm() { return null; }
   async setAlarm() {}
 }
@@ -22,10 +26,10 @@ function gate<T>() {
 const observed = "2026-11-01T10:00:00.000Z";
 function data(label = "Old"): HomeViewData {
   return {
-    membership: { groups: [{ id: 1, channel_name: "signalbox-pool-pool-a" }],
-      members: [{ id: 1, channel_group_id: 1, auth_id: "a" }] },
-    credentials: [{ id: "a", provider: "codex", label }, { id: "private", label: "Other pool" }],
-    quota: [{ credential: { credential_id: "a", observed_at: observed, freshness: "fresh" }, windows: [] }],
+    accounts: [{ id: "a", provider: "codex", label, plan: null, state: "active", message: null,
+      windows: [], observedAt: observed, freshness: "fresh", readingFailed: false,
+      collection: { status: null, errorCode: null, lastAttemptAt: null }, nextReadAt: null,
+      earliestResetAt: null, bankedResets: null }],
     readAt: { membership: observed, credentials: observed, quota: observed },
   };
 }
@@ -41,12 +45,12 @@ test("snapshot miss waits for the complete view and persists it across restarts"
   const snapshot = await restored.view("pool-a", false, () => { started.resolve(); return next.promise; });
   await started.promise;
   assert.equal(snapshot.source, "snapshot");
-  assert.equal(snapshot.data.credentials[0]!.label, "Old");
+  assert.equal(snapshot.data.accounts[0]!.label, "Old");
   assert.deepEqual(snapshot.data.readAt, result.data.readAt);
   next.resolve(data("New"));
   const fresh = await restored.view("pool-a", true, async () => { throw Error("must join revalidation"); });
   assert.equal(fresh.source, "live");
-  assert.equal(fresh.data.credentials[0]!.label, "New");
+  assert.equal(fresh.data.accounts[0]!.label, "New");
 });
 
 test("a large complete Home result persists without exceeding the storage value limit", async () => {
@@ -58,7 +62,7 @@ test("a large complete Home result persists without exceeding the storage value 
   }
   const storage = new LimitedStorage();
   const large = data("Pool account");
-  large.credentials.push({ id: "another-pool", label: "界".repeat(100_000) });
+  large.accounts[0] = { ...large.accounts[0]!, label: "界".repeat(100_000) };
   await new PoolViewSnapshots(storage, () => {}).view("pool-a", false, async () => large);
   const restored = new PoolViewSnapshots(storage, () => {});
   const result = await restored.view("pool-a", false, async () => large);
@@ -78,19 +82,21 @@ test("snapshot requests and fresh follow-ups share one revalidation per pool", a
   await started.promise;
   const fresh = cache.view("a", true, read);
   pending.resolve(data("New"));
-  assert.equal((await fresh).data.credentials[0]!.label, "New");
+  assert.equal((await fresh).data.accounts[0]!.label, "New");
   assert.equal(reads, 1);
 });
 
-test("a completed background result is consumed by the one fresh follow-up without another Home read", async () => {
+test("an explicit fresh read never reuses a completed abandoned revalidation", async () => {
   const jobs: Promise<void>[] = [];
   const cache = new PoolViewSnapshots(new MemoryStorage(), (work) => jobs.push(work));
   await cache.view("a", false, async () => data());
-  await cache.view("a", false, async () => data("New"));
+  await cache.view("a", false, async () => data("Already old"));
   await Promise.all(jobs);
-  const fresh = await cache.view("a", true, async () => { throw Error("duplicate revalidation"); });
+  let reads = 0;
+  const fresh = await cache.view("a", true, async () => { reads++; return data("Current"); });
+  assert.equal(reads, 1);
   assert.equal(fresh.source, "live");
-  assert.equal(fresh.data.credentials[0]!.label, "New");
+  assert.equal(fresh.data.accounts[0]!.label, "Current");
 });
 
 test("failed revalidation preserves the snapshot and reports stale rather than success", async () => {
@@ -103,7 +109,7 @@ test("failed revalidation preserves the snapshot and reports stale rather than s
   const result = await fresh;
   assert.equal(result.source, "snapshot");
   assert.equal(result.revalidationFailed, true);
-  assert.equal(result.data.credentials[0]!.label, "Old");
+  assert.equal(result.data.accounts[0]!.label, "Old");
   assert.equal(result.data.readAt.credentials, observed);
 });
 
@@ -121,7 +127,7 @@ test("invalidation survives restart, is scoped, and fences an in-flight old resu
   await cache.invalidate("a");
   const fresh = cache.view("a", true, read);
   pending.resolve(data("Obsolete"));
-  assert.equal((await fresh).data.credentials[0]!.label, "After change");
+  assert.equal((await fresh).data.accounts[0]!.label, "After change");
   assert.equal(reads, 2);
   const restored = new PoolViewSnapshots(storage, () => {});
   assert.equal((await restored.view("b", false, async () => data())).source, "snapshot");
@@ -129,7 +135,7 @@ test("invalidation survives restart, is scoped, and fences an in-flight old resu
   assert.equal((await new PoolViewSnapshots(storage, () => {}).view("a", false, async () => data("Live"))).source, "live");
 });
 
-test("invalidation discards a completed unconsumed revalidation", async () => {
+test("invalidation expires the saved result after a completed revalidation", async () => {
   const jobs: Promise<void>[] = [];
   const cache = new PoolViewSnapshots(new MemoryStorage(), (work) => jobs.push(work));
   await cache.view("a", false, async () => data());
@@ -137,7 +143,7 @@ test("invalidation discards a completed unconsumed revalidation", async () => {
   await Promise.all(jobs);
   await cache.invalidate("a");
   const result = await cache.view("a", true, async () => data("After removal"));
-  assert.equal(result.data.credentials[0]!.label, "After removal");
+  assert.equal(result.data.accounts[0]!.label, "After removal");
 });
 
 test("snapshot and live views apply the same pool filter and current owner flag without exposing raw Home", async () => {
@@ -198,17 +204,20 @@ test("Home writes invalidate before and after success or uncertain failure", asy
   assert.equal(invalidations, 4);
 });
 
-test("PoolControl persists complete unfiltered data, rejects bad tokens, and strips owner-only history for members", async () => {
+test("PoolControl persists only public in-pool data, rejects bad tokens, and strips owner-only history for members", async () => {
   const storage = new MemoryStorage();
   const key = "ab".repeat(32);
   let homeReads = 0;
   let label = "Old";
   const deps = { signingKey: key, home: async (path: string) => {
     homeReads++;
-    if (path.endsWith("/channel-groups")) return Response.json({ channel_groups: data().membership.groups });
-    if (path.includes("/channel-group-details?")) return Response.json({ channel_group_details: data().membership.members });
-    if (path.endsWith("/credentials")) return Response.json({ files: data(label).credentials });
-    if (path.endsWith("/quota/credentials/a")) return Response.json(data().quota[0]);
+    if (path.endsWith("/channel-groups")) return Response.json({ channel_groups: [{ id: 1, channel_name: "signalbox-pool-pool-a" }] });
+    if (path.includes("/channel-group-details?")) return Response.json({ channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }] });
+    if (path.endsWith("/credentials")) return Response.json({ files: [{ id: "a", provider: "codex", label }, { id: "private", label: "Other pool" }].map((file) => ({
+      ...file, proxy_url: "socks5://fixture-proxy-user:fixture-proxy-password@proxy.invalid:1080",
+      access_token: "fixture-credential-secret",
+    })) });
+    if (path.endsWith("/quota/credentials/a")) return Response.json({ credential: { credential_id: "a", observed_at: observed, freshness: "fresh" }, windows: [] });
     throw Error("Unexpected Home endpoint");
   } };
   const token = await signPoolToken(key, { pool: "pool-a", owner: "owner", organization: "org" });
@@ -218,6 +227,10 @@ test("PoolControl persists complete unfiltered data, rejects bad tokens, and str
   const first = await new PoolControl(storage, deps).handle(request("owner"));
   assert.equal(first.status, 200);
   assert.equal((await first.json() as PoolView).reading?.source, "live");
+  const storedBytes = storage.writes.join("\n");
+  assert.doesNotMatch(storedBytes, /fixture-proxy-user|fixture-proxy-password|proxy_url|fixture-credential-secret|access_token/);
+  assert.doesNotMatch(storedBytes, /Other pool|"private"/);
+  assert.doesNotMatch(storedBytes, /"isOwner"|"inAccounts"|"removals"/);
   label = "Revalidated";
   const control = new PoolControl(storage, deps);
   const member = await control.handle(request("member"));

@@ -398,14 +398,12 @@ export class PoolHome {
     ] as const;
     await Promise.allSettled(reads);
     const [members, files, usage] = await Promise.all(reads);
-    return { membership: members, credentials: files, quota: usage, readAt };
+    return { accounts: accountsView(files, usage, new Set(members.members.map((member) => member.auth_id))), readAt };
   }
   async view(isOwner: boolean, views?: PoolViewSnapshots, fresh = false, now = () => new Date()): Promise<PoolView> {
     const result = views ? await views.view(this.pool, fresh, () => this.readView(now))
       : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
-    const { membership: members, credentials: files, quota: usage } = result.data;
-    const ids = new Set(members.members.map((member) => member.auth_id));
-    const accounts = accountsView(files, usage, ids).map((account) => result.source === "snapshot"
+    const accounts = result.data.accounts.map((account) => result.source === "snapshot"
       ? { ...account, freshness: account.freshness === "never" ? "never" as const : "stale" as const }
       : account);
     return { isOwner, providers, accounts,
