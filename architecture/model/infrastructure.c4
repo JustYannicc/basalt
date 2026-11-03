@@ -109,6 +109,7 @@ model {
     metadata { hosts "aws-mcp.us-east-1.api.aws|us-east-1.oauth.signin.aws" }
   }
   basalt.toolsGateway -[sync]-> cloudAccountApi "authorize in the cloud and call with the person's own cloud-account permissions"
+  basalt.build -[sync]-> cloudAccountApi "verify service contracts with isolated local fixtures"
 
   crmService = adapter "CRM service" {
     #external
