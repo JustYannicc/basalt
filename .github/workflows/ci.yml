@@ -256,6 +256,12 @@ jobs:
         env:
           BASALT_E2E_POOL_BACKEND: "1"
         run: bun run e2e:cloud --test-name '^Cloud native provider accounts link' --workers 1
+      - name: Verify exact provider account adoption through signed operations
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_POOL_BACKEND: "1"
+        run: bun run e2e:cloud --test-name '^Cloud provider adoption' --workers 1
       - name: Verify migration ownership through signed apply verification and replay
         run: node scripts/production-ops/prove-scope.ts
       - name: Verify legacy PAYG checkout and normal seat synchronization
