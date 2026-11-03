@@ -232,11 +232,15 @@ test("an account check forces a scoped Home collection and returns its completed
     });
     return undefined;
   };
+  await f.call("/pool");
   const response = await f.call("/accounts/checked/collect", { method: "POST" });
   assert.equal(response.status, 200, await response.clone().text());
   const value = await response.json() as Row;
   assert.equal(value.id, "checked"); assert.equal(value.freshness, "fresh");
   assert.equal(collected, true);
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.reading?.source, "live");
+  assert.equal(after.accounts[0]!.observedAt, f.deps.now().toISOString());
   await error(await f.call("/accounts/other/collect", { method: "POST" }), "not_found", 404);
   assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 1);
 });
@@ -325,10 +329,13 @@ test("invalid and absent pool tokens never contact Home", async () => {
   assert.equal(f.home.calls.length, 0);
 });
 
-test("only GET pool is available to a non-owner; empty reads create nothing", async () => {
+test("only GET pool is available to a non-owner; empty reads create no Home resources", async () => {
   const f = await fixture();
   const view = await (await f.call("/pool", { owner: false })).json() as PoolView;
-  assert.deepEqual(view, { isOwner: false, providers, accounts: [] });
+  assert.deepEqual(view, { isOwner: false, providers, accounts: [], reading: {
+    source: "live", revalidationFailed: false,
+    readAt: { membership: f.deps.now().toISOString(), credentials: f.deps.now().toISOString(), quota: f.deps.now().toISOString() },
+  } });
   for (const [path, method] of [["/sign-ins", "POST"], ["/sign-ins", "DELETE"], ["/sign-ins/status", "GET"], ["/sign-ins/callback", "POST"], ["/login-files", "POST"], ["/accounts/fake", "DELETE"]]) {
     await error(await f.call(path!, { method, owner: false }), "not_owner", 403);
   }
@@ -741,7 +748,8 @@ async function withoutWaitingForGate(work: Promise<unknown>): Promise<void> {
 test("GET pool bypasses an in-flight attribution request and never loads its state", async () => {
   const f = await fixture();
   await f.call("/pool");
-  assert.deepEqual(f.storage.readKeys, ["pool-account-removals:pool-a"]);
+  assert.equal(f.storage.readKeys.includes(attributionStorageKey), false);
+  assert.ok(f.storage.values.has("pool-view-snapshot-v1:pool-a"));
   const started = await f.start();
   const entered = deferred(); const release = deferred();
   f.home.override = async (path) => {
@@ -755,8 +763,9 @@ test("GET pool bypasses an in-flight attribution request and never loads its sta
   try {
     await withoutWaitingForGate(read);
     assert.equal(view?.status, 200, "the view should finish while status is blocked");
-    assert.deepEqual(f.storage.readKeys.slice(before.reads), ["pool-account-removals:pool-b"]);
-    assert.equal(f.storage.puts, before.writes);
+    assert.equal(f.storage.readKeys.slice(before.reads).includes(attributionStorageKey), false);
+    assert.ok(f.storage.values.has("pool-view-snapshot-v1:pool-b"));
+    assert.equal(f.storage.puts, before.writes + 1);
     assert.equal(f.storage.alarmReads, before.alarms);
   } finally { release.resolve(); await Promise.all([poll, read]); }
 });
@@ -1492,7 +1501,9 @@ test("owner usage returns only exact-session pool records and only four public f
   const query = new URL(`https://home.example${call.path}`).searchParams;
   assert.equal(query.get("session_id"), "b2dff7a4-658d-811d-ab12-7d8bbe4e6157"); assert.equal(query.get("limit"), "200");
   assert.equal(query.has("parent_session_id"), false); assert.equal(query.has("root_session_id"), false);
-  assert.deepEqual(f.storage.readKeys, ["pool-account-removals:pool-a"]); assert.equal(f.storage.puts, 0);
+  assert.equal(f.storage.readKeys.includes(attributionStorageKey), false);
+  assert.ok(f.storage.values.has("pool-view-snapshot-v1:pool-a"));
+  assert.equal(f.storage.puts, 1);
 });
 
 test("usage rejects non-owners and invalid tokens before Home or attribution storage", async () => {
@@ -1965,4 +1976,45 @@ test("the alarm retains an unattended global result across eviction without atta
   assert.deepEqual(await response.json(), { state: "connected", ref: "unattended-account" });
   assert.equal(f.home.calls.length, before, "a lost Home result is served from the durable answer");
   assert.equal(f.home.members.length, 0);
+});
+
+test("connecting an account invalidates the retained full view", async () => {
+  const f = await fixture();
+  f.home.addGroup("pool-a", 1, ["existing"]); f.home.addFile("existing");
+  const started = await f.start();
+  const before = await (await f.call("/pool")).json() as PoolView;
+  assert.deepEqual(before.accounts.map((account) => account.id), ["existing"]);
+  f.home.addFile("connected");
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "connected" });
+  await status(await f.poll(started), { status: "connected", accountId: "connected" });
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.reading?.source, "live");
+  assert.deepEqual(after.accounts.map((account) => account.id), ["connected", "existing"]);
+});
+
+test("removing an account cannot return its retained membership after acknowledgement", async () => {
+  const f = await fixture();
+  f.home.addGroup("pool-a", 1, ["removed"]); f.home.addFile("removed");
+  await f.call("/pool");
+  assert.equal((await f.call("/accounts/removed", { method: "DELETE" })).status, 200);
+  f.restart();
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.reading?.source, "live");
+  assert.deepEqual(after.accounts, []);
+});
+
+test("pausing an account invalidates credential state in the retained view", async () => {
+  const f = await fixture();
+  f.home.addGroup("pool-a", 1, ["paused"]); f.home.addFile("paused", "codex");
+  await f.call("/pool");
+  f.home.override = (path, init) => {
+    if (!path.endsWith("/credentials/status")) return undefined;
+    assert.equal(init?.method, "PATCH");
+    f.home.files.get("paused")!.disabled = true;
+    return Response.json({ status: "ok", disabled: true });
+  };
+  assert.equal((await f.call("/accounts/paused/pause", { method: "POST" })).status, 200);
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.reading?.source, "live");
+  assert.equal(after.accounts[0]!.state, "disabled");
 });

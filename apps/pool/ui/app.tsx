@@ -1,40 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
 import { poolOrigin, productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
+import { Freshness } from "./freshness.tsx";
+import { usePool } from "./pool-view.ts";
+import { Usage } from "./usage-view.tsx";
 
 /** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
 const connectHint = "Connect subscriptions from this app's Accounts tab: choose Connect new account under Subscription.";
-import { duration, lastReading } from "./usage.ts";
-import { Usage } from "./usage-view.tsx";
-
-const refresh = 60_000;
-
-function usePool(api: PoolApi) {
-  const [view, setView] = useState<PoolView>();
-  const [error, setError] = useState<string>();
-  const firstLoad = useRef<"initial" | "pending" | "success" | "failure">("initial");
-  const load = useCallback(async () => {
-    const initial = firstLoad.current === "initial";
-    if (initial) firstLoad.current = "pending";
-    const result = await api.view();
-    if (initial) firstLoad.current = result.ok ? "success" : "failure";
-    if (result.ok) {
-      setView(result.value);
-      setError(undefined);
-    } else {
-      // Keep the last good view on screen; say the refresh failed.
-      setError(result.message);
-    }
-  }, [api]);
-  useEffect(() => {
-    void load();
-    return api.poll(() => void load(), refresh);
-  }, [api, load]);
-  return { view, error, load, measurable: firstLoad.current === "success" };
-}
 
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
@@ -46,14 +21,14 @@ function useNow(every = 30_000) {
 }
 
 export function App({ api }: { api: PoolApi }) {
-  const { view, error, load, measurable } = usePool(api);
+  const { view, error, updating, reload, measurable } = usePool(api);
   const accountsReady = useRef(false);
   useLayoutEffect(() => {
     if (!measurable || view === undefined || accountsReady.current) return;
     accountsReady.current = true;
     // Document load does not prove the account list or empty result has committed.
     const name = "basalt:pool-accounts-ready";
-    performance.mark(name);
+    performance.mark(name, { detail: { source: view.reading?.source ?? "live" } });
     if (window.parent !== window)
       window.parent.postMessage({ name, version: 1 }, new URL(poolOrigin).origin);
   }, [view, measurable]);
@@ -80,11 +55,10 @@ export function App({ api }: { api: PoolApi }) {
       setRemoveError(result.message);
       return false;
     }
-    await load();
+    await reload();
     return true;
   };
 
-  const reading = view ? lastReading(view.accounts) : null;
   const count = view?.accounts.length ?? 0;
 
   return (
@@ -114,17 +88,15 @@ export function App({ api }: { api: PoolApi }) {
                   : `${count} ${count === 1 ? "account" : "accounts"} in this pool. Conversations stay on one account; new ones spread across them.`}
             </p>
           </div>
-          {reading !== null && (
-            <p className="text-xs text-muted-foreground tabular-nums" title={new Date(reading).toLocaleString()}>
-              Usage read {now - reading < 60_000 ? "just now" : `${duration(now - reading)} ago`}
-            </p>
+          {view !== undefined && (
+            <Freshness view={view} updating={updating} now={now} onRetry={error ? undefined : () => void reload()} />
           )}
         </section>
 
         {error && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 px-4 py-3">
             <Problem>{error}</Problem>
-            <Button size="sm" variant="outline" onClick={() => void load()}>
+            <Button size="sm" variant="outline" onClick={() => void reload()}>
               Try again
             </Button>
           </div>

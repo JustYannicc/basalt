@@ -1,5 +1,6 @@
 import {
   defineApp,
+  boolean,
   json,
   mutation,
   number,
@@ -31,9 +32,9 @@ type Context = QueryContext<typeof requirements>;
 type Caller = Context | ConnectContext<typeof requirements>;
 
 export const view = query(
-  { description: "This pool's accounts with their limit windows, reading freshness and banked resets, and the providers it can connect", input: object({}) },
-  async (ctx: Context): Promise<Result<PoolView>> => {
-    const result = await control<PoolView>(ctx, "/pool");
+  { description: "This pool's accounts with their limit windows, reading freshness and banked resets, and the providers it can connect. Set fresh to await revalidation instead of returning the retained view.", input: object({ fresh: boolean().optional() }) },
+  async (ctx: Context, { fresh }): Promise<Result<PoolView>> => {
+    const result = await control<PoolView>(ctx, fresh ? "/pool?fresh=true" : "/pool");
     if (!result.ok) return result;
     const linked = new Set(ctx.app.accounts.subscriptions.map((account) => account.fields.ref));
     const accounts = result.value.accounts.map((account) => ({ ...account, inAccounts: linked.has(account.id) }));

@@ -107,16 +107,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
         return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
       };
-    this.mirrorHome = new HomeClient(home);
+    this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool),
       defer: (work) => ctx.waitUntil(work), home, onProductEvent,
     });
-    this.prices = new PriceUpkeep(new HomeClient(home), ctx.storage);
+    this.prices = new PriceUpkeep(new HomeClient(home, Date.now, () => this.control.invalidateViews()), ctx.storage);
     this.usage = new PoolUsage({
-      storage: ctx.storage, client: new HomeClient(home),
+      storage: ctx.storage, client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool), defer: (work) => ctx.waitUntil(work),
       collection: this.control.collection,
@@ -125,7 +125,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       permissions: (pool, user) => this.computers.permissions(pool, user),
     });
     this.computers = new Computers({
-      storage: ctx.storage, home: new ComputerHome(new HomeClient(home), onProductEvent),
+      storage: ctx.storage, home: new ComputerHome(new HomeClient(home, Date.now, () => this.control.invalidateViews()), onProductEvent),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       onProductEvent, usage: this.usage,
     });
@@ -142,12 +142,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           await appAttributionReady(db) && (await db.query("SELECT 1 FROM basalt_model_history_cursor LIMIT 1")).rows.length > 0),
       forward: (request, identity) => this.forward(request, identity),
     });
-    const membership = new HomeMembership(new HomeClient(home));
+    const membership = new HomeMembership(new HomeClient(home, Date.now, () => this.control.invalidateViews()));
     this.memberships = new NativeMemberships({
       storage: ctx.storage, signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       read: (pool, organization) => readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
       actual: (pool) => membership.actual(pool),
+      invalidateView: (pool) => this.control.invalidateViews(pool),
       reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
       install: async (policy) => {
         const projection = await signEnvelope(env.POOL_APP_SIGNING_KEY, policyPrefix, policy);
