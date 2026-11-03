@@ -1,0 +1,395 @@
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+index b87f7764..69f9ed1a 100644
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -6,6 +6,7 @@ import { withRemoteSpan } from "@executor-js/telemetry";
+ import { Config, Effect, Option, Predicate, Schema } from "effect";
+ import { compileCloudApp } from "./implementation/app-build.ts";
+ import { makeBuildAdmission } from "./implementation/build-admission.ts";
++import { compilerPhases } from "./implementation/compiler-phases.ts";
+ import {
+   cloudObservability,
+   cloudTelemetry,
+@@ -74,27 +75,41 @@ export default AppCompiler.make(
+     // stalled on the registry leaves the other slot free. A slot is reclaimed after the API's
+     // own compiler deadline, when no caller still waits for that build.
+     const admitted = makeBuildAdmission(2, "50 seconds");
++    const isolate = crypto.randomUUID();
+     const host = {
+       ...(registry === undefined ? {} : { registry }),
+       ...(Option.isSome(version) ? { apps: { version: version.value, files } } : {}),
+     };
+     return AppCompiler.of({
+       compile: (files, publicPaths, headers) =>
+-        Schema.decodeUnknownEffect(
+-          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
+-        )({ files, publicPaths }).pipe(
+-          Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
+-          Effect.flatMap((input) =>
+-            admitted(compileCloudApp(input.files, host, input.publicPaths)),
+-          ),
+-          Effect.map((value) => ({ ok: true as const, value })),
+-          Effect.catchTags({
+-            RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
+-            RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
+-            RuntimeAppsDependencyMissing: (error) => Effect.succeed({ ok: false as const, error }),
+-          }),
+-          Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
+-          Effect.orDie,
++        Effect.suspend(() => {
++          let replied = () => {};
++          return Schema.decodeUnknownEffect(
++            Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
++          )({ files, publicPaths }).pipe(
++            Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
++            Effect.flatMap((input) =>
++              Effect.gen(function* () {
++                const phase = yield* compilerPhases(input.files, input.publicPaths, isolate);
++                replied = () => phase("replied");
++                return yield* admitted(
++                  compileCloudApp(input.files, { ...host, onPhase: phase }, input.publicPaths),
++                  phase,
++                );
++              }),
++            ),
++            Effect.map((value) => ({ ok: true as const, value })),
++            Effect.catchTags({
++              RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
++              RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
++              RuntimeAppsDependencyMissing: (error) =>
++                Effect.succeed({ ok: false as const, error }),
++            }),
++            Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
++            Effect.tap(() => Effect.sync(() => replied())),
++            Effect.orDie,
++          );
++        }).pipe(
+           withRemoteSpan(new Request("https://compiler.internal", { headers }), "compiler.compile"),
+         ),
+     });
+diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
+index 4aa00e2f..57265da8 100644
+--- a/apps/hosted/cloud/src/implementation/build-admission.ts
++++ b/apps/hosted/cloud/src/implementation/build-admission.ts
+@@ -49,10 +49,17 @@ export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
+     }
+   };
+   /** Run a build once a slot is free, and free the slot when the build ends. */
+-  return <A, E, R>(build: Effect.Effect<A, E, R>) =>
++  return <A, E, R>(
++    build: Effect.Effect<A, E, R>,
++    phase?: (phase: "admitted" | "released") => void,
++  ) =>
+     Effect.acquireUseRelease(
+       Effect.promise(acquire).pipe(Effect.withSpan("compiler.admission")),
+-      () => build,
+-      (release) => Effect.sync(release),
++      () => Effect.sync(() => phase?.("admitted")).pipe(Effect.andThen(build)),
++      (release) =>
++        Effect.sync(() => {
++          release();
++          phase?.("released");
++        }),
+     );
+ };
+diff --git a/apps/hosted/cloud/src/implementation/compiler-phases.ts b/apps/hosted/cloud/src/implementation/compiler-phases.ts
+new file mode 100644
+index 00000000..5f0f62cb
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-phases.ts
+@@ -0,0 +1,50 @@
++/** Immediate records retain the last reached phase even when a compiler span never ends. */
++import type { CodeFiles } from "@executor-js/sdk/core";
++import { Effect, Option } from "effect";
++
++type Phase = "received" | "admitted" | "dependencies" | "bundle" | "replied" | "released";
++
++export const compilerPhases = (
++  files: CodeFiles,
++  publicPaths: ReadonlyArray<string>,
++  isolate: string,
++) =>
++  Effect.gen(function* () {
++    const span = yield* Effect.currentSpan.pipe(Effect.option);
++    const traceId = Option.isSome(span) ? span.value.traceId : null;
++    const attempt = crypto.randomUUID();
++    const started = performance.now();
++    const sourceDigest = yield* Effect.promise(async () => {
++      const canonical = JSON.stringify([
++        files
++          .map(({ path, content }) => ({ path, content }))
++          .sort((a, b) => a.path.localeCompare(b.path)),
++        [...publicPaths].sort(),
++      ]);
++      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
++      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join(
++        "",
++      );
++    });
++    let previous: Phase | undefined;
++    const phase = (phase: Phase) => {
++      if (phase === previous) return;
++      previous = phase;
++      // Diagnostic transport must never change a build's outcome.
++      try {
++        console.log(
++          JSON.stringify({
++            type: "executor.compiler.phase",
++            traceId,
++            attempt,
++            isolate,
++            sourceDigest,
++            phase,
++            elapsedMs: Math.max(0, performance.now() - started),
++          }),
++        );
++      } catch {}
++    };
++    phase("received");
++    return phase;
++  }).pipe(Effect.catchCause(() => Effect.succeed((_phase: Phase) => {})));
+diff --git a/e2e/support/compiler-phase-evidence.ts b/e2e/support/compiler-phase-evidence.ts
+new file mode 100644
+index 00000000..536d9fbf
+--- /dev/null
++++ b/e2e/support/compiler-phase-evidence.ts
+@@ -0,0 +1,54 @@
++/** Read the runner's retained log independently of completed compiler spans. */
++import { Effect, FileSystem, Option, Schema } from "effect";
++import { Target } from "./platform.ts";
++import { createHash } from "node:crypto";
++
++const Phase = Schema.Struct({
++  type: Schema.Literal("executor.compiler.phase"),
++  traceId: Schema.NullOr(Schema.String),
++  attempt: Schema.String,
++  isolate: Schema.String,
++  sourceDigest: Schema.String,
++  phase: Schema.Literals(["received", "admitted", "dependencies", "bundle", "replied", "released"]),
++  elapsedMs: Schema.Number,
++});
++
++export const compilerPhaseEvidence = (
++  traceId: string,
++  files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
++) =>
++  Effect.gen(function* () {
++    const sourceDigest = createHash("sha256")
++      .update(
++        JSON.stringify([
++          files
++            .map(({ path, content }) => ({ path, content }))
++            .sort((a, b) => a.path.localeCompare(b.path)),
++          [],
++        ]),
++      )
++      .digest("hex");
++    const target = yield* Target;
++    const fs = yield* FileSystem.FileSystem;
++    const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
++    return text.split("\n").flatMap((line) => {
++      const start = line.indexOf('{"type":"executor.compiler.phase"');
++      if (start < 0) return [];
++      let value: unknown;
++      try {
++        value = JSON.parse(line.slice(start));
++      } catch {
++        return [];
++      }
++      const parsed = Schema.decodeUnknownOption(Phase)(value);
++      if (
++        Option.isNone(parsed) ||
++        parsed.value.traceId !== traceId ||
++        parsed.value.sourceDigest !== sourceDigest ||
++        value === null ||
++        typeof value !== "object"
++      )
++        return [];
++      return [{ record: parsed.value, keys: Object.keys(value).sort() }];
++    });
++  });
+diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
+index 948df66b..c3a6fbbf 100644
+--- a/e2e/tests/cloud-compiler.spec.ts
++++ b/e2e/tests/cloud-compiler.spec.ts
+@@ -12,6 +12,7 @@ import { Browser } from "../support/browser.ts";
+ import { saveAndDeploy } from "../support/app-authoring.ts";
+ import { appsManifest, appsVersion, withApps } from "../support/apps-release.ts";
+ import { stalledPackage } from "../support/npm-registry.ts";
++import { compilerPhaseEvidence } from "../support/compiler-phase-evidence.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
+   it.effect(scenarios.cloudCompilerMemory.title, (context) =>
+@@ -210,29 +211,61 @@ export default defineApp({}, async (ctx) => ({tools: router({
+             actors = yield* Actors,
+             evidence = yield* Evidence;
+           const prefix = `/api/organizations/${actors.organization.id}/apps`;
+-          // The registry starts this package's metadata and never finishes it, so the compiler
+-          // Worker stays busy and never answers, as a lost compiler isolate does.
+-          const [duration, stalled] = yield* api
+-            .request(actors.owner, "POST", `${prefix}/deploy`, {
+-              name: `Compiler deadline ${randomUUID().slice(0, 8)}`,
+-              files: [
+-                {
+-                  path: "index.ts",
+-                  content: `import { defineApp, query, object, router } from "apps";
++          const traceId = randomUUID().replaceAll("-", "");
++          const completedTrace = randomUUID().replaceAll("-", "");
++          const completedFiles = [
++            {
++              path: "index.ts",
++              content:
++                'import { defineApp, router } from "apps"; export default defineApp({}, { tools: router({}) });',
++            },
++            appsManifest,
++          ];
++          const stalledFiles = [
++            {
++              path: "index.ts",
++              content: `import { defineApp, query, object, router } from "apps";
+ import stalled from "${stalledPackage}";
+ export default defineApp({}, {tools: router({
+   inspect:query({description:"Never compiles",input:object({})},async()=>String(stalled)),
+ })});`,
+-                },
+-                {
+-                  path: "package.json",
+-                  content: JSON.stringify({
+-                    type: "module",
+-                    dependencies: withApps({ [stalledPackage]: "1.0.0" }),
+-                  }),
+-                },
+-              ],
+-            })
++            },
++            {
++              path: "package.json",
++              content: JSON.stringify({
++                type: "module",
++                dependencies: withApps({ [stalledPackage]: "1.0.0" }),
++              }),
++            },
++          ];
++          const completed = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/deploy`,
++            {
++              name: "Compiler phase trail",
++              files: completedFiles,
++            },
++            { traceparent: `00-${completedTrace}-0123456789abcdef-01` },
++          );
++          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++          const app = yield* body(App, completed);
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
++          );
++          // The registry starts this package's metadata and never finishes it, so the compiler
++          // Worker stays busy and never answers, as a lost compiler isolate does.
++          const [duration, stalled] = yield* api
++            .request(
++              actors.owner,
++              "POST",
++              `${prefix}/deploy`,
++              {
++                name: `Compiler deadline ${randomUUID().slice(0, 8)}`,
++                files: stalledFiles,
++              },
++              { traceparent: `00-${traceId}-0123456789abcdef-01` },
++            )
+             .pipe(Effect.timed);
+           const elapsed = Duration.toMillis(duration);
+           yield* evidence.json("compiler-deadline-response.json", {
+@@ -249,6 +282,42 @@ export default defineApp({}, {tools: router({
+           });
+           expect(elapsed).toBeGreaterThanOrEqual(50_000);
+           expect(elapsed).toBeLessThan(58_000);
++          const finished = yield* compilerPhaseEvidence(completedTrace, completedFiles);
++          yield* evidence.json("compiler-completed-phases.json", finished);
++          expect(finished.map(({ record }) => record.phase)).toEqual([
++            "received",
++            "admitted",
++            "dependencies",
++            "bundle",
++            "released",
++            "replied",
++          ]);
++          const trail = yield* compilerPhaseEvidence(traceId, stalledFiles);
++          yield* evidence.json("compiler-deadline-phases.json", trail);
++          const phases = trail.map(({ record }) => record.phase);
++          expect(phases).toContain("received");
++          expect(phases).toContain("admitted");
++          expect(phases.at(-1)).toBe("dependencies");
++          expect(phases).not.toContain("replied");
++          expect(new Set(trail.map(({ record }) => record.attempt)).size).toBe(1);
++          expect(new Set(trail.map(({ record }) => record.isolate)).size).toBe(1);
++          expect(new Set(trail.map(({ record }) => record.sourceDigest)).size).toBe(1);
++          for (const { record, keys } of trail) {
++            expect(keys).toEqual([
++              "attempt",
++              "elapsedMs",
++              "isolate",
++              "phase",
++              "sourceDigest",
++              "traceId",
++              "type",
++            ]);
++            expect(record.traceId).toBe(traceId);
++            expect(record.attempt).toMatch(/^[a-f0-9-]{36}$/);
++            expect(record.isolate).toMatch(/^[a-f0-9-]{36}$/);
++            expect(record.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
++            expect(record.elapsedMs).toBeGreaterThanOrEqual(0);
++          }
+           const listed = yield* api.request(actors.owner, "GET", prefix);
+           expect(JSON.stringify(listed.body)).not.toContain("Compiler deadline");
+         }),
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+index ff5a6495..a4915b9e 100644
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -28,6 +28,8 @@ import apps from "apps/package.json" with { type: "json" };
+  * against its own unpublished framework. Any other declared release installs from the registry.
+  */
+ export interface WorkerHost {
++  /** Host-owned phase records outlive a request whose completed span is lost. */
++  readonly onPhase?: (phase: "dependencies" | "bundle") => void;
+   readonly registry?: string;
+   readonly apps?: {
+     readonly version: string;
+@@ -159,6 +161,7 @@ export const compileWorkerApp = (
+         message:
+           "Source files cannot include node_modules. Declare packages in package.json dependencies; the build installs them.",
+       });
++    host.onPhase?.("dependencies");
+     const filesystem = new InMemoryFileSystem(
+       Object.fromEntries(files.map((file) => [file.path, file.content])),
+     );
+@@ -178,6 +181,7 @@ export const compileWorkerApp = (
+     const wasm = wasmBuild(filesystem, path);
+     const json = jsonModules(files, entry);
+     const sourceMap = serverSourceMap(entry);
++    host.onPhase?.("bundle");
+     const compiled = yield* Effect.tryPromise({
+       try: () =>
+         createApp({
+diff --git a/packages/sdk/src/implementation/worker-dependencies.ts b/packages/sdk/src/implementation/worker-dependencies.ts
+index 9caa3371..da687c9e 100644
+--- a/packages/sdk/src/implementation/worker-dependencies.ts
++++ b/packages/sdk/src/implementation/worker-dependencies.ts
+@@ -30,6 +30,7 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
+       installLock.withPermits(1)(
+         Effect.gen(function* () {
+           if (filesystem.read(`node_modules/${name}/package.json`) !== null) return;
++          host.onPhase?.("dependencies");
+           const result = yield* Effect.tryPromise({
+             try: () =>
+               installDependencies(
+@@ -68,6 +69,7 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
+                   : `Installing ${name}@${version} did not produce node_modules/${name}/package.json.`,
+               ),
+             });
++          host.onPhase?.("bundle");
+           yield* Effect.annotateCurrentSpan({
+             "executor.build.installed_packages": result.installed.length,
+           });
