@@ -9,7 +9,7 @@ const sources = [
     id: "checks-operator",
     name: "Production checks",
     description:
-      "Editable production check workflows. Configure sources and your connected nudge channel; schedules start paused.",
+      "Editable production checks that nudge your chosen channel when something needs attention.",
     source: operator,
   },
   {
@@ -23,7 +23,7 @@ const sources = [
     id: "checks-personal",
     name: "My connection checks",
     description:
-      "Private checks that ask you to reconnect only after a current native credential refusal.",
+      "Private checks that ask you to reconnect an account only when it actually stops working.",
     source: personal,
   },
 ];

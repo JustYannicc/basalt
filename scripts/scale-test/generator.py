@@ -6,6 +6,7 @@ seed=os.environ['SCALE_KEY_SEED']
 admin=os.environ['SCALE_ADMIN']
 context=ssl.create_default_context()
 jobs={}
+tasks={}
 total={'requestBytes':0,'responseBytes':0,'requests':0,'peakActive':0,'active':0}
 
 def percentile(values,p):
@@ -89,10 +90,13 @@ async def connection(reader,writer):
             spec=json.loads(body)
             if spec['id'] in jobs:status=409;result={'error':'duplicate'}
             elif time.time()>=deadline or spec['concurrency']>5000 or spec['users']>5000:status=400;result={'error':'limit'}
-            else:jobs[spec['id']]={'spec':spec,'state':'queued'};asyncio.create_task(run(spec));result={'id':spec['id'],'started':True}
+            else:jobs[spec['id']]={'spec':spec,'state':'queued'};tasks[spec['id']]=asyncio.create_task(run(spec));result={'id':spec['id'],'started':True}
         elif path.startswith('/job/'):
-            result=jobs.get(path[5:],{'error':'not_found'})
-            if 'details' not in path:result={k:v for k,v in result.items() if k!='records'}
+            details=path.endswith('/details')
+            job_id=path[5:-8] if details else path[5:]
+            if details and job_id in tasks:await tasks[job_id]
+            result=jobs.get(job_id,{'error':'not_found'})
+            if not details:result={k:v for k,v in result.items() if k!='records'}
         elif path=='/stats':result={**total,'cpuSeconds':time.process_time(),'rssKb':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}
         else:status=404;result={'error':'not_found'}
         data=json.dumps(result).encode();writer.write(f'HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(data)}\r\nConnection: close\r\n\r\n'.encode()+data);await writer.drain()
@@ -103,6 +107,7 @@ async def connection(reader,writer):
         except Exception:pass
 
 async def main():
-    server=await asyncio.start_server(connection,'0.0.0.0',8080,limit=32*1024*1024)
+    server=await asyncio.start_server(connection,os.environ.get('SCALE_BIND','0.0.0.0'),int(os.environ.get('SCALE_PORT','8080')),limit=32*1024*1024)
+    print('READY',flush=True)
     async with server:await server.serve_forever()
 asyncio.run(main())
