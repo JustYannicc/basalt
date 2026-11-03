@@ -39,6 +39,8 @@ for (const face of faces) {
   assert(font, "Emitted font must match a licensed source asset");
   assert.equal(seen.has(font.file), false, "Each font face must be emitted once");
   seen.add(font.file);
+  const family = face.match(/font-family:\s*([^;]+)/)?.[1]?.replace(/^["']|["']$/g, "");
+  assert.equal(family?.replace(/-[a-f0-9]{16}$/, ""), font.family);
   assert.equal(face.match(/font-weight:\s*([^;}]+)/)?.[1]?.trim(), font.weights.join(" "));
   assert.equal(face.match(/font-style:\s*([^;}]+)/)?.[1]?.trim(), font.style);
   assert.equal(
