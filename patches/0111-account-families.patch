@@ -523,7 +523,7 @@ index 42722c5..dc125bc 100644
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index bd7691d..7f3531e 100644
+index 752e905..681200e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -245,6 +245,7 @@ export const scenarios = plan({
@@ -919,10 +919,10 @@ index 0000000..8bd2b80
 +});
 diff --git a/e2e/tests/account-family-pools.spec.ts b/e2e/tests/account-family-pools.spec.ts
 new file mode 100644
-index 0000000..d544186
+index 0000000..425fed9
 --- /dev/null
 +++ b/e2e/tests/account-family-pools.spec.ts
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,205 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, FileSystem, Path, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -1041,7 +1041,9 @@ index 0000000..d544186
 +            expect(response.status, JSON.stringify(response.body)).toBe(200);
 +            return yield* body(Methods, response);
 +          });
-+        expect((yield* methods(manager)).unavailable).toEqual([]);
++        expect((yield* methods(manager)).unavailable).toEqual([
++          { requirement: "openai", method: "apiKey" },
++        ]);
 +        for (const pool of [first, second]) {
 +          const unavailable = (yield* methods(pool)).unavailable;
 +          expect(unavailable).toContainEqual({ requirement: "openai", method: "apiKey" });
@@ -1127,7 +1129,7 @@ index 0000000..d544186
 +  );
 +});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index d71a137..2a498c3 100644
+index d71a137..27814bd 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
 @@ -8,6 +8,8 @@ import { body } from "../support/api.ts";
@@ -1225,13 +1227,21 @@ index d71a137..2a498c3 100644
              .then(() =>
                page
                  .locator(".inventory-row")
-@@ -144,6 +213,38 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -144,6 +213,46 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
                  .waitFor(),
              ),
          );
 +        yield* browser.use("The saved grants prove all five retained sign-ins", (page) =>
 +          page.getByRole("status").filter({ hasText: "5 sign-ins verified." }).waitFor(),
 +        );
++        yield* browser.use("The refreshed inventory groups all five retained bindings", (page) => {
++          let row = page.locator(".inventory-row").filter({ hasText: "same@example.test" });
++          for (let index = 0; index < 5; index++)
++            row = row.filter({
++              has: page.getByRole("link", { name: `Connected app ${index + 1}` }),
++            });
++          return row.waitFor();
++        });
 +        expect(
 +          yield* browser.use(
 +            "Verified identity stays the title after a saved label is authored",
@@ -1264,7 +1274,7 @@ index d71a137..2a498c3 100644
          expect(
            yield* browser.use("Five app bindings occupy one verified row", (page) =>
              page.locator(".inventory-row").filter({ hasText: "same@example.test" }).count(),
-@@ -158,12 +259,29 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -158,12 +267,29 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
                .waitFor(),
            );
          yield* browser.use("Inspect each app's requested access", (page) =>
@@ -1296,7 +1306,7 @@ index d71a137..2a498c3 100644
          yield* browser.use("Add a later app from the saved account", (page) =>
            page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
          );
-@@ -191,6 +309,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -191,6 +317,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
              .waitFor(),
          );
          expect((yield* issuer.metrics).authorizations).toBe(5);
@@ -6253,7 +6263,7 @@ index 7a5e4ca..a4521e1 100644
            ...resolved,
            scopes: [...new Set([...resolved.scopes, ...(identityConsent?.scopes ?? [])])],
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 31b6329..c804a10 100644
+index 385601f..0a15b98 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,8 @@
@@ -6265,7 +6275,7 @@ index 31b6329..c804a10 100644
  import type { BackgroundWork } from "../contracts/declarations.ts";
  /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
  import {
-@@ -1750,7 +1752,10 @@ export const makeOAuth = (
+@@ -1733,7 +1735,10 @@ export const makeOAuth = (
            existing,
            {
              ...chosen.firstParty,
@@ -6277,7 +6287,7 @@ index 31b6329..c804a10 100644
            },
            resolved.redirect,
            method.response,
-@@ -2035,6 +2040,7 @@ export const makeOAuth = (
+@@ -2018,6 +2023,7 @@ export const makeOAuth = (
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
        const provider = yield* requireTargetProvider(db, connection);
@@ -6285,7 +6295,7 @@ index 31b6329..c804a10 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -2595,6 +2601,7 @@ export const makeOAuth = (
+@@ -2578,6 +2584,7 @@ export const makeOAuth = (
                attempt,
                attemptId: id,
                grant: yield* decodedGrantOf(generation),
@@ -6293,7 +6303,7 @@ index 31b6329..c804a10 100644
              });
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
-@@ -2741,8 +2748,12 @@ export const makeOAuth = (
+@@ -2724,8 +2731,12 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||
