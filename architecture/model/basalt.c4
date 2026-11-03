@@ -123,7 +123,7 @@ model {
     }
 
     usageImportClient = adapter "Usage import client" {
-      description "Operator-supplied target origin and private pool-token file. Redirects are refused; only the usage import endpoint is called. Manager Plus metadata files stream in byte-bounded pages of at most 200 rows. A complete hashed exact-ID dry-run manifest binds the source file, destination and caller. Apply obtains a fresh matching short-lived page approval and fsyncs acknowledgement receipts; uncertain HTTP results stop for reconciliation. Replays compare immutable retained contents before inserting missing identities."
+      description "Operator-supplied target origin and private pool-token file. Redirects are refused; only the usage import endpoint is called. Manager Plus metadata files stream in byte-bounded pages of at most 200 rows. A complete hashed exact-ID dry-run manifest binds the source file, destination and caller. A temporary disk-backed ID index rejects duplicates across all pages before apply. Apply obtains a fresh matching short-lived page approval and fsyncs acknowledgement receipts; uncertain HTTP results stop for reconciliation. Replays compare immutable retained contents before inserting missing identities."
       metadata { code "scripts/import-usage.ts|scripts/import-cpamp.ts|scripts/usage-import-stream.ts"; bindings "globalThis=basalt.modelGateway" }
     }
 

@@ -50,7 +50,8 @@ For each metadata page, `node scripts/import-cpamp.ts` takes `--target`,
 `--pool-token-file`, `--caller`, `--source`, `--file` and `--report` for its dry
 run. A multi-page JSONL file is streamed with at most 200 rows per HTTP request.
 The complete report binds the source file digest, caller, destination and exact
-request IDs. It contains no bearer credential or reusable page approval.
+request IDs. A temporary disk-backed index rejects repeated IDs across the whole
+export and approved manifest before any apply request. It contains no bearer credential or reusable page approval.
 
 Production needs the selected organization and pool inventory, backup receipts,
 a complete exact-ID dry run and the coordinator's GO for its report digest.

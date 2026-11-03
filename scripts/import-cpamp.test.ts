@@ -98,6 +98,16 @@ test("streaming CLI approves exact IDs, stops uncertain apply, and safely replay
     assert.equal(second.code, 0, second.output);
     assert.match(second.output, /"inserted":0/);
     assert.equal(saved.size, 201);
+    const duplicateReport = manifest.trim().split("\n").map((line) => JSON.parse(line));
+    duplicateReport[2].ids[0] = duplicateReport[1].ids[0];
+    const duplicateText = duplicateReport.map((row) => JSON.stringify(row)).join("\n") + "\n";
+    await writeFile(report, duplicateText);
+    const beforeDuplicate = requests;
+    const duplicate = await run(["--apply-report", report, "--approve", digest(duplicateText),
+      "--receipts", join(dir, "duplicate-receipt")]);
+    assert.equal(duplicate.code, 1);
+    assert.equal(requests, beforeDuplicate, "cross-page duplicate IDs fail before any request");
+    await writeFile(report, manifest);
     const before = requests;
     await writeFile(report, manifest.split("\n").slice(0, -2).join("\n") + "\n");
     const incomplete = await run([
@@ -110,6 +120,13 @@ test("streaming CLI approves exact IDs, stops uncertain apply, and safely replay
     ]);
     assert.equal(incomplete.code, 1);
     assert.equal(requests, before, "incomplete approved manifest must fail before any request");
+    await writeFile(file, Array.from({ length: 201 }, (_, n) => JSON.stringify({ n: n % 200 })).join("\n"));
+    const beforeRepeated = requests;
+    const repeated = await run(["--report", join(dir, "duplicate-dry-report")]);
+    assert.equal(repeated.code, 1);
+    assert.equal(requests, beforeRepeated + 2, "the repeated ID is detected across separate pages");
+    assert.doesNotMatch(await readFile(join(dir, "duplicate-dry-report"), "utf8"), /"complete":true/);
+
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

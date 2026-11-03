@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
@@ -19,6 +20,11 @@ const { values } = parseArgs({
     receipts: { type: "string" },
   },
 });
+
+// SQLite uses a temporary disk file, so checking millions of IDs stays memory-bounded.
+const seenIds = new DatabaseSync("");
+seenIds.exec("PRAGMA cache_size=-4096; CREATE TABLE ids(id TEXT PRIMARY KEY) WITHOUT ROWID");
+const retainId = seenIds.prepare("INSERT INTO ids(id) VALUES (?)");
 
 async function main() {
   if (
@@ -75,6 +81,7 @@ async function main() {
           row.ids.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id))
         )
           throw new Error("Invalid approval page");
+        for (const id of row.ids) retainId.run(String(id));
         count++;
       }
     }
@@ -129,6 +136,7 @@ async function main() {
         throw new Error("Invalid page result");
       if (applying && JSON.stringify(dry.ids) !== JSON.stringify(expected!.ids))
         throw new Error("Resolved IDs changed since approval");
+      if (!applying) for (const id of dry.ids) retainId.run(String(id));
       const { approval, ...summary } = dry;
       const result = applying ? await request({ ...input, mode: "apply", approval }) : summary;
       if (
@@ -182,4 +190,6 @@ try {
     "Import stopped. No automatic retry. Reconcile retained IDs with the approved manifest before restarting with a new receipts path.",
   );
   process.exitCode = 1;
+} finally {
+  seenIds.close();
 }
