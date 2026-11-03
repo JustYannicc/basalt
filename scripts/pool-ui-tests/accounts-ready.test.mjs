@@ -136,46 +136,19 @@ test(
         arrived();
       });
 
-    for (const populated of [false, true])
-      await t.test(populated ? "account rows" : "authorized empty result", async () => {
-        viewResult = failed;
-        held = [];
-        const context = await browser.newContext();
-        try {
-          const page = await context.newPage();
-          await page.addInitScript(() => {
-            const mark = performance.mark.bind(performance);
-            performance.mark = (name, options) => {
-              const result = mark(name, options);
-              if (name === "basalt:pool-accounts-ready")
-                document.documentElement.dataset.committedAtReady = document.body.textContent ?? "";
-              return result;
-            };
-          });
-          await page.goto(parentOrigin);
-          await requests(2); // Development StrictMode replays the real mount effect.
-          const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
-          assert.ok(frame);
-          const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
-          assert.deepEqual(await accepted(), []);
-          release();
-          await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
-          assert.equal(
-            await frame.evaluate(
-              () => performance.getEntriesByName("basalt:pool-accounts-ready").length,
-            ),
-            0,
-          );
-          assert.deepEqual(await accepted(), []);
-          // Unrelated sources and unsupported contracts cannot satisfy the parent probe.
-          await page.evaluate((data) => window.postMessage(data, location.origin), ready);
-          await frame.evaluate(
-            ({ origin, data }) => window.parent.postMessage({ ...data, version: 2 }, origin),
-            { origin: parentOrigin, data: ready },
-          );
-          await page.waitForFunction(() => Reflect.get(window, "rejected") === 2);
-          assert.deepEqual(await accepted(), []);
-
+    for (const { populated, recovery } of [
+      { populated: false },
+      { populated: true },
+      { populated: true, recovery: "manual" },
+      { populated: true, recovery: "background" },
+    ])
+      await t.test(
+        recovery
+          ? `failed first load, then ${recovery} recovery`
+          : populated
+            ? "account rows"
+            : "authorized empty result",
+        async () => {
           const value = populated
             ? {
                 ...empty,
@@ -198,56 +171,131 @@ test(
                 ],
               }
             : empty;
-          viewResult = { ok: true, value };
-          await frame.getByRole("button", { name: "Try again", exact: true }).click();
-          await requests(1);
-          release();
-          const visible = populated ? "Synthetic subscription" : "No accounts yet.";
-          await frame.getByText(visible, { exact: true }).waitFor();
-          await page.waitForFunction(() => Reflect.get(window, "readiness").length === 1);
-          assert.deepEqual(
-            (await accepted()).map((entry) => entry.data),
-            [ready],
-          );
-          assert.ok(
-            (await frame.locator("html").getAttribute("data-committed-at-ready"))?.includes(
-              visible,
-            ),
-          );
-          assert.equal(
+          viewResult = recovery ? failed : { ok: true, value };
+          held = [];
+          const context = await browser.newContext();
+          try {
+            const page = await context.newPage();
+            await page.addInitScript(() => {
+              const mark = performance.mark.bind(performance);
+              performance.mark = (name, options) => {
+                const result = mark(name, options);
+                if (name === "basalt:pool-accounts-ready")
+                  document.documentElement.dataset.committedAtReady =
+                    document.body.textContent ?? "";
+                return result;
+              };
+            });
+            await page.goto(parentOrigin);
+            await requests(2); // Development StrictMode replays the real mount effect.
+            const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
+            assert.ok(frame);
+            const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
+            const marks = () =>
+              frame.evaluate(
+                () => performance.getEntriesByName("basalt:pool-accounts-ready").length,
+              );
+            const poll = async () => {
+              await frame.evaluate(() => {
+                const now = Date.now();
+                Date.now = () => now + 60_001;
+              });
+              await page.evaluate((origin) => {
+                const frame = document.querySelector("iframe");
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: false },
+                  origin,
+                );
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: true },
+                  origin,
+                );
+              }, childOrigin);
+            };
+            assert.deepEqual(await accepted(), []);
+            release();
+            const visible = populated ? "Synthetic subscription" : "No accounts yet.";
+            if (recovery) {
+              await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
+              assert.equal(await marks(), 0);
+              assert.deepEqual(await accepted(), []);
+              viewResult = { ok: true, value };
+              if (recovery === "manual")
+                await frame.getByRole("button", { name: "Try again", exact: true }).click();
+              else await poll();
+              await requests(1);
+              release();
+              await frame.getByText(visible, { exact: true }).waitFor();
+              assert.equal(await marks(), 0);
+              assert.deepEqual(await accepted(), []);
+              return;
+            }
+            await frame.getByText(visible, { exact: true }).waitFor();
+            await page.waitForFunction(() => Reflect.get(window, "readiness").length === 1);
+            assert.deepEqual(
+              (await accepted()).map((entry) => entry.data),
+              [ready],
+            );
+            assert.ok(
+              (await frame.locator("html").getAttribute("data-committed-at-ready"))?.includes(
+                visible,
+              ),
+            );
+            assert.equal(await marks(), 1);
+            // Unrelated sources and unsupported contracts cannot satisfy the parent probe.
+            await page.evaluate((data) => window.postMessage(data, location.origin), ready);
             await frame.evaluate(
-              () => performance.getEntriesByName("basalt:pool-accounts-ready").length,
-            ),
-            1,
-          );
-          await frame.evaluate(() => {
-            const now = Date.now();
-            Date.now = () => now + 60_001;
+              ({ origin, data }) => window.parent.postMessage({ ...data, version: 2 }, origin),
+              { origin: parentOrigin, data: ready },
+            );
+            await page.waitForFunction(() => Reflect.get(window, "rejected") === 2);
+            assert.equal((await accepted()).length, 1);
+            await poll();
+            await requests(1);
+            viewResult = { ok: true, value: empty };
+            release();
+            await frame.getByText("No accounts yet.", { exact: true }).waitFor();
+            assert.equal(await marks(), 1);
+            assert.equal((await accepted()).length, 1);
+            // Keep the same WindowProxy, changing only its actual origin.
+            await frame.goto(`${parentOrigin}/spoof`);
+            await page.waitForFunction(() => Reflect.get(window, "rejected") === 3);
+            assert.equal((await accepted()).length, 1);
+          } finally {
+            release();
+            await context.close();
+          }
+        },
+      );
+    await t.test("the sender targets the exact configured parent origin", async () => {
+      viewResult = { ok: true, value: empty };
+      held = [];
+      const context = await browser.newContext();
+      try {
+        const page = await context.newPage();
+        // The external parent is a spy only for this argument-level assertion.
+        await page.addInitScript(() => {
+          Object.defineProperty(window, "parent", {
+            value: {
+              postMessage(data, targetOrigin) {
+                if (data?.name === "basalt:pool-accounts-ready")
+                  Reflect.set(window, "sentReady", { data, targetOrigin });
+              },
+            },
           });
-          await page.evaluate((origin) => {
-            const frame = document.querySelector("iframe");
-            frame.contentWindow.postMessage({ type: "executor:app-active", active: false }, origin);
-            frame.contentWindow.postMessage({ type: "executor:app-active", active: true }, origin);
-          }, childOrigin);
-          await requests(1);
-          viewResult = { ok: true, value: empty };
-          release();
-          await frame.getByText("No accounts yet.", { exact: true }).waitFor();
-          assert.equal(
-            await frame.evaluate(
-              () => performance.getEntriesByName("basalt:pool-accounts-ready").length,
-            ),
-            1,
-          );
-          assert.equal((await accepted()).length, 1);
-          // Keep the same WindowProxy, changing only its actual origin.
-          await frame.goto(`${parentOrigin}/spoof`);
-          await page.waitForFunction(() => Reflect.get(window, "rejected") === 3);
-          assert.equal((await accepted()).length, 1);
-        } finally {
-          release();
-          await context.close();
-        }
-      });
+        });
+        await page.goto(childOrigin);
+        await requests(2);
+        release();
+        await page.getByText("No accounts yet.", { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(() => Reflect.get(window, "sentReady")), {
+          data: ready,
+          targetOrigin: parentOrigin,
+        });
+      } finally {
+        release();
+        await context.close();
+      }
+    });
   },
 );

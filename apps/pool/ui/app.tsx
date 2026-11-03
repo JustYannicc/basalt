@@ -15,8 +15,12 @@ const refresh = 60_000;
 function usePool(api: PoolApi) {
   const [view, setView] = useState<PoolView>();
   const [error, setError] = useState<string>();
+  const firstLoad = useRef<"initial" | "pending" | "success" | "failure">("initial");
   const load = useCallback(async () => {
+    const initial = firstLoad.current === "initial";
+    if (initial) firstLoad.current = "pending";
     const result = await api.view();
+    if (initial) firstLoad.current = result.ok ? "success" : "failure";
     if (result.ok) {
       setView(result.value);
       setError(undefined);
@@ -29,7 +33,7 @@ function usePool(api: PoolApi) {
     void load();
     return api.poll(() => void load(), refresh);
   }, [api, load]);
-  return { view, error, load };
+  return { view, error, load, measurable: firstLoad.current === "success" };
 }
 
 function useNow(every = 30_000) {
@@ -42,17 +46,17 @@ function useNow(every = 30_000) {
 }
 
 export function App({ api }: { api: PoolApi }) {
-  const { view, error, load } = usePool(api);
+  const { view, error, load, measurable } = usePool(api);
   const accountsReady = useRef(false);
   useLayoutEffect(() => {
-    if (view === undefined || accountsReady.current) return;
+    if (!measurable || view === undefined || accountsReady.current) return;
     accountsReady.current = true;
     // Document load does not prove the account list or empty result has committed.
     const name = "basalt:pool-accounts-ready";
     performance.mark(name);
     if (window.parent !== window)
       window.parent.postMessage({ name, version: 1 }, new URL(poolOrigin).origin);
-  }, [view]);
+  }, [view, measurable]);
   const now = useNow();
   const [removeError, setRemoveError] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
