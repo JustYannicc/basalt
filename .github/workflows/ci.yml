@@ -171,6 +171,8 @@ jobs:
           --workers 1
       - name: Verify account deletion against concurrent OAuth renewal
         run: node scripts/oauth-removal-tests/prove.ts
+      - name: Verify discarded rotated refresh revocation after account deletion
+        run: node scripts/oauth-discard-tests/prove.ts
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts

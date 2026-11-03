@@ -1,0 +1,69 @@
+import { Context, Effect, Option, type Tracer } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import * as Statement from "effect/sql/Statement";
+
+const active = Context.Reference<boolean>("proof/OAuthDiscardGate", { defaultValue: () => false });
+const origin = "__GATE_ORIGIN__";
+const signal = (path: string, id?: string, resolve?: string) =>
+  Effect.gen(function* () {
+    const url = new URL(path, origin);
+    if (id !== undefined) url.searchParams.set("id", id);
+    if (resolve !== undefined) url.searchParams.set("resolve", resolve);
+    const response = yield* HttpClient.execute(HttpClientRequest.post(url));
+    if (response.status !== 204) return yield* Effect.die("Discard proof gate refused");
+  }).pipe(Effect.provide(FetchHttpClient.layer), Effect.orDie);
+
+/** Observe the native scheduler without replacing it or changing whether it accepts work. */
+export const observeDiscardWork = (
+  schedule: (work: Effect.Effect<void>) => Effect.Effect<boolean>,
+  work: Effect.Effect<void>,
+) => Effect.gen(function* () {
+  const id = crypto.randomUUID();
+  yield* signal("/work/start", id);
+  const accepted = yield* schedule(work.pipe(Effect.ensuring(signal("/work/end", id))));
+  if (!accepted) yield* signal("/work/end", id);
+  return accepted;
+});
+
+/** Pause before settlement's first account statement, before it can hold either row. */
+export const withDiscardGate = <A, E, R, B, E2, R2>(
+  work: Effect.Effect<A, E, R>,
+  transaction: (body: Effect.Effect<A, E, R>) => Effect.Effect<B, E2, R2>,
+) => transaction(Effect.gen(function* () {
+  const previous = yield* Statement.CurrentTransformer;
+  if (yield* active) return yield* work;
+  let held = false;
+  const transformer: Statement.Transformer = (input, sql, fiber, span) =>
+    Effect.gen(function* () {
+      const statement = previous === undefined ? input : yield* previous(input, sql, fiber, span);
+      const [source, params] = statement.compile();
+      const names: string[] = [];
+      let resolution: Tracer.Span | undefined;
+      let parent: Tracer.AnySpan | undefined = span;
+      while (parent?._tag === "Span") {
+        names.push(parent.name);
+        if (parent.name === "oauth.resolve") resolution = parent;
+        parent = Option.getOrUndefined(parent.parent);
+      }
+      const id = params.find((value) => typeof value === "string" && value.startsWith("acc_"));
+      if (!held && typeof id === "string" && /\bexecutor_accounts\b/.test(source.replaceAll('"', "")) &&
+          resolution !== undefined && names.includes("sdk.webhooks.reconcileSource")) {
+        held = true;
+        const resolveId = resolution.spanId;
+        const end = resolution.end.bind(resolution);
+        // Cron reconciliation is native event work, outside the SDK's background scheduler.
+        Object.assign(resolution, { end: (...args: Parameters<typeof end>) => {
+          end(...args);
+          const url = new URL("/resolve/end", origin);
+          url.searchParams.set("id", resolveId);
+          void fetch(url, { method: "POST" }).then(response => response.body?.cancel()).catch(() => {});
+        }});
+        yield* signal("/arrive", id, resolveId);
+      }
+      return statement;
+    });
+  return yield* work.pipe(
+    Effect.provideService(Statement.CurrentTransformer, transformer),
+    Effect.provideService(active, true),
+  );
+}));

@@ -1,0 +1,461 @@
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index fdcfd45..fcd83e2 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -293,6 +293,14 @@ const notRunInCi: Partial<
+     targets: ["cloud"],
+     reason: "The Basalt host-managed-accounts job runs the disposable SQL-gate wrapper.",
+   },
++  oauthDiscardedRefresh: {
++    targets: ["cloud"],
++    reason: "The Basalt host-managed-accounts job runs the disposable discarded-token proof.",
++  },
++  oauthDiscardedRefreshReconnect: {
++    targets: ["cloud"],
++    reason: "The Basalt host-managed-accounts job runs the disposable discarded-token proof.",
++  },
+   nativeProviderCloudLinks: {
+     targets: ["cloud"],
+     reason: "The Basalt production-ops job supplies an isolated native acquisition signing key.",
+diff --git a/e2e/support/oauth-discard-gates.ts b/e2e/support/oauth-discard-gates.ts
+new file mode 100644
+index 0000000..9bf8c21
+--- /dev/null
++++ b/e2e/support/oauth-discard-gates.ts
+@@ -0,0 +1,29 @@
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++
++/** The disposable runner observes native work completion as well as settlement's SQL boundary. */
++export const oauthDiscardGate = Effect.gen(function* () {
++  const origin = process.env.EXECUTOR_OAUTH_DISCARD_GATE;
++  if (origin === undefined) return yield* Effect.die("Run scripts/oauth-discard-tests/prove.ts");
++  const request = (action: string) =>
++    HttpClient.execute(HttpClientRequest.post(new URL(`/${action}`, origin))).pipe(
++      Effect.provide(FetchHttpClient.layer),
++    );
++  const command = (action: string) =>
++    request(action).pipe(
++      Effect.flatMap((response) =>
++        response.status === 204 ? Effect.void : Effect.die("Discard proof command refused"),
++      ),
++    );
++  yield* command("arm");
++  const release = command("release");
++  yield* Effect.addFinalizer(() => release.pipe(Effect.orDie));
++  return {
++    entered: request("entered").pipe(
++      Effect.flatMap((response) => response.json),
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ account: Schema.String }))),
++    ),
++    release,
++    drained: command("drained"),
++  };
++});
+diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
+index f8e7cb7..04a35aa 100644
+--- a/e2e/support/oauth-setup-issuer.ts
++++ b/e2e/support/oauth-setup-issuer.ts
+@@ -10,7 +10,7 @@ import {
+   sign,
+ } from "node:crypto";
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
++import { Context, Deferred, Effect, Layer, Option, Queue, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { tokenRequestParameters } from "./client-credentials-issuer.ts";
+ 
+@@ -53,6 +53,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+   const port = yield* IssuerPort;
+   const address = yield* Deferred.make<string>();
+   const revocationReceived = yield* Deferred.make<void>();
++  const revocationEvents = yield* Queue.unbounded<void>();
+   let registration = true;
+   let postChallenge = false;
+   let challenge = true;
+@@ -195,6 +196,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+   const refreshOrigins = new Map<string, "sign-in" | "refresh">();
+   /** The issuance of each refresh token revocation named, in order: a current or replaced one. */
+   const revokedRefreshTokens: Array<"sign-in" | "refresh"> = [];
++  const revokedRefreshTokenClients: Array<{ issuedTo: string | null; presentedBy: string | null }> =
++    [];
+   /** Refresh tokens a rotation replaced, with their client. */
+   const replacedRefreshGrants = new Map<string, string>();
+   const refreshedAccessTokens = new Set<string>();
+@@ -904,7 +907,16 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+           typeof presented.clientId === "string" ? clients.get(presented.clientId) : undefined;
+         const token = input.get("token");
+         const origin = token === null ? undefined : refreshOrigins.get(token);
+-        if (origin !== undefined) revokedRefreshTokens.push(origin);
++        if (origin !== undefined) {
++          revokedRefreshTokens.push(origin);
++          revokedRefreshTokenClients.push({
++            issuedTo:
++              token === null
++                ? null
++                : (refreshGrants.get(token) ?? replacedRefreshGrants.get(token) ?? null),
++            presentedBy: presented.clientId ?? null,
++          });
++        }
+         revocations.push({
+           token:
+             token !== null && refreshGrants.has(token)
+@@ -921,6 +933,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+             presented.secret === client.secret,
+         });
+         yield* Deferred.succeed(revocationReceived, undefined);
++        yield* Queue.offer(revocationEvents, undefined);
+         return revocation === "failing"
+           ? HttpServerResponse.empty({ status: 503 })
+           : HttpServerResponse.empty({ status: 200 });
+@@ -1042,6 +1055,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+   return {
+     origin,
+     revoked: Deferred.await(revocationReceived),
++    awaitRevocation: Queue.take(revocationEvents),
+     configure: (input: {
+       readonly requireUserAgent?: boolean;
+       readonly registration?: boolean;
+@@ -1287,6 +1301,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+       nonceRequested,
+       revocations: [...revocations],
+       revokedRefreshTokens: [...revokedRefreshTokens],
++      revokedRefreshTokenClients: [...revokedRefreshTokenClients],
+       resourceRequests: { ...resourceRequests },
+       resourceAuthorizations: [...resourceAuthorizations],
+       reportingIdentityRequests,
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 9f52b4c..407b0b9 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5006,6 +5006,26 @@ export const scenarios = plan({
+       local: na("The proof gates the managed Cloud's actual Postgres transactions."),
+     },
+   },
++  oauthDiscardedRefresh: {
++    fixtures: "actors",
++    file: "oauth-discarded-refresh.spec.ts",
++    title: "Cloud discards a rotated refresh safely after account deletion wins settlement",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The proof observes the managed Cloud's native SQL and background work."),
++      local: na("The proof observes the managed Cloud's native SQL and background work."),
++    },
++  },
++  oauthDiscardedRefreshReconnect: {
++    fixtures: "actors",
++    file: "oauth-discarded-refresh.spec.ts",
++    title: "Cloud discards a rotated refresh without revoking reconnected credentials",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The proof observes the managed Cloud's native SQL and background work."),
++      local: na("The proof observes the managed Cloud's native SQL and background work."),
++    },
++  },
+   oauthClientAuthentication: {
+     fixtures: "actors",
+     file: "oauth-client-authentication.spec.ts",
+diff --git a/e2e/tests/oauth-account-removal.spec.ts b/e2e/tests/oauth-account-removal.spec.ts
+index 93e2d1e..48e22ba 100644
+--- a/e2e/tests/oauth-account-removal.spec.ts
++++ b/e2e/tests/oauth-account-removal.spec.ts
+@@ -128,12 +128,15 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({re
+             params: [account.id],
+           }),
+         ).toEqual([]);
+-        yield* issuer.revoked;
++        yield* issuer.awaitRevocation;
++        yield* issuer.awaitRevocation;
+         const metrics = yield* issuer.metrics;
+         expect(metrics.refreshes).toBe(1);
+         expect(metrics.refreshesIssued).toBe(1);
++        expect(metrics.revokedRefreshTokens).toEqual(["sign-in"]);
+         expect(metrics.revocations).toEqual([
+           { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++          { token: "access", hint: "access_token", clientAuthenticated: true },
+         ]);
+       }),
+     ),
+diff --git a/e2e/tests/oauth-discarded-refresh.spec.ts b/e2e/tests/oauth-discarded-refresh.spec.ts
+new file mode 100644
+index 0000000..d032b6c
+--- /dev/null
++++ b/e2e/tests/oauth-discarded-refresh.spec.ts
+@@ -0,0 +1,207 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { oauthDiscardGate } from "../support/oauth-discard-gates.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { scenarios } from "../test-plan.ts";
++
++const rotatingAccount = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    http = yield* HttpClient.HttpClient,
++    issuer = yield* oauthSetupIssuer,
++    database = yield* cloudLocks,
++    evidence = yield* Evidence;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  yield* issuer.configure({
++    refreshTokens: true,
++    rotateRefreshTokens: true,
++    expiresIn: 20,
++    revocation: "recorded",
++  });
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: `Discarded refresh ${randomUUID().slice(0, 8)}`,
++    files: [
++      appsManifest,
++      {
++        path: "index.ts",
++        content: `import { defineApp, defineProvider, oauth2, router, query, object } from "apps";
++const service=defineProvider({name:"Discarded refresh service",auth:{oauth:oauth2(${JSON.stringify({
++          authorizationUrl: issuer.origin + "/authorize",
++          tokenUrl: issuer.origin + "/token",
++          revocationUrl: issuer.origin + "/revoke",
++          scopes: ["read"],
++        })})}});
++export default defineApp({user:{accounts:{service}}},async({user:{accounts}})=>({tools:router({
++  read:query({input:object({})},async({fetch})=>({usable:(await fetch(${JSON.stringify(issuer.origin + "/resource")},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}})).ok})),
++})}));`,
++      },
++    ],
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const app = yield* body(Resource, deployed);
++  yield* Effect.addFinalizer(() =>
++    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++  );
++  const client = { clientId: "discard-client", clientSecret: "discard-secret" };
++  const connect = (existing?: string, using = client) =>
++    Effect.gen(function* () {
++      const connection = yield* body(
++        Resource,
++        yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++          existing === undefined ? {} : { account: existing },
++        ),
++      );
++      const started = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${connection.id}/oauth/start`,
++        { method: "oauth", client: using },
++      );
++      expect(started.status, JSON.stringify(started.body)).toBe(200);
++      const redirect = yield* body(
++        Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String }),
++        started,
++      );
++      yield* issuer.allowClient({ ...using, redirect: redirect.redirectUri });
++      const callbackUrl = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++          expect(response.status).toBe(302);
++          if (response.headers.location === undefined)
++            return yield* Effect.die("No OAuth callback returned");
++          return response.headers.location;
++        }),
++      ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++      const completed = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${connection.id}/oauth/complete`,
++        { callbackUrl },
++      );
++      expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++      return yield* body(Resource, completed);
++    });
++  const gate = yield* oauthDiscardGate;
++  const account = yield* connect();
++  expect((yield* gate.entered).account).toBe(account.id);
++  expect((yield* issuer.metrics).refreshesIssued).toBe(1);
++  const metrics = issuer.metrics.pipe(
++    Effect.tap((current) =>
++      evidence.json("discarded-refresh-revocations.json", {
++        refreshes: current.refreshes,
++        refreshesIssued: current.refreshesIssued,
++        origins: current.revokedRefreshTokens,
++        clients: current.revokedRefreshTokenClients,
++        revocations: current.revocations,
++      }),
++    ),
++  );
++  return { api, actors, issuer, database, prefix, app, account, gate, client, connect, metrics };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Discarded OAuth refresh", (it) => {
++  it.effect(scenarios.oauthDiscardedRefresh.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, actors, database, prefix, account, gate, client, metrics } =
++          yield* rotatingAccount;
++        const deleted = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${prefix}/accounts/${account.id}`,
++        );
++        expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
++        yield* gate.release;
++        yield* gate.drained;
++        const current = yield* metrics;
++        expect(current.refreshes).toBe(1);
++        expect(current.refreshesIssued).toBe(1);
++        expect([...current.revokedRefreshTokens].sort()).toEqual(["refresh", "sign-in"]);
++        expect(current.revokedRefreshTokenClients).toEqual([
++          { issuedTo: client.clientId, presentedBy: client.clientId },
++          { issuedTo: client.clientId, presentedBy: client.clientId },
++        ]);
++        expect(current.revocations).toHaveLength(2);
++        for (const revocation of current.revocations)
++          expect(revocation).toMatchObject({ hint: "refresh_token", clientAuthenticated: true });
++        for (const table of ["executor_accounts", "executor_oauth_grants"])
++          expect(
++            yield* database.run({
++              sql: `select id from ${table} where id = $1`,
++              params: [account.id],
++            }),
++          ).toEqual([]);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.oauthDiscardedRefreshReconnect.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const {
++          api,
++          actors,
++          issuer,
++          database,
++          prefix,
++          app,
++          account,
++          gate,
++          client,
++          connect,
++          metrics,
++        } = yield* rotatingAccount;
++        yield* issuer.configure({ expiresIn: 3600 });
++        const replacement = { clientId: "replacement-client", clientSecret: "replacement-secret" };
++        expect((yield* connect(account.id, replacement)).id).toBe(account.id);
++        const stored = () =>
++          database.run({
++            sql: "select status, encrypted from executor_oauth_grants where id = $1",
++            params: [account.id],
++          });
++        const before = yield* stored();
++        expect(before).toHaveLength(1);
++        yield* gate.release;
++        yield* gate.drained;
++        const current = yield* metrics;
++        expect(current.refreshes).toBe(1);
++        expect(current.refreshesIssued).toBe(1);
++        expect(current.revokedRefreshTokens).toEqual(["refresh"]);
++        expect(current.revokedRefreshTokenClients).toEqual([
++          { issuedTo: client.clientId, presentedBy: client.clientId },
++        ]);
++        expect(current.revocations).toEqual([
++          { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++        ]);
++        expect(yield* stored()).toEqual(before);
++        const read = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/tools/call`,
++          {
++            tool: "read",
++            input: {},
++          },
++        );
++        expect(read.status, JSON.stringify(read.body)).toBe(200);
++        expect(read.body).toEqual({ usable: true });
++        expect((yield* metrics).revocations).toEqual(current.revocations);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index e4dec2e..5c4f762 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -650,23 +650,6 @@ export const makeOAuth = (
+       return { ...rest, ...operator };
+     });
+ 
+-  /**
+-   * Renew an authorization code grant with its refresh token. Undefined when it has none, or when
+-   * the operator removed the client that issued it.
+-   */
+-  const refreshOf = (
+-    protocol: ReturnType<typeof makeOAuthProtocol>,
+-    grant: Exclude<OAuthGrant, { readonly grant: "client_credentials" }>,
+-  ) =>
+-    Effect.gen(function* () {
+-      const operating = yield* operatingGrant(grant);
+-      return grant.refreshToken === undefined ||
+-        operating === undefined ||
+-        operating.grant === "client_credentials"
+-        ? undefined
+-        : protocol.refresh({ ...operating, refreshToken: grant.refreshToken });
+-    });
+-
+   /**
+    * The operator's client to sign in with, and the scopes to ask for, when one is configured for
+    * exactly the method's authorization and token endpoints. The endpoints decide only whether it
+@@ -2767,10 +2750,14 @@ export const makeOAuth = (
+           return held(grant.fields);
+         if (protocol === undefined) return yield* reconnect("not_renewable");
+         const stage = grant.grant === "client_credentials" ? "clientCredentials" : "refresh";
++        const issuing = yield* operatingGrant(grant);
++        if (issuing === undefined) return yield* reconnect("not_renewable");
+         const renewal =
+-          grant.grant === "client_credentials"
+-            ? protocol.clientCredentials(grant)
+-            : yield* refreshOf(protocol, grant);
++          issuing.grant === "client_credentials"
++            ? protocol.clientCredentials(issuing)
++            : issuing.refreshToken === undefined
++              ? undefined
++              : protocol.refresh({ ...issuing, refreshToken: issuing.refreshToken });
+         if (renewal === undefined) return yield* reconnect("not_renewable");
+         const claim = `refresh_${yield* nextId}`;
+         /**
+@@ -2976,6 +2963,23 @@ export const makeOAuth = (
+           );
+           if (!committed) {
+             recorded.lost = "tokens";
++            // Only this response is discarded. A replacement grant belongs to another writer.
++            yield* revokeLater(
++              settledRevocation(
++                revokeTokens(issuing, {
++                  refreshToken:
++                    grant.grant !== "client_credentials" &&
++                    tokens.refresh_token === grant.refreshToken
++                      ? undefined
++                      : tokens.refresh_token,
++                  accessToken:
++                    tokens.access_token === grant.fields.access_token
++                      ? undefined
++                      : tokens.access_token,
++                }),
++                "oauth.revokeRefused",
++              ),
++            );
+             return undefined;
+           }
+           yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
