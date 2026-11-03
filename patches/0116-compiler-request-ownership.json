@@ -1,7 +1,7 @@
 {
   "identity": "basalt-compiler-request-ownership",
   "file": "0116-compiler-request-ownership.patch",
-  "content_sha256": "49e6e284da074a1c6a0d188c0271d757f191fa3a774ac034cc67fd678757bb1d",
+  "content_sha256": "5805763a1506c5039a53d9b809d6e60b24fe80e29f8ab43aced7b970e14f650d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

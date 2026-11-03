@@ -1,8 +1,7 @@
 diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
-index 57265da8..8760fc18 100644
 --- a/apps/hosted/cloud/src/implementation/build-admission.ts
 +++ b/apps/hosted/cloud/src/implementation/build-admission.ts
-@@ -1,65 +1,52 @@
+@@ -1,65 +1,67 @@
  /**
 - * Bound how many builds one compiler isolate runs at once.
 - *
@@ -15,43 +14,69 @@ index 57265da8..8760fc18 100644
 - * its waiter in the waiter's own I/O context (Workers' cross-request promise handling), so its
 - * timers and fetches stay its own. A request can be cancelled while it holds a slot, without
 - * running its finalizers, so each slot is a lease: after `lease` a waiter takes the slot over.
-+ * Bound an isolate's simultaneous builds without sharing request-owned continuations. Waiters
-+ * read leases on their own timers. Expiry recovers an owner whose request ended before cleanup;
-+ * a late release only removes its own lease.
++ * Bound an isolate's builds in arrival order without sharing request-owned continuations.
++ * Tickets and leases contain only values; each waiter owns its polling timer. Expiry removes
++ * requests whose cleanup never ran, and late cleanup cannot release a successor's lease.
   */
++import { RuntimeBuildFailed } from "@executor-js/sdk/core";
  import { Duration, Effect } from "effect";
-
+-
++
  interface Slot {
 -  readonly released: Promise<void>;
    readonly expires: number;
  }
-
++
 +const check = { min: 10, max: 200 };
+-
 +
  export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
    const leaseMillis = Duration.toMillis(lease);
    const held = new Set<Slot>();
 -  const acquire = async (): Promise<() => void> => {
-+  const acquire = Effect.gen(function* () {
-+    const since = Date.now();
-     for (;;) {
-       const now = Date.now();
-       for (const slot of held) if (slot.expires <= now) held.delete(slot);
-       if (held.size < slots) {
+-    for (;;) {
+-      const now = Date.now();
+-      for (const slot of held) if (slot.expires <= now) held.delete(slot);
+-      if (held.size < slots) {
 -        let release = () => {};
 -        const released = new Promise<void>((resolve) => {
 -          release = resolve;
 -        });
 -        const slot = { released, expires: now + leaseMillis };
-+        const slot = { expires: now + leaseMillis };
-         held.add(slot);
+-        held.add(slot);
 -        return () => {
 -          held.delete(slot);
 -          release();
 -        };
-+        return slot;
++  const waiting = new Set<Slot>();
++  const acquire = Effect.suspend(() => {
++    const since = Date.now();
++    const ticket = { expires: since + leaseMillis };
++    waiting.add(ticket);
++    return Effect.gen(function* () {
++      for (;;) {
++        const now = Date.now();
++        for (const slot of held) if (slot.expires <= now) held.delete(slot);
++        for (const queued of waiting) if (queued.expires <= now) waiting.delete(queued);
++        if (ticket.expires <= now)
++          return yield* new RuntimeBuildFailed({
++            stage: "compile",
++            message:
++              "The compiler admission deadline elapsed. No new version was activated; deploy again.",
++          });
++        if (waiting.values().next().value === ticket && held.size < slots) {
++          waiting.delete(ticket);
++          held.add(ticket);
++          return ticket;
++        }
++        yield* Effect.sleep(
++          Math.min(
++            ticket.expires - now,
++            Math.max(check.min, Math.min(check.max, (now - since) / 4)),
++          ),
++        );
        }
-       const first = Math.min(...Array.from(held, (slot) => slot.expires));
+-      const first = Math.min(...Array.from(held, (slot) => slot.expires));
 -      let timer: ReturnType<typeof setTimeout> | undefined;
 -      await Promise.race([
 -        ...Array.from(held, (slot) => slot.released),
@@ -60,12 +85,10 @@ index 57265da8..8760fc18 100644
 -        }),
 -      ]);
 -      clearTimeout(timer);
-+      yield* Effect.sleep(
-+        Math.min(first - now, Math.max(check.min, Math.min(check.max, (now - since) / 4))),
-+      );
-     }
+-    }
 -  };
 -  /** Run a build once a slot is free, and free the slot when the build ends. */
++    }).pipe(Effect.ensuring(Effect.sync(() => waiting.delete(ticket))));
 +  });
    return <A, E, R>(
      build: Effect.Effect<A, E, R>,
