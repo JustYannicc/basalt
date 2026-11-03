@@ -38,6 +38,8 @@ runtime; do not paste their decrypted contents into public logs or issues.
 
 A failed run still uploads `failure.json`. Its fixed category and phase locate
 the failed boundary; a SQL failure can include its two-character SQL state class.
+Known provider-adoption refusals, defects and interruptions have distinct categories.
+The cause kind records whether a failure, defect or composite cause reached the boundary.
 Use this receipt when deciding the next diagnostic step. It contains no raw error
 message, response, SQL statement or credentials, and does not authorize a retry.
 
@@ -98,9 +100,15 @@ and request with `mode=apply`, `source_run` equal to the successful dry-run run 
 The CLI verifies that the source was a successful main-branch dispatch of this
 workflow and that its downloaded backup matches its checksum before sending
 anything. The runtime refuses changed requests, deployments, revisions,
-databases or inputs, and plans older than one hour. Database binding includes
-fingerprints of the trusted runtime and direct connections, so a same-name
-database on another target or a credential rotation requires a new dry-run.
+databases or inputs, and plans older than one hour. Database binding uses the
+normalized direct origin and the connected database's identity, checked again
+inside the write transaction. Credentials, URL options and Hyperdrive's temporary
+proxy address do not identify the database. Password changes alone preserve its
+database binding.
+The cluster identifier is included when the runtime role can read it; otherwise
+the stable origin, database name and database OID identify the target. Plans made
+before this identity format was deployed require a fresh dry run. Existing
+receipts keep their plan and backup hashes; no receipt schema changes.
 It re-inspects inside the write transaction and verifies before and after commit.
 A failed in-transaction verification rolls back the writes and receipt together.
 
@@ -116,6 +124,8 @@ follow-up. Do not invent a new plan merely to repeat an uncertain mutation.
 After preparing the pinned upstream and its E2E assets, run
 `node scripts/production-ops/prove-scope.ts`. It temporarily registers a synthetic
 migration while the normal managed Cloud suite exercises signed dry-run, apply,
-verification and replay requests. It restores the original registry and removes
-the fixture module afterward. The proof module is never part of a carried patch
-or a deployment.
+verification and replay requests. Runner-only binding controls vary passwords
+and supply mismatched host and database origins, while signed requests still use
+the real HTTP handler and SQL transactions. It restores the original registry and
+connection declaration and removes both fixture modules afterward. The fixture
+modules are never part of a carried patch or a deployment.

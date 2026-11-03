@@ -1,0 +1,11 @@
+import * as Redacted from "effect/Redacted";
+
+/** Change only the declared direct origin; real SQL still runs through the Hyperdrive binding. */
+export const databaseOriginFixture = (value: Redacted.Redacted<string>) => {
+  const url = new URL(Redacted.value(value));
+  const variant = process.env.BASALT_E2E_DATABASE_ORIGIN;
+  if (variant === "host") url.hostname = "another-database.invalid";
+  if (variant === "database") url.pathname = "/another_database";
+  url.searchParams.set("invocation", "synthetic-per-request-query-secret");
+  return Redacted.make(url.toString());
+};

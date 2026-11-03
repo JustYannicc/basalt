@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-stable-production-database-identity",
+  "file": "0114-stable-production-database-identity.patch",
+  "content_sha256": "34df6f098de46e2d57fad75c856adb9da53fe057db3b508d0459fcb412c92923",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

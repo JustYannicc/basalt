@@ -97,6 +97,34 @@ test("a refused response never exposes its private body or repeats the mutation"
 
 const poison = "DO-NOT-RETAIN-password-response-credential";
 
+test("the operator CLI retains classified composite, defect and migration refusals safely", () => {
+  for (const [category, causeKind, sqlStateClass] of [
+    ["refused", "failure", undefined],
+    ["defect", "defect", undefined],
+    ["sql", "composite", "22"],
+  ] as const) {
+    const receipt = {
+      format: "basalt-production-ops-failure-v1",
+      category,
+      phase: "sql",
+      causeKind,
+      ...(sqlStateClass === undefined ? {} : { sqlStateClass }),
+    };
+    const { directory, result } = run({
+      error: "operation_refused",
+      failure: { ...receipt, message: poison, cause: { password: poison } },
+    });
+    try {
+      assert.equal(result.status, 1);
+      const text = readFileSync(join(directory, "failure.json"), "utf8");
+      assert.deepEqual(JSON.parse(text), { ...receipt, httpStatus: 409 });
+      assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 function run(response?: unknown) {
   const directory = mkdtempSync(join(tmpdir(), "production-ops-failure-"));
   const fixture = join(directory, "fetch.mjs");
