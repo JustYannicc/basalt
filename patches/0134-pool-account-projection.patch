@@ -216,10 +216,10 @@ index 000000000..4d6e4783a
 +};
 diff --git a/apps/hosted/server/src/implementation/account-projection.ts b/apps/hosted/server/src/implementation/account-projection.ts
 new file mode 100644
-index 000000000..4b057fabe
+index 000000000..38eeea005
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-projection.ts
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,98 @@
 +import { AppId, AppNotFound, StorageError } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import type { ResourceDirectory, SavedAccountBinding } from "../contracts/resource-access.ts";
@@ -260,6 +260,8 @@ index 000000000..4b057fabe
 +      return yield* new AppNotFound({ app: pool });
 +    const { owner } = yield* CurrentOrganization;
 +    const executor = yield* Effect.flatten(HostedExecutor);
++    // The native link reader still applies each app's policy; only its saved-account lookup is shared.
++    const all = yield* executor.accounts.list({ owner });
 +    const saved = yield* Effect.forEach(
 +      directory.accounts,
 +      ({ account, provider, health }) =>
@@ -281,7 +283,7 @@ index 000000000..4b057fabe
 +        Effect.gen(function* () {
 +          const scopes = access.canUse ? (["app", "user"] as const) : (["app"] as const);
 +          return (yield* Effect.forEach(scopes, (scope) =>
-+            Effect.map(listAppAccountLinks(app.id, scope), (links) =>
++            Effect.map(listAppAccountLinks(app.id, scope, all), (links) =>
 +              links.flatMap((link): AccountProjectionInput[] => {
 +                if (link.hostManaged === true) return [];
 +                const requirement = app.requirements.accounts[link.requirement];
@@ -317,31 +319,66 @@ index 000000000..4b057fabe
 +    return savedAccountRows([...saved, ...links.flat()], pool);
 +  });
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index 6099e972f..ad5fe0a3f 100644
+index 6099e972f..4ec827d3d 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
-@@ -194,6 +194,20 @@ const userLinkRecords = (app: AppId, requirement?: string) =>
+@@ -96,11 +96,15 @@ const linkViews = (
+   app: AppId,
+   records: ReadonlyArray<LinkRecord>,
+   identity: boolean,
++  savedAccounts?: readonly Account[],
+ ) =>
+   Effect.gen(function* () {
+     if (records.length === 0) return [];
+     const accounts = new Map(
+-      (yield* executor.accounts.list({ owner })).map((account) => [account.id as string, account]),
++      (savedAccounts ?? (yield* executor.accounts.list({ owner }))).map((account) => [
++        account.id as string,
++        account,
++      ]),
+     );
+     const present = records.flatMap((record) => {
+       const account = accounts.get(record.account);
+@@ -194,6 +198,38 @@ const userLinkRecords = (app: AppId, requirement?: string) =>
      );
    });
  
 +/** Shared native link read for app Accounts and the saved-account projection. */
-+export const listAppAccountLinks = (app: AppId, scope: AccountScope) =>
++export const listAppAccountLinks = (
++  app: AppId,
++  scope: AccountScope,
++  savedAccounts?: readonly Account[],
++) =>
 +  Effect.gen(function* () {
 +    const owner = yield* currentOwner;
 +    const executor = yield* Effect.flatten(HostedExecutor);
 +    if (scope === "user") {
 +      yield* usableApp(executor, owner, app);
-+      return yield* linkViews(executor, owner, app, yield* userLinkRecords(app), true);
++      return yield* linkViews(
++        executor,
++        owner,
++        app,
++        yield* userLinkRecords(app),
++        true,
++        savedAccounts,
++      );
 +    }
 +    const { access } = yield* requireCurrentAppAccess(app, "read");
 +    yield* executor.apps.get({ owner, app });
-+    return yield* linkViews(executor, owner, app, yield* linkRecords(app, null), access.canManage);
++    return yield* linkViews(
++      executor,
++      owner,
++      app,
++      yield* linkRecords(app, null),
++      access.canManage,
++      savedAccounts,
++    );
 +  });
 +
  /** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
  const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
    const required = Object.hasOwn(app.requirements.accounts, requirement)
-@@ -402,19 +416,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+@@ -402,19 +438,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
        .handle("userCreate", ({ params, payload }) =>
          createRequirementAccount("user", params, payload),
        )
@@ -362,7 +399,7 @@ index 6099e972f..ad5fe0a3f 100644
        .handle("appGet", ({ params }) =>
          Effect.gen(function* () {
            const owner = yield* currentOwner;
-@@ -508,15 +510,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+@@ -508,15 +532,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
          }),
        )
        .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))
@@ -450,6 +487,26 @@ index 000000000..ec5e7cadd
 +/** All mounted pool filters share the same source, so a changed binding refreshes them together. */
 +export const refreshSavedAccountRows = (get: Atom.FnContext, organization: OrganizationReference) =>
 +  get.refresh(accounts(new OrganizationKey({ organization })));
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+index a64008ecd..ff2a29dcd 100644
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -17,6 +17,7 @@ import { HostedClient } from "./api.ts";
+ import { inventoryAtom } from "./organization.ts";
+ import { toolsAtom } from "./apps.ts";
+ import { accountObservationsAtom } from "./account-observations.ts";
++import { refreshSavedAccountRows } from "./account-projection.ts";
+ 
+ class AccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -48,6 +49,7 @@ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+         // The account list reads the resource directory; reload it for the recorded results.
+         get.refresh(resourceDirectoryAtom(key.organization));
+         get.refresh(resourceDirectoryAtom(key.organization, "managed"));
++        refreshSavedAccountRows(get, key.organization);
+         acknowledge(get, inventoryAtom(key.organization), (data) => ({
+           ...data,
+           accounts: data.accounts.map((current) =>
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
 index 504132411..4f2d791bf 100644
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
