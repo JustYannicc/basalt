@@ -1319,7 +1319,7 @@ index 70eb890..7d41e42 100644
  
  /**
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 3643ce7..f51e0fc 100644
+index 3643ce7..c54c079 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
@@ -1404,15 +1404,6 @@ index 3643ce7..f51e0fc 100644
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
-@@ -522,7 +563,7 @@ export const startCloudEnvironment = (input: {
-             databasePassword,
-             v1ReaderPassword,
-             v1WriterPassword,
--            ...cloudStartupSecrets(env, Redacted.value(fixture).services),
-+            ...cloudStartupSecrets(env, Redacted.value(routesFixture).services),
-           ],
-           (line) =>
-             Effect.gen(function* () {
 @@ -685,6 +726,6 @@ export const startCloudEnvironment = (input: {
        emulators,
        fixtures: controls,
