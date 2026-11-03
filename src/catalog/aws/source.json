@@ -11,7 +11,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"AWS\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.1\",\n    \"aws4fetch\": \"1.0.20\",\n    \"fast-xml-parser\": \"5.11.1\"\n  },\n  \"description\": \"AWS caller identity and regional S3 bucket reads with personal access keys.\"\n}\n"
+      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"AWS\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.2\",\n    \"aws4fetch\": \"1.0.20\",\n    \"fast-xml-parser\": \"5.11.1\"\n  },\n  \"description\": \"AWS caller identity and regional S3 bucket reads with personal access keys.\"\n}\n"
     },
     {
       "path": "src/aws.ts",
