@@ -1,0 +1,401 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -395,6 +395,7 @@
+       JSON.stringify(
+         {
+           runtime: "Alchemy local Worker and disposable Postgres",
++          prebuiltFramework: input.prebuilt === true,
+           origin: input.origin,
+           externalServices: "emulators.dev",
+           inheritedCredentials: false,
+@@ -486,96 +487,126 @@
+     if (built !== 0)
+       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
+     const ownerScope = yield* Effect.scope;
+-    const launch = Effect.gen(function* () {
+-      yield* apiListener.unset();
+-      const scope = yield* Scope.fork(ownerScope);
+-      return yield* Effect.gen(function* () {
+-        const server = yield* processes.spawn(
+-          ChildProcess.make(
+-            "node",
++    let launchCount = 0;
++    const launch = (
++      listener = apiListener,
++      overrides: Readonly<Record<string, string>> = {},
++      suffix = "",
++    ) =>
++      Effect.gen(function* () {
++        yield* listener.unset();
++        const runtimeEnv = { ...env, ...overrides };
++        const scope = yield* Scope.fork(ownerScope);
++        return yield* Effect.gen(function* () {
++          const server = yield* processes.spawn(
++            ChildProcess.make(
++              "node",
++              [
++                "scripts/dev.ts",
++                "--stage",
++                `${stage}${suffix}`,
++                ...(stack === undefined ? [] : ["--config", stack]),
++              ],
++              {
++                cwd: cloud,
++                env: {
++                  ...runtimeEnv,
++                  AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
++                },
++                extendEnv: false,
++                stdout: "pipe",
++                stderr: "pipe",
++                forceKillAfter: "15 seconds",
++              },
++            ),
++          );
++          yield* fs.writeFileString(
++            `${directory}/runtime-launches.ndjson`,
++            JSON.stringify({ launch: ++launchCount, stage: `${stage}${suffix}` }) + "\n",
++            { flag: "a", mode: 0o600 },
++          );
++          // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
++          // run nothing will edit the sources it waits on, so the Worker that failed never starts.
++          const mcpStarted = yield* Deferred.make<void>();
++          const output = yield* captureCloudStartup(
++            server,
++            `${directory}/cloud${suffix}.log`,
+             [
+-              "scripts/dev.ts",
+-              "--stage",
+-              stage,
+-              ...(stack === undefined ? [] : ["--config", stack]),
++              databasePassword,
++              v1ReaderPassword,
++              v1WriterPassword,
++              ...cloudStartupSecrets(runtimeEnv, Redacted.value(fixture).services),
+             ],
+-            {
+-              cwd: cloud,
+-              env: {
+-                ...env,
+-                AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
+-              },
+-              extendEnv: false,
+-              stdout: "pipe",
+-              stderr: "pipe",
+-              forceKillAfter: "15 seconds",
+-            },
+-          ),
++            (line) =>
++              Effect.gen(function* () {
++                const address = cloudApiAddress(line);
++                if (address !== undefined) yield* listener.set(address);
++                if (line.includes("[McpServer] Started in "))
++                  yield* Deferred.succeed(mcpStarted, undefined);
++              }),
++          ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
++          // A Worker that is still starting holds the request until it can answer, so each probe has its
++          // own deadline and the whole wait has one too.
++          const health = Effect.scoped(
++            http
++              .get(`${listener.url.origin}/health`, {
++                headers: { host: new URL(input.origin).host },
++              })
++              .pipe(
++                Effect.flatMap((response) =>
++                  Effect.gen(function* () {
++                    yield* response.text;
++                    if (response.status !== 200)
++                      return yield* new CloudStartFailed({ operation: "Cloud readiness" });
++                  }),
++                ),
++              ),
++          ).pipe(
++            Effect.timeout("10 seconds"),
++            Effect.retry({ schedule: Schedule.spaced("500 millis") }),
++            Effect.timeoutOrElse({
++              duration: readinessDeadline,
++              orElse: () =>
++                Effect.fail(
++                  new CloudStartFailed({
++                    operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
++                  }),
++                ),
++            }),
++          );
++          // API health can answer before a restarted private service has finished booting.
++          const ready =
++            alternatePort === undefined
++              ? health
++              : Effect.all(
++                  [health, Deferred.await(mcpStarted).pipe(Effect.timeout(readinessDeadline))],
++                  { concurrency: 2 },
++                );
++          yield* Effect.raceFirst(
++            ready.pipe(Effect.andThen(output.check)),
++            Effect.raceFirst(output.stopped, output.failure),
++          );
++          return scope;
++        }).pipe(
++          Scope.provide(scope),
++          Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+         );
+-        // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+-        // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+-        const mcpStarted = yield* Deferred.make<void>();
+-        const output = yield* captureCloudStartup(
+-          server,
+-          `${directory}/cloud.log`,
+-          [
+-            databasePassword,
+-            v1ReaderPassword,
+-            v1WriterPassword,
+-            ...cloudStartupSecrets(env, Redacted.value(fixture).services),
+-          ],
+-          (line) =>
+-            Effect.gen(function* () {
+-              const address = cloudApiAddress(line);
+-              if (address !== undefined) yield* apiListener.set(address);
+-              if (line.includes("[McpServer] Started in "))
+-                yield* Deferred.succeed(mcpStarted, undefined);
+-            }),
+-        ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+-        // A Worker that is still starting holds the request until it can answer, so each probe has its
+-        // own deadline and the whole wait has one too.
+-        const health = Effect.scoped(
+-          http.get(`${input.origin}/health`).pipe(
+-            Effect.flatMap((response) =>
+-              Effect.gen(function* () {
+-                yield* response.text;
+-                if (response.status !== 200)
+-                  return yield* new CloudStartFailed({ operation: "Cloud readiness" });
+-              }),
+-            ),
+-          ),
+-        ).pipe(
+-          Effect.timeout("10 seconds"),
+-          Effect.retry({ schedule: Schedule.spaced("500 millis") }),
+-          Effect.timeoutOrElse({
+-            duration: readinessDeadline,
+-            orElse: () =>
+-              Effect.fail(
+-                new CloudStartFailed({
+-                  operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
+-                }),
+-              ),
+-          }),
+-        );
+-        // API health can answer before a restarted private service has finished booting.
+-        const ready =
+-          alternatePort === undefined
+-            ? health
+-            : Effect.all(
+-                [health, Deferred.await(mcpStarted).pipe(Effect.timeout(readinessDeadline))],
+-                { concurrency: 2 },
+-              );
+-        yield* Effect.raceFirst(
+-          ready.pipe(Effect.andThen(output.check)),
+-          Effect.raceFirst(output.stopped, output.failure),
+-        );
+-        return scope;
+-      }).pipe(
+-        Scope.provide(scope),
+-        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+-      );
+-    });
+-    let serverScope = yield* launch;
++      });
++    const prebootBinding = process.env.BASALT_E2E_PREBOOT_BINDING;
++    if (
++      prebootBinding !== undefined &&
++      !["credentials", "host", "database", "role", "without-server", "release"].includes(
++        prebootBinding,
++      )
++    )
++      return yield* new CloudStartFailed({ operation: "Unknown preboot binding" });
++    if (prebootBinding !== undefined && alternatePort === undefined)
++      return yield* new CloudStartFailed({
++        operation: "Preboot requires an isolated production-ops run",
++      });
++    const originalListener = prebootBinding === undefined ? apiListener : yield* cloudListener;
++    let serverScope = yield* launch(originalListener);
++    if (prebootBinding !== undefined) yield* apiListener.set(originalListener.url);
+     const fixtures = yield* startFixtureControl(input.origin, directory, browser);
+     yield* fixtureRequest(fixtures, "/configure", {
+       origin: input.origin,
+@@ -594,6 +625,62 @@
+             directory,
+             dockerEnv,
+           });
++    const bindingEnvironment = (next: string) => ({
++      CLOUD_DEV_DATABASE_PORT: String(next === "alternate" ? alternatePort : input.databasePort),
++      BASALT_E2E_DATABASE_ORIGIN: next,
++      BASALT_E2E_OPS_RELEASE: next === "release" ? "replacement-release" : "reviewed-release",
++      CLOUD_DEV_DATABASE_PASSWORD:
++        next === "credentials" ? "hyperdrive-invocation-password-two" : databasePassword,
++    });
++    const prepareBinding = (next: string) =>
++      Effect.gen(function* () {
++        if (next === "role" || next === "without-server")
++          yield* databaseFixture!.role(next === "role");
++        if (next === "credentials") {
++          const trust = yield* processes.exitCode(
++            ChildProcess.make(
++              "docker",
++              [
++                "exec",
++                container,
++                "sh",
++                "-c",
++                `sed -i '1i host all executor 0.0.0.0/0 trust' "$PGDATA/pg_hba.conf" && psql -U executor -d executor -c 'select pg_reload_conf()'`,
++              ],
++              { env: dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
++            ),
++          );
++          if (trust !== 0)
++            return yield* new CloudStartFailed({ operation: "Database credential fixture" });
++        }
++      });
++    const changedListener = prebootBinding === undefined ? undefined : yield* cloudListener;
++    if (prebootBinding !== undefined && changedListener !== undefined) {
++      yield* prepareBinding(prebootBinding);
++      const appPort = yield* freePort;
++      yield* launch(
++        changedListener,
++        {
++          ...bindingEnvironment(prebootBinding),
++          CLOUD_DEV_APP_UI_PORT: String(appPort),
++          EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appPort}`,
++        },
++        `-${prebootBinding}`,
++      );
++      yield* apiListener.set(originalListener.url);
++      yield* fs.writeFileString(
++        `${directory}/runtime-preboot.json`,
++        JSON.stringify({
++          original: originalListener.url.origin,
++          changed: changedListener.url.origin,
++          binding: prebootBinding,
++          launches: launchCount,
++          sharedDatabase: true,
++          sharedConfiguredSecrets: true,
++        }),
++        { mode: 0o600 },
++      );
++    }
+     let binding = "original";
+     let running = true;
+     const reconfigure = (
+@@ -616,6 +703,24 @@
+           databaseProxy === undefined
+         )
+           return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
++        if (prebootBinding !== undefined && changedListener !== undefined) {
++          if (next !== "original" && next !== prebootBinding)
++            return yield* new CloudStartFailed({
++              operation: "Binding was not prepared for this isolated case",
++            });
++          yield* apiListener.set(next === "original" ? originalListener.url : changedListener.url);
++          binding = next;
++          yield* fs.writeFileString(
++            `${directory}/runtime-switches.ndjson`,
++            JSON.stringify({ binding, launches: launchCount }) + "\n",
++            { flag: "a", mode: 0o600 },
++          );
++          return {
++            binding,
++            databaseName: "executor",
++            origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
++          };
++        }
+         if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
+         if (next === "target") {
+           if (binding !== "original")
+@@ -636,36 +741,9 @@
+         if (next !== binding || !running) {
+           running = false;
+           yield* Scope.close(serverScope, Exit.void);
+-          if (next === "role" || next === "without-server")
+-            yield* databaseFixture.role(next === "role");
+-          if (next === "credentials") {
+-            // This disposable loopback database models Hyperdrive accepting invocation-local
+-            // passwords. Keep the fixture client's existing login valid while the Worker changes.
+-            const trust = yield* processes.exitCode(
+-              ChildProcess.make(
+-                "docker",
+-                [
+-                  "exec",
+-                  container,
+-                  "sh",
+-                  "-c",
+-                  `sed -i '1i host all executor 0.0.0.0/0 trust' "$PGDATA/pg_hba.conf" && psql -U executor -d executor -c 'select pg_reload_conf()'`,
+-                ],
+-                { env: dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
+-              ),
+-            );
+-            if (trust !== 0)
+-              return yield* new CloudStartFailed({ operation: "Database credential fixture" });
+-          }
+-          env.CLOUD_DEV_DATABASE_PORT = String(
+-            next === "alternate" ? alternatePort : input.databasePort,
+-          );
+-          env.BASALT_E2E_DATABASE_ORIGIN = next;
+-          env.BASALT_E2E_OPS_RELEASE =
+-            next === "release" ? "replacement-release" : "reviewed-release";
+-          env.CLOUD_DEV_DATABASE_PASSWORD =
+-            next === "credentials" ? "hyperdrive-invocation-password-two" : databasePassword;
+-          serverScope = yield* launch;
++          yield* prepareBinding(next);
++          Object.assign(env, bindingEnvironment(next));
++          serverScope = yield* launch();
+           binding = next;
+           running = true;
+         }
+diff --git a/e2e/run.ts b/e2e/run.ts
+--- a/e2e/run.ts
++++ b/e2e/run.ts
+@@ -20,6 +20,8 @@
+       Flag.withDefault("self-host"),
+     ),
+     name: Flag.String("test-name").pipe(Flag.withDefault("")),
++    // The caller built the framework once for a group of isolated runs with unchanged inputs.
++    prebuiltFramework: Flag.Boolean("prebuilt-framework").pipe(Flag.withDefault(false)),
+     // Without it, managed Cloud caps `defaultWorkers`; see `runSuite`.
+     workers: Flag.Int("workers").pipe(Flag.optional),
+     // Start managed Cloud with the per-address auth limit on and run only the scenarios proving it.
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -53,6 +53,7 @@
+   rollback = false,
+   oauthProxyPreview = false,
+   manualCron = false,
++  prebuiltFramework = false,
+   attachment,
+ }: {
+   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
+@@ -75,6 +76,8 @@
+   readonly oauthProxyPreview?: boolean;
+   /** Run queue observations between explicit calls to the real local scheduled handler. */
+   readonly manualCron?: boolean;
++  /** Reuse the framework the caller built for these unchanged inputs. */
++  readonly prebuiltFramework?: boolean;
+   readonly attachment?: {
+     readonly origin: string;
+     readonly fixtures: typeof FixtureControl.Type;
+@@ -294,6 +297,7 @@
+                           appPort: yield* freePort,
+                           databasePort: yield* freePort,
+                           commit,
++                          ...(prebuiltFramework ? { prebuilt: true as const } : {}),
+                           observeUI: false,
+                           authRateLimit: false,
+                           browserOrigin: "app",
+@@ -310,6 +314,7 @@
+                         appPort: yield* freePort,
+                         databasePort: yield* freePort,
+                         commit,
++                        ...(prebuiltFramework ? { prebuilt: true as const } : {}),
+                         observeUI,
+                         authRateLimit,
+                         manualCron,

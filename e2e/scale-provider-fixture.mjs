@@ -10,11 +10,14 @@ const rows = {
   "mtls_certificates": [{ id: "fixture-ca", name: "basalt-180-scale-ca" }],
 };
 let database = true;
+if (process.env.SCALE_FIXTURE_RESIZE === "true") {
+  rows["containers/applications"][0].configuration = { image: `fixture-image@${imageDigest}`, instance_type: "basic" };
+}
 if (process.env.SCALE_FIXTURE_NEWER_LEASE === "true") rows["workers/scripts"].push({ id: "basalt-180-scale-gateway" });
 globalThis.fetch = async (target, init = {}) => {
   const url = new URL(target);
   const method = init.method ?? "GET";
-  const record = { host: url.hostname, path: url.pathname, method };
+  const record = { host: url.hostname, path: url.pathname, method, ...(init.body ? { body: JSON.parse(init.body) } : {}) };
   appendFileSync(process.env.SCALE_FIXTURE_CALLS, JSON.stringify(record) + "\n");
   const response = (body, status = 200) => Response.json(body, { status });
   if (url.hostname === "api.planetscale.com") {
@@ -22,6 +25,7 @@ globalThis.fetch = async (target, init = {}) => {
     if (method === "DELETE") { database = false; return response({}); }
     return database ? response({ name: "basalt-180-scale-pg", private: "private-database-sentinel" }) : response({}, 404);
   }
+  if (url.hostname === "basalt-180-scale-gateway.fixture.workers.dev") return response({}, 503);
   if (url.hostname !== "api.cloudflare.com") throw new Error("Unexpected provider");
   if (new Headers(init.headers).get("authorization") !== `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`)
     return response({ errors: [{ code: 10000, message: "private-authorization-sentinel" }] }, 401);
@@ -35,6 +39,16 @@ globalThis.fetch = async (target, init = {}) => {
   ] } });
   if (path.endsWith("/settings")) return process.env.SCALE_FIXTURE_NEWER_LEASE === "true"
     ? response({ result: { bindings: [{ name: "TEST_DEADLINE", text: "9999999999999" }] } }) : response({}, 404);
+  if (process.env.SCALE_FIXTURE_RESIZE === "true" && path === "containers/applications/fixture-app") {
+    if (method === "PATCH") return response({ success: true });
+    return response({ result: { configuration: { instance_type: "lite" } } });
+  }
+  if (path === "containers/applications/fixture-app/rollouts") {
+    const body = JSON.parse(init.body);
+    if (!body.description || process.env.SCALE_FIXTURE_ROLLOUT_REFUSAL === "true")
+      return response({ errors: [{ code: 1001, message: "description required private-provider-response-sentinel" }] }, 400);
+    return response({ success: true });
+  }
   if (method === "DELETE") {
     const entry = Object.entries(rows).find(([kind]) => path.startsWith(`${kind}/`));
     if (!entry) throw new Error("Unexpected delete");

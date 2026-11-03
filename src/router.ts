@@ -17,6 +17,7 @@ import { nativeControlPath } from "./pool/native-contract.ts";
 import { nativeSessionPath } from "./pool/native-contract.ts";
 import { tunnelPath } from "../clients/contracts/tunnel.ts";
 import { handleTunnel } from "./tunnel/host.ts";
+import { importRemovalPath } from "./pool/import-removal/paths.ts";
 
 // Service bindings name the same gateways as the architecture.
 export const serviceArchitecture = {
@@ -212,7 +213,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (pathname.startsWith("/share/v1/")) return handleShare(request, env);
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
-  if (pathname === nativeControlPath) return env.POOL_SERVICE.fetch(request);
+  if (pathname === nativeControlPath || pathname === importRemovalPath) return env.POOL_SERVICE.fetch(request);
   if (isPoolManagementPath(pathname)) {
     return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
   }
