@@ -24,7 +24,11 @@ views {
       The model gateway owns the registry in the existing pool controller, generates a model key and
       registers it to the user's backend record with a nonempty pool channel-group list. Both credentials
       are encrypted under a five-minute one-time link. Claim consumption is durable before the response.
-      The Node.js installer backs up and marks config, preserves unrelated settings and supports undo.
+      Before consuming the link, the Node.js installer lists existing MCP connection names and asks the
+      person whether to replace named old connections or keep both. A noninteractive agent must relay
+      the choice and supply the person's answer explicitly; it cannot silently choose. Replacement never
+      infers that unrelated local servers are old Executor connections. The installer backs up and marks
+      config, records approved connection removals in the same manifest and restores them with undo.
       Build prepares frozen setup dependencies; scripts/setup-build.ts bundles the installer with esbuild
       from the pinned dependency; src/setup/package.json pins smol-toml 1.8.0 with its own bun.lock.
     """
@@ -59,6 +63,8 @@ views {
     basalt.router <- basalt.setupHost "setup prompt, shell command and undo prompt"
     localClient <- basalt.router "one-time link and setup commands"
     localClient -> basalt.setupInstaller "run downloaded installer with one-time link"
+    basalt.setupInstaller -> poolOwner "existing MCP names: replace named connections or keep both"
+    poolOwner -> basalt.setupInstaller "explicit connection choice; no writes or claim before answer"
     basalt.setupInstaller -> basalt.router "GET /setup/claim/:token as JSON"
     basalt.router -> basalt.setupHost "handle claim"
     basalt.setupHost -> basalt.modelGateway "signed claim action with 30-second expiry via private binding"
