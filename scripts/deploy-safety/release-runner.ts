@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { rollForwardTo } from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { assertNoReleaseHold, requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
+import { poolImageReceipt } from "./pool-image.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
@@ -211,7 +212,18 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
       rmSync(receiptPath, { force: true });
       return runCommand("npm", ["run", "deploy"], sourceRoot, imageEnvironment);
     },
-    assertImages: () => runCommand("node", ["scripts/deploy-safety/assert-pool-image.ts"], sourceRoot, imageEnvironment),
+    assertImages: () => {
+      // Retain publication evidence in the workflow log even when verification fails.
+      try {
+        const receipt = poolImageReceipt(JSON.parse(readFileSync(receiptPath, "utf8")), imageEnvironment.GITHUB_SHA ?? "");
+        console.log(JSON.stringify({ poolImagePublication: {
+          candidate: receipt.candidate, platform: receipt.platform, inputHash: receipt.inputHash, digest: receipt.digest,
+        } }));
+      } catch {
+        // The assertion reports a missing or invalid receipt and stops recovery.
+      }
+      return runCommand("node", ["scripts/deploy-safety/assert-pool-image.ts"], sourceRoot, imageEnvironment);
+    },
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
     rollback: (report) => deployPreviousRelease(report, github),
   };

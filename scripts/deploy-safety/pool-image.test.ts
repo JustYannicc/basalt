@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assertPoolImage, poolImageReceipt, waitForPoolImage } from "./pool-image.ts";
 
 const candidate = "a".repeat(40);
@@ -10,6 +15,23 @@ const credentials = { accountId: "fixture", apiToken: "synthetic-never-sent" };
 const instance = (id: string) => ({ id, application_id: "pool-app", image, status: { state: "running" } });
 const envelope = (result: unknown, result_info: unknown = {}) => Response.json({ success: true, errors: [], messages: [], result, result_info });
 const settings = () => envelope({ bindings: [{ name: "POOL_IMAGE_HASH", type: "plain_text", text: receipt.inputHash }] });
+
+test("the deploy capture command writes a candidate-bound receipt that the release verifier accepts", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pool-publication-test-"));
+  const file = join(directory, "receipt.json");
+  try {
+    execFileSync(process.execPath, [fileURLToPath(new URL("./capture-pool-image.ts", import.meta.url))], { env: {
+      BASALT_POOL_IMAGE_RECEIPT: file, GITHUB_SHA: candidate, CLOUDFLARE_ACCOUNT_ID: "fixture",
+      POOL_APPLICATION_ID: "pool-app", POOL_WORKER_READY: "pool-worker", POOL_IMAGE_INPUT_HASH: receipt.inputHash,
+      POOL_IMAGE_DIGEST: digest,
+    }, stdio: "pipe" });
+    const captured = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(poolImageReceipt(captured, candidate).digest, digest);
+    assert.throws(() => poolImageReceipt(captured, "c".repeat(40)), /candidate/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("the publication receipt keeps input hashes separate from immutable digests and binds the candidate", () => {
   assert.equal(poolImageReceipt(receipt, candidate).digest, digest);
