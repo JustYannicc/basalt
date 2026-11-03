@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -84,10 +84,14 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   await access(browser);
   const installation = join(directory, "provider");
   await mkdir(installation, { recursive: true, mode: 0o700 });
-  await writeFile(join(installation, "package.json"), JSON.stringify({ private: true }), { mode: 0o600 });
-  await run("bun", ["add", "--cwd", installation,
-    "--ignore-scripts", "@executor-js/emulate@0.14.2"],
-  root, join(directory, "install.json"), home, useHeavySlot);
+  // The emulator's whole dependency tree comes from the committed lockfile, so a third-party publish
+  // cannot change or break the proof. Its package.json overrides @clerk/backend to 3.26.5: 3.26.6
+  // requires @clerk/shared ^4.44.0, which Clerk has not published as a stable release. Drop the
+  // override once @clerk/shared 4.44.0 is published, then regenerate the lockfile with `bun install`.
+  for (const file of ["package.json", "bun.lock"])
+    await copyFile(join(root, "scripts/connectors-tests/emulator", file), join(installation, file));
+  await run("bun", ["install", "--cwd", installation, "--frozen-lockfile", "--ignore-scripts"],
+    root, join(directory, "install.json"), home, useHeavySlot);
   const packageRoot = join(installation, "node_modules/@executor-js/emulate");
   const metadata: { version: string; bin: string | Record<string, string> } = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   if (metadata.version !== "0.14.2") throw new Error("Wrong provider emulator version.");

@@ -14,6 +14,15 @@
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
           }
+        },
+        {
+          "identity": "cliproxy-home-oauth-completion-receipts",
+          "file": "0169-home-oauth-completion-receipts.patch",
+          "sha256": "541d4a1a86f4d1a41fa70f00c663779fadd400b44778217268e4b3e0c62ef6f4",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0169 adapts Home upstream PR 168. Retire after the pinned Home returns atomically saved credential IDs from v8 OAuth completion, including the first plugin success poll, and passes the real Claude exchange, cross-handler receipt, cancellation, forced failure rollback, pending-secret purge, expiry and legacy-response regressions. No Executor storage or protocol change is required."
+          }
         }
       ]
     },
