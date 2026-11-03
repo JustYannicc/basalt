@@ -1,0 +1,302 @@
+diff --git a/apps/hosted/cloud/src/contracts/development.ts b/apps/hosted/cloud/src/contracts/development.ts
+index ef6900a..08c0461 100644
+--- a/apps/hosted/cloud/src/contracts/development.ts
++++ b/apps/hosted/cloud/src/contracts/development.ts
+@@ -1,4 +1,4 @@
+-import { Config, Effect, Schema } from "effect";
++import { Config, Effect, Option, Schema } from "effect";
+ import { LoopbackOrigin } from "@executor-js/utils/url-policy";
+ 
+ /** Stable cloud origin; self-host keeps its existing origin on port 5394. */
+@@ -33,7 +33,7 @@ export const cloudDevelopment = Config.all({
+             },
+           ),
+         ),
+-        apiPort: Port,
++        apiPort: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 })),
+         databasePort: Port,
+         dashboard: Schema.Literals(["source", "built"]),
+         webPort: Schema.Option(Port),
+@@ -42,8 +42,14 @@ export const cloudDevelopment = Config.all({
+           (configuration) =>
+             configuration.dashboard === "source" ||
+             (new URL(configuration.origin).protocol === "http:" &&
+-              Number(new URL(configuration.origin).port) === configuration.apiPort),
+-          { message: "Built Cloud previews must use the HTTP Worker listener as their origin" },
++              Number(new URL(configuration.origin).port) ===
++                (configuration.apiPort === 0
++                  ? Option.getOrUndefined(configuration.webPort)
++                  : configuration.apiPort)),
++          {
++            message:
++              "Built Cloud previews need the HTTP Worker listener or an explicit proxy port as their origin",
++          },
+         ),
+       ),
+     ),
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 141f261..f344ca4 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -225,7 +225,7 @@ export default Api.make(
+       dev: {
+         host: "127.0.0.1",
+         port: dev ? (yield* cloudDevelopment.pipe(Effect.orDie)).apiPort : 4411,
+-        strictPort: true,
++        strictPort: dev ? (yield* cloudDevelopment.pipe(Effect.orDie)).apiPort !== 0 : true,
+       },
+       assets: {
+         // Resolve the dev asset root once before Alchemy hands it to workerd.
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index 19fab24..eb84a07 100644
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -73,6 +73,13 @@ const check = Effect.gen(function* () {
+             allowed.has(specifier)
+           )
+             return;
++          // The runner owns its canonical TCP listener through this external transport SDK.
++          // Application implementations remain forbidden; only this listener adapter may import it.
++          if (
++            label === `support${path.sep}cloud-listener.ts` &&
++            specifier === "@alchemy.run/cloudflare-runtime/core/proxy/WorkerProxy"
++          )
++            return;
+           // This adapter observes the real OS store, never an application implementation.
+           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
+             return;
+diff --git a/e2e/sdk/environment.ts b/e2e/sdk/environment.ts
+index 8ba6aa2..d7b95c1 100644
+--- a/e2e/sdk/environment.ts
++++ b/e2e/sdk/environment.ts
+@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
+ import { Target } from "../support/platform.ts";
+ import { startCloudEnvironment } from "../support/cloud-environment.ts";
+ import { startDeployment } from "./deployment.ts";
++import { cloudListener } from "../support/cloud-listener.ts";
+ import { freePort } from "../support/ports.ts";
+ 
+ /** Acquire real infrastructure once. The caller's scope owns servers, fixtures, emulators and teardown. */
+@@ -25,13 +26,15 @@ export const startEnvironment = (input: {
+     const dirty =
+       (yield* processes.string(ChildProcess.make("git", ["status", "--porcelain"]))).trim().length >
+       0;
+-    const origin = `http://localhost:${yield* freePort}`;
++    const listener = input.target === "cloud" ? yield* cloudListener : undefined;
++    const origin = listener?.url.origin ?? `http://localhost:${yield* freePort}`;
+     const cloud =
+       input.target === "deployed"
+         ? yield* startDeployment(input.database === undefined ? {} : { database: input.database })
+         : input.target === "cloud"
+           ? yield* startCloudEnvironment({
+               directory,
++              listener: listener!,
+               origin,
+               commit,
+               observeUI: false,
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+index b3f3e5c..8332e7c 100644
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -19,6 +19,7 @@ import { roleHost } from "../support/role-hosts.ts";
+ import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+ 
+ class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
++import { cloudListener } from "../support/cloud-listener.ts";
+ import { freePort } from "../support/ports.ts";
+ 
+ /**
+@@ -230,16 +231,19 @@ export const runSuite = ({
+               const targetWorkers =
+                 workers ??
+                 (managedCloud ? Math.min(defaultWorkers, sharedCloudWorkers) : defaultWorkers);
++              const listener = managedCloud ? yield* cloudListener : undefined;
+               const origin =
+                 target === "cloud"
+                   ? Option.isSome(cloud)
+                     ? cloud.value
+-                    : `http://localhost:${yield* freePort}`
++                    : listener!.url.origin
+                   : `http://127.0.0.1:${yield* freePort}`;
+               // The OAuth proxy's production, beside the test stage this run tests.
++              const productionListener =
++                managedCloud && oauthProxyPreview ? yield* cloudListener : undefined;
+               const proxyProduction =
+                 managedCloud && oauthProxyPreview
+-                  ? Option.some(`http://localhost:${yield* freePort}`)
++                  ? Option.some(productionListener!.url.origin)
+                   : Option.none<string>();
+               const metadata: typeof RunMetadata.Type = {
+                 target,
+@@ -285,6 +289,7 @@ export const runSuite = ({
+                         yield* startCloudEnvironment({
+                           ...(registry === undefined ? {} : { npmRegistry: registry.url }),
+                           directory: productionDirectory,
++                          listener: productionListener!,
+                           origin: proxyProduction.value,
+                           appPort: yield* freePort,
+                           databasePort: yield* freePort,
+@@ -300,6 +305,7 @@ export const runSuite = ({
+                     ? yield* startCloudEnvironment({
+                         ...(registry === undefined ? {} : { npmRegistry: registry.url }),
+                         directory,
++                        listener: listener!,
+                         origin,
+                         appPort: yield* freePort,
+                         databasePort: yield* freePort,
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index aa71727..3643ce7 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -1,3 +1,4 @@
++import { cloudListener, cloudApiAddress, type CloudListener } from "./cloud-listener.ts";
+ import {
+   Clock,
+   Deferred,
+@@ -135,6 +136,7 @@ const collectorShards = 4;
+ export const startCloudEnvironment = (input: {
+   readonly directory: string;
+   readonly origin: string;
++  readonly listener: CloudListener;
+   readonly appPort: number;
+   readonly databasePort: number;
+   readonly commit: string;
+@@ -184,9 +186,12 @@ export const startCloudEnvironment = (input: {
+     const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+     if (input.manualCron && poolBackend)
+       return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
+-    const apiPort = poolBackend
+-      ? yield* cloudPoolGateway(input.origin, directory)
+-      : Number(new URL(input.origin).port);
++    const apiListener = poolBackend ? yield* cloudListener : input.listener;
++    if (poolBackend) {
++      const gateway = yield* cloudPoolGateway(input.origin, directory, apiListener.url);
++      yield* input.listener.set(gateway);
++    }
++    const apiPort = 0;
+     const stack = poolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
+     const stage = `e2e-${randomBytes(8).toString("hex")}`;
+     const container = `executor-${stage}`;
+@@ -321,6 +326,7 @@ export const startCloudEnvironment = (input: {
+       // uses the supported source port configuration, without starting the dashboard dev process.
+       CLOUD_DEV_DASHBOARD: poolBackend ? "source" : "built",
+       CLOUD_DEV_API_PORT: String(apiPort),
++      CLOUD_DEV_WEB_PORT: new URL(input.origin).port,
+       ...(poolBackend
+         ? { EXECUTOR_CATALOG_URL: `${browser}/native-provider-fixture/catalog/index.json` }
+         : {}),
+@@ -481,6 +487,7 @@ export const startCloudEnvironment = (input: {
+       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
+     const ownerScope = yield* Effect.scope;
+     const launch = Effect.gen(function* () {
++      yield* apiListener.unset();
+       const scope = yield* Scope.fork(ownerScope);
+       return yield* Effect.gen(function* () {
+         const server = yield* processes.spawn(
+@@ -518,9 +525,12 @@ export const startCloudEnvironment = (input: {
+             ...cloudStartupSecrets(env, Redacted.value(fixture).services),
+           ],
+           (line) =>
+-            line.includes("[McpServer] Started in ")
+-              ? Deferred.succeed(mcpStarted, undefined).pipe(Effect.asVoid)
+-              : Effect.void,
++            Effect.gen(function* () {
++              const address = cloudApiAddress(line);
++              if (address !== undefined) yield* apiListener.set(address);
++              if (line.includes("[McpServer] Started in "))
++                yield* Deferred.succeed(mcpStarted, undefined);
++            }),
+         ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+         // A Worker that is still starting holds the request until it can answer, so each probe has its
+         // own deadline and the whole wait has one too.
+diff --git a/e2e/support/cloud-listener.ts b/e2e/support/cloud-listener.ts
+new file mode 100644
+index 0000000..761e0cf
+--- /dev/null
++++ b/e2e/support/cloud-listener.ts
+@@ -0,0 +1,23 @@
++/** Own the canonical origin before fixtures start; Alchemy binds its private listener separately. */
++import {
++  WorkerProxy,
++  WorkerProxyLive,
++} from "@alchemy.run/cloudflare-runtime/core/proxy/WorkerProxy";
++import { Effect } from "effect";
++
++export const cloudListener = Effect.gen(function* () {
++  const proxy = yield* WorkerProxy;
++  return yield* proxy.serve({ port: 0 });
++}).pipe(Effect.provide(WorkerProxyLive));
++
++/** Read only the API resource's successful listener announcement, never another Worker's URL. */
++export const cloudApiAddress = (line: string) => {
++  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
++  const match =
++    /\[Api\] Started in [^\n]* → (http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)\/?(?:\s|$)/u.exec(
++      plain,
++    );
++  return match === null ? undefined : new URL(match[1]!);
++};
++
++export type CloudListener = Effect.Success<typeof cloudListener>;
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+index ae8db64..b08a98e 100644
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -3,7 +3,6 @@ import { Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer, request } from "node:http";
+-import { freePort } from "./ports.ts";
+ 
+ const access = "/pool/v1/access";
+ const acquisition = "/pool/v1/account-acquisitions";
+@@ -16,11 +15,10 @@ const Signed = Schema.Struct({
+ });
+ 
+ /** The outer pool service is external to the Cloud Worker, including for its own-origin callbacks. */
+-export const cloudPoolGateway = (origin: string, directory: string) =>
++export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem,
+       path = yield* Path.Path;
+-    const port = yield* freePort;
+     const source = yield* fs.readFileString(
+       path.resolve("..", "src/catalog/provider-apps/openai.json"),
+     );
+@@ -123,7 +121,7 @@ export const cloudPoolGateway = (origin: string, directory: string) =>
+     const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
+     if (!("port" in server.address)) return yield* Effect.die("Expected a TCP pool backend");
+     const backendPort = server.address.port;
+-    yield* Effect.acquireRelease(
++    const gateway = yield* Effect.acquireRelease(
+       Effect.promise(() => {
+         const gateway = createServer((incoming, outgoing) => {
+           const url = new URL(incoming.url ?? "/", origin).pathname;
+@@ -133,7 +131,7 @@ export const cloudPoolGateway = (origin: string, directory: string) =>
+               port:
+                 url.startsWith("/pool/v1/") || url.startsWith("/native-provider-fixture/")
+                   ? backendPort
+-                  : port,
++                  : Number(api.port),
+               path: incoming.url,
+               method: incoming.method,
+               headers: incoming.headers,
+@@ -148,7 +146,7 @@ export const cloudPoolGateway = (origin: string, directory: string) =>
+         });
+         return new Promise<typeof gateway>((resolve, reject) => {
+           gateway.once("error", reject);
+-          gateway.listen(Number(new URL(origin).port), "127.0.0.1", () => resolve(gateway));
++          gateway.listen(0, "127.0.0.1", () => resolve(gateway));
+         });
+       }),
+       (gateway) =>
+@@ -160,5 +158,8 @@ export const cloudPoolGateway = (origin: string, directory: string) =>
+             }),
+         ),
+     );
+-    return port;
++    const address = gateway.address();
++    if (address === null || typeof address === "string")
++      return yield* Effect.die("Expected TCP gateway");
++    return new URL(`http://127.0.0.1:${address.port}`);
+   });
