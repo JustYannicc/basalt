@@ -43,25 +43,38 @@ test("the catalog serves the framework release Basalt's compiler ships", () => {
   assert.equal(catalog.framework, poolFrameworkVersion);
 });
 
-test("every package the catalog serves declares the served framework", async () => {
-  const index = (await (await handleCatalog(new Request(`${origin}/catalog/index.json`), publisher)).json()) as Feed;
+/** Each package the catalog serves that does not declare the served framework, and what it declares. */
+async function offFramework(source: typeof fetch) {
+  const index = (await (await handleCatalog(new Request(`${origin}/catalog/index.json`), source)).json()) as Feed;
   const declared: Record<string, unknown> = {};
   for (const entry of index.apps) {
-    const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), publisher);
+    const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), source);
     // Additions not set up in this environment have no source to serve.
     if (response.status === 503) continue;
     assert.equal(response.status, 200, entry.id);
-    const source = (await response.json()) as { files: { path: string; content: string }[] };
-    const manifest = source.files.find((file) => file.path === "package.json");
-    if (manifest !== undefined) declared[entry.id] = JSON.parse(manifest.content).dependencies?.apps;
+    const served = (await response.json()) as { files: { path: string; content: string }[] };
+    // A package without a manifest or without the framework would build on no served framework.
+    const manifest = served.files.find((file) => file.path === "package.json");
+    declared[entry.id] = manifest === undefined ? "no manifest" : JSON.parse(manifest.content).dependencies?.apps;
   }
   // Official, carried and Basalt's own packages alike.
   for (const id of ["gmail", "elevenlabs", "gitlab", "miro", "slack", "zendesk", "atlassian", "aws"])
     assert.ok(Object.hasOwn(declared, id), `${id} was served`);
-  assert.deepEqual(
-    Object.entries(declared).filter(([, version]) => version !== undefined && version !== catalog.framework),
-    [],
-  );
+  return Object.entries(declared).filter(([, version]) => version !== catalog.framework);
+}
+
+test("every package the catalog serves declares the served framework", async () => {
+  assert.deepEqual(await offFramework(publisher), []);
+});
+
+test("a served package that declares no framework fails the check", async () => {
+  const bare: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/index.json")) return Response.json(official);
+    return new Response(JSON.stringify({ package: "@executor.sh/gmail", files: [{ path: "package.json", content: "{}" }] }));
+  };
+  const missing = await offFramework(bare);
+  assert.ok(missing.some(([id, version]) => id === "gmail" && version === undefined));
 });
 
 test("a served official package keeps everything but the framework it declares", () => {

@@ -36,6 +36,8 @@ const origin = "https://catalog.invalid";
 const served = async (path) => handleCatalog(new Request(`${origin}${catalog.path}${path}`));
 const publisher = async (path) => fetch(new URL(path, catalog.official));
 
+// Results as each package finishes, so a run that stops early keeps what it found.
+const results = [];
 const program = Effect.gen(function* () {
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* localNpmRegistry;
@@ -71,7 +73,7 @@ const program = Effect.gen(function* () {
 
   const index = yield* Effect.promise(async () => (await served("index.json")).json());
   const entries = index.apps.slice(0, limit);
-  const results = yield* Effect.forEach(
+  yield* Effect.forEach(
     entries,
     (entry) =>
       Effect.gen(function* () {
@@ -88,15 +90,21 @@ const program = Effect.gen(function* () {
             ? "no publisher source"
             : yield* build(`Compat ${entry.id} original`.slice(0, 60), (yield* Effect.promise(() => original.json())).files);
         return { id: entry.id, built: false, failure, originalBuilt: originalFailure === undefined, originalFailure };
-      }),
+      }).pipe(Effect.tap((result) => Effect.sync(() => results.push(result)))),
     { concurrency },
   );
-  return results;
 });
 
-const results = await Effect.runPromise(
-  program.pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
-);
+try {
+  await Effect.runPromise(
+    program.pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  );
+} catch (error) {
+  await writeFile(join(directory, "partial-results.json"), `${JSON.stringify(results, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(join(directory, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
+  console.error("Catalog compatibility run failed; private diagnostics retained.");
+  process.exit(1);
+}
 const failed = results.filter((result) => result.built === false || result.servedFailure !== undefined);
 const regressions = failed.filter((result) => result.originalBuilt === true).map((result) => result.id);
 const unlisted = failed.filter((result) => !Object.hasOwn(known, result.id)).map((result) => result.id);

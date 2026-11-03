@@ -152,10 +152,14 @@ jobs:
         if: always()
         with:
           name: catalog-compat
+          # Only these files: session files under .generated stay private.
           path: |
             .generated/catalog-compat/ci/report.json
+            .generated/catalog-compat/ci/partial-results.json
+            .generated/catalog-compat/ci/failure.txt
             .generated/elevenlabs-discovery/ci/result.json
             .generated/elevenlabs-discovery/ci/failure.txt
+          include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts:
     runs-on: ubuntu-latest
