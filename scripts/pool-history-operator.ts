@@ -79,11 +79,10 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
     approval = approvalFor(options.operation, report);
     if (options.operation === "schema") {
       const preview = schemaPreview(report);
-      if (report.version === historySchemaVersion && (JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl)
-        || JSON.stringify(report.migrationMarkers) !== JSON.stringify(preview.migrationMarkers)))
+      if (JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl)
+        || JSON.stringify(report.migrationMarkers) !== JSON.stringify(preview.migrationMarkers))
         throw new Error("History schema statements changed since dry run");
-      if (report.version === historySchemaVersion)
-        approvedSchemaState = JSON.stringify({ ...approval, version: report.version, ...preview });
+      approvedSchemaState = JSON.stringify({ ...approval, version: report.version, ...preview });
     }
   }
   const directory = await mkdtemp(join(tmpdir(), "pool-history-operator-"));

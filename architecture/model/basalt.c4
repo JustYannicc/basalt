@@ -268,7 +268,7 @@ model {
         the Worker's database connection. Schema writes require explicit GO and matching hashes;
         remote invocation retains a target-bound private plan and started receipt. The operator accepts only
         known v1 and v2 manifests, prints pending DDL and migration markers before apply, and refuses
-        changed v2 statement previews. It refreshes the v2 catalog before applying and refuses when
+        changed statement previews. It refreshes the catalog for both versions before applying and refuses when
         the current hash or pending statements differ from the approved plan. Capture defaults
         off; production enables it after approved schema and backfill activation. Capture cannot
         create its own activation cursor. Forward, historical and repeating sweep

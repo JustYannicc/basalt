@@ -149,3 +149,45 @@ test("v2 previews include the base schema on fresh databases and no DDL after mi
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+
+test("v1 refuses edited previews and stale catalog state before any apply request or receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "history-v1-refusal-fixture-"));
+  try {
+    const path = join(directory, "plan.json");
+    const options = historyOperatorOptions(["--worker", "fixture-pool", "--plan", path]);
+    let current = Response.json(report);
+    const calls: Request[] = [];
+    const connect = async (_path: string) => ({ env: { POOL_OPERATIONS: { fetch: async (request: Request) => {
+      calls.push(request.clone());
+      assert.equal(request.method, "GET", "edited or stale plans must never reach POST");
+      return current.clone();
+    } } }, dispose: async () => {} });
+    const preview = await runHistoryOperator(options, account, connect);
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    const applying = { ...options, apply: true };
+    for (const change of [{ pendingDdl: [] }, { migrationMarkers: [] }]) {
+      await writeFile(path, JSON.stringify({ ...saved, report: { ...saved.report, ...change } }));
+      await assert.rejects(runHistoryOperator(applying, account, connect), /statements changed/);
+      assert.equal(calls.length, 1, "edited previews refuse before opening the binding");
+      await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
+    }
+    assert.ok(Array.isArray(preview.pendingDdl));
+    const appliedReport = { ...saved.report, applied: true,
+      pendingDdl: preview.pendingDdl.slice(0, 1), migrationMarkers: [] };
+    await writeFile(path, JSON.stringify({ ...saved, report: appliedReport }));
+    await assert.rejects(runHistoryOperator(applying, account, connect), /plan changed/);
+    assert.equal(calls.length, 2, "edited applied state refuses after refreshing the catalog");
+    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
+    await writeFile(path, JSON.stringify(saved));
+    const catalog = { relations: [
+      { name: "basalt_model_history_migrations", kind: "r" },
+      { name: "basalt_model_requests", kind: "p" },
+    ] };
+    current = Response.json({ ...report, applied: true, catalog,
+      catalogHash: createHash("sha256").update(JSON.stringify(catalog)).digest("hex") });
+    await assert.rejects(runHistoryOperator(applying, account, connect), /plan changed/);
+    assert.equal(calls.length, 3, "a changed catalog refuses after refreshing and before POST");
+    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
