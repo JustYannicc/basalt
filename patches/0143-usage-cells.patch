@@ -1,0 +1,1065 @@
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index a6e47b5..9f0aa4c 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -116,7 +116,14 @@ ${options.observe ? 'observeAccount: context => read(context, "/observation"),'
+ export default defineApp({ user:{accounts:{service}} }, { tools:router({ ping:query({input:object({})},async()=>true) }) });`;
+ 
+ export const observationFixture = (
+-  options: { observe?: boolean; health?: boolean; shared?: boolean; framework?: string } = {
++  options: {
++    observe?: boolean;
++    health?: boolean;
++    shared?: boolean;
++    framework?: string;
++    /** App names are unique per owner, so a case with several fixtures names each one. */
++    name?: string;
++  } = {
+     observe: true,
+     health: true,
+   },
+@@ -136,7 +143,7 @@ export const observationFixture = (
+           },
+     ];
+     const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-      name: "Observation fixture",
++      name: options.name ?? "Observation fixture",
+       files: files(observationSource(backend.origin, options)),
+     });
+     expect(created.status, JSON.stringify(created.body)).toBe(200);
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 844b24b..c5033dc 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8741,6 +8741,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted sharing policy and rows."),
+     },
+   },
++  accountUsageCells: {
++    fixtures: "actors",
++    file: "account-usage-cells.spec.ts",
++    title:
++      "usage cells show only reported limited windows in threshold colors, grey only stale readings, count banked resets and leave accounts without limits bare",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback allowance services."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
+   accountObservations: {
+     fixtures: "actors",
+     file: "account-observations.spec.ts",
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index e28b65a..e39b847 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -1,4 +1,4 @@
+-/** Account rows show retained usage beside independent health, only to callers who may see it. */
++/** Account rows show retained usage cells beside independent health, only to callers who may see it. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import type { Page } from "playwright";
+@@ -64,40 +64,59 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           block(page).locator(inventoryRow).locator("[data-account-plan]");
+ 
+         yield* browser.login(f.actors.owner);
+-        yield* browser.use("Open Accounts as the account manager", (page) =>
+-          page.goto(accounts).then(() => block(page).getByText("No usage reported").waitFor()),
++        const unread = yield* browser.use("Open Accounts before anything was reported", (page) =>
++          page
++            .goto(accounts)
++            .then(() => block(page).locator("[data-account-health]").waitFor())
++            .then(() =>
++              Promise.all([
++                block(page).locator("[data-usage]").count(),
++                block(page).locator("[data-reading]").count(),
++                block(page).getByText("No usage reported").count(),
++                refreshButton(page).count(),
++              ]),
++            ),
+         );
+-        expect(yield* f.backend.calls, "showing retained usage collects nothing").toBe(0);
++        expect(unread, "an account with no reading has no usage area").toEqual([0, 0, 0, 0]);
++        expect(yield* f.backend.calls, "showing an account collects nothing").toBe(0);
+ 
+-        yield* browser.use("Refresh usage from the row", (page) =>
+-          refreshButton(page)
+-            .click()
+-            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
+-        );
++        expect((yield* f.refresh()).status).toBe(200);
+         expect(yield* f.backend.calls).toBe(1);
++        yield* browser.use("Show the first reading as a usage cell", (page) =>
++          page.reload().then(() => reading(page).getByText("Rem 88%").waitFor()),
++        );
+         const fresh = yield* browser.use("Read the fresh row", (page) => {
+           const row = block(page);
+           const meter = row.getByRole("meter", { name: "Requests per minute", exact: true });
+           return Promise.all([
+             meter.getAttribute("aria-valuenow"),
+             meter.getAttribute("aria-valuemax"),
+-            row.locator('[data-reading="credits"] [data-reading-value]').innerText(),
++            reading(page).locator("[data-reading-value]").innerText(),
++            row.locator('[data-reading="credits"]').count(),
+             plan(page).allInnerTexts(),
+             refreshButton(page).getAttribute("aria-disabled"),
+             row.locator("[data-usage-source] time").getAttribute("datetime"),
++            reading(page).locator("[data-stale-age]").count(),
++            row.innerText(),
+           ]);
+         });
+-        expect(fresh.slice(0, 3)).toEqual(["88", "100", "$25.00 available"]);
++        expect(fresh.slice(0, 4)).toEqual(["88", "100", "Rem 88%", 0]);
++        expect(fresh[7], "a fresh reading names no age").toBe(0);
++        expect(fresh[8], "the cell replaces the text readings").not.toMatch(/ left\b| of 100/);
+         const units = yield* browser.use("Keep RPM as a count while USD remains money", (page) =>
+-          reading(page).innerText(),
++          block(page)
++            .getByRole("button", { name: "Details", exact: true })
++            .click()
++            .then(() => block(page).locator("[data-observation-details]").innerText()),
+         );
+-        expect(units).toContain("12 used");
+-        expect(units).not.toContain("spent");
++        expect(units).toContain("88 / 100 RPM remaining");
++        expect(units).toContain("$25.00");
+         expect(units).not.toContain("88.00");
+-        expect(fresh[3]).toContain("Developer");
+-        expect(fresh[4], "the source's next allowed refresh holds Refresh").toBe("true");
++        const [, , , , planTags, refreshHeld, sourceTime] = fresh;
++        expect(planTags).toContain("Developer");
++        expect(refreshHeld, "the source's next allowed refresh holds Refresh").toBe("true");
+         const observedAt = (yield* body(Retained, yield* f.read())).reports[0]?.result.observedAt;
+-        expect(fresh[5]).toBe(observedAt);
++        expect(sourceTime).toBe(observedAt);
+         yield* evidence.attach(
+           "account-observation-row-fresh.png",
+           "image/png",
+@@ -132,6 +151,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             row.locator("[data-attempt-note]").innerText(),
+             reading(page).locator("[data-reading-value]").innerText(),
+             reading(page).getAttribute("data-stale"),
++            reading(page).locator("[data-stale-age]").innerText(),
+             row.locator("[data-usage-source] [data-freshness]").getAttribute("data-freshness"),
+             row.locator("[data-usage-source] time").getAttribute("datetime"),
+             row.getByRole("link", { name: /^Reconnect/ }).count(),
+@@ -141,13 +161,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         });
+         expect(failed[0]).toContain("Refresh failed");
+         expect(failed[0]).toContain("Showing the last successful reading.");
+-        expect(failed[1]).toBe("88 of 100 RPM left");
++        expect(failed[1]).toBe("Rem 88%");
+         expect(failed[2]).toBe("");
+-        expect(failed[3]).toBe("stale");
+-        expect(failed[4], "the retained reading keeps its source time").toBe(observedAt);
+-        expect(failed[5], "a usage failure never asks to reconnect").toBe(0);
+-        expect(failed[6]).toBe(1);
+-        expect(failed[7]).toBe("true");
++        // The server clock moved, not the browser's, so only the stale label is stable here.
++        expect(failed[3]).toMatch(/^last read /);
++        expect(failed[4]).toBe("stale");
++        expect(failed[5], "the retained reading keeps its source time").toBe(observedAt);
++        expect(failed[6], "a usage failure never asks to reconnect").toBe(0);
++        expect(failed[7]).toBe(1);
++        expect(failed[8]).toBe("true");
+         yield* evidence.attach(
+           "account-observation-row-failed.png",
+           "image/png",
+@@ -157,13 +179,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         // Using a shared account shows its health, never its usage, until the policy allows it.
+         yield* browser.login(f.actors.member);
+         yield* browser.use("Open Accounts as a member who uses the account", (page) =>
+-          page.goto(accounts).then(() => block(page).locator("[data-usage-restricted]").waitFor()),
++          page
++            .goto(accounts)
++            .then(() => block(page).locator("[data-account-health] [data-check-status]").waitFor()),
+         );
+         const denied = yield* browser.use("Read the restricted row", (page) => {
+           const row = block(page);
+           return Promise.all([
+             row.locator("[data-reading]").count(),
+-            row.getByText("88 of 100", { exact: false }).count(),
++            row.getByText("Rem 88%", { exact: false }).count(),
+             plan(page).count(),
+             row.getByRole("button", { name: "Refresh", exact: true }).count(),
+             row.locator("[data-usage-source]").count(),
+@@ -212,7 +236,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+ 
+         yield* browser.login(f.actors.member);
+         yield* browser.use("Open Accounts after the grant", (page) =>
+-          page.goto(accounts).then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
++          page.goto(accounts).then(() => reading(page).getByText("Rem 88%").waitFor()),
+         );
+         expect(
+           yield* browser.use("Refresh stays with the account managers", (page) =>
+@@ -225,7 +249,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+               .getByRole("region", { name: "Your accounts", exact: true })
+               .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+               .locator('[data-reading="requests"]')
+-              .getByText("88 of 100 RPM left")
++              .getByText("Rem 88%")
+               .waitFor(),
+           ),
+         );
+@@ -250,7 +274,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             .setViewportSize({ width: 390, height: 900 })
+             .then(() => page.emulateMedia({ colorScheme: "dark" }))
+             .then(() => page.goto(accounts))
+-            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor())
++            .then(() => reading(page).getByText("Rem 88%").waitFor())
+             .then(() =>
+               page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+             ),
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+new file mode 100644
+index 0000000..1453a80
+--- /dev/null
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -0,0 +1,231 @@
++/** Usage cells show only the windows an account reports, in color, and nothing for accounts without limits. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { observationFixture } from "../support/account-observation-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const hour = 3_600_000;
++const day = 24 * hour;
++const iso = (at: number) => new Date(at).toISOString();
++const percentWindow = (
++  id: string,
++  label: string,
++  remaining: number,
++  seconds: number,
++  resetsIn: number,
++  at: number,
++  stale?: number,
++) => ({
++  id,
++  label,
++  observedAt: iso(at),
++  ...(stale === undefined ? {} : { staleAt: iso(stale) }),
++  measure: { unit: "%", used: 100 - remaining, remainingRatio: remaining / 100 },
++  period: { mode: "fixed", seconds },
++  resetsAt: iso(at + resetsIn),
++});
++const subscription = <const W, const B = readonly []>(at: number, windows: W, balances?: B) => ({
++  observedAt: iso(at),
++  observation: { offering: "subscription", windows, balances: balances ?? [] },
++});
++const banked = (index: number, at: number, expiresIn: number) => ({
++  id: `resets-${index}`,
++  label: "Banked resets",
++  unit: "resets",
++  available: 1,
++  observedAt: iso(at),
++  expiresAt: iso(at + expiresIn),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) => {
++  it.effect(scenarios.accountUsageCells.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const now = yield* Clock.currentTimeMillis;
++        // Two windows that both exist, plus one the provider calls unlimited.
++        const studio = yield* observationFixture({
++          name: "Studio fixture",
++          observe: true,
++          health: true,
++        });
++        yield* studio.backend.answer({
++          status: 200,
++          body: subscription(now, [
++            percentWindow("five_hour", "5-hour", 34, 5 * hour, 2 * hour + 14 * 60_000, now),
++            percentWindow("seven_day", "Weekly", 96, 7 * day, 4 * day + hour, now),
++            {
++              id: "daily",
++              label: "Daily",
++              observedAt: iso(now),
++              measure: { unit: "requests", unlimited: true },
++            },
++          ]),
++        });
++        // Weekly only, nearly spent, with two banked resets.
++        const spare = yield* observationFixture({
++          name: "Spare fixture",
++          observe: true,
++          health: true,
++        });
++        yield* spare.backend.answer({
++          status: 200,
++          body: subscription(
++            now,
++            [percentWindow("seven_day", "Weekly", 8, 7 * day, 2 * day + hour, now)],
++            [banked(0, now, 27 * day), banked(1, now, 28 * day)],
++          ),
++        });
++        // A reading three hours old that its source marked stale an hour ago.
++        const old = now - 3 * hour;
++        const stale = yield* observationFixture({
++          name: "Default fixture",
++          observe: true,
++          health: true,
++        });
++        yield* stale.backend.answer({
++          status: 200,
++          body: subscription(old, [
++            percentWindow("seven_day", "Weekly", 89, 7 * day, 6 * day, old, now - hour),
++          ]),
++        });
++        // A connector: health, no usage reporter.
++        const connector = yield* observationFixture({
++          name: "Work mail fixture",
++          observe: false,
++          health: true,
++        });
++        const named = [
++          [studio, "Studio"],
++          [spare, "Spare"],
++          [stale, "Default"],
++          [connector, "Work mail"],
++        ] as const;
++        for (const [fixture, label] of named) {
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.refresh()).status).toBe(200);
++        }
++        expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
++
++        const accounts = `/org/${studio.actors.organization.slug}/accounts`;
++        const block = (page: Page, label: string) =>
++          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const cell = (page: Page, label: string, window: string) =>
++          block(page, label).locator(`[data-reading="${window}"]`);
++        const ready = (page: Page) =>
++          Promise.all([
++            cell(page, "Studio", "seven_day").waitFor(),
++            cell(page, "Spare", "seven_day").waitFor(),
++            cell(page, "Default", "seven_day").waitFor(),
++            block(page, "Work mail").locator("[data-account-health]").waitFor(),
++          ]);
++
++        yield* browser.login(studio.actors.owner);
++        for (const width of [1280, 390])
++          for (const scheme of ["light", "dark"] as const) {
++            yield* browser.use(`Open Accounts at ${width}px in ${scheme} mode`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.emulateMedia({ colorScheme: scheme }))
++                .then(() => page.goto(accounts))
++                .then(() => ready(page))
++                .then(() => cell(page, "Studio", "seven_day").scrollIntoViewIfNeeded()),
++            );
++            yield* browser.checkpoint(`usage cells ${width} ${scheme}`);
++          }
++
++        const read = yield* browser.use("Read every cell", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.emulateMedia({ colorScheme: "light" }))
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() => {
++              const view = (label: string) =>
++                block(page, label)
++                  .locator("[data-reading]")
++                  .evaluateAll((cells) =>
++                    cells.map((element) => ({
++                      id: element.getAttribute("data-reading"),
++                      state: element.getAttribute("data-meter-state"),
++                      stale: element.hasAttribute("data-stale"),
++                      value: element.querySelector("[data-reading-value]")?.textContent ?? "",
++                      age: element.querySelector("[data-stale-age]")?.textContent ?? null,
++                      fill: (() => {
++                        const bar = element.querySelector('[role="meter"] > span');
++                        return bar === null ? null : getComputedStyle(bar).backgroundColor;
++                      })(),
++                      reset: element.querySelector("[data-reset]")?.textContent ?? null,
++                      resetTitle:
++                        element.querySelector("[data-reset]")?.getAttribute("title") ?? null,
++                      count: element.querySelector("[data-reset-count]")?.textContent ?? null,
++                      countTitle:
++                        element.querySelector("[data-reset-count]")?.getAttribute("title") ?? null,
++                      buttons: element.querySelectorAll("button").length,
++                    })),
++                  );
++              return Promise.all([
++                view("Studio"),
++                view("Spare"),
++                view("Default"),
++                view("Work mail"),
++                block(page, "Work mail").innerText(),
++                block(page, "Work mail").locator("[data-usage]").count(),
++                block(page, "Work mail").getByRole("meter").count(),
++              ]);
++            }),
++        );
++        const [
++          studioCells,
++          spareCells,
++          staleCells,
++          connectorCells,
++          connectorText,
++          ...connectorParts
++        ] = read;
++
++        // Only reported, limited windows render; the unlimited one gets no cell.
++        expect(studioCells.map((entry) => entry.id)).toEqual(["five_hour", "seven_day"]);
++        expect(spareCells.map((entry) => entry.id)).toEqual(["seven_day"]);
++        // Thresholds: green from 70% remaining, amber from 30%, red below with "Low".
++        expect(studioCells.map((entry) => [entry.state, entry.value])).toEqual([
++          ["warn", "Rem 34%"],
++          ["good", "Rem 96%"],
++        ]);
++        expect([spareCells[0]?.state, spareCells[0]?.value]).toEqual(["bad", "Rem 8% · Low"]);
++        const fills = new Set([studioCells[0]?.fill, studioCells[1]?.fill, spareCells[0]?.fill]);
++        expect(fills.size, "green, amber and red are distinct fills").toBe(3);
++        // The reset reads as a countdown with the exact moment on hover.
++        expect(studioCells[0]?.reset).toMatch(/^in [12] h \d+ min$/);
++        expect(studioCells[1]?.reset).toBe("in 4 days");
++        expect(studioCells[1]?.resetTitle).toMatch(/^Resets /);
++        // Stale only when stale: fresh cells name no age and keep their color.
++        expect(
++          [...studioCells, ...spareCells].every((entry) => !entry.stale && entry.age === null),
++        ).toBe(true);
++        expect(staleCells).toHaveLength(1);
++        expect(staleCells[0]?.stale).toBe(true);
++        expect(staleCells[0]?.age).toBe("last read 3 h ago");
++        expect(staleCells[0]?.value, "a stale cell keeps its exact amount").toBe("Rem 89%");
++        expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
++        // Banked resets are a count on the window they refill, never a control.
++        expect(spareCells[0]?.count).toContain("↻ 2");
++        expect(spareCells[0]?.countTitle).toMatch(/^2 banked resets · soonest expires /);
++        expect(spareCells[0]?.buttons).toBe(0);
++        expect(studioCells.every((entry) => entry.count === null)).toBe(true);
++        // A connector without a usage reporter has no usage area or text.
++        expect(connectorCells).toEqual([]);
++        expect(connectorParts).toEqual([0, 0]);
++        expect(connectorText).not.toMatch(/usage/i);
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index a0d65f6..77d09c2 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -13,8 +13,6 @@ type Window = Observation["windows"][number];
+ type Balance = Observation["balances"][number];
+ export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
+ 
+-const day = 86_400_000;
+-
+ /** Elapsed time in its two largest units, such as "2 h 14 min". */
+ export const span = (milliseconds: number) => {
+   const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
+@@ -79,7 +77,10 @@ const periodSpan = (period: NonNullable<Window["period"]>) => {
+   return `${seconds / size}-${unit}`;
+ };
+ 
+-/** One reported window: its amount, drawn width and reset, exactly as the source gave them. */
++/**
++ * One reported window as a usage cell: the remaining share in its header, the drawn width and the
++ * reset. Where no share is known the header names the remaining or used amount instead.
++ */
+ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+   const { unit, used, limit } = entry.measure;
+   const unlimited = entry.measure.unlimited === true;
+@@ -92,16 +93,6 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+   const over = remaining !== undefined && remaining < 0;
+   const short = (value: number) => amount(value, unit, format);
+   const long = (value: number) => amount(value, unit, format, true);
+-  const phrase = (last: (value: number) => string) =>
+-    remaining !== undefined && limit !== undefined
+-      ? over
+-        ? `${short(limit - remaining)} of ${last(limit)} used`
+-        : `${short(remaining)} of ${last(limit)} left`
+-      : remaining !== undefined
+-        ? `${last(remaining)} left`
+-        : used !== undefined
+-          ? `${last(used)} used`
+-          : undefined;
+   const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
+   const state: ObservationMeterState = unlimited
+     ? "unlimited"
+@@ -110,17 +101,36 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+       : ratio === undefined
+         ? "unknown"
+         : toneOf(ratio);
+-  const absolute = phrase(long);
++  const absolute =
++    remaining !== undefined && limit !== undefined
++      ? over
++        ? `${short(limit - remaining)} / ${long(limit)} used, over the limit`
++        : `${short(remaining)} / ${long(limit)} remaining`
++      : remaining !== undefined
++        ? `${long(remaining)} remaining`
++        : used !== undefined
++          ? `${long(used)} used`
++          : undefined;
+   return {
+     state,
+-    value: unlimited
+-      ? "Unlimited"
+-      : (phrase(long) ?? (percent === undefined ? "Usage unknown" : `${percent}% left`)),
++    // The header reads "Rem 89%": a quiet lead and the figure that carries the tone.
++    ...(unlimited
++      ? { lead: undefined, figure: "Unlimited" }
++      : over
++        ? { lead: undefined, figure: "Over limit" }
++        : percent !== undefined
++          ? // A sliver that rounds to zero still reads as some left, not as exhausted.
++            { lead: "Rem", figure: percent === 0 && state !== "exhausted" ? "<1%" : `${percent}%` }
++          : remaining !== undefined
++            ? { lead: "Rem", figure: long(remaining) }
++            : used !== undefined
++              ? { lead: "Used", figure: long(used) }
++              : { lead: undefined, figure: "Unknown" }),
+     flag: over
+-      ? "Over limit"
++      ? undefined
+       : state === "exhausted"
+         ? "Exhausted"
+-        : state === "warn" || state === "bad"
++        : state === "bad"
+           ? "Low"
+           : undefined,
+     detail: unlimited
+@@ -128,9 +138,9 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+       : absolute !== undefined
+         ? `${absolute}${isCurrency(unit) ? ` (${unit})` : ""}`
+         : percent !== undefined
+-          ? `${percent}% left (percent only)`
++          ? `${percent}% remaining`
+           : limit !== undefined
+-            ? `Unknown of ${long(limit)}`
++            ? `Limit ${long(limit)}, amount unknown`
+             : "Unknown",
+     // The bar draws the remaining share only; it never grows past full or below empty.
+     width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
+@@ -140,12 +150,6 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+         : percent !== undefined
+           ? { now: Math.min(100, Math.max(0, percent)), max: 100 }
+           : { now: undefined, max: limit ?? 100 },
+-    note:
+-      state === "unknown" && limit !== undefined && remaining === undefined
+-        ? `Limit ${long(limit)}`
+-        : used !== undefined && remaining !== undefined && limit !== undefined && !over
+-          ? `${short(used)} ${isCurrency(unit) ? "spent" : "used"}`
+-          : undefined,
+     ...windowTiming(entry, now, format),
+   };
+ }
+@@ -156,42 +160,35 @@ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+     const at = Date.parse(entry.resetsAt);
+     const when = moment(entry.resetsAt, now, format);
+     if (at <= now)
+-      return { timing: `Reset was due ${when}, not read since`, when: `Was due ${when}` };
++      return {
++        reset: { text: `was due ${when}`, at: entry.resetsAt, due: true },
++        when: `Was due ${when}`,
++      };
+     return {
+-      timing: at - now < day ? `Resets in ${span(at - now)}` : `Resets ${when}`,
++      reset: {
++        text: `in ${span(at - now)}`,
++        at: entry.resetsAt,
++        title: `Resets ${when}`,
++        due: false,
++      },
+       when,
+     };
+   }
+   const length = entry.period === undefined ? undefined : periodSpan(entry.period);
+   if (entry.period?.mode === "rolling")
+     return {
+-      timing: length === undefined ? "Rolling window" : `Rolling ${length} window`,
++      reset: { text: length === undefined ? "rolling" : `rolling ${length}`, due: false },
+       when: "Rolling, no single reset",
+     };
+-  if (length !== undefined) return { timing: `${length} window`, when: "Reset not reported" };
+-  return { timing: undefined, when: "Not reported" };
++  return { reset: undefined, when: length === undefined ? "Not reported" : "Reset not reported" };
+ }
+ 
+ /** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
+ export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
+   const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
+   const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
+-  const units =
+-    !isCurrency(balance.unit) && Number.isInteger(balance.available) && balance.available > 0
+-      ? balance.available
+-      : 0;
+   return {
+-    value: `${amount(balance.available, balance.unit, format, true)} available`,
+     detail: amount(balance.available, balance.unit, format, true),
+-    expired: expires !== undefined && expires <= now,
+-    // One pip per whole unit up to eight; larger counts read better as the number alone.
+-    pips: units <= 8 ? units : 0,
+-    timing:
+-      expires === undefined
+-        ? undefined
+-        : expires <= now
+-          ? `Expired ${when}`
+-          : `Expires ${when} · in ${span(expires - now)}`,
+     when:
+       expires === undefined
+         ? "Does not expire"
+@@ -199,6 +196,53 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
+   };
+ }
+ 
++/**
++ * Unexpired balances counted in resets, which refill a window early. They belong to the window
++ * with the longest period, which is the one a banked reset clears.
++ */
++export function bankedResets(observation: Observation, now: number, format: DisplayFormat) {
++  const live = observation.balances.filter(
++    (balance) =>
++      balance.unit === "resets" &&
++      balance.available > 0 &&
++      (balance.expiresAt === undefined || Date.parse(balance.expiresAt) > now),
++  );
++  const count = live.reduce((total, balance) => total + balance.available, 0);
++  if (count === 0) return undefined;
++  const soonest = live
++    .flatMap((balance) => (balance.expiresAt === undefined ? [] : [balance.expiresAt]))
++    .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
++  return {
++    count,
++    title: `${count} banked ${count === 1 ? "reset" : "resets"}${
++      soonest === undefined ? "" : ` · soonest expires ${moment(soonest, now, format)}`
++    }`,
++  };
++}
++
++const unitSeconds: Readonly<Record<string, number>> = {
++  second: 1,
++  minute: 60,
++  hour: 3_600,
++  day: 86_400,
++  week: 604_800,
++  month: 2_592_000,
++};
++/** A period's length in seconds, from `seconds` or a value and unit such as 1 week. */
++const periodSeconds = (period: Window["period"]) =>
++  period?.seconds ??
++  (period?.value ?? 0) * (unitSeconds[period?.unit?.toLowerCase().replace(/s$/u, "") ?? ""] ?? 0);
++
++/** The limited window a banked reset applies to: the longest period, else the last reported. */
++export const resetWindow = (windows: readonly Window[]) =>
++  windows.reduce<Window | undefined>(
++    (best, entry) =>
++      best === undefined || periodSeconds(entry.period) >= periodSeconds(best.period)
++        ? entry
++        : best,
++    undefined,
++  )?.id;
++
+ const offerings = {
+   subscription: "Subscription",
+   metered_api: "Metered API",
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 0807713..788a925 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -1,30 +1,12 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+-import { cn } from "../lib/utils.ts";
+-import {
+-  age,
+-  balanceView,
+-  readingTimes,
+-  windowView,
+-  type ObservationMeterState,
+-} from "./account-observation-format.ts";
++import { bankedResets, resetWindow } from "./account-observation-format.ts";
++import { UsageCell } from "./account-usage-cell.tsx";
+ 
+-const fills = {
+-  good: "bg-emerald-500",
+-  warn: "bg-amber-500",
+-  bad: "bg-destructive",
+-  exhausted: "",
+-  unknown: "",
+-  unlimited: "",
+-} satisfies Record<ObservationMeterState, string>;
+-const flagTone = (flag: string, stale: boolean) =>
+-  stale
+-    ? ""
+-    : flag === "Low"
+-      ? "font-medium text-amber-700 dark:text-amber-400"
+-      : "font-medium text-destructive";
+-
+-/** One cell per window or balance; a stale reading keeps its exact amount and drawn width. */
++/**
++ * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
++ * not limits, so they get no cell; balances and their expiry live in the account's details.
++ */
+ export function ObservationReadings({
+   record,
+   source,
+@@ -36,132 +18,29 @@ export function ObservationReadings({
+   readonly now: number;
+   readonly format: DisplayFormat;
+ }) {
+-  const result = record.result;
+-  if (result === null) return null;
+-  const { windows, balances } = result.observation;
+-  if (windows.length === 0 && balances.length === 0) return null;
++  const observation = record.result?.observation;
++  const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
++  if (observation === undefined || windows.length === 0) return null;
+   const stale = record.freshness !== "fresh";
+-  const newest = Date.parse(readingTimes(result)[0] ?? result.observedAt);
+-  // A reading older than the rest of its read names its own age.
+-  const ownAge = (observedAt: string) =>
+-    newest - Date.parse(observedAt) >= 60_000 ? (
+-      <span className={stale ? "text-sign-in-warning" : undefined}>
+-        read <time dateTime={observedAt}>{age(observedAt, now)}</time>
+-      </span>
+-    ) : null;
++  const resets = bankedResets(observation, now, format);
++  const target = resets === undefined ? undefined : resetWindow(windows);
+   return (
+     <div
+       {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
+       data-observation-source={record.source.id}
+       data-freshness={record.freshness}
+-      className="grid max-w-[900px] grid-cols-[repeat(auto-fill,_minmax(190px,_1fr))] gap-x-6 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
++      className="grid max-w-[760px] grid-cols-[repeat(auto-fill,_minmax(250px,_1fr))] gap-x-7 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
+     >
+-      {windows.map((entry) => {
+-        const reading = windowView(entry, now, format);
+-        const sub = [reading.timing, reading.note].filter((part) => part !== undefined);
+-        return (
+-          <div
+-            key={entry.id}
+-            className="flex min-w-0 flex-col gap-1"
+-            data-reading={entry.id}
+-            data-meter-state={reading.state}
+-            {...(stale ? { "data-stale": "" } : {})}
+-          >
+-            <div className="flex min-w-0 items-baseline justify-between gap-2">
+-              <span className="truncate font-medium text-foreground" title={entry.label}>
+-                {entry.label}
+-              </span>
+-              <span className="shrink-0 tabular-nums" data-reading-value>
+-                {reading.value}
+-                {reading.flag !== undefined && (
+-                  <>
+-                    {" · "}
+-                    <span className={flagTone(reading.flag, stale)}>{reading.flag}</span>
+-                  </>
+-                )}
+-              </span>
+-            </div>
+-            {reading.state !== "unlimited" && (
+-              <span
+-                role="meter"
+-                aria-label={stale ? `${entry.label}, stale` : entry.label}
+-                aria-valuemin={0}
+-                aria-valuemax={reading.aria.max}
+-                {...(reading.aria.now === undefined ? {} : { "aria-valuenow": reading.aria.now })}
+-                aria-valuetext={[
+-                  reading.value,
+-                  reading.flag,
+-                  stale ? `when last read ${age(entry.observedAt, now)}` : undefined,
+-                  reading.timing,
+-                ]
+-                  .filter((part) => part !== undefined)
+-                  .join(", ")}
+-                className={cn(
+-                  "block h-1.5 overflow-hidden rounded-full bg-border",
+-                  reading.state === "unknown" &&
+-                    "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)] opacity-55",
+-                  reading.state === "exhausted" &&
+-                    (stale
+-                      ? "ring-1 ring-inset ring-muted-foreground/60"
+-                      : "bg-destructive/20 ring-1 ring-inset ring-destructive/40"),
+-                )}
+-              >
+-                {reading.width !== undefined && reading.width > 0 && (
+-                  <span
+-                    className={cn(
+-                      "block h-full rounded-full",
+-                      stale ? "bg-muted-foreground/45" : fills[reading.state],
+-                    )}
+-                    style={{ width: `${reading.width}%` }}
+-                  />
+-                )}
+-              </span>
+-            )}
+-            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
+-              {sub.length > 0 && <span className="wrap-anywhere">{sub.join(" · ")}</span>}
+-              {ownAge(entry.observedAt)}
+-            </div>
+-          </div>
+-        );
+-      })}
+-      {balances.map((entry) => {
+-        const balance = balanceView(entry, now, format);
+-        return (
+-          <div
+-            key={entry.id}
+-            className="flex min-w-0 flex-col gap-1"
+-            data-reading={entry.id}
+-            data-balance
+-            {...(stale || balance.expired ? { "data-stale": "" } : {})}
+-          >
+-            <div className="flex min-w-0 items-baseline justify-between gap-2">
+-              <span className="truncate font-medium text-foreground" title={entry.label}>
+-                {entry.label}
+-              </span>
+-              <span className="shrink-0 tabular-nums" data-reading-value>
+-                {balance.value}
+-              </span>
+-            </div>
+-            <span className="flex h-1.5 gap-[3px]" aria-hidden>
+-              {Array.from({ length: balance.pips }, (_, index) => (
+-                <i
+-                  key={index}
+-                  className={cn(
+-                    "w-4 rounded-full",
+-                    stale || balance.expired ? "bg-muted-foreground/45" : "bg-foreground/55",
+-                  )}
+-                />
+-              ))}
+-            </span>
+-            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
+-              {balance.timing !== undefined && (
+-                <span className="wrap-anywhere">{balance.timing}</span>
+-              )}
+-              {ownAge(entry.observedAt)}
+-            </div>
+-          </div>
+-        );
+-      })}
++      {windows.map((entry) => (
++        <UsageCell
++          key={entry.id}
++          entry={entry}
++          stale={stale}
++          resets={entry.id === target ? resets : undefined}
++          now={now}
++          format={format}
++        />
++      ))}
+     </div>
+   );
+ }
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index 4a9738f..f320db6 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -80,6 +80,10 @@ export function AccountObservations<E>({
+     if (collecting) reload();
+   }, [collecting, now, reload]);
+   const label = account.label || "Unnamed account";
++  // Accounts with no reporter, such as most connectors, and callers who may not see usage get no
++  // usage area at all; only the account's own health, when given, remains.
++  const reported = inspected !== undefined && inspected.reports.length > 0;
++  if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
+   return (
+     <div
+       role="group"
+@@ -119,7 +123,7 @@ export function AccountObservations<E>({
+           format={format}
+           Failure={Failure}
+         />
+-        {(inspected !== undefined && inspected.reports.length > 0) || health !== undefined ? (
++        {reported || health !== undefined ? (
+           <Button
+             variant="ghost"
+             size="xs"
+@@ -210,17 +214,9 @@ function UsageFact<E>({
+       <div className="min-w-0">
+         <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
+       </div>
+-    ) : (
+-      <div role="status" className={line}>
+-        Loading usage…
+-      </div>
+-    );
+-  if (!view.canInspect)
+-    return (
+-      <div className={line} data-usage-restricted>
+-        Usage isn't shared with you. Ask the owner if you need it.
+-      </div>
+-    );
++    ) : null;
++  // Nothing reported, or usage not shared: the caller can't tell a reporter exists, so say nothing.
++  if (!view.canInspect || view.reports.length === 0) return null;
+   const run = async () => {
+     if (pending) return;
+     setPending(true);
+@@ -244,12 +240,6 @@ function UsageFact<E>({
+   );
+   return (
+     <div className="flex min-w-0 flex-col gap-0.75" data-usage>
+-      {view.reports.length === 0 && (
+-        <div className={line}>
+-          <span>No usage reported for this account.</span>
+-          {action}
+-        </div>
+-      )}
+       {view.reports.map((report, index) => {
+         const read = report.result === null ? undefined : readingTimes(report.result)[0];
+         const stale = report.freshness !== "fresh";
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+new file mode 100644
+index 0000000..c4b3d02
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -0,0 +1,143 @@
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { cn } from "../lib/utils.ts";
++import { age, windowView, type ObservationMeterState } from "./account-observation-format.ts";
++
++type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
++
++const fills = {
++  good: "bg-emerald-500",
++  warn: "bg-amber-500",
++  bad: "bg-destructive",
++  exhausted: "",
++  unknown: "",
++  unlimited: "",
++} satisfies Record<ObservationMeterState, string>;
++const valueTones: Partial<Record<ObservationMeterState, string>> = {
++  warn: "text-amber-700 dark:text-amber-400",
++  bad: "text-destructive",
++  exhausted: "text-destructive",
++};
++
++/**
++ * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
++ * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
++ * reset count for the window they refill; it is a count only, never a control.
++ */
++export function UsageCell({
++  entry,
++  stale,
++  resets,
++  now,
++  format,
++}: {
++  readonly entry: Window;
++  readonly stale: boolean;
++  readonly resets?: { readonly count: number; readonly title: string } | undefined;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const reading = windowView(entry, now, format);
++  const read = age(entry.observedAt, now);
++  const value = reading.lead === undefined ? reading.figure : `${reading.lead} ${reading.figure}`;
++  return (
++    <div
++      className="flex min-w-0 flex-col gap-1.25 text-xs"
++      data-reading={entry.id}
++      data-meter-state={reading.state}
++      {...(stale ? { "data-stale": "" } : {})}
++    >
++      <div className="flex min-h-5.5 min-w-0 items-center gap-2">
++        <span
++          className="truncate rounded border bg-muted px-1.5 text-[11px] leading-[18px] font-medium text-foreground"
++          title={entry.label}
++        >
++          {entry.label}
++        </span>
++        {stale && (
++          <span className="shrink-0 text-sign-in-warning" data-stale-age>
++            last read <time dateTime={entry.observedAt}>{read}</time>
++          </span>
++        )}
++        <span className="flex-1" />
++        {resets !== undefined && (
++          <>
++            <span
++              className="shrink-0 font-semibold text-foreground tabular-nums"
++              title={resets.title}
++              data-reset-count={resets.count}
++            >
++              <span aria-hidden>↻ {resets.count}</span>
++              <span className="sr-only">{resets.title}</span>
++            </span>
++            <span className="h-3 w-px shrink-0 bg-border" aria-hidden />
++          </>
++        )}
++        <span className="shrink-0 text-muted-foreground tabular-nums" data-reading-value>
++          {reading.lead !== undefined && `${reading.lead} `}
++          <span
++            className={cn("font-semibold text-foreground", !stale && valueTones[reading.state])}
++          >
++            {reading.figure}
++          </span>
++          {reading.flag !== undefined && !stale && (
++            <span className={cn("font-medium", valueTones[reading.state])}> · {reading.flag}</span>
++          )}
++        </span>
++      </div>
++      <span
++        role="meter"
++        aria-label={stale ? `${entry.label}, stale` : entry.label}
++        aria-valuemin={0}
++        aria-valuemax={reading.aria.max}
++        {...(reading.aria.now === undefined ? {} : { "aria-valuenow": reading.aria.now })}
++        aria-valuetext={[
++          value,
++          stale ? undefined : reading.flag,
++          stale ? `when last read ${read}` : undefined,
++          reading.reset === undefined ? undefined : `resets ${reading.reset.text}`,
++        ]
++          .filter((part) => part !== undefined)
++          .join(", ")}
++        className={cn(
++          "block h-1.5 overflow-hidden rounded-full bg-border",
++          reading.state === "unknown" &&
++            "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)] opacity-55",
++          reading.state === "exhausted" &&
++            (stale
++              ? "ring-1 ring-muted-foreground/60 ring-inset"
++              : "bg-destructive/20 ring-1 ring-destructive/40 ring-inset"),
++        )}
++      >
++        {reading.width !== undefined && reading.width > 0 && (
++          <span
++            className={cn(
++              "block h-full rounded-full",
++              stale ? "bg-muted-foreground/45" : fills[reading.state],
++            )}
++            style={{ width: `${reading.width}%` }}
++          />
++        )}
++      </span>
++      {/* The left of this line is reserved for the pool's own token and cost counts. */}
++      {reading.reset !== undefined && (
++        <div className="flex min-w-0 justify-end text-muted-foreground tabular-nums">
++          <span
++            className={cn(
++              "truncate",
++              reading.reset.due ? "text-sign-in-warning" : "text-foreground",
++            )}
++            {...(reading.reset.title === undefined ? {} : { title: reading.reset.title })}
++            data-reset
++          >
++            {reading.reset.at === undefined ? (
++              reading.reset.text
++            ) : (
++              <time dateTime={reading.reset.at}>{reading.reset.text}</time>
++            )}
++          </span>
++        </div>
++      )}
++    </div>
++  );
++}
