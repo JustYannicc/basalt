@@ -96,6 +96,12 @@ export interface AccountObservationResponse {
 /** GET /pool */
 export interface PoolView {
   readonly isOwner: boolean;
+  readonly reading?: {
+    readonly source: "snapshot" | "live";
+    readonly revalidationFailed: boolean;
+    /** Completion of each Home read. Provider observations retain their own original timestamps. */
+    readonly readAt: { readonly membership: string; readonly credentials: string; readonly quota: string };
+  };
   /** Native removal intent is visible to the owner only. `since` bounds retained history. */
   readonly removals?: {
     readonly since: string | null;

@@ -25,7 +25,9 @@ function read<T>(promise: Promise<Result<T>>): Promise<Result<T>> {
 
 export const pool = {
   computerContext: () => read(client.query(queryReference<typeof computerContext>("computerContext"), {}, result<ComputerContext>())),
-  view: () => read(client.query(queryReference<typeof view>("view"), {}, result<PoolView>())),
+  /** `fresh` waits for a live read; otherwise the pool may answer at once from its retained view. */
+  view: (options: { readonly fresh?: boolean } = {}) =>
+    read(client.query(queryReference<typeof view>("view"), options.fresh ? { fresh: true } : {}, result<PoolView>())),
   usage: () => read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   remove: (id: string) =>
     read(client.mutate(mutationReference<typeof removeAccount>("removeAccount"), { id }, result<null>())),

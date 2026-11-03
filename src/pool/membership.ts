@@ -25,6 +25,7 @@ interface Dependencies {
   reconcile(pool: string, accounts: readonly string[]): Promise<void>;
   install(policy: NativeMembershipPolicy): Promise<void>;
   abort(pool: string): void;
+  invalidateView?(pool: string): Promise<void>;
   schedule(at: number): Promise<void>;
   now?: () => number;
 }
@@ -62,6 +63,7 @@ export class NativeMemberships {
       || Number(value.expiresAt) <= now || Number(value.expiresAt) > now + 30_000)
       throw new Error("Invalid native membership acknowledgement");
     const pool = String(value.pool), organization = String(value.organization);
+    await this.deps.invalidateView?.(pool);
     const policy = await this.run(async (state) => {
       const previous = state[pool];
       if (previous && previous.organization !== organization) throw new Error("Native pool organization changed");

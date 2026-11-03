@@ -1,0 +1,114 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+deleted file mode 100644
+index 4861bf9..0000000
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
++++ /dev/null
+@@ -1,49 +0,0 @@
+-import * as Cloudflare from "alchemy/Cloudflare";
+-import { Effect, Schema } from "effect";
+-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+-import { McpServer } from "../mcp-server-worker.ts";
+-import { requestBody } from "./body.ts";
+-import { atPhase, diagnostic } from "./diagnostics.ts";
+-export { productionOpsPath } from "./contracts.ts";
+-
+-const Binding = Schema.declare(
+-  (value): value is { readonly fetch: (request: Request) => Promise<Response> } =>
+-    typeof value === "object" &&
+-    value !== null &&
+-    "fetch" in value &&
+-    typeof value.fetch === "function",
+-);
+-
+-/** Large operator modules stay in the private Worker already holding the SQL and OAuth services. */
+-export const cloudProductionOpsForward = Effect.gen(function* () {
+-  yield* Cloudflare.Workers.bindWorker(McpServer);
+-  return Effect.gen(function* () {
+-    const body = yield* requestBody.pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
+-      atPhase("decode"),
+-    );
+-    const environment = yield* Cloudflare.WorkerEnvironment;
+-    const worker = yield* Schema.decodeUnknownEffect(Binding)(
+-      environment[McpServer.LogicalId],
+-    ).pipe(atPhase("config"));
+-    const request = yield* HttpServerRequest.HttpServerRequest;
+-    const response = yield* Effect.tryPromise(() =>
+-      worker.fetch(
+-        new Request(request.originalUrl, {
+-          method: "POST",
+-          headers: { "content-type": "application/json" },
+-          body: JSON.stringify(body),
+-        }),
+-      ),
+-    ).pipe(atPhase("forward"));
+-    return HttpServerResponse.fromWeb(response);
+-  }).pipe(
+-    Effect.catchCause((cause) =>
+-      HttpServerResponse.json(
+-        { error: "operation_refused", failure: diagnostic(cause, "forward") },
+-        { status: 409, headers: { "cache-control": "no-store" } },
+-      ),
+-    ),
+-    Effect.withTracerEnabled(false),
+-  );
+-});
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 666a982..141f261 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -26,10 +26,7 @@ import {
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
+ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+-import {
+-  cloudProductionOpsForward,
+-  productionOpsPath,
+-} from "./infrastructure/production-ops/forward.ts";
++import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -623,7 +620,7 @@ export default Api.make(
+       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+     );
+-    const productionOps = yield* cloudProductionOpsForward;
++    const productionOps = yield* cloudProductionOps;
+     const routes = Layer.mergeAll(
+       HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
+         HttpRouter.provideRequest(executor),
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index 033dee5..1eb463d 100644
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -24,8 +24,7 @@ import {
+ } from "./infrastructure/telemetry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { cloudSite } from "./infrastructure/site.ts";
+-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+-import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
++import { HttpServerResponse } from "effect/http";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** The executor and MCP identity are built once per isolate and shared by its objects. */
+@@ -81,18 +80,9 @@ export default McpServer.make(
+   }),
+   Effect.gen(function* () {
+     const services = yield* cloudServingProduct(yield* appDataSupervisors);
+-    const operations = yield* cloudProductionOps;
+     return {
+       ...(yield* makeWorkflowDisplayRpc(services)),
+-      fetch: Effect.gen(function* () {
+-        const request = yield* HttpServerRequest.HttpServerRequest;
+-        if (
+-          request.method !== "POST" ||
+-          new URL(request.originalUrl).pathname !== productionOpsPath
+-        )
+-          return HttpServerResponse.empty({ status: 404 });
+-        return yield* operations.pipe(Effect.provide(services));
+-      }),
++      fetch: Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+     };
+   }).pipe(
+     Effect.provide(

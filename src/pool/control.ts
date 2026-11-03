@@ -17,6 +17,7 @@ import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
+import type { HomeViewData, PoolViewSnapshots } from "./view-snapshot.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 import { checkAccount, readCheckedAccount } from "./account-check.ts";
 import { quotaObservation } from "./quota-observation.ts";
@@ -68,6 +69,7 @@ export interface ControlDependencies extends HomeDependencies {
   collection?: QuotaCollection;
   actions?: AccountActions;
   removals?: (pool: string) => Promise<NonNullable<PoolView["removals"]>>;
+  views?: PoolViewSnapshots;
 }
 export interface Session {
   pool: string;
@@ -208,12 +210,21 @@ export class HomeClient {
   private groupCache = new Map<string, Group[]>();
   private quotaDetails = new Map<string, { promise: Promise<Json | null>; expiresAt: number }>();
   private clock: () => number;
-  constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now) { this.fetchHome = fetchHome; this.clock = clock; }
+  private changed?: () => Promise<void>;
+  constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now,
+    changed?: () => Promise<void>) { this.fetchHome = fetchHome; this.clock = clock; this.changed = changed; }
   async response(path: string, init?: RequestInit): Promise<Response> {
+    const mutation = init?.method !== undefined && !["GET", "HEAD"].includes(init.method.toUpperCase())
+      && /^(?:\/(?:credentials|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(path);
+    if (mutation) await this.changed?.();
     try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); }
     catch {
       init?.signal?.throwIfAborted();
       return unavailable();
+    }
+    finally {
+      // Unknown mutation outcomes must not retain a view from before the attempt.
+      if (mutation) await this.changed?.();
     }
   }
   async data(path: string, init?: RequestInit): Promise<Json> {
@@ -372,17 +383,31 @@ export class PoolHome {
       if (this.accountId) emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
     }
   }
-  async view(isOwner: boolean): Promise<PoolView> {
+  async readView(now: () => Date): Promise<HomeViewData> {
+    const readAt = { membership: "", credentials: "", quota: "" };
     const membership = timePoolRead("membership", () => this.membership(), (value) => value.members.length);
-    const [members, files, usage] = await Promise.all([
-      membership,
-      timePoolRead("credentials", () => this.credentials(), (value) => value.length),
-      membership.then(({ members }) => timePoolRead("quota_detail", () => this.client.quota(
-        [...new Set(members.map((member) => member.auth_id))].sort(), true,
-      ), (value) => value.length)),
-    ]);
-    const ids = new Set(members.members.map((member) => member.auth_id));
-    return { isOwner, providers, accounts: accountsView(files, usage, ids) };
+    const reads = [
+      membership.then((value) => { readAt.membership = now().toISOString(); return value; }),
+      timePoolRead("credentials", () => this.credentials(), (value) => value.length)
+        .then((value) => { readAt.credentials = now().toISOString(); return value; }),
+      membership.then(({ members }) => {
+        const ids = [...new Set(members.map((member) => member.auth_id))].sort();
+        for (const id of ids) this.client.dropQuotaDetail(id);
+        return timePoolRead("quota_detail", () => this.client.quota(ids, true), (value) => value.length);
+      }).then((value) => { readAt.quota = now().toISOString(); return value; }),
+    ] as const;
+    await Promise.allSettled(reads);
+    const [members, files, usage] = await Promise.all(reads);
+    return { accounts: accountsView(files, usage, new Set(members.members.map((member) => member.auth_id))), readAt };
+  }
+  async view(isOwner: boolean, views?: PoolViewSnapshots, fresh = false, now = () => new Date()): Promise<PoolView> {
+    const result = views ? await views.view(this.pool, fresh, () => this.readView(now))
+      : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
+    const accounts = result.data.accounts.map((account) => result.source === "snapshot"
+      ? { ...account, freshness: account.freshness === "never" ? "never" as const : "stale" as const }
+      : account);
+    return { isOwner, providers, accounts,
+      reading: { source: result.source, readAt: result.data.readAt, revalidationFailed: result.revalidationFailed } };
   }
   async usage(query: UsageQuery): Promise<UsageResponse> {
     const accounts = new Set((await this.membership()).members.map((member) => member.auth_id));
@@ -462,8 +487,8 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool }) => {
-    const view = await home.view(isOwner);
+  "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
+    const view = await home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now);
     return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
@@ -607,10 +632,16 @@ export async function authorizeControl(request: Request, signingKey: string, pre
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const { claims, url, route, isOwner, isRead, isAccountAction } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
+    const { claims, url, route, routeKey, isOwner, isRead, isAccountAction } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added, deps.onProductEvent, claims.owner);
     if (!isRead && !isAccountAction) await (deps.attribution ?? unavailable()).expireLocked(client);
-    return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
+    const changesAccount = request.method === "POST" && routeKey.startsWith("POST /accounts/");
+    if (changesAccount) await deps.views?.invalidate();
+    try {
+      return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
+    } finally {
+      if (changesAccount) await deps.views?.invalidate();
+    }
   } catch (error) { return failureResponse(error); }
 }
