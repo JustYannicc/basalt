@@ -185,6 +185,37 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  sso-service-binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated SSO test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the SSO journeys
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify OIDC and SAML through the private service binding
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sso-service-binding-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/sso-idp.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   production-ops:
     runs-on: ubuntu-latest
     timeout-minutes: 15
