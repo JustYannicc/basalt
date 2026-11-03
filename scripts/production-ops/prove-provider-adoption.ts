@@ -29,7 +29,7 @@ const expected =
     `      const client = Context.get(sql, PgClient.PgClient);
       const transaction = client.withTransaction;
       Object.assign(client, {
-        withTransaction: <A, E, R>(work: Effect.Effect<A, E, R>) => transaction(withAdoptionStepGate(work)),
+        withTransaction: <A, E, R>(work: Effect.Effect<A, E, R>) => withAdoptionStepGate(work, transaction),
       });
 ${marker}`,
   );

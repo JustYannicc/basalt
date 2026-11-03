@@ -14,17 +14,34 @@ const arrive = (step: string, id: string) =>
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.orDie);
 
 /** Preserve every statement and result; only pause at a selected real transaction boundary. */
-export const withAdoptionStepGate = <A, E, R>(work: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
+export const withAdoptionStepGate = <A, E, R, B, E2, R2>(
+  work: Effect.Effect<A, E, R>,
+  transaction: (body: Effect.Effect<A, E, R>) => Effect.Effect<B, E2, R2>,
+) => {
+  let purgeOwner: string | undefined;
+  return transaction(Effect.gen(function* () {
     const previous = yield* Statement.CurrentTransformer;
     if (yield* active) return yield* work;
     let connectionClaimed = false;
     let accountClaim: string | undefined;
+    let purgeClaim: string | undefined;
     const transformer: Statement.Transformer = (input, sql, fiber, span) =>
       Effect.gen(function* () {
         const statement = previous === undefined ? input : yield* previous(input, sql, fiber, span);
         const [source, params] = statement.compile();
         const query = source.replaceAll('"', "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (purgeClaim !== undefined) {
+          const id = purgeClaim;
+          purgeClaim = undefined;
+          yield* arrive("purge", id);
+        }
+        if (/^update (?:\w+\.)?executor_apps\b/.test(query) && query.includes("owner")) {
+          const owner = params.find((value) => typeof value === "string" && value.startsWith("organization:"));
+          if (typeof owner === "string") {
+            purgeOwner = owner.slice("organization:".length);
+            purgeClaim = purgeOwner;
+          }
+        }
         if (accountClaim !== undefined) {
           const id = accountClaim;
           accountClaim = undefined;
@@ -47,4 +64,5 @@ export const withAdoptionStepGate = <A, E, R>(work: Effect.Effect<A, E, R>) =>
         return statement;
       });
     return yield* work.pipe(Effect.provideService(Statement.CurrentTransformer, transformer), Effect.provideService(active, true));
-  });
+  })).pipe(Effect.tap(() => purgeOwner === undefined ? Effect.void : arrive("purged", purgeOwner)));
+};
