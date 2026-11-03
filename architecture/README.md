@@ -166,4 +166,4 @@ accounts are excluded. Driver report leases and retry deadlines remain authorita
 collection keeps its persisted thirty-minute cap and provider backoff. Publication reads reset
 credits without redeeming them. Accounts without a native Home binding, including API keys that
 have never been mirrored and methods whose Home adapter is unavailable, have no periodic usage
-hook in this carry. Multi-credential Home bindings still have no aggregate observation report.
+hook in this carry. Multi-credential Home bindings still have no aggregate observation report. Open account rows read the retained report again every 30 seconds while the page is visible, and every 5 seconds while a collection is running, so new readings appear without a manual refresh. Reading never collects.

@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index f344ca4..74c418c 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,7 @@
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
  import { drainContributedDepartures } from "@executor-js/hosted-server/contributed-departures";
  import { cloudWorkflowInputDisplays } from "./infrastructure/workflow-display.ts";
  import { appSandboxAddress } from "@executor-js/mcp";
-@@ -622,6 +626,9 @@
+@@ -622,6 +626,9 @@ export default Api.make(
      );
      const productionOps = yield* cloudProductionOps;
      const routes = Layer.mergeAll(
@@ -20,6 +21,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index e82a249..019163b 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -1,3 +1,7 @@
@@ -30,7 +32,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
  import { drainContributedDepartures } from "@executor-js/hosted-server/contributed-departures";
  import { WorkflowInputDisplays } from "@executor-js/hosted-server/workflow-display";
  import { directWorkflowInputDisplays } from "@executor-js/hosted-server/workflow-display/direct";
-@@ -189,6 +193,9 @@
+@@ -189,6 +193,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        Layer.provide(auth.apiIdentity),
      );
      const productRoutes = Layer.mergeAll(
@@ -41,6 +43,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        authoring,
        api,
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 4d4111d..5fb528a 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -35,6 +35,7 @@
@@ -53,6 +56,7 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
      "./pool-defaults": "./src/implementation/pool-defaults.ts",
 diff --git a/apps/hosted/server/src/implementation/account-observation-upkeep.ts b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
 new file mode 100644
+index 0000000..456d9fc
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
 @@ -0,0 +1,50 @@
@@ -107,9 +111,10 @@ new file mode 100644
 +  return HttpServerResponse.empty({ status: 204 });
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+index 3535f3b..f7afc44 100644
 --- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,7 @@ import {
  import { providerDeclaration } from "apps/host";
  import {
    AccountCheckResult,
@@ -117,7 +122,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
    InteractiveStart,
    InteractiveStatus,
    ProviderError,
-@@ -97,6 +98,21 @@
+@@ -97,6 +98,21 @@ export const poolAccountAcquisition = (
            else await mirror.remove(context);
          },
          ...(oauth ? {} : { mirror: mirror.mirror }),
@@ -139,10 +144,43 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
          ...(oauth
            ? {
                check: async (context: AccountAcquisitionAccountContext) => {
+diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
+index f343cd9..bda20d0 100644
+--- a/apps/hosted/web/src/contracts/account-observations.ts
++++ b/apps/hosted/web/src/contracts/account-observations.ts
+@@ -6,6 +6,7 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
+ export type ObservationAudience = ObservationPolicy["read"];
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
++import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { HostedClient } from "./api.ts";
+@@ -21,11 +22,18 @@ class AccountKey extends Data.Class<{
+ const observations = Atom.family((key: AccountKey) =>
+   protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
+ );
++// The server collects on its own interval; a visible row reads the retained report again so new
++// readings appear without a manual refresh, and sooner while a collection is still running.
++const polledObservations = Atom.family((key: AccountKey) =>
++  pollingQuery(observations(key), {
++    active: whileLoaded((view) => view.reports.some((report) => report.collecting)),
++  }),
++);
+ /** The caller's view of an account's retained usage, with what the policy lets them do. */
+ export const accountObservationsAtom = (key: {
+   readonly organization: OrganizationReference;
+   readonly account: AccountId;
+-}) => observations(new AccountKey(key));
++}) => polledObservations(new AccountKey(key));
+ 
+ const refreshObservations = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) =>
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index a6e47b5..4501070 100644
 --- a/e2e/support/account-observation-fixture.ts
 +++ b/e2e/support/account-observation-fixture.ts
-@@ -209,7 +209,11 @@
+@@ -209,7 +209,11 @@ export const ObservationView = Schema.Struct({
        freshness: Schema.String,
        checkedAt: Schema.NullOr(Schema.String),
        lastAttempt: Schema.NullOr(
@@ -156,9 +194,10 @@ diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-ob
        collecting: Schema.Boolean,
        nextAllowedAt: Schema.NullOr(Schema.String),
 diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+index 42722c5..fd7e8c5 100644
 --- a/e2e/support/provider-apps-catalog.ts
 +++ b/e2e/support/provider-apps-catalog.ts
-@@ -40,6 +40,8 @@
+@@ -40,6 +40,8 @@ export const providerAppsCatalog = Effect.gen(function* () {
      ),
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
@@ -167,7 +206,7 @@ diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-ca
    const routes = Layer.mergeAll(
      HttpRouter.add(
        "GET",
-@@ -95,10 +97,12 @@
+@@ -95,10 +97,12 @@ export const providerAppsCatalog = Effect.gen(function* () {
          const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Acquisition))(
            Buffer.from(payload, "base64url").toString(),
          );
@@ -181,7 +220,7 @@ diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-ca
          if (input.action === "start")
            return HttpServerResponse.jsonUnsafe({
              session: `synthetic-session-${input.provider}`,
-@@ -120,5 +124,11 @@
+@@ -120,5 +124,11 @@ export const providerAppsCatalog = Effect.gen(function* () {
    );
    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
    if (!("port" in server.address)) return yield* Effect.die("Expected a loopback catalog");
@@ -195,14 +234,13 @@ diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-ca
 +  };
  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..45249cf 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3314,6 +3314,17 @@
-       "self-host": scheduled,
-       cloud: na("Uses controlled loopback providers through the shared runtime contract."),
+@@ -3316,6 +3316,17 @@ export const scenarios = plan({
        local: na("Shared error views and SDK are exercised through hosted APIs."),
-+    },
-+  },
+     },
+   },
 +  accountObservationInterval: {
 +    fixtures: "actors",
 +    file: "account-observation-interval.spec.ts",
@@ -212,11 +250,31 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      cloud: na("The same private handler is exercised with a controlled loopback Home service."),
 +      local: na("The pool alarm belongs to the hosted product."),
++    },
++  },
+   providerApps: {
+     fixtures: "actors",
+     file: "provider-apps.spec.ts",
+@@ -8731,6 +8742,16 @@ export const scenarios = plan({
+       local: na("Exercises hosted sharing policy and rows."),
      },
    },
-   providerApps: {
++  accountObservationRowPolling: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "an open account row shows newly retained usage without a manual refresh",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback allowance service."),
++      local: na("Hosted rows read the server's retained reports."),
++    },
++  },
+   accountObservations: {
+     fixtures: "actors",
+     file: "account-observations.spec.ts",
 diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
 new file mode 100644
+index 0000000..2220811
 --- /dev/null
 +++ b/e2e/tests/account-observation-interval.spec.ts
 @@ -0,0 +1,128 @@
@@ -344,6 +402,69 @@ new file mode 100644
 +            envelope: "invalid",
 +          })).status,
 +        ).toBe(503);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+new file mode 100644
+index 0000000..44c80b6
+--- /dev/null
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -0,0 +1,57 @@
++/** A visible account row picks up a newly retained usage report without a manual refresh. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
++const Retained = Schema.Struct({
++  reports: Schema.Array(Schema.Struct({ result: Schema.Struct({ observedAt: Schema.String }) })),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account observation row polling", (it) => {
++  it.effect(scenarios.accountObservationRowPolling.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const f = yield* observationFixture({ observe: true, health: true, shared: true });
++        yield* f.backend.answer({ status: 200, body: allowance() });
++        const label = (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
++        const block = (page: Page) =>
++          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const source = (page: Page) => block(page).locator("[data-usage-source] time");
++
++        yield* installBrowserClock;
++        yield* browser.login(f.actors.owner);
++        yield* browser.use("Open Accounts with nothing retained yet", (page) =>
++          page
++            .goto(`/org/${f.actors.organization.slug}/accounts`)
++            .then(() => block(page).getByText("No usage reported").waitFor()),
++        );
++
++        // Stands in for the server interval: a report is retained while the row stays open.
++        expect((yield* f.refresh()).status).toBe(200);
++        const observedAt = (yield* body(Retained, yield* f.read())).reports[0]?.result.observedAt;
++        expect(observedAt).toBeDefined();
++        expect(yield* f.backend.calls).toBe(1);
++
++        yield* advanceToReconciliation;
++        const shown = yield* browser.use("The open row shows the new reading on its own", (page) =>
++          source(page)
++            .waitFor()
++            .then(() => source(page).getAttribute("datetime")),
++        );
++        expect(shown).toBe(observedAt);
++        expect(yield* f.backend.calls, "reading the retained report again collects nothing").toBe(
++          1,
++        );
 +      }),
 +    ),
 +  );
