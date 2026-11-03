@@ -1,0 +1,15 @@
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -329,7 +329,10 @@
+         );
+         expect(
+           yield* browser.use("Outdated result is marked", (page) =>
+-            page.locator('[data-check-status="healthy"][data-check-current="false"]').count(),
++            page
++              .getByRole("img")
++              .and(page.locator('[data-check-status="healthy"][data-check-current="false"]'))
++              .count(),
+           ),
+         ).toBe(1);
+         // Opening the account's health rechecks it and lists each app's result.
