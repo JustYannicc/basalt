@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-health-status-dot",
+  "file": "0163-account-health-status-dot.patch",
+  "content_sha256": "dc5a030e462917763f7ec60dec54d4299d9e05a6f2f278635dd85167b5636967",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
