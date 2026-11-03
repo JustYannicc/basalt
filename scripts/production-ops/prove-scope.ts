@@ -87,6 +87,15 @@ try {
     scenarios,
     process.env.BASALT_SCOPE_PROOF_PATTERN ?? "^Cloud production operations enforce",
   );
+  const buildStarted = Date.now();
+  const built = spawnSync("bun", ["run", "framework:build"], {
+    cwd: `${root}/.upstream/apps/hosted/cloud`,
+    stdio: "inherit",
+  });
+  assert.equal(built.status, 0, "The shared Cloud framework must build before isolated proofs");
+  console.log(
+    `Shared Cloud framework built once in ${Date.now() - buildStarted}ms for ${cases.length} isolated proofs`,
+  );
   for (const scenario of cases) {
     console.log(`Isolated scope proof: ${scenario.title}`);
     const evidenceRoot = `${root}/.upstream/.local/e2e`;
@@ -96,7 +105,15 @@ try {
     delete environment.BASALT_E2E_PREBOOT_BINDING;
     const child = spawn(
       "bun",
-      ["run", "e2e:cloud", "--test-name", scenario.pattern, "--workers", "1"],
+      [
+        "run",
+        "e2e:cloud",
+        "--test-name",
+        scenario.pattern,
+        "--workers",
+        "1",
+        "--prebuilt-framework",
+      ],
       {
         cwd: `${root}/.upstream`,
         stdio: "inherit",
@@ -121,10 +138,16 @@ try {
         process.exitCode = code;
         break;
       }
+      const runs = (await readdir(evidenceRoot)).filter((name) => !previousRuns.has(name));
+      assert.equal(runs.length, 1, "One isolated Cloud run must own this case's evidence");
+      const directory = `${evidenceRoot}/${runs[0]}/cloud`;
+      const metadata = JSON.parse(await readFile(`${directory}/environment.json`, "utf8"));
+      assert.equal(
+        metadata.prebuiltFramework,
+        true,
+        "Each isolated run must reuse the shared framework",
+      );
       if (scenario.binding !== undefined) {
-        const runs = (await readdir(evidenceRoot)).filter((name) => !previousRuns.has(name));
-        assert.equal(runs.length, 1, "One isolated Cloud run must own this case's evidence");
-        const directory = `${evidenceRoot}/${runs[0]}/cloud`;
         const ready = JSON.parse(await readFile(`${directory}/runtime-preboot.json`, "utf8"));
         const launches = (await readFile(`${directory}/runtime-launches.ndjson`, "utf8"))
           .trim()
