@@ -55,6 +55,13 @@ const { linkAppAccount } = await load("apps/hosted/server/src/implementation/app
 const { identifyProvider } = await load("packages/sdk/src/implementation/provider.ts");
 import { signPoolToken, verifyPoolToken } from "../../src/pool/token.ts";
 
+// Fixture queries address the owner's one pool in either retained storage format.
+const poolRecordKey = (sql: SqlClient.SqlClient, owner = "person-a") =>
+  sql`(select entry.key from jsonb_each(metadata::jsonb -> 'basaltPools') entry
+    where coalesce(entry.value ->> 'owner', entry.key) = ${owner})`;
+const ownedRecord = <T extends object>(pools: Record<string, T>, owner = "person-a") =>
+  Object.entries(pools).find(([key, value]) => ("owner" in value ? value.owner : key) === owner)?.[1];
+
 const providerCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
   digest: (_algorithm, data) =>
@@ -364,12 +371,15 @@ test("installs an owner's private app and personal linked account with a verifia
       assert.equal(apps.length, 1);
       assert.equal(apps[0]!.name, "Alex's pool");
       const [record]: readonly any[] =
-        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization where id = ${organization}`;
+        yield* sql`select ${poolRecordKey(sql)} as key, metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} as pool from organization where id = ${organization}`;
       assert.equal(
         record!.pool.app,
         apps[0]!.id,
         "provisioning writes the reserved pool record through SQL",
       );
+      assert.equal(record!.key, apps[0]!.id);
+      assert.equal(record!.pool.owner, "person-a");
+      assert.equal(record!.pool.primary, true);
       assert.equal(accounts.length, 1);
       const payload = JSON.parse(
         Buffer.from(accounts[0]!.token.split(".")[1]!, "base64url").toString(),
@@ -418,17 +428,56 @@ test("pool reconciliation and key rotation preserve native authorization and sib
     yield* setup();
     yield* setup("person-b");
     yield* sql`update organization set metadata = jsonb_set(jsonb_set(metadata::jsonb,
-      '{basaltPools,person-a,authorization}', '"executor-app-v1"'::jsonb),
-      '{basaltPools,person-b,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+      array['basaltPools', ${poolRecordKey(sql)}, 'authorization'], '"executor-app-v1"'::jsonb),
+      array['basaltPools', ${poolRecordKey(sql, "person-b")}, 'authorization'], '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
     const [before] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
     yield* setup();
     const [reconciled] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
     assert.deepEqual(reconciled!.pools, before!.pools);
     yield* setup("person-a", Redacted.make("d1".repeat(32)));
     const [rotated] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    assert.equal(rotated!.pools["person-a"]!.authorization, "executor-app-v1");
-    assert.notEqual(rotated!.pools["person-a"]!.tokenKeyVersion, before!.pools["person-a"]!.tokenKeyVersion);
-    assert.deepEqual(rotated!.pools["person-b"], before!.pools["person-b"]);
+    assert.equal(ownedRecord(rotated!.pools)!.authorization, "executor-app-v1");
+    assert.notEqual(ownedRecord(rotated!.pools)!.tokenKeyVersion, ownedRecord(before!.pools)!.tokenKeyVersion);
+    assert.deepEqual(ownedRecord(rotated!.pools, "person-b"), ownedRecord(before!.pools, "person-b"));
+  }));
+});
+
+test("reconciliation retains a legacy user-key default and every unknown policy field", async () => {
+  await fixture(({ sql, setup }) => Effect.gen(function* () {
+    yield* setup();
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}',
+      jsonb_build_object('person-a', ((metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)})
+        - 'owner' - 'primary') || '{"authorization":"executor-app-v1","membership":"executor-links-v1","futurePolicy":{"keep":true}}'::jsonb))::text
+      where id = ${organization}`;
+    const [before] = yield* sql`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    yield* setup();
+    yield* setup();
+    const [after] = yield* sql`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    assert.deepEqual(after, before);
+    assert.deepEqual(Object.keys(after!.pools), ["person-a"]);
+    assert.equal((yield* sql`select id from executor_apps`).length, 1);
+    assert.equal((yield* sql`select id from executor_accounts`).length, 1);
+  }));
+});
+
+test("an additional pool created before onboarding does not replace the default", async () => {
+  await fixture(({ sql, setup }) => Effect.gen(function* () {
+    yield* setup();
+    const [additional] = yield* sql`select id from executor_apps`;
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      array['basaltPools', ${poolRecordKey(sql)}, 'primary'], 'false')::text where id = ${organization}`;
+    yield* setup();
+    yield* setup();
+    const records = yield* sql`select entry.key, entry.value ->> 'app' as app,
+      entry.value ->> 'owner' as owner, entry.value -> 'primary' as primary
+      from organization team cross join lateral jsonb_each(team.metadata::jsonb -> 'basaltPools') entry
+      where team.id = ${organization} order by entry.key`;
+    assert.equal(records.length, 2);
+    assert.equal(records.filter(record => record.primary === true).length, 1);
+    assert.equal(records.find(record => record.app === additional!.id)?.primary, false);
+    assert.equal(records.every(record => record.key === record.app && record.owner === "person-a"), true);
+    assert.equal((yield* sql`select id from executor_accounts`).length, 2);
+    assert.equal((yield* sql`select app from hosted_app_account_links`).length, 2);
   }));
 });
 
@@ -482,11 +531,11 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       ]);
       const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
       assert.deepEqual(yield* decisions(setup()), ["upgraded"]);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = '[{"path":"index.ts","content":"editing"}]'::jsonb`;
       assert.deepEqual(yield* decisions(setup()), ["source-edited"]);
       const [editedLink] = yield* sql<{
@@ -503,8 +552,8 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
         "a source-edited pool keeps a working link to its old provider identity",
       );
       const [beforeOwnerDeployment] = yield* sql<{ version: string; bundle: string }>`select
-        metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
-        metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`;
+        metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
+        metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle from organization`;
       const [currentApp] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
       const [currentDeployment] = yield* sql<{ requirements: unknown }>`select requirements
         from executor_deployments where id = ${currentApp!.active_deployment}`;
@@ -515,8 +564,8 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       assert.deepEqual(yield* decisions(setup()), ["version-mismatch"]);
       assert.deepEqual(
         yield* sql<{ version: string; bundle: string }>`select
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`,
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle from organization`,
         [beforeOwnerDeployment!],
         "an owner deployment with different files does not advance the recorded pool bundle",
       );
@@ -557,7 +606,7 @@ test("a workspace left on an earlier pool bundle by a file deploy still upgrades
       const stale = (bundle: string, files: string) =>
         Effect.gen(function* () {
           yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-            '{basaltPools,person-a,bundle}', ${JSON.stringify(bundle)})::text`;
+            array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], ${JSON.stringify(bundle)})::text`;
           const [app] = yield* sql<{
             active_deployment: string;
           }>`select active_deployment from executor_apps`;
@@ -594,7 +643,7 @@ test("upgrades an untouched recorded version and preserves owner deployments and
       yield* setup();
       const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
       yield* setup();
       const [upgraded] = yield* sql<{
@@ -606,9 +655,9 @@ test("upgrades an untouched recorded version and preserves owner deployments and
       const [org] = yield* sql<{
         metadata: { basaltPools: Record<string, { version: string }> };
       }>`select metadata::jsonb as metadata from organization`;
-      assert.equal(org!.metadata.basaltPools["person-a"].version, upgraded!.active_deployment);
+      assert.equal(ownedRecord(org!.metadata.basaltPools)!.version, upgraded!.active_deployment);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = '[{"path":"index.ts","content":"editing"}]'::jsonb`;
       yield* setup();
       assert.equal(
@@ -739,7 +788,7 @@ test("ordinary member jobs retry pool failures after the default setup has run",
       assert.equal((yield* sql`select * from hosted_app_access`).length, 0);
       assert.equal((yield* sql`select * from hosted_app_account_links`).length, 0);
       const [failedPool] =
-        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} as pool from organization`;
       assert.equal(failedPool!.pool, null);
       yield* run(key);
       assert.equal(defaultsRan, 2);
@@ -751,8 +800,8 @@ test("ordinary member jobs retry pool failures after the default setup has run",
       assert.equal((yield* sql`select * from hosted_app_account_links`).length, 1);
       const [linkedPool] = yield* sql`select link.app from hosted_app_account_links link
         join organization team on team.id = ${organization}
-        where link.app = team.metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'app'
-          and link.account = team.metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'account'`;
+        where link.app = team.metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'app'
+          and link.account = team.metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'account'`;
       assert.ok(linkedPool);
     }),
   );
@@ -787,7 +836,7 @@ test("an upgrade does not replace a pool record changed during compilation", asy
       yield* setup();
       const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
       const concurrent = {
         ...executor,
@@ -797,14 +846,14 @@ test("an upgrade does not replace a pool record changed during compilation", asy
             executor.apps.deploy(input).pipe(
               Effect.tap(
                 () => sql`update organization set metadata = jsonb_set(metadata::jsonb,
-            '{basaltPools,person-a,version}', '"dpl_record_changed_during_compile"')::text`,
+            array['basaltPools', ${poolRecordKey(sql)}, 'version'], '"dpl_record_changed_during_compile"')::text`,
               ),
             ),
         },
       };
       yield* poolDefaults(concurrent, Option.some(key), organization, "person-a");
       const [row] =
-        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version from organization`;
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version from organization`;
       assert.equal(row!.version, "dpl_record_changed_during_compile");
       assert.equal((yield* sql`select * from executor_accounts`).length, 1);
     }),
@@ -848,10 +897,10 @@ test("current bundles still check credentials and legacy bundles get one source 
       assert.equal(reads.source, initial.source);
       assert.equal(reads.get, initial.get + 2);
       const [recorded] =
-        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`;
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle from organization`;
       assert.equal(recorded!.bundle, poolAppVersion);
       // Existing installations have no bundle field; verify their source once without redeploying.
-      yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,bundle}')::text`;
+      yield* sql`update organization set metadata = (metadata::jsonb #- array['basaltPools', ${poolRecordKey(sql)}, 'bundle'])::text`;
       yield* setup();
       assert.equal(reads.get, initial.get + 4);
       assert.equal(reads.source, initial.source + 1);
@@ -898,7 +947,7 @@ test("promotion installs once; demotion leaves the pool, token and pending upgra
       assert.equal((yield* sql`select * from executor_apps`).length, 1);
       yield* sql`update member set role = 'member' where "userId" = 'invited'`;
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-      '{basaltPools,invited,bundle}', '"previous-bundle"')::text`;
+      array['basaltPools', ${poolRecordKey(sql, "invited")}, 'bundle'], '"previous-bundle"')::text`;
       const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
       yield* sql`delete from hosted_app_account_links`;
@@ -946,7 +995,7 @@ test("a rotated signing key re-mints and re-links once, retires the old account 
       );
       const [state] = yield* sql<{
         pool: { tokenKeyVersion: string; account: string };
-      }>`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
+      }>`select metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} as pool from organization`;
       assert.equal(state!.pool.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
       assert.equal(state!.pool.account, link!.account);
     }),
@@ -1126,8 +1175,8 @@ test("a legacy unlinked pool retires the personal account whose signed claims ma
           fields: Redacted.make({ token }),
         }),
       );
-      yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,account}'
-      #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+      yield* sql`update organization set metadata = (metadata::jsonb #- array['basaltPools', ${poolRecordKey(sql)}, 'account']
+      #- array['basaltPools', ${poolRecordKey(sql)}, 'tokenKeyVersion'])::text`;
       yield* sql`delete from hosted_app_account_links`;
       yield* setup();
       const [link] = yield* sql`select account from hosted_app_account_links`;
@@ -1169,7 +1218,7 @@ for (const transition of ["demotion", "email verification revoked"] as const) {
           yield* setup();
           const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
           yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
           yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
           const before = yield* sql`select * from executor_apps`;
           const accounts = yield* sql`select * from executor_accounts`;
@@ -1191,12 +1240,12 @@ for (const legacyUnlinked of [false, true]) {
         const [original] = yield* sql`select id from executor_accounts`;
         const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
         yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
         yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
         changeProvider();
         if (legacyUnlinked) {
-          yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,account}'
-          #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+          yield* sql`update organization set metadata = (metadata::jsonb #- array['basaltPools', ${poolRecordKey(sql)}, 'account']
+          #- array['basaltPools', ${poolRecordKey(sql)}, 'tokenKeyVersion'])::text`;
           yield* sql`delete from hosted_app_account_links`;
         }
         yield* setup();
@@ -1228,7 +1277,7 @@ test("a bundle upgrade re-mints and links the provisioned pool identity in the s
       }>`select * from executor_accounts`;
       const oldFiles = JSON.stringify([{ path: "index.ts", content: "previous pool bundle" }]);
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       yield* sql`update executor_apps set files = ${oldFiles}::jsonb, workspace = ${oldFiles}::jsonb`;
       changeProvider();
       yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
@@ -1363,8 +1412,8 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           { pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id, owner: "person-a", organization },
         );
         const [adopted] = yield* sql<{ version: string; bundle: string }>`select
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle
           from organization`;
         assert.equal(adopted!.version, deployed!.active_deployment);
         assert.equal(adopted!.bundle, "current-bundle");
@@ -1392,8 +1441,8 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         const [following] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
         assert.notEqual(following!.active_deployment, adopted!.version);
         const [followingRecord] = yield* sql<{ version: string; bundle: string }>`select
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
-          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle
           from organization`;
         assert.equal(followingRecord!.version, following!.active_deployment);
         assert.equal(followingRecord!.bundle, "next-pool-bundle");
@@ -1429,14 +1478,14 @@ test("rotation jobs wait 15 minutes for the pool Worker, including demoted and u
       on access.id = app.id where access.creator_id = 'invited'`;
       yield* sql`delete from executor_apps where id = ${deleted!.id}`;
       const [deletedRecord] =
-        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'invited' as pool from organization`;
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql, "invited")} as pool from organization`;
       yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
       yield* sql`update member set role = 'admin' where "userId" = 'person-b'`;
       yield* sql`update "user" set "emailVerified" = false where id = 'person-b'`;
       const old = JSON.stringify([{ path: "index.ts", content: "retained pool source" }]);
       yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       const apps = yield* sql`select * from executor_apps order by id`;
       const rotated = Redacted.make("cd".repeat(32));
       yield* queuePoolAppUpgrades(rotated);
@@ -1495,10 +1544,10 @@ test("rotation jobs wait 15 minutes for the pool Worker, including demoted and u
       }>`select
       metadata::jsonb -> 'basaltPools' as pools from organization`;
       const version = yield* poolTokenKeyVersion(rotated);
-      assert.equal(state!.pools["person-a"]!.tokenKeyVersion, version);
-      assert.equal(state!.pools["person-b"]!.tokenKeyVersion, version);
-      assert.equal(state!.pools["person-a"]!.bundle, "previous-bundle");
-      assert.deepEqual(state!.pools.invited, deletedRecord!.pool);
+      assert.equal(ownedRecord(state!.pools)!.tokenKeyVersion, version);
+      assert.equal(ownedRecord(state!.pools, "person-b")!.tokenKeyVersion, version);
+      assert.equal(ownedRecord(state!.pools)!.bundle, "previous-bundle");
+      assert.deepEqual(ownedRecord(state!.pools, "invited"), deletedRecord!.pool);
       // A fresh bundle retains its delay and only targets the remaining verified owner.
       yield* queuePoolAppUpgrades(rotated, "next-bundle");
       const delayed = yield* sql`select user_id from hosted_provisioning
@@ -1532,7 +1581,7 @@ test("a stale key-version record rotates a demoted holder once even if its old t
       yield* setup();
       const [original] = yield* sql`select id from executor_accounts`;
       yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
-      yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+      yield* sql`update organization set metadata = (metadata::jsonb #- array['basaltPools', ${poolRecordKey(sql)}, 'tokenKeyVersion'])::text`;
       yield* setup();
       yield* setup();
       const [link] = yield* sql`select account from hosted_app_account_links`;
@@ -1633,7 +1682,7 @@ test("an owner's token-only job preserves source until its bundle job runs", asy
       const old = [{ path: "index.ts", content: "previous pool" }];
       yield* sql`update executor_apps set files = ${JSON.stringify(old)}::jsonb, workspace = ${JSON.stringify(old)}::jsonb`;
       yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
       const rotated = Redacted.make("cd".repeat(32));
       yield* queuePoolAppUpgrades(rotated, "next-bundle");
       let ordinarySetupCalls = 0;
