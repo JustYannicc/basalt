@@ -22,6 +22,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       mkdirSync(join(root, directory), { recursive: true });
     for (const [path, content] of Object.entries({
       "apps/pool/index.ts": "export default {};",
+      "apps/pool/requirements.ts": 'import { providers } from "../../src/pool/provider-accounts/definitions.ts";',
       "apps/pool/deployment.ts": "old origin",
       "apps/pool/package.json": JSON.stringify({ dependencies: { apps: "old", react: "19" } }),
       "apps/pool/ui/page.tsx": "export default () => null;",
@@ -45,8 +46,12 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     const files = bundlePoolApp(root, upstream);
     assert.deepEqual(
       files.map((file) => file.path),
-      ["deployment.ts", "index.ts", "package.json", "provider-capabilities.ts", "provider-definitions.ts", "ui/page.tsx", "ui/public/fonts.css"],
+      ["deployment.ts", "index.ts", "package.json", "provider-capabilities.ts", "provider-definitions.ts", "requirements.ts", "ui/page.tsx", "ui/public/fonts.css"],
     );
+    assert.equal(files.find((file) => file.path === "requirements.ts")!.content,
+      'import { providers } from "./provider-definitions.ts";');
+    assert.equal(files.find((file) => file.path === "provider-definitions.ts")!.content,
+      readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"));
     // The page links the faces from the router, which serves the copies the bundler placed.
     const fonts = files.find((file) => file.path === "ui/public/fonts.css")!.content;
     assert.match(
