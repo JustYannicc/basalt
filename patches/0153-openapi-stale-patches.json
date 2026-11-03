@@ -1,7 +1,7 @@
 {
   "identity": "executor-openapi-stale-patches",
   "file": "0153-openapi-stale-patches.patch",
-  "content_sha256": "28f4a77c7c9f615b09045fb472b4784cd5981f4067424605d107ffbd1c5ca8a5",
+  "content_sha256": "24cc489405d4f62813d0770d7b66c9efbc71362b1063e80b50004f814424c7b7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

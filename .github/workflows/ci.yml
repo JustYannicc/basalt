@@ -122,6 +122,8 @@ jobs:
           mkdir -p .generated/slack-health
           git show "${{ github.event.pull_request.base.sha || github.event.before }}:src/catalog/slack.json" > .generated/slack-before-health.json
           bun e2e/slack-health.mjs .generated/slack-health/ci .generated/slack-before-health.json
+      - name: Verify ElevenLabs tools load when its definition dropped patched routes
+        run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -130,6 +132,8 @@ jobs:
             .generated/slack-health/ci/report.json
             .generated/slack-health/ci/partial-results.json
             .generated/slack-health/ci/failure.txt
+            .generated/elevenlabs-discovery/ci/result.json
+            .generated/elevenlabs-discovery/ci/failure.txt
           if-no-files-found: warn
   host-managed-accounts:
     runs-on: ubuntu-latest
