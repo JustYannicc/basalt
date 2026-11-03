@@ -18,14 +18,58 @@ export interface ArtifactsApi {
 
 export type ArtifactsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+const failureHeaders = {
+  "cf-ray": /^[a-f0-9]{16}(?:-[A-Z]{3})?$/i,
+  "cf-mitigated": /^challenge$/,
+  "retry-after": /^\d{1,10}$/,
+  "x-ratelimit-limit": /^\d{1,10}$/,
+  "x-ratelimit-remaining": /^\d{1,10}$/,
+  "x-ratelimit-reset": /^\d{1,10}$/,
+};
+
+async function apiFailure(response: Response, message: string, body?: unknown): Promise<Error> {
+  const envelope: unknown = body ?? await response.json().catch(() => undefined);
+  const errors = typeof envelope === "object" && envelope !== null && "errors" in envelope
+    ? envelope.errors : undefined;
+  const codes = new Set<number>();
+  if (Array.isArray(errors)) {
+    for (const entry of errors.slice(0, 10)) {
+      if (typeof entry !== "object" || entry === null || !("code" in entry)) continue;
+      const code: unknown = entry.code;
+      if (typeof code === "number" && Number.isSafeInteger(code) && code > 0 && code <= 99_999_999)
+        codes.add(code);
+    }
+  }
+  const headers: Record<string, string> = {};
+  for (const [name, pattern] of Object.entries(failureHeaders)) {
+    const value = response.headers.get(name);
+    if (value !== null && pattern.test(value)) headers[name] = value;
+  }
+  // Keep only numeric quota parameters; provider-chosen names may contain private data.
+  for (const [name, pattern] of [
+    ["ratelimit", /^"[^"\r\n]{1,64}"\s*;\s*r=(\d{1,10})\s*;\s*t=(\d{1,10})$/],
+    ["ratelimit-policy", /^"[^"\r\n]{1,64}"\s*;\s*q=(\d{1,10})\s*;\s*w=(\d{1,10})$/],
+  ] as const) {
+    const value = response.headers.get(name);
+    if (value === null || value.length > 256) continue;
+    const quotas = value.split(",").slice(0, 4).flatMap(item => {
+      const match = pattern.exec(item.trim());
+      if (!match) return [];
+      return [name === "ratelimit" ? `r=${match[1]};t=${match[2]}` : `q=${match[1]};w=${match[2]}`];
+    });
+    if (quotas.length) headers[name] = quotas.join(", ");
+  }
+  return new Error(`${message}; diagnostics=${JSON.stringify({ codes: [...codes], headers })}`);
+}
+
 /** The Cloudflare v4 envelope: `result` plus, on list routes, pagination `result_info`. */
 async function envelope<T>(response: Response, operation: string): Promise<{ result: T; result_info?: Record<string, unknown> }> {
-  if (!response.ok) throw new Error(`Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`);
+  if (!response.ok) throw await apiFailure(response, `Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`);
   const body: unknown = await response.json();
   if (typeof body !== "object" || body === null || !("result" in body))
     throw new Error(`Cloudflare Artifacts ${operation} returned an invalid response`);
   if ("success" in body && body.success !== true)
-    throw new Error(`Cloudflare Artifacts ${operation} was rejected`);
+    throw await apiFailure(response, `Cloudflare Artifacts ${operation} was rejected`, body);
   const info = "result_info" in body ? body.result_info : undefined;
   return { result: body.result as T, ...(typeof info === "object" && info !== null ? { result_info: info as Record<string, unknown> } : {}) };
 }
@@ -69,7 +113,7 @@ export function cloudflareArtifactsApi(
       const response = await request(`${base}/namespaces/${encodeURIComponent(name)}`, "DELETE");
       if (response.status === 404 || response.status === 204) return;
       if (!response.ok)
-        throw new Error(`Cloudflare Artifacts namespace deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(response, `Cloudflare Artifacts namespace deletion failed with HTTP ${response.status}`);
     },
     listRepositories: (namespace, cursor) =>
       list(`${base}/namespaces/${encodeURIComponent(namespace)}/repos`, cursor),
@@ -80,7 +124,7 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw new Error(`Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(response, `Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`);
     },
     // The token route pages by number (`page`, `per_page`, `total_pages`), not by cursor. The page
     // number travels as the cursor so every list shares one loop.
@@ -104,7 +148,7 @@ export function cloudflareArtifactsApi(
       );
       if ([202, 204, 404].includes(response.status)) return;
       if (!response.ok)
-        throw new Error(`Cloudflare Artifacts token deletion failed with HTTP ${response.status}`);
+        throw await apiFailure(response, `Cloudflare Artifacts token deletion failed with HTTP ${response.status}`);
     },
   };
 }

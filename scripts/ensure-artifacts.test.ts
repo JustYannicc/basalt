@@ -168,3 +168,106 @@ test("a listing that keeps issuing fresh cursors stops instead of hanging the de
   await assert.rejects(ensureEuNamespace(api, "basalt-apps"), /pagination did not end/);
   assert.equal(reads, 1000);
 });
+
+test("403 diagnostics keep codes, Ray and rate limits without secrets or a retry", async () => {
+  const secret = "fixture-secret-token-do-not-log";
+  const ray = "0123456789abcdef-ABC";
+  let requests = 0;
+  const api = cloudflareArtifactsApi("account", secret, async () => {
+    requests++;
+    return Response.json({
+      success: false,
+      errors: [{ code: 10000, message: secret }, { code: 9109, secret }, { code: secret }],
+      secret,
+      messages: [secret],
+      result: { token: secret },
+    }, {
+      status: 403,
+      headers: {
+        "cf-ray": ray,
+        "cf-mitigated": "challenge",
+        "retry-after": "30",
+        ratelimit: `"${secret}";r=0;t=30`,
+        "ratelimit-policy": '"burst";q=100;w=60',
+        "x-ratelimit-limit": "100",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1234567890",
+        authorization: `Bearer ${secret}`,
+        "cf-access-jwt-assertion": secret,
+        "set-cookie": secret,
+      },
+    });
+  });
+  await assert.rejects(ensureEuNamespace(api, "basalt-apps"), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Cloudflare Artifacts list failed with HTTP 403/);
+    assert.match(error.message, /"codes":\[10000,9109\]/);
+    for (const value of [ray, '"cf-mitigated":"challenge"', '"retry-after":"30"',
+      '"ratelimit":"r=0;t=30"', '"ratelimit-policy":"q=100;w=60"',
+      '"x-ratelimit-limit":"100"', '"x-ratelimit-remaining":"0"', '"x-ratelimit-reset":"1234567890"'])
+      assert.ok(error.message.includes(value), value);
+    for (const value of [secret, "authorization", "cf-access-jwt-assertion", "set-cookie", "messages", '"secret"'])
+      assert.ok(!error.message.includes(value), value);
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  assert.equal(requests, 1);
+});
+
+test("invalid error bodies and header values cannot replace or contaminate the HTTP failure", async () => {
+  const secret = "fixture-secret-token-do-not-log";
+  const api = cloudflareArtifactsApi("account", secret, async () => new Response(`<html>${secret}</html>`, {
+    status: 403,
+    headers: {
+      "cf-ray": secret,
+      "cf-mitigated": secret,
+      "retry-after": secret,
+      "x-ratelimit-reset": "1".repeat(11),
+      ratelimit: `"default";r=${secret};t=30`,
+      "ratelimit-policy": "1".repeat(257),
+    },
+  }));
+  await assert.rejects(api.listNamespaces(), {
+    message: 'Cloudflare Artifacts list failed with HTTP 403; diagnostics={"codes":[],"headers":{}}',
+  });
+});
+
+test("rejected API envelopes keep numeric codes without their messages", async () => {
+  const api = cloudflareArtifactsApi("account", "fixture-token", async () => Response.json({
+    result: null, success: false, errors: [{ code: 10000, message: "fixture-secret-do-not-log" }],
+  }));
+  await assert.rejects(api.listNamespaces(), {
+    message: 'Cloudflare Artifacts list was rejected; diagnostics={"codes":[10000],"headers":{}}',
+  });
+});
+
+test("every Artifacts operation bounds numeric codes and rejects 403 after one request", async () => {
+  for (const operation of [
+    (api: ArtifactsApi) => api.listNamespaces(),
+    (api: ArtifactsApi) => api.createNamespace("ns"),
+    (api: ArtifactsApi) => api.deleteNamespace("ns"),
+    (api: ArtifactsApi) => api.listRepositories("ns"),
+    (api: ArtifactsApi) => api.deleteRepository("ns", "repo"),
+    (api: ArtifactsApi) => api.listRepositoryTokens("ns", "repo"),
+    (api: ArtifactsApi) => api.deleteToken("ns", "fixture-token"),
+  ]) {
+    let requests = 0;
+    const api = cloudflareArtifactsApi("account", "fixture-token", async () => {
+      requests++;
+      return Response.json({ errors: [
+        { code: "123" }, { code: -1 }, { code: 1.5 }, { code: 100_000_000 },
+        ...Array.from({ length: 12 }, (_, index) => ({ code: 1000 + index })),
+      ] }, { status: 403, headers: {
+        ratelimit: Array.from({ length: 5 }, (_, index) => `"default";r=${index};t=30`).join(", "),
+      } });
+    });
+    await assert.rejects(operation(api), error => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /failed with HTTP 403/);
+      assert.match(error.message, /"codes":\[1000,1001,1002,1003,1004,1005\]/);
+      assert.match(error.message, /"ratelimit":"r=0;t=30, r=1;t=30, r=2;t=30, r=3;t=30"/);
+      return true;
+    });
+    assert.equal(requests, 1);
+  }
+});
