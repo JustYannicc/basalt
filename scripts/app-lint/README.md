@@ -4,14 +4,19 @@ This is Basalt's CI check for the [Executor app-authoring guide](https://executo
 The upstream contribution is tracked in [executor#2384](https://github.com/UsefulSoftwareCo/executor/issues/2384).
 
 ```sh
+# Use an existing prepared .upstream, or create a source-only checkout first.
+git init .upstream
+git -C .upstream fetch --depth=1 https://github.com/UsefulSoftwareCo/executor.git "$(node -p 'JSON.parse(require("node:fs").readFileSync("upstream.json", "utf8")).commit')"
 bun install --cwd scripts/app-lint --frozen-lockfile
 node scripts/app-lint/prepare-host.mjs
 node scripts/app-lint/check.mjs
 node --test scripts/app-lint/*.test.mjs
 ```
 
-`prepare-host.mjs` reads the public source at `upstream.json` and applies the carried
-framework-manifest patches. It uses `gh` authentication in CI. A fully prepared
+`prepare-host.mjs` reads the pinned manifest with `git show` from `.upstream` and applies
+the carried framework-manifest patches. It needs the pinned commit's Git objects, not
+a host installation or GitHub content API call. CI checks out that exact source pin
+with a sparse worktree. A fully prepared
 `.upstream/packages/apps/package.json` takes precedence when present. The lightweight
 manifest is bound to the upstream pin and all carried patch bytes.
 
