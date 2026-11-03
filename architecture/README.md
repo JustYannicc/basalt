@@ -2,6 +2,8 @@
 
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
+The tools gateway pins its authentication dependency overlays to Better Auth and core 1.7.5. Social token and signing-key fetches refuse redirects; administrator updates cannot replace a user ID, and banned users cannot acquire a new session through a context-free adapter call. These checks protect the identity that account and pool authority rely on, while the existing private SSO transport remains responsible for its own requests.
+
 Billing policy and SSO identity verification use separate public scenarios and fresh teams. SSO setup enables Enterprise without running the checkout and seat-synchronization proof. Combining those independent proofs spends the sign-in scenario's fixed 60-second deadline before its protocol completes.
 
 Native device approval lives at `/native/device` on the public app origin. The page uses the existing cookie-authenticated device and setup APIs, checks the native audience and scopes, and refreshes account identity and signed pool context before deciding. A decision with an unknown outcome sends the person back to their device without replaying the write. The generic `/device` flow and the `/setup` redirect keep their existing ownership.

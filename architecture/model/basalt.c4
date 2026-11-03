@@ -75,6 +75,10 @@ model {
         description "Member removal snapshots exact native links in the membership transaction. In Cloud, API or auth writes and the minute cron wake cleanup. GET, HEAD and OPTIONS do not; a read-only app query sent as POST does. Failed attempts back off, starting at two seconds. After transient lock contention, physical unlink can lag about 62 seconds with no backlog or intervening writes, while native pool use is vetoed before removal commits. Repeated failures retain links until recovery. Independent expiring claims recover interrupted cleanup without an old server acknowledging the new queue. A retained link timestamp prevents stale cleanup from removing a newer contribution. Jobs detach links and never delete saved credentials. Hosted migration 13 adds enqueue time and fixed error kinds; older rows keep unknown diagnostics. Only current app managers can read at most 100 remaining link snapshots, with explicit completeness."
         metadata { code ".upstream/apps/hosted/server/src/implementation/contributed-departure-queue.ts|.upstream/apps/hosted/server/src/implementation/contributed-departure-schema.ts" }
       }
+      serviceInstalls = part "Service installs" {
+        description "A trusted catalog ID and exact endpoint aliases identify one team service across native and MCP transports. Normal adds reuse its app; a deliberate separate instance keeps its own name. App creation claims the service inside the short SDK transaction, so concurrent requests return one app without replacing saved accounts or source. Only visible app IDs enter the service projection; existing pool records retain their explicit instance identity."
+        metadata { code ".upstream/apps/hosted/server/src/implementation/service-installs.ts|.upstream/apps/hosted/server/src/implementation/service-install-records.ts|.upstream/packages/catalog/src/implementation/services.ts" }
+      }
     }
 
     site = module "Public site" {
@@ -82,6 +86,7 @@ model {
       description "Home, privacy, terms and legal notice at the zone apex (signalbox.run), rendered from the brand configuration in a separate Worker. Static pages with no scripts, forms or third-party requests."
       metadata { code "src/site" }
     }
+
 
     catalog = module "Connector catalog" {
       #basalt #v1
