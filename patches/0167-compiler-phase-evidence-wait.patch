@@ -1,0 +1,240 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 994be69..92e8e89 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -35,6 +35,7 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
+ import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
++import { cloudLogActivity } from "./cloud-log-activity.ts";
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+ import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
+@@ -485,6 +486,7 @@ export const startCloudEnvironment = (input: {
+           );
+     if (built !== 0)
+       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
++    const logActivity = yield* cloudLogActivity;
+     const ownerScope = yield* Effect.scope;
+     const launch = Effect.gen(function* () {
+       yield* apiListener.unset();
+@@ -526,6 +528,7 @@ export const startCloudEnvironment = (input: {
+           ],
+           (line) =>
+             Effect.gen(function* () {
++              yield* logActivity.written;
+               const address = cloudApiAddress(line);
+               if (address !== undefined) yield* apiListener.set(address);
+               if (line.includes("[McpServer] Started in "))
+@@ -675,8 +678,11 @@ export const startCloudEnvironment = (input: {
+           origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
+         };
+       });
+-    const controls =
+-      alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
++    const controls = yield* cloudRuntimeControl(
++      fixtures,
++      logActivity,
++      alternatePort === undefined ? undefined : reconfigure,
++    );
+     return {
+       emulators,
+       fixtures: controls,
+diff --git a/e2e/support/cloud-log-activity.ts b/e2e/support/cloud-log-activity.ts
+new file mode 100644
+index 0000000..d70922b
+--- /dev/null
++++ b/e2e/support/cloud-log-activity.ts
+@@ -0,0 +1,29 @@
++/** A saved-line revision bridges the collector and its separate test process without polling. */
++import { Deferred, Effect, Schema } from "effect";
++
++export const CloudLogRevision = Schema.Struct({
++  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++});
++export const CloudLogWait = Schema.Struct({
++  after: Schema.optional(CloudLogRevision.fields.revision),
++});
++
++export const cloudLogActivity = Effect.gen(function* () {
++  let revision = 0;
++  let changed = yield* Deferred.make<void>();
++  return {
++    written: Effect.gen(function* () {
++      const next = yield* Deferred.make<void>();
++      const previous = changed;
++      changed = next;
++      revision++;
++      yield* Deferred.succeed(previous, undefined);
++    }),
++    wait: (after?: number) =>
++      Effect.suspend(() =>
++        after === undefined || revision > after
++          ? Effect.succeed({ revision })
++          : Deferred.await(changed).pipe(Effect.map(() => ({ revision }))),
++      ),
++  };
++});
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+index ea91f4c..6cd46de 100644
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -11,6 +11,7 @@ import {
+ } from "effect/http";
+ import { createServer } from "node:http";
+ import type { FixtureControl } from "../sdk/contracts.ts";
++import { CloudLogWait, type cloudLogActivity } from "./cloud-log-activity.ts";
+
+ const Change = Schema.Struct({
+   binding: Schema.Literals([
+@@ -27,10 +28,11 @@ const Change = Schema.Struct({
+   ]),
+ });
+
+-/** Preserve the existing fixture capability while adding one fixed local runtime operation. */
++/** Preserve fixture capabilities while controlling only the runner-owned process and its saved log. */
+ export const cloudRuntimeControl = <A, E>(
+   fixtures: typeof FixtureControl.Type,
+-  change: (binding: typeof Change.Type.binding) => Effect.Effect<A, E>,
++  log: Effect.Success<typeof cloudLogActivity>,
++  change?: (binding: typeof Change.Type.binding) => Effect.Effect<A, E>,
+ ) =>
+   Effect.gen(function* () {
+     const http = yield* HttpClient.HttpClient;
+@@ -39,7 +41,14 @@ export const cloudRuntimeControl = <A, E>(
+       const request = yield* HttpServerRequest.HttpServerRequest;
+       if (request.headers.authorization !== `Bearer ${Redacted.value(fixtures.token)}`)
+         return HttpServerResponse.empty({ status: 401 });
++      if (request.url === "/runtime/cloud-log" && request.method === "POST") {
++        const input = yield* request.json.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(CloudLogWait)),
++        );
++        return HttpServerResponse.jsonUnsafe(yield* log.wait(input.after));
++      }
+       if (request.url === "/runtime/database-binding" && request.method === "POST") {
++        if (change === undefined) return HttpServerResponse.empty({ status: 404 });
+         const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
+         if (changing) return HttpServerResponse.empty({ status: 409 });
+         changing = true;
+diff --git a/e2e/support/compiler-phase-evidence.ts b/e2e/support/compiler-phase-evidence.ts
+index 76859ef..035c73f 100644
+--- a/e2e/support/compiler-phase-evidence.ts
++++ b/e2e/support/compiler-phase-evidence.ts
+@@ -1,5 +1,8 @@
+ /** Read the runner's retained log independently of completed compiler spans. */
+ import { Effect, FileSystem, Option, Schema } from "effect";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { FixtureFailed } from "../sdk/fixtures.ts";
++import { CloudLogRevision } from "./cloud-log-activity.ts";
+ import { Target } from "./platform.ts";
+ import { createHash } from "node:crypto";
+
+@@ -25,6 +28,7 @@ const Phase = Schema.Struct({
+ export const compilerPhaseEvidence = (
+   traceId: string,
+   files: ReadonlyArray<{ readonly path: string; readonly content: string }>,
++  until: (typeof Phase.Type)["phase"] = "replied",
+ ) =>
+   Effect.gen(function* () {
+     const sourceDigest = createHash("sha256")
+@@ -39,30 +43,61 @@ export const compilerPhaseEvidence = (
+       .digest("hex");
+     const target = yield* Target;
+     const fs = yield* FileSystem.FileSystem;
+-    const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
+-    const records = text.split("\n").flatMap((line) => {
+-      const start = line.indexOf('{"type":"executor.compiler.phase"');
+-      if (start < 0) return [];
+-      let value: unknown;
+-      try {
+-        value = JSON.parse(line.slice(start));
+-      } catch {
+-        return [];
+-      }
+-      const parsed = Schema.decodeUnknownOption(Phase)(value);
+-      if (
+-        Option.isNone(parsed) ||
+-        parsed.value.traceId !== traceId ||
+-        value === null ||
+-        typeof value !== "object"
+-      )
+-        return [];
+-      return [{ record: parsed.value, keys: Object.keys(value).sort() }];
+-    });
+-    const attempts = new Set(
+-      records
+-        .filter(({ record }) => record.sourceDigest === sourceDigest)
+-        .map(({ record }) => record.attempt),
+-    );
+-    return records.filter(({ record }) => attempts.has(record.attempt));
++    const file = `${target.directory}/cloud.log`;
++    const http = yield* HttpClient.HttpClient;
++    const fixtures = target.fixtures;
++    if (fixtures === undefined) return yield* Effect.die("Managed Cloud log control required");
++    const logRevision = (after?: number) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.post(
++            `${fixtures.origin}/runtime/cloud-log`,
++          ).pipe(
++            HttpClientRequest.bearerToken(fixtures.token),
++            HttpClientRequest.bodyJson(after === undefined ? {} : { after }),
++          );
++          const response = yield* http.execute(request);
++          if (response.status !== 200)
++            return yield* new FixtureFailed({
++              operation: "Cloud log wait",
++              status: response.status,
++            });
++          return yield* response.json.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(CloudLogRevision)),
++            Effect.map(({ revision }) => revision),
++          );
++        }),
++      );
++    // Capture the revision before reading. A later append remains visible even before the wait starts.
++    let revision = yield* logRevision();
++    for (;;) {
++      const text = yield* fs.readFileString(file);
++      const records = text.split("\n").flatMap((line) => {
++        const start = line.indexOf('{"type":"executor.compiler.phase"');
++        if (start < 0) return [];
++        let value: unknown;
++        try {
++          value = JSON.parse(line.slice(start));
++        } catch {
++          return [];
++        }
++        const parsed = Schema.decodeUnknownOption(Phase)(value);
++        if (
++          Option.isNone(parsed) ||
++          parsed.value.traceId !== traceId ||
++          value === null ||
++          typeof value !== "object"
++        )
++          return [];
++        return [{ record: parsed.value, keys: Object.keys(value).sort() }];
++      });
++      const attempts = new Set(
++        records
++          .filter(({ record }) => record.sourceDigest === sourceDigest)
++          .map(({ record }) => record.attempt),
++      );
++      const matching = records.filter(({ record }) => attempts.has(record.attempt));
++      if (matching.some(({ record }) => record.phase === until)) return matching;
++      revision = yield* logRevision(revision);
++    }
+   });
+diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
+index c66a262..21a597a 100644
+--- a/e2e/tests/cloud-compiler.spec.ts
++++ b/e2e/tests/cloud-compiler.spec.ts
+@@ -367,7 +367,7 @@ export default defineApp({}, {tools: router({
+           });
+           expect(elapsed).toBeGreaterThanOrEqual(50_000);
+           expect(elapsed).toBeLessThan(58_000);
+-          const trail = yield* compilerPhaseEvidence(traceId, stalledFiles);
++          const trail = yield* compilerPhaseEvidence(traceId, stalledFiles, "dependencies");
+           yield* evidence.json("compiler-deadline-phases.json", trail);
+           const phases = trail.map(({ record }) => record.phase);
+           expect(phases).toContain("received");
