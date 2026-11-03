@@ -169,10 +169,6 @@ jobs:
           bun run e2e:cloud --test-name
           "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app|^invitation roles cannot grant|^organization admins who manage an app"
           --workers 1
-      - name: Verify account deletion against concurrent OAuth renewal
-        run: node scripts/oauth-removal-tests/prove.ts
-      - name: Verify discarded rotated refresh revocation after account deletion
-        run: node scripts/oauth-discard-tests/prove.ts
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -180,6 +176,40 @@ jobs:
         if: always()
         with:
           name: host-managed-accounts-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  oauth-account-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated OAuth test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify account deletion against concurrent OAuth renewal
+        timeout-minutes: 5
+        run: node scripts/oauth-removal-tests/prove.ts
+      - name: Verify discarded rotated refresh revocation after account deletion
+        timeout-minutes: 5
+        run: node scripts/oauth-discard-tests/prove.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oauth-account-regressions-e2e
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
