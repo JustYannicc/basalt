@@ -13,7 +13,7 @@ env:
 
 jobs:
   client-connection:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-connection,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-mobile,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +53,7 @@ jobs:
             platform: win
           - os: ubuntu-latest
             platform: linux
-    runs-on: ${{ matrix.platform == 'linux' && vars.BASALT_CI_RUNNER_HEAVY || matrix.os }}
+    runs-on: ${{ matrix.platform == 'linux' && contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-desktop,') && 'boat' || matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',client-native-product,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
             .generated/native-mobile-*/failure*.txt
           if-no-files-found: warn
   slack-health:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',slack-health,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -133,7 +133,7 @@ jobs:
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
   host-managed-accounts:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',host-managed-accounts,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +190,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',oauth-account-regressions,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -224,7 +224,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-account-recovery,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -264,7 +264,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   sso-service-binding:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',sso-service-binding,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -295,7 +295,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -342,7 +342,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-migrations,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -379,11 +379,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
+      max-parallel: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
       matrix:
         include:
           - scope: diagnostics
@@ -434,7 +434,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',compiler-diagnostics,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -466,7 +466,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   human-in-the-loop:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',human-in-the-loop,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -511,7 +511,7 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',contributed-accounts,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -558,7 +558,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',personal-data-reporting,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -597,7 +597,7 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-inventory,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -627,7 +627,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   dashboard-batch:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',dashboard-batch,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -688,7 +688,7 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   gitlab-connectors:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',gitlab-connectors,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -720,7 +720,7 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
   mcp-apps:
-    runs-on: ubuntu-latest
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',mcp-apps,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -913,7 +913,7 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ${{ contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',account-acquisition,') && 'boat' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
