@@ -362,7 +362,7 @@ jobs:
         timeout-minutes: 7
         run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Verify migration ownership through signed apply verification and replay
-        timeout-minutes: 5
+        timeout-minutes: 9
         run: node scripts/production-ops/prove-scope.ts
       - uses: actions/upload-artifact@v4
         if: always()
