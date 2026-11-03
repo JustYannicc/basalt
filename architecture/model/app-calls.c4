@@ -1,8 +1,8 @@
 model {
   extend basalt.toolsGateway {
     appCalls = part "App dependency calls" {
-      description "Saved personal or shared dependency connections bind one exact target app instance and account selection. The host rechecks current authority and calls the ordinary native tool path. Only queries are enabled in the first slice; mutation calls return effects_unavailable. Encrypted effect receipts reserve one host operation identity, retain completed results and close expired or uncertain reservations without dispatch takeover."
-      metadata { code ".upstream/packages/sdk/src/implementation/app-calls.ts|.upstream/packages/sdk/src/implementation/app-connections.ts|.upstream/packages/sdk/src/implementation/app-call-receipts.ts" }
+      description "Saved personal or shared dependency connections bind one exact target app instance and account selection. The host rechecks current authority and calls the ordinary native tool path. A trusted configuration callback runs only after a successful consumed SDK approval; it attaches or revokes an encrypted confirmation bound to current connection and source/target versions. Native dispatch consults host policy only after decoding and only to satisfy user-approval; denials and policy failures remain authoritative. Only queries are enabled in the first slice; mutation calls return effects_unavailable. Encrypted effect receipts reserve one host operation identity, retain completed results and close expired or uncertain reservations without dispatch takeover."
+      metadata { code ".upstream/packages/sdk/src/implementation/app-calls.ts|.upstream/packages/sdk/src/implementation/app-connections.ts|.upstream/packages/sdk/src/implementation/app-call-receipts.ts|.upstream/packages/sdk/src/implementation/app-confirmations.ts" }
     }
   }
 }
