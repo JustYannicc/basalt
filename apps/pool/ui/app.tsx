@@ -28,9 +28,10 @@ export function App({ api }: { api: PoolApi }) {
     accountsReady.current = true;
     // Document load does not prove the account list or empty result has committed.
     const name = "basalt:pool-accounts-ready";
-    performance.mark(name, { detail: { source: view.reading?.source ?? "live" } });
+    const source = view.reading?.source ?? "live";
+    performance.mark(name, { detail: { source } });
     if (window.parent !== window)
-      window.parent.postMessage({ name, version: 1 }, new URL(poolOrigin).origin);
+      window.parent.postMessage({ name, version: 2, snapshot: source === "snapshot" }, new URL(poolOrigin).origin);
   }, [view, measurable]);
   const now = useNow();
   const [removeError, setRemoveError] = useState<string>();
