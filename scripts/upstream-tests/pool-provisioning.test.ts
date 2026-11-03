@@ -167,7 +167,19 @@ const fixture = <A>(
               scope: "app",
               cardinality: "one",
               definition: {
-                auth: { token: { type: "secrets", provisioned: poolProvisioned } },
+                name: "Pool",
+                auth: {
+                  token: {
+                    type: "secrets",
+                    label: "Pool access",
+                    ...(poolProvisioned ? { provisioned: true } : {}),
+                    fields: {
+                      type: "object",
+                      properties: { token: { type: "string", minLength: 1 } },
+                      required: ["token"],
+                    },
+                  },
+                },
               },
             },
           },

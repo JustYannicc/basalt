@@ -5,7 +5,7 @@
   "license": "MIT",
   "files": {
     "index.ts": "774e5ce1c1c202a682e24cb35bdca893d748624b4c9efcd6640a7a3d7eea53e5",
-    "package.json": "46187a3b15d071bb1820117f4898e8bf225783c31fc1698cd508f0414795bba5",
+    "package.json": "156c4f9270b4cfba3509162933e5ae1d7a9e72c8a76fe76cf4c4ac27bec64b7c",
     "provider.ts": "0cbd03e63aeebbfbd41e23fb0cff11f4c950078544a37b8ab2e4f281a96a0d4b",
     "queries.ts": "61ab5688adc8a19ebfd2779cb65bfeac768684b2723fe116cf91a938e1dd3778",
     "configuration.ts": "190d47f9f198c4b524588f437e294f2dabae2cc6ab8953023733ec7ee3516c39",
@@ -15,7 +15,7 @@
     "api-coverage.json": "8811053d7885c0b5cdeee1702ef4558d8990d24e9b2170a250b6f7463431f149",
     "README.md": "4b8c82e23da6464bb255381dafafb97863fb7fa049f68c52d5ef32a0a0d5138f"
   },
-  "snapshotSha256": "b534c0aa6b16dcd58c2164a417f8dbae593bd1f5802e0359aff0990b6a3a09c8",
+  "snapshotSha256": "e33d12618f882849cd3b9dca91e121e9cdeeb1a221ab8cc01b1026ef723d8adb",
   "publicSource": {
     "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
     "files": {
@@ -25,7 +25,7 @@
   },
   "localPatch": {
     "path": "source.patch",
-    "sha256": "9514479028eab0a7c1b12a019ffc6ef261008316444a112c96ee5ddc29d4657f"
+    "sha256": "f2c122bca8af2c7c33a6631675d46b0db5277d9be854ab0d6e36d1b3d57f5ad4"
   },
   "capabilities": {
     "checkedAt": "2026-10-31",
