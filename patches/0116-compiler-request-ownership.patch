@@ -119,17 +119,17 @@ diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/host
      );
  };
 diff --git a/bun.lock b/bun.lock
-index dfe9d5ef..e91edefb 100644
+index dfe9d5ef..4529c1e5 100644
 --- a/bun.lock
 +++ b/bun.lock
-@@ -862,6 +862,7 @@
-     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
+@@ -863,6 +863,7 @@
      "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
      "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
-+    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
      "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
++    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
      "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
      "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
+     "effect@4.0.1": "patches/effect@4.0.1.patch",
 diff --git a/package.json b/package.json
 index 3fe21ca0..4ea4aa7e 100644
 --- a/package.json
