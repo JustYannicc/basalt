@@ -180,7 +180,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^native pool usage (renders|preserves)"
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^native pool usage (renders|preserves)"
           --workers 1
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
@@ -194,6 +194,15 @@ jobs:
           bun run e2e:cloud --test-name
           "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app|^invitation roles cannot grant|^organization admins who manage an app"
           --workers 1
+      - name: Verify shared account families and consumer capability refusals
+        working-directory: .upstream
+        run: >-
+          bun run e2e:local --test-name
+          '^A declared family reuses|^Consumer capability requirements block|^Family metadata preserves retained|^Exact account reuse preserves each app'
+          --workers 1
+      - name: Verify one saved provider account supplies two native pools
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies' --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -201,6 +210,46 @@ jobs:
         if: always()
         with:
           name: host-managed-accounts-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  google-account-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Prepare the pinned Google recovery runtime
+        timeout-minutes: 2
+        run: npm run prepare:upstream
+      - name: Build the isolated Google recovery test assets
+        timeout-minutes: 2
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the Google recovery browser engine
+        timeout-minutes: 1
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify Google recovery through signed Cloud operations
+        timeout-minutes: 6
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+        run: bun run e2e:cloud --test-name '^Google identity recovery (binds exact grants|refuses a plan after)' --workers 1
+      - name: Upload Google recovery evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 1
+        with:
+          name: google-account-recovery-e2e
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
