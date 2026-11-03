@@ -36,7 +36,7 @@ diff --git a/e2e/support/cloud-startup-output.ts b/e2e/support/cloud-startup-out
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/cloud-startup-output.ts
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,91 @@
 +import { Deferred, Effect, FileSystem, Queue, Schema, Stream } from "effect";
 +import type { ChildProcessSpawner } from "effect/process";
 +import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
@@ -48,6 +48,20 @@ new file mode 100644
 +    return `Cloud test environment failed: ${this.operation}`;
 +  }
 +}
++
++export const cloudStartupSecrets = (
++  env: Readonly<Record<string, string | undefined>>,
++  services: Readonly<
++    Record<string, { readonly clientSecret: string } | { readonly token: string }>
++  >,
++) => [
++  ...Object.entries(env)
++    .filter(([name]) => /SECRET|TOKEN|PASSWORD|KEY/u.test(name))
++    .flatMap(([, value]) => (value === undefined ? [] : [value])),
++  ...Object.values(services).map((service) =>
++    "clientSecret" in service ? service.clientSecret : service.token,
++  ),
++];
 +
 +/** One reader owns both pipes, the saved log, and the failure text readiness reports. */
 +export const captureCloudStartup = (
@@ -117,17 +131,21 @@ new file mode 100644
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -24,7 +24,8 @@
+@@ -24,7 +24,12 @@
    v1DatabaseWriter,
  } from "./cloud-postgres.ts";
  import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 -import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
 +import { outputLines } from "./alchemy-dev-output.ts";
-+import { captureCloudStartup, CloudStartFailed } from "./cloud-startup-output.ts";
++import {
++  captureCloudStartup,
++  CloudStartFailed,
++  cloudStartupSecrets,
++} from "./cloud-startup-output.ts";
  import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
  import { roleHost } from "./role-hosts.ts";
  import { freePort } from "./ports.ts";
-@@ -110,14 +111,6 @@
+@@ -110,14 +115,6 @@
      ),
    };
  };
@@ -142,7 +160,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
  
  /**
   * Starts on this host took up to 324 s from `alchemy dev` to a ready API Worker, under load 60
-@@ -499,14 +492,25 @@
+@@ -499,14 +496,21 @@
          );
          // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
          // run nothing will edit the sources it waits on, so the Worker that failed never starts.
@@ -161,11 +179,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 +            databasePassword,
 +            v1ReaderPassword,
 +            v1WriterPassword,
-+            ...Object.entries(env)
-+              .filter(([name]) =>
-+                /SECRET|TOKEN|PASSWORD|ENCRYPTION_KEY|MCP_SESSION_KEY/u.test(name),
-+              )
-+              .map(([, value]) => value),
++            ...cloudStartupSecrets(env, Redacted.value(fixture).services),
 +          ],
 +          (line) =>
 +            line.includes("[McpServer] Started in ")
@@ -224,11 +238,11 @@ diff --git a/e2e/tests/alchemy-dev-output.spec.ts b/e2e/tests/alchemy-dev-output
 +import { Deferred, Effect, FileSystem, Stream } from "effect";
  import { ChildProcess, ChildProcessSpawner } from "effect/process";
  import { isAlchemyDevFailure, outputLines } from "../support/alchemy-dev-output.ts";
-+import { captureCloudStartup } from "../support/cloud-startup-output.ts";
++import { captureCloudStartup, cloudStartupSecrets } from "../support/cloud-startup-output.ts";
  
  const applyFailed =
    "alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.";
-@@ -45,6 +46,86 @@
+@@ -45,6 +46,113 @@
  ];
  
  layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (it) => {
@@ -242,6 +256,24 @@ diff --git a/e2e/tests/alchemy-dev-output.spec.ts b/e2e/tests/alchemy-dev-output
 +        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
 +        const failed = yield* Deferred.make<void>();
 +        const secret = "synthetic-startup-secret";
++        const env = { POOL_APP_SIGNING_KEY: "synthetic-pool-key" };
++        const services = {
++          google: { clientSecret: "synthetic-google-secret" },
++          github: { clientSecret: "synthetic-github-secret" },
++          mail: { token: "synthetic-mail-token" },
++          company: { token: "synthetic-company-token" },
++          billing: { token: "synthetic-billing-token" },
++          workos: { token: "synthetic-workos-token" },
++        };
++        const credentials = [
++          env.POOL_APP_SIGNING_KEY,
++          services.google.clientSecret,
++          services.github.clientSecret,
++          services.mail.token,
++          services.company.token,
++          services.billing.token,
++          services.workos.token,
++        ];
 +        const child = yield* processes.spawn(
 +          ChildProcess.make("node", [
 +            "--input-type=module",
@@ -252,15 +284,20 @@ diff --git a/e2e/tests/alchemy-dev-output.spec.ts b/e2e/tests/alchemy-dev-output
 +            await new Promise(resolve => setImmediate(resolve));
 +            await write("stderr", "Error: synthetic planning cause\\n");
 +            await write("stdout", "resource: SyntheticWorker ${secret} #pair=${"a".repeat(64)}\\n");
++            await write("stdout", ${JSON.stringify(`credentials: ${credentials.join(" ")}\n`)});
 +            await write("stderr", ${JSON.stringify("    at synthetic-plan.ts:42")} + ${JSON.stringify(keepsWatching ? "\n" : "")});
 +            ${keepsWatching ? "setInterval(() => {}, 10000);" : "process.exitCode = 1;"}
 +          `,
 +          ]),
 +        );
-+        const output = yield* captureCloudStartup(child, file, [secret], (line) =>
-+          isAlchemyDevFailure(line)
-+            ? Deferred.succeed(failed, undefined).pipe(Effect.asVoid)
-+            : Effect.void,
++        const output = yield* captureCloudStartup(
++          child,
++          file,
++          [secret, ...cloudStartupSecrets(env, services)],
++          (line) =>
++            isAlchemyDevFailure(line)
++              ? Deferred.succeed(failed, undefined).pipe(Effect.asVoid)
++              : Effect.void,
 +        );
 +        yield* Deferred.await(failed);
 +        const result = yield* Effect.result(
@@ -284,6 +321,10 @@ diff --git a/e2e/tests/alchemy-dev-output.spec.ts b/e2e/tests/alchemy-dev-output
 +        expect(log).not.toContain("a".repeat(64));
 +        expect(result.failure.message).not.toContain(secret);
 +        expect(result.failure.message).not.toContain("a".repeat(64));
++        for (const credential of credentials) {
++          expect(log).not.toContain(credential);
++          expect(result.failure.message).not.toContain(credential);
++        }
 +        if (keepsWatching) expect(yield* child.isRunning).toBe(true);
 +      }).pipe(Effect.scoped),
 +    );
