@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compiler-phase-evidence-wait",
+  "file": "0167-compiler-phase-evidence-wait.patch",
+  "content_sha256": "6bd315a0db1dcaae33681b7b9d72d3167db15539de10118f22ef84c19fd9f720",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,0 +1,163 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/analytics.tsx b/apps/hosted/cloud/web/src/implementation/analytics.tsx
+--- a/apps/hosted/cloud/web/src/implementation/analytics.tsx
++++ b/apps/hosted/cloud/web/src/implementation/analytics.tsx
+@@ -1,6 +1,7 @@
++import { createIsomorphicFn } from "@tanstack/react-start";
+ import { browserPageId, BrowserOperationFailure } from "@executor-js/telemetry/browser";
+ import { documentBuild } from "@executor-js/dashboard-start/document-build";
+-/** Cloud-only product analytics, sharing the marketing site's PostHog project. */
++/** Client-only exports let Start remove the SDK before bundling the dashboard renderer. */
+ import posthog from "posthog-js";
+ import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
+ import { useAtomValue } from "@effect/atom-react";
+@@ -21,9 +22,9 @@
+ const replayAllowed = () => identified && replayPageAllowed(new URL(location.href));
+
+ /** Stop before route changes so login, consent and private settings never enter the recorder. */
+-export const pauseReplay = () => {
++export const pauseReplay = createIsomorphicFn().client(() => {
+   if (started) posthog.stopSessionRecording();
+-};
++});
+ const updateReplay = () => {
+   if (!started) return;
+   if (!replayAllowed()) {
+@@ -66,7 +67,7 @@
+ });
+
+ /** Initialize explicit event capture at the browser entry point. */
+-export const startAnalytics = () => {
++export const startAnalytics = createIsomorphicFn().client(() => {
+   if (started) return;
+   const key: unknown = import.meta.env.VITE_POSTHOG_KEY;
+   if (typeof key !== "string" || key.length === 0) return;
+@@ -156,7 +157,7 @@
+         ...pageContext(location.pathname, location.search),
+       });
+   });
+-};
++});
+
+ /** Route categories avoid high-cardinality customer names, resource IDs and capability values. */
+ export const pageContext = (pathname: string, search = "") => {
+@@ -209,53 +210,55 @@
+ };
+
+ /** Record resolved SPA navigation without OAuth codes, search parameters or fragments. */
+-export const capturePageview = (pathname: string) => {
++export const capturePageview = createIsomorphicFn().client((pathname: string) => {
+   updateReplay();
+   if (started)
+     posthog.capture("$pageview", {
+       ...pageContext(pathname, location.search),
+     });
+-};
++});
+
+ /** Record that the support dialog opened. */
+-export const captureSupportOpened = () => {
++export const captureSupportOpened = createIsomorphicFn().client(() => {
+   if (started) posthog.capture("support_opened", pageContext(location.pathname, location.search));
+-};
++});
+
+ /** Record which fixed support channel was followed. */
+-export const captureSupportLinkClicked = (label: SupportLink) => {
++export const captureSupportLinkClicked = createIsomorphicFn().client((label: SupportLink) => {
+   if (started)
+     posthog.capture("support_link_clicked", {
+       label,
+       ...pageContext(location.pathname, location.search),
+     });
+-};
++});
+
+ /** Identify only confirmed sessions; reset persisted identity after confirmed sign-out. */
+-export function AnalyticsIdentity() {
+-  const session = useAtomValue(sessionAtom);
+-  useEffect(() => {
+-    if (!started) return;
+-    if (!AsyncResult.isSuccess(session) || session.waiting) {
+-      identified = false;
+-      pauseReplay();
+-      return;
+-    }
+-    identified = session.value !== null;
+-    if (session.value !== null) {
+-      const previousUser = posthog.get_property("$user_id");
+-      if (previousUser !== undefined && previousUser !== session.value.user.id) {
++export const AnalyticsIdentity = createIsomorphicFn()
++  .server(() => null)
++  .client(function AnalyticsIdentity() {
++    const session = useAtomValue(sessionAtom);
++    useEffect(() => {
++      if (!started) return;
++      if (!AsyncResult.isSuccess(session) || session.waiting) {
++        identified = false;
+         pauseReplay();
++        return;
++      }
++      identified = session.value !== null;
++      if (session.value !== null) {
++        const previousUser = posthog.get_property("$user_id");
++        if (previousUser !== undefined && previousUser !== session.value.user.id) {
++          pauseReplay();
++          posthog.reset();
++          posthog.register(deploymentProperties());
++        }
++        if (posthog.get_distinct_id() !== session.value.user.id)
++          posthog.identify(session.value.user.id);
++      } else if (posthog.get_property("$user_id")) {
+         posthog.reset();
+         posthog.register(deploymentProperties());
+       }
+-      if (posthog.get_distinct_id() !== session.value.user.id)
+-        posthog.identify(session.value.user.id);
+-    } else if (posthog.get_property("$user_id")) {
+-      posthog.reset();
+-      posthog.register(deploymentProperties());
+-    }
+-    updateReplay();
+-  }, [session]);
+-  return null;
+-}
++      updateReplay();
++    }, [session]);
++    return null;
++  });
+diff --git a/e2e/tests/product-analytics.spec.ts b/e2e/tests/product-analytics.spec.ts
+--- a/e2e/tests/product-analytics.spec.ts
++++ b/e2e/tests/product-analytics.spec.ts
+@@ -18,6 +18,19 @@
+   properties: Schema.Record(Schema.String, Schema.Json),
+ });
+ const Batch = Schema.Struct({ batch: Schema.Array(Event) });
++/** Replayed text can span sibling text nodes, as a heading containing the product name does. */
++const replayText = (value: Schema.Json): string => {
++  if (Array.isArray(value)) return value.map(replayText).join("");
++  if (value === null || typeof value !== "object") return "";
++  if ("textContent" in value && typeof value.textContent === "string") return value.textContent;
++  return Object.values(value).map(replayText).join("");
++};
++const replayHeadings = (value: Schema.Json): readonly string[] => {
++  if (Array.isArray(value)) return value.flatMap(replayHeadings);
++  if (value === null || typeof value !== "object") return [];
++  if ("tagName" in value && value.tagName === "h1") return [replayText(value)];
++  return Object.values(value).flatMap(replayHeadings);
++};
+ const isSnapshot = (event: Schema.Json) =>
+   event !== null &&
+   typeof event === "object" &&
+@@ -474,9 +487,10 @@
+         );
+
+         const guide = snapshots().length;
+-        yield* open(`${setup}/assistant?assistant=claude`, "Add Executor to Claude");
++        const guideHeading = "Add Executor to Claude";
++        yield* open(`${setup}/assistant?assistant=claude`, guideHeading);
+         yield* recordedAfter(guide);
+-        expect(recorded(guide)).toContain("Add Executor to");
++        expect(replayHeadings(snapshots().slice(guide))).toContain(guideHeading);
+
+         yield* markExcluded(
+           `${setup}/accounts?code=PRIVATE_OAUTH_CODE&state=PRIVATE_OAUTH_STATE`,

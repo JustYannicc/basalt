@@ -10,7 +10,7 @@ export function withMiroCapabilities(feed: Feed): Feed {
     if (entry.package !== miroSource.package) throw new Error("Miro catalog package changed");
     return {
       ...entry,
-      description: "Miro board content, team and organization administration, exports, and audit APIs; some require Enterprise and Company Admin.",
+      description: "Miro boards and everything on them, plus board exports, teams and organization administration.",
       auth: [
         { method: "oauth", kind: "oauth2", label: "Connect your Miro account" },
         { method: "token", kind: "secrets", label: "Advanced: access token" },

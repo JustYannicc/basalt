@@ -1,0 +1,9 @@
+{
+  "identity": "executor-auth-security-hardening",
+  "file": "0138-auth-security-hardening.patch",
+  "content_sha256": "362f340ba842ea16cc10a2b0dff9c2999e670effa9eeed1d1a3455bec00fd13a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

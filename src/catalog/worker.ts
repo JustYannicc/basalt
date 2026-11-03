@@ -1,3 +1,4 @@
+import { withServiceIdentities } from "./service-identities.ts";
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
@@ -74,7 +75,7 @@ export async function handleCatalog(
           (entry) => !(entry.id === "google-maps" && entry.package === "@executor.sh/google-maps"),
         ),
       };
-      body = JSON.stringify(mergeFeed(feed, additions));
+      body = JSON.stringify(withServiceIdentities(mergeFeed(feed, additions)));
     } else {
       body = await response.text();
     }

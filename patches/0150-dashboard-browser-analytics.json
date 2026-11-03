@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-dashboard-browser-analytics",
+  "file": "0150-dashboard-browser-analytics.patch",
+  "content_sha256": "7144316bd5671d911cafbf8cbcac2ad54c4d30a2d540f4adf57185975ef59b03",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

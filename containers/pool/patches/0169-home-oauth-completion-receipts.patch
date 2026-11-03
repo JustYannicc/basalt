@@ -1,0 +1,636 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 37fad63..644adfc 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -2455,15 +2455,17 @@ Query parameters:
+ Example responses:
+ 
+ ```json
+-{ "status": "ok" }
++{ "status": "ok", "auth_id": "credential-uuid", "auth_ids": ["credential-uuid"] }
+ { "status": "wait" }
+ { "status": "error", "error": "Authentication failed" }
+ { "status": "error", "error": "unknown or expired state" }
+ ```
+ 
+-Unknown or expired state tokens return an error instead of being treated as completed. Completed sessions remain available as short-lived tombstones so the final poll can return `{ "status": "ok" }`; after the tombstone expires, the same state is treated as unknown.
++Unknown or expired state tokens return an error instead of being treated as completed. Completed sessions remain available as short-lived tombstones so the final poll can return success with the saved credential IDs; after the tombstone expires, the same state is treated as unknown.
++
++For plugin OAuth sessions, this route polls the Home-loaded plugin. When the plugin returns success, Home converts the returned auth data into DB-backed auth records, registers models for the auths, completes the OAuth session, and then returns success with the saved credential IDs.
+ 
+-For plugin OAuth sessions, this route polls the Home-loaded plugin. When the plugin returns success, Home converts the returned auth data into DB-backed auth records, registers models for the auths, completes the OAuth session, and then returns `{ "status": "ok" }`.
++Completed logins return `auth_ids`, the UUIDs of all credentials saved by that login. When exactly one credential was saved, `auth_id` is also present. These IDs can be used as channel group detail `auth_id` values. Home stores the result in the same database transaction as the credentials, so later polls and other Home nodes return the same IDs until the one-minute completion record expires. Plugin logins can produce multiple credentials, in which case the singular `auth_id` is omitted. Missing state, older completion records, pending logins, and failed logins do not return IDs. Completion records retain only credential IDs, with PKCE and token data cleared.
+ 
+ A missing `state` returns `200 {"status":"ok"}` and does not verify a login. A cancelled session returns `200 {"status":"error","error":"Authentication cancelled"}`. Invalid state syntax returns `400`.
+ 
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index 515ad4b..919eef9 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -2453,7 +2453,7 @@ Query 参数：
+ 输出示例：
+ 
+ ```json
+-{ "status": "ok" }
++{ "status": "ok", "auth_id": "credential-uuid", "auth_ids": ["credential-uuid"] }
+ { "status": "wait" }
+ { "status": "error", "error": "Authentication failed" }
+ { "status": "error", "error": "unknown or expired state" }
+@@ -2465,6 +2465,8 @@ Query 参数：
+ 
+ 未传 `state` 时返回 `200 {"status":"ok"}`，不能据此确认登录成功。已取消的会话返回 `200 {"status":"error","error":"Authentication cancelled"}`；state 格式不合法时返回 `400`。
+ 
++完成的登录在同一个数据库事务中保存凭证 ID。`auth_ids` 包含本次登录保存的所有凭证 UUID，可直接用作渠道组明细的 `auth_id`。仅保存一个凭证时，响应还包含 `auth_id`。这些字段在后续轮询和其他 Home 节点上保持可用，直到完成记录的一分钟有效期结束。未提供 state、旧的完成记录、等待或失败的登录不会返回凭证 ID。插件登录可能返回多个凭证，此时省略单数 `auth_id`。完成记录只保留凭证 ID，不保留 PKCE 或 token 数据。
++
+ ### GET/POST `/oauth/callback`
+ 
+ 此 v8 接口不要求管理密钥，通过数据库中待完成的 OAuth state 校验，仍受 Management API 可用性检查约束。v0 的 `POST /v0/management/oauth-callback` 仍要求管理认证。
+diff --git a/internal/cluster/management/oauth_claude_receipt_test.go b/internal/cluster/management/oauth_claude_receipt_test.go
+new file mode 100644
+index 0000000..41df1d0
+--- /dev/null
++++ b/internal/cluster/management/oauth_claude_receipt_test.go
+@@ -0,0 +1,185 @@
++package management
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/json"
++	"io"
++	"math/big"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"os"
++	"os/exec"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
++)
++
++// The normal Anthropic client, exchange and database path must produce a usable receipt.
++func TestClaudeOAuthCompletionReceipt(t *testing.T) {
++	if os.Getenv("HOME_CLAUDE_RECEIPT_FIXTURE") != "1" {
++		cmd := exec.Command(os.Args[0], "-test.run=^TestClaudeOAuthCompletionReceipt$", "-test.v")
++		cmd.Env = append(os.Environ(), "HOME_CLAUDE_RECEIPT_FIXTURE=1")
++		output, errRun := cmd.CombinedOutput()
++		t.Log(string(output))
++		if errRun != nil {
++			t.Fatal(errRun)
++		}
++		return
++	}
++	key, errKey := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if errKey != nil {
++		t.Fatal(errKey)
++	}
++	template := &x509.Certificate{
++		SerialNumber: big.NewInt(169), Subject: pkix.Name{CommonName: "OAuth fixture"},
++		DNSNames: []string{"api.anthropic.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
++		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
++		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
++	}
++	der, errCert := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
++	if errCert != nil {
++		t.Fatal(errCert)
++	}
++	cert, errParse := x509.ParseCertificate(der)
++	if errParse != nil {
++		t.Fatal(errParse)
++	}
++	roots := x509.NewCertPool()
++	roots.AddCert(cert)
++	// Force only this test's trust roots without changing the production TLS client.
++	t.Setenv("GODEBUG", "x509usefallbackroots=1")
++	x509.SetFallbackRoots(roots)
++	requests := make(chan map[string]string, 1)
++	tokenServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodPost || r.Host != "api.anthropic.com" || r.URL.Path != "/v1/oauth/token" {
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++		var body map[string]string
++		if errDecode := json.NewDecoder(r.Body).Decode(&body); errDecode != nil {
++			w.WriteHeader(http.StatusBadRequest)
++			return
++		}
++		requests <- body
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"access_token":"fixture-access","refresh_token":"fixture-refresh","expires_in":3600,"account":{"uuid":"fixture-account","email_address":"receipt@example.invalid"},"organization":{"uuid":"fixture-org","name":"Fixture"}}`)
++	}))
++	tokenServer.EnableHTTP2 = true
++	tokenServer.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
++	tokenServer.StartTLS()
++	defer tokenServer.Close()
++	proxy, errListen := net.Listen("tcp", "127.0.0.1:0")
++	if errListen != nil {
++		t.Fatal(errListen)
++	}
++	defer proxy.Close()
++	go func() {
++		conn, errAccept := proxy.Accept()
++		if errAccept != nil {
++			return
++		}
++		defer conn.Close()
++		greeting := make([]byte, 2)
++		if _, errRead := io.ReadFull(conn, greeting); errRead != nil {
++			return
++		}
++		methods := make([]byte, int(greeting[1]))
++		if _, errRead := io.ReadFull(conn, methods); errRead != nil {
++			return
++		}
++		_, _ = conn.Write([]byte{5, 0})
++		header := make([]byte, 5)
++		if _, errRead := io.ReadFull(conn, header); errRead != nil || header[3] != 3 {
++			return
++		}
++		destination := make([]byte, int(header[4])+2)
++		if _, errRead := io.ReadFull(conn, destination); errRead != nil || string(destination[:len(destination)-2]) != "api.anthropic.com" {
++			return
++		}
++		upstream, errDial := net.Dial("tcp", tokenServer.Listener.Addr().String())
++		if errDial != nil {
++			return
++		}
++		defer upstream.Close()
++		_, _ = conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 0})
++		done := make(chan struct{})
++		go func() { _, _ = io.Copy(upstream, conn); _ = upstream.Close(); close(done) }()
++		_, _ = io.Copy(conn, upstream)
++		_ = conn.Close()
++		<-done
++	}()
++	runtime, errRuntime := home.NewRuntime(&config.Config{AuthDir: t.TempDir(), SDKConfig: config.SDKConfig{ProxyURL: "socks5://" + proxy.Addr().String()}})
++	if errRuntime != nil {
++		t.Fatal(errRuntime)
++	}
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	repo := cluster.NewRepository(db)
++	h := NewHandler(repo, runtime, "127.0.0.1", 0)
++	router := gin.New()
++	router.GET("/oauth/auth-url", h.StartOAuthV8)
++	router.GET("/oauth/status", h.GetAuthStatusV8)
++	start := oauthStatusV8Request(t, router, "/oauth/auth-url?provider=claude")
++	state, ok := start["state"].(string)
++	if !ok || state == "" {
++		t.Fatal("login did not return state")
++	}
++	pending, errPending := repo.GetOAuthSession(t.Context(), state)
++	if errPending != nil || pending == nil {
++		t.Fatal("pending login is missing")
++	}
++	pendingData, errData := cluster.OAuthSessionData(pending)
++	if errData != nil {
++		t.Fatal(errData)
++	}
++	// The same synchronous worker used by the public callback runs the real token exchange.
++	h.processOAuthCallback("anthropic", state, "fixture-code")
++	select {
++	case request := <-requests:
++		if request["code"] != "fixture-code" || request["state"] != state || request["code_verifier"] != pendingData["code_verifier"] || request["grant_type"] != "authorization_code" {
++			t.Fatal("exchange did not preserve callback state and PKCE")
++		}
++	default:
++		t.Fatal("normal Anthropic client did not reach the fixture")
++	}
++	auths, errAuths := repo.ListAuths(t.Context())
++	if errAuths != nil || len(auths) != 1 {
++		t.Fatal("exchange did not commit exactly one credential")
++	}
++	credential, _, errCredential := repo.GetAuth(t.Context(), auths[0].ID)
++	if errCredential != nil || credential == nil {
++		t.Fatal("saved credential is missing")
++	}
++	if credential.Metadata["type"] != "claude" || credential.Metadata["access_token"] != "fixture-access" || credential.Metadata["refresh_token"] != "fixture-refresh" || credential.Metadata["email"] != "receipt@example.invalid" {
++		t.Fatal("normal exchange changed the stored Claude token shape")
++	}
++	expires, errExpires := time.Parse(time.RFC3339, credential.Metadata["expired"].(string))
++	if errExpires != nil || time.Until(expires) < 59*time.Minute {
++		t.Fatal("stored Claude expiry is missing or invalid")
++	}
++	reader := gin.New()
++	reader.GET("/oauth/status", NewHandler(cluster.NewRepository(db), nil, "127.0.0.1", 0).GetAuthStatusV8)
++	result := oauthStatusV8Request(t, reader, "/oauth/status?state="+url.QueryEscape(state))
++	want := map[string]any{"status": "ok", "auth_id": auths[0].ID, "auth_ids": []any{auths[0].ID}}
++	if !reflect.DeepEqual(result, want) {
++		t.Fatalf("completion receipt = %#v, want %#v", result, want)
++	}
++	complete, errComplete := repo.GetOAuthSession(t.Context(), state)
++	if errComplete != nil || complete == nil || strings.Contains(string(complete.Data), "fixture-") || strings.Contains(string(complete.Data), "code_verifier") {
++		t.Fatal("completion record retained pending secrets")
++	}
++	t.Log("Claude token exchange committed one credential and returned its exact ID through a fresh Home handler")
++}
+diff --git a/internal/cluster/management/oauth_login.go b/internal/cluster/management/oauth_login.go
+index 5f61327..2cfa470 100644
+--- a/internal/cluster/management/oauth_login.go
++++ b/internal/cluster/management/oauth_login.go
+@@ -347,7 +347,7 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
+ 		return
+ 	}
+ 	if strings.EqualFold(session.Status, "complete") {
+-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
++		h.respondCompletedOAuthStatus(c, session)
+ 		return
+ 	}
+ 	if strings.EqualFold(session.Status, "error") {
+diff --git a/internal/cluster/management/oauth_status_v8.go b/internal/cluster/management/oauth_status_v8.go
+new file mode 100644
+index 0000000..04a7d04
+--- /dev/null
++++ b/internal/cluster/management/oauth_status_v8.go
+@@ -0,0 +1,37 @@
++package management
++
++import (
++	"encoding/json"
++	"net/http"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++const oauthStatusV8Key = "home.oauth-status-v8"
++
++// GetAuthStatusV8 includes the saved credential IDs in a completed login result.
++func (h *Handler) GetAuthStatusV8(c *gin.Context) {
++	c.Set(oauthStatusV8Key, true)
++	h.GetAuthStatus(c)
++}
++
++func (h *Handler) respondCompletedOAuthStatus(c *gin.Context, session *cluster.OAuthSessionRecord) {
++	payload := gin.H{"status": "ok"}
++	if c.GetBool(oauthStatusV8Key) && len(session.Data) > 0 {
++		var result struct {
++			AuthIDs []string `json:"auth_ids"`
++		}
++		if errUnmarshal := json.Unmarshal(session.Data, &result); errUnmarshal != nil {
++			respondError(c, http.StatusInternalServerError, "oauth_session_failed", errUnmarshal)
++			return
++		}
++		if len(result.AuthIDs) > 0 {
++			payload["auth_ids"] = result.AuthIDs
++			if len(result.AuthIDs) == 1 {
++				payload["auth_id"] = result.AuthIDs[0]
++			}
++		}
++	}
++	c.JSON(http.StatusOK, payload)
++}
+diff --git a/internal/cluster/management/oauth_status_v8_test.go b/internal/cluster/management/oauth_status_v8_test.go
+new file mode 100644
+index 0000000..a56a2db
+--- /dev/null
++++ b/internal/cluster/management/oauth_status_v8_test.go
+@@ -0,0 +1,183 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestOAuthStatusV8ReturnsPersistedCredentialID(t *testing.T) {
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	ctx := context.Background()
++	repo := cluster.NewRepository(db)
++	session, errSession := cluster.NewOAuthSessionRecord("kimi-ai", "saved-login", map[string]any{"code_verifier": "private-verifier"}, time.Now())
++	if errSession != nil {
++		t.Fatal(errSession)
++	}
++	if errUpsert := repo.UpsertOAuthSession(ctx, session); errUpsert != nil {
++		t.Fatal(errUpsert)
++	}
++	h := NewHandler(repo, nil, "127.0.0.1", 0)
++	storeCtx := context.WithValue(ctx, oauthSessionStateKey{}, session.State)
++	if errStore := h.storeOAuthMetadataWithContext(storeCtx, map[string]any{
++		"type": "kimi-ai", "access_token": "private-access", "refresh_token": "private-refresh",
++	}, "fixture.json"); errStore != nil {
++		t.Fatal(errStore)
++	}
++	auths, errAuths := repo.ListAuths(ctx)
++	if errAuths != nil || len(auths) != 1 {
++		t.Fatalf("saved credentials = %d, error = %v", len(auths), errAuths)
++	}
++	// Read through a new handler and repository, as another Home node would.
++	reader := NewHandler(cluster.NewRepository(db), nil, "127.0.0.1", 0)
++	engine := gin.New()
++	engine.GET("/v8/management/oauth/status", reader.GetAuthStatusV8)
++	engine.GET("/v0/management/get-auth-status", reader.GetAuthStatus)
++	for range 2 {
++		body := oauthStatusV8Request(t, engine, "/v8/management/oauth/status?state="+session.State)
++		want := map[string]any{"status": "ok", "auth_id": auths[0].ID, "auth_ids": []any{auths[0].ID}}
++		if !reflect.DeepEqual(body, want) {
++			t.Fatalf("status = %#v, want %#v", body, want)
++		}
++	}
++	legacy := oauthStatusV8Request(t, engine, "/v0/management/get-auth-status?state="+session.State)
++	if !reflect.DeepEqual(legacy, map[string]any{"status": "ok"}) {
++		t.Fatalf("legacy status changed: %#v", legacy)
++	}
++	completed, errCompleted := repo.GetOAuthSession(ctx, session.State)
++	if errCompleted != nil || completed == nil {
++		t.Fatalf("completed session missing: %v", errCompleted)
++	}
++	if strings.Contains(string(completed.Data), "private-") {
++		t.Fatal("completed session retained OAuth secrets")
++	}
++	group, errGroup := repo.CreateChannelGroup(ctx, "fixture", false)
++	if errGroup != nil {
++		t.Fatal(errGroup)
++	}
++	if _, errDetail := repo.CreateChannelGroupDetail(ctx, group.ID, auths[0].ID); errDetail != nil {
++		t.Fatalf("returned ID cannot be assigned to a channel group: %v", errDetail)
++	}
++	if errExpire := db.Model(&cluster.OAuthSessionRecord{}).Where("state = ?", session.State).
++		Update("expires_at", time.Now().Add(-time.Minute)).Error; errExpire != nil {
++		t.Fatal(errExpire)
++	}
++	expired := oauthStatusV8Request(t, engine, "/v8/management/oauth/status?state="+session.State)
++	if expired["status"] != "error" || expired["auth_id"] != nil || expired["auth_ids"] != nil {
++		t.Fatalf("expired result = %#v", expired)
++	}
++}
++
++func TestOAuthStatusV8MultipleCredentialsAndNonSuccess(t *testing.T) {
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	ctx := context.Background()
++	repo := cluster.NewRepository(db)
++	h := NewHandler(repo, nil, "127.0.0.1", 0)
++	engine := gin.New()
++	engine.GET("/oauth/status", h.GetAuthStatusV8)
++	for _, state := range []string{"multiple", "pending", "cancelled", "legacy"} {
++		session, errSession := cluster.NewOAuthSessionRecord("codex", state, nil, time.Now())
++		if errSession != nil {
++			t.Fatal(errSession)
++		}
++		if errUpsert := repo.UpsertOAuthSession(ctx, session); errUpsert != nil {
++			t.Fatal(errUpsert)
++		}
++	}
++	first := &coreauth.Auth{ID: "fixture-first", Index: "fixture-first", Provider: "codex"}
++	second := &coreauth.Auth{ID: "fixture-second", Index: "fixture-second", Provider: "codex"}
++	if errComplete := repo.CompleteOAuthSessionWithAuths(ctx, "multiple", []*coreauth.Auth{first, second, first}); errComplete != nil {
++		t.Fatal(errComplete)
++	}
++	multiple := oauthStatusV8Request(t, engine, "/oauth/status?state=multiple")
++	if multiple["status"] != "ok" || multiple["auth_id"] != nil || !reflect.DeepEqual(multiple["auth_ids"], []any{first.ID, second.ID}) {
++		t.Fatalf("multiple credential result = %#v", multiple)
++	}
++	if _, errCancel := repo.CancelOAuthSession(ctx, "cancelled"); errCancel != nil {
++		t.Fatal(errCancel)
++	}
++	if errComplete := repo.CompleteOAuthSession(ctx, "legacy"); errComplete != nil {
++		t.Fatal(errComplete)
++	}
++	for state, wantStatus := range map[string]string{"pending": "wait", "cancelled": "error", "unknown": "error", "legacy": "ok", "": "ok"} {
++		body := oauthStatusV8Request(t, engine, "/oauth/status?state="+state)
++		if body["status"] != wantStatus || body["auth_id"] != nil || body["auth_ids"] != nil {
++			t.Fatalf("state %q result = %#v", state, body)
++		}
++	}
++}
++
++func oauthStatusV8Request(t *testing.T, handler http.Handler, path string) map[string]any {
++	t.Helper()
++	response := httptest.NewRecorder()
++	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
++	if response.Code != http.StatusOK {
++		t.Fatalf("status HTTP %d: %s", response.Code, response.Body.String())
++	}
++	var body map[string]any
++	if errDecode := json.Unmarshal(response.Body.Bytes(), &body); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	return body
++}
++
++func TestOAuthStatusV8FirstPluginSuccessPollReturnsIDs(t *testing.T) {
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	repo := cluster.NewRepository(db)
++	session, errSession := cluster.NewOAuthSessionRecord("fixture-plugin", "plugin-login", pluginOAuthSessionData(nil), time.Now())
++	if errSession != nil {
++		t.Fatal(errSession)
++	}
++	if errUpsert := repo.UpsertOAuthSession(t.Context(), session); errUpsert != nil {
++		t.Fatal(errUpsert)
++	}
++	plugin := &successfulOAuthStatusPlugin{auths: []*coreauth.Auth{
++		{ID: "plugin-first", Index: "plugin-first", Provider: "fixture-plugin"},
++		{ID: "plugin-second", Index: "plugin-second", Provider: "fixture-plugin"},
++	}}
++	h := NewHandler(repo, nil, "127.0.0.1", 0)
++	h.pluginOAuthStatus = plugin
++	engine := gin.New()
++	engine.GET("/oauth/status", h.GetAuthStatusV8)
++	for range 2 {
++		body := oauthStatusV8Request(t, engine, "/oauth/status?state="+session.State)
++		want := map[string]any{"status": "ok", "auth_ids": []any{"plugin-first", "plugin-second"}}
++		if !reflect.DeepEqual(body, want) {
++			t.Fatalf("plugin completion response = %#v, want %#v", body, want)
++		}
++	}
++	if plugin.polls != 1 {
++		t.Fatalf("plugin polls = %d, want one poll followed by the persisted result", plugin.polls)
++	}
++}
++
++type successfulOAuthStatusPlugin struct {
++	auths []*coreauth.Auth
++	polls int
++}
++
++func (p *successfulOAuthStatusPlugin) HasPluginAuthProvider(provider string) bool {
++	return provider == "fixture-plugin"
++}
++
++func (p *successfulOAuthStatusPlugin) PollPluginLogin(context.Context, string, string, map[string]any) (pluginapi.AuthLoginPollResponse, bool, error) {
++	p.polls++
++	return pluginapi.AuthLoginPollResponse{Status: pluginapi.AuthLoginStatusSuccess}, true, nil
++}
++
++func (p *successfulOAuthStatusPlugin) PluginLoginAuths(pluginapi.AuthLoginPollResponse) ([]*coreauth.Auth, error) {
++	return p.auths, nil
++}
+diff --git a/internal/cluster/management/plugin_oauth.go b/internal/cluster/management/plugin_oauth.go
+index 2d241d0..151f065 100644
+--- a/internal/cluster/management/plugin_oauth.go
++++ b/internal/cluster/management/plugin_oauth.go
+@@ -15,12 +15,19 @@ import (
+ 	cpaauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+ 	sdkpluginhost "github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginhost"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+ const oauthSessionSourcePlugin = "plugin"
+ 
++type pluginOAuthStatusRuntime interface {
++	HasPluginAuthProvider(string) bool
++	PollPluginLogin(context.Context, string, string, map[string]any) (pluginapi.AuthLoginPollResponse, bool, error)
++	PluginLoginAuths(pluginapi.AuthLoginPollResponse) ([]*coreauth.Auth, error)
++}
++
+ type pluginManagementListResponse struct {
+ 	PluginsEnabled bool                        `json:"plugins_enabled"`
+ 	PluginsDir     string                      `json:"plugins_dir"`
+@@ -202,14 +209,14 @@ func (h *Handler) respondPluginAuthStatus(c *gin.Context, ctx context.Context, s
+ 		return false
+ 	}
+ 	provider := strings.ToLower(strings.TrimSpace(session.Provider))
+-	if h == nil || h.runtime == nil || provider == "" || !h.runtime.HasPluginAuthProvider(provider) {
++	if h == nil || h.pluginOAuthStatus == nil || provider == "" || !h.pluginOAuthStatus.HasPluginAuthProvider(provider) {
+ 		c.JSON(http.StatusOK, gin.H{"status": "wait"})
+ 		return true
+ 	}
+ 
+ 	pollCtx, cancelPoll := h.oauthSessionContext(ctx, session.State, cluster.OAuthSessionTTL)
+ 	defer cancelPoll()
+-	resp, handled, errPoll := h.runtime.PollPluginLogin(pluginAuthRequestContext(pollCtx, c), provider, session.State, pluginOAuthPollMetadata(data))
++	resp, handled, errPoll := h.pluginOAuthStatus.PollPluginLogin(pluginAuthRequestContext(pollCtx, c), provider, session.State, pluginOAuthPollMetadata(data))
+ 	// A remote cancellation may have won while the plugin was polling.
+ 	if current, errCurrent := h.repo.GetOAuthSession(ctx, session.State); errCurrent == nil && (current == nil || current.Status != "") {
+ 		h.GetAuthStatus(c)
+@@ -234,7 +241,7 @@ func (h *Handler) respondPluginAuthStatus(c *gin.Context, ctx context.Context, s
+ 		_ = h.repo.SetOAuthSessionError(ctx, session.State, message)
+ 		c.JSON(http.StatusOK, gin.H{"status": "error", "error": message})
+ 	case pluginapi.AuthLoginStatusSuccess:
+-		auths, errAuths := h.runtime.PluginLoginAuths(resp)
++		auths, errAuths := h.pluginOAuthStatus.PluginLoginAuths(resp)
+ 		if errAuths != nil {
+ 			log.WithError(errAuths).WithField("provider", provider).Error("cluster plugin oauth: decode auth failed")
+ 			_ = h.repo.SetOAuthSessionError(ctx, session.State, "Authentication failed")
+@@ -257,7 +264,7 @@ func (h *Handler) respondPluginAuthStatus(c *gin.Context, ctx context.Context, s
+ 			c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Failed to save authentication tokens"})
+ 			return true
+ 		}
+-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
++		h.GetAuthStatus(c)
+ 	default:
+ 		c.JSON(http.StatusOK, gin.H{"status": "wait"})
+ 	}
+diff --git a/internal/cluster/management/server.go b/internal/cluster/management/server.go
+index a1b6788..10525bb 100644
+--- a/internal/cluster/management/server.go
++++ b/internal/cluster/management/server.go
+@@ -18,6 +18,7 @@ import (
+ type Handler struct {
+ 	repo                  *cluster.Repository
+ 	runtime               *home.Runtime
++	pluginOAuthStatus     pluginOAuthStatusRuntime
+ 	nodeIP                string
+ 	nodePort              int
+ 	heartbeatTimeout      time.Duration
+@@ -34,6 +35,7 @@ func NewHandler(repo *cluster.Repository, runtime *home.Runtime, nodeIP string,
+ 	return &Handler{
+ 		repo:                 repo,
+ 		runtime:              runtime,
++		pluginOAuthStatus:    runtime,
+ 		nodeIP:               strings.TrimSpace(nodeIP),
+ 		nodePort:             nodePort,
+ 		heartbeatTimeout:     cluster.DefaultHeartbeatTimeout(),
+diff --git a/internal/cluster/oauth_sessions.go b/internal/cluster/oauth_sessions.go
+index 807e005..fbbf7df 100644
+--- a/internal/cluster/oauth_sessions.go
++++ b/internal/cluster/oauth_sessions.go
+@@ -227,15 +227,28 @@ func (r *Repository) CompleteOAuthSessionWithAuths(ctx context.Context, state st
+ 			return errComplete
+ 		}
+ 		txRepo := NewRepository(tx)
++		authIDs := make([]string, 0, len(auths))
++		seen := make(map[string]bool, len(auths))
+ 		for _, auth := range auths {
+ 			if auth == nil {
+ 				return fmt.Errorf("oauth credential is nil")
+ 			}
+-			if _, errUpsert := txRepo.UpsertAuth(ctx, auth, "upsert"); errUpsert != nil {
++			record, errUpsert := txRepo.UpsertAuth(ctx, auth, "upsert")
++			if errUpsert != nil {
+ 				return errUpsert
+ 			}
++			if !seen[record.UUID] {
++				authIDs = append(authIDs, record.UUID)
++				seen[record.UUID] = true
++			}
++		}
++		// Keep only the public result after clearing the pending session's secrets.
++		result, errMarshal := json.Marshal(map[string]any{"auth_ids": authIDs})
++		if errMarshal != nil {
++			return errMarshal
+ 		}
+-		return nil
++		return tx.Model(&OAuthSessionRecord{}).Where("state = ?", strings.TrimSpace(state)).
++			Update("data", JSONB(result)).Error
+ 	})
+ }
+ 
+diff --git a/internal/cluster/oauth_sessions_cancel_test.go b/internal/cluster/oauth_sessions_cancel_test.go
+index 30adf69..ba20aef 100644
+--- a/internal/cluster/oauth_sessions_cancel_test.go
++++ b/internal/cluster/oauth_sessions_cancel_test.go
+@@ -60,7 +60,7 @@ func TestOAuthSessionAtomicCredentialCompletion(t *testing.T) {
+ 			}
+ 			switch outcome {
+ 			case "success":
+-				if current.Status != "complete" || len(current.Data) != 0 {
++				if current.Status != "complete" || string(current.Data) != `{"auth_ids":["oauth-atomic"]}` {
+ 					t.Fatalf("session = %+v", current)
+ 				}
+ 				if errRepeat := repo.CompleteOAuthSessionWithAuths(ctx, session.State, auths); !errors.Is(errRepeat, ErrOAuthSessionNotPending) {
+diff --git a/internal/managementhttp/routes_v8.go b/internal/managementhttp/routes_v8.go
+index 35024a5..1ad1980 100644
+--- a/internal/managementhttp/routes_v8.go
++++ b/internal/managementhttp/routes_v8.go
+@@ -68,6 +68,7 @@ func managementV8Routes(legacy *RouteRegistry, sdk *cpasdkapi.Handler, home *clu
+ 		routes.Set(http.MethodGet, "/credentials", home.ListCredentialsV8)
+ 		routes.Set(http.MethodGet, "/credentials/models", home.GetCredentialModelsV8)
+ 		routes.Set(http.MethodGet, "/oauth/auth-url", home.StartOAuthV8)
++		routes.Set(http.MethodGet, "/oauth/status", home.GetAuthStatusV8)
+ 		routes.Set(http.MethodPost, "/oauth/import", home.ImportOAuthV8)
+ 		routes.Set(http.MethodDelete, "/oauth/session", home.CancelAuthSession)
+ 		routes.Set(http.MethodPost, "/credentials/refresh", home.RefreshAuthFiles)
+diff --git a/internal/managementhttp/routes_v8_test.go b/internal/managementhttp/routes_v8_test.go
+index 1bb1e47..532f667 100644
+--- a/internal/managementhttp/routes_v8_test.go
++++ b/internal/managementhttp/routes_v8_test.go
+@@ -24,6 +24,9 @@ func TestManagementV8Routes(t *testing.T) {
+ 	registered := make(map[string]bool)
+ 	for _, route := range engine.Routes() {
+ 		registered[route.Method+" "+route.Path] = true
++		if route.Method == http.MethodGet && route.Path == "/v8/management/oauth/status" && !strings.Contains(route.Handler, "GetAuthStatusV8") {
++			t.Fatalf("v8 OAuth status must include saved credential IDs, got %s", route.Handler)
++		}
+ 	}
+ 	for _, route := range []string{
+ 		"GET /config", "PUT /config", "PATCH /config", "GET /config.yaml", "PUT /config.yaml", "DELETE /config/*path",

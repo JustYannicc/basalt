@@ -34,7 +34,7 @@ test("Zendesk publisher metadata comes from operator configuration and cannot se
   assert.doesNotMatch(index, /EXECUTOR_ZENDESK_SUBDOMAIN/);
 });
 
-test("Zendesk source carries the full Support API router and official primary logo", async () => {
+test("Zendesk source carries the full Support API router and the Z mark from its official logo", async () => {
   const sourceResponse = await handleCatalog(
     new Request("https://catalog.example.test/catalog/apps/zendesk.json"),
     async () => { throw new Error("The carried source is local"); },
@@ -57,15 +57,14 @@ test("Zendesk source carries the full Support API router and official primary lo
   assert.match(index, /withApprovals\(/);
   assert.match(index, /tool\.kind === "mutation" \? always\(\) : undefined/);
   assert.match(iconModule, /data:image\/png;base64,/);
-  assert.deepEqual(zendeskIcons, [{
-    src: (JSON.parse(iconModule.match(/= ([\s\S]*);\n$/)?.[1] ?? "null") as { src: string }[])[0]!.src,
-    mimeType: "image/png",
-    theme: "light",
-  }]);
-
-  const iconBytes = Buffer.from(zendeskIcons[0]!.src.replace("data:image/png;base64,", ""), "base64");
-  assert.equal(iconBytes.byteLength, sourceProvenance.vendorLogo.bytes);
-  assert.equal(createHash("sha256").update(iconBytes).digest("hex"), sourceProvenance.vendorLogo.sha256);
+  // The installed app and its catalog card show the same mark.
+  assert.deepEqual(zendeskIcons, JSON.parse(iconModule.match(/= ([\s\S]*);\n$/)?.[1] ?? "null"));
+  // Each variant is the recorded crop of the vendor asset named below.
+  for (const icon of zendeskIcons) {
+    const bytes = Buffer.from(icon.src.replace("data:image/png;base64,", ""), "base64");
+    const theme = icon.theme === "dark" ? "dark" : "light";
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), sourceProvenance.vendorLogo.mark.variants[theme].sha256, theme);
+  }
   assert.equal(sourceProvenance.vendorLogo.url,
     "https://web-assets.zendesk.com/zendesk/pages/company/brand-guidelines/primarylogo.png");
 });

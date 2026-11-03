@@ -110,7 +110,7 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
       assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
     else {
       assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
-      assert.match(entry.description, /GitLab\.com or a self-managed instance/);
+      assert.match(entry.description, /GitLab\.com or your own GitLab server/);
     }
     assert.equal(entry.source, `apps/${entry.id}.json`);
     const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
@@ -227,4 +227,35 @@ test("Slack's carried app and feed select personal OAuth while other sources sta
   const changedPublisher = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
     async () => Response.json({ version: 1, apps: [{ ...slack, package: "@example/replaced" }] }));
   assert.equal(changedPublisher.status, 502);
+});
+
+
+test("the public feed identifies services with exact MCP aliases and keeps distinct products", async () => {
+  const entries: Feed = { version: 1, apps: ["vercel", "vercel-ai-gateway", "elevenlabs"].map(id => ({
+    ...official.apps[0]!, id, package: `@executor.sh/${id}`, name: id,
+  })) };
+  const response = await handleCatalog(new Request("https://catalog.example.test/catalog/index.json"), async () => Response.json(entries));
+  assert.equal(response.status, 200);
+  const result = await response.json() as Feed;
+  const vercel = result.apps.find(entry => entry.id === "vercel")!;
+  const models = result.apps.find(entry => entry.id === "vercel-ai-gateway")!;
+  const audio = result.apps.find(entry => entry.id === "elevenlabs")!;
+  assert.deepEqual(vercel.service, { id: "@executor.sh/vercel", mcp: ["https://mcp.vercel.com/"], packages: ["@executor.sh/vercel"] });
+  assert.deepEqual(audio.service, { id: "@executor.sh/elevenlabs", mcp: ["https://api.elevenlabs.io/v1/mcp"], packages: ["@executor.sh/elevenlabs"] });
+  assert.deepEqual(models.service, { id: "@executor.sh/vercel-ai-gateway", mcp: [], packages: ["@executor.sh/vercel-ai-gateway"] });
+  assert.notEqual(vercel.service?.id, models.service?.id);
+});
+
+
+test("Confluence aliases the canonical Atlassian service while Jira stays separate", async () => {
+  const entries: Feed = { version: 1, apps: ["confluence", "jira"].map(id => ({
+    ...official.apps[0]!, id, package: `@executor.sh/${id}`, name: id,
+  })) };
+  const response = await handleCatalog(new Request("https://catalog.example.test/catalog/index.json"), async () => Response.json(entries));
+  assert.equal(response.status, 200);
+  const result = await response.json() as Feed;
+  const confluence = result.apps.find(entry => entry.id === "confluence")!;
+  const jira = result.apps.find(entry => entry.id === "jira")!;
+  assert.deepEqual(confluence.service, { id: "atlassian", mcp: [], packages: ["@executor.sh/confluence", "atlassian"] });
+  assert.equal(jira.service?.id, "@executor.sh/jira");
 });

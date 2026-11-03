@@ -1,0 +1,332 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -1,3 +1,4 @@
++import { knownRefusalGuard } from "./refusal-guards.ts";
+ import { Cause, Effect, Option, Schema } from "effect";
+ import { SqlError } from "effect/sql";
+ import { ProviderAppsRefused } from "./migrations/provider-apps-schema.ts";
+@@ -67,9 +68,11 @@
+ 
+ class DiagnosticFailure extends Error {
+   readonly receipt: FailureReceipt;
+-  constructor(receipt: FailureReceipt) {
++  readonly guard: { readonly guard: string; readonly reasonCode: string };
++  constructor(receipt: FailureReceipt, guard: DiagnosticFailure["guard"]) {
+     super("Production operation refused");
+     this.receipt = receipt;
++    this.guard = guard;
+   }
+ }
+ 
+@@ -144,9 +147,29 @@
+   };
+ }
+ 
++/** Preserve only allowlisted guard codes before phase wrappers discard the underlying error. */
++export function refusalDiagnostic(cause: Cause.Cause<unknown>, phase: Phase) {
++  for (const reason of cause.reasons) {
++    const error = Cause.isFailReason(reason)
++      ? reason.error
++      : Cause.isDieReason(reason)
++        ? reason.defect
++        : undefined;
++    if (error instanceof DiagnosticFailure) return error.guard;
++    const guard = knownRefusalGuard(error instanceof Error ? error.message : undefined);
++    if (guard !== undefined) return guard;
++  }
++  const receipt = diagnostic(cause, phase);
++  return { guard: `phase_${receipt.phase}`, reasonCode: receipt.category };
++}
++
+ export const atPhase =
+   (phase: Phase) =>
+   <A, E, R>(work: Effect.Effect<A, E, R>) =>
+     work.pipe(
+-      Effect.catchCause((cause) => Effect.fail(new DiagnosticFailure(diagnostic(cause, phase)))),
++      Effect.catchCause((cause) =>
++        Effect.fail(
++          new DiagnosticFailure(diagnostic(cause, phase), refusalDiagnostic(cause, phase)),
++        ),
++      ),
+     );
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -13,7 +13,7 @@
+ import { requestBody } from "./body.ts";
+ import { databaseOrigin } from "./database-identity.ts";
+ import { contention } from "./locking.ts";
+-import { atPhase, diagnostic } from "./diagnostics.ts";
++import { atPhase, diagnostic, refusalDiagnostic } from "./diagnostics.ts";
+ export { productionOpsPath } from "./contracts.ts";
+ 
+ const SignedRequest = Schema.Struct({
+@@ -33,7 +33,11 @@
+   const preparations = yield* cloudProductionPreparations;
+   const directConnection = yield* cloudDirectDatabaseConnection;
+   return Effect.gen(function* () {
+-    if (Option.isNone(key))
++    if (Option.isNone(key)) {
++      yield* Effect.logWarning("production_ops.operation_refused", {
++        guard: "http_configuration",
++        reasonCode: "signing_key_missing",
++      });
+       return yield* HttpServerResponse.json(
+         {
+           error: "operation_refused",
+@@ -45,6 +49,7 @@
+         },
+         { status: 503, headers: { "cache-control": "no-store" } },
+       );
++    }
+     const body = yield* requestBody.pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
+       atPhase("decode"),
+@@ -61,7 +66,11 @@
+       signed.value.expiresAt <= now ||
+       signed.value.expiresAt > signed.value.at + 60_000 ||
+       signed.value.id.length > 128
+-    )
++    ) {
++      yield* Effect.logWarning("production_ops.operation_refused", {
++        guard: "http_signed_request",
++        reasonCode: "invalid_or_expired",
++      });
+       return yield* HttpServerResponse.json(
+         {
+           error: "operation_refused",
+@@ -69,6 +78,7 @@
+         },
+         { status: 401, headers: { "cache-control": "no-store" } },
+       );
++    }
+     const sql = yield* Effect.flatten(GroupDatabase).pipe(atPhase("sql"));
+     const secret = yield* encryptionKey.pipe(atPhase("config"));
+     const origin = yield* databaseOrigin(
+@@ -127,9 +137,16 @@
+   }).pipe(
+     // SQL errors can quote credentials from a rejected row. Only a fixed refusal crosses HTTP or telemetry.
+     Effect.catchCause((cause) =>
+-      HttpServerResponse.json(
+-        { error: "operation_refused", failure: diagnostic(cause, "config") },
+-        { status: 409, headers: { "cache-control": "no-store" } },
++      Effect.logWarning(
++        "production_ops.operation_refused",
++        refusalDiagnostic(cause, "config"),
++      ).pipe(
++        Effect.andThen(
++          HttpServerResponse.json(
++            { error: "operation_refused", failure: diagnostic(cause, "config") },
++            { status: 409, headers: { "cache-control": "no-store" } },
++          ),
++        ),
+       ),
+     ),
+     Effect.withTracerEnabled(false),
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+@@ -0,0 +1,170 @@
++/** Only this fixed catalog can name a refusing guard in server logs. Unknown text stays private. */
++const guards = {
++  backup: {
++    unknown_backup_table: "Unknown backup table",
++    backup_exceeds_its_row_bound: "Backup exceeds its row bound",
++    backup_exceeds_its_byte_bound: "Backup exceeds its byte bound",
++  },
++  body: {
++    ops_request_exceeds_its_bound: "Ops request exceeds its bound",
++  },
++  crypto: {
++    invalid_ops_encryption_key: "Invalid ops encryption key",
++    ops_artifact_exceeds_its_bound: "Ops artifact exceeds its bound",
++    ops_recipient_requires_rsa_3072_or_stronger: "Ops recipient requires RSA 3072 or stronger",
++    ops_artifact_hash_mismatch: "Ops artifact hash mismatch",
++  },
++  inventory: {
++    unknown_inventory: "Unknown inventory",
++    inventory_exceeds_its_bound: "Inventory exceeds its bound",
++  },
++  provider_apps_apps: {
++    app_must_be_active_in_this_organization:
++      "Provider adoption refused: app must be active in this organization",
++    deployment_ownership_changed: "Provider adoption refused: deployment ownership changed",
++    active_requirements_are_unreadable:
++      "Provider adoption refused: active requirements are unreadable",
++    app_policy_belongs_to_another_organization:
++      "Provider adoption refused: app policy belongs to another organization",
++  },
++  provider_apps_consumers: {
++    account_has_unsettled_leased_or_mismatched_webhook_source_bookkeeping:
++      "Provider adoption refused: account has unsettled, leased or mismatched webhook source bookkeeping",
++    account_has_webhook_or_active_workflow_consumers:
++      "Provider adoption refused: account has webhook or active workflow consumers",
++  },
++  provider_apps_openai_anthropic_v1: {
++    reviewed_plan_has_blocked_prerequisites:
++      "Provider adoption refused: reviewed plan has blocked prerequisites",
++    provider_app_or_pool_prerequisites_are_missing:
++      "Provider adoption refused: provider app or pool prerequisites are missing",
++    reviewed_plan_changed_under_the_write_locks:
++      "Provider adoption refused: reviewed plan changed under the write locks",
++    account_changed_during_apply: "Provider adoption refused: account changed during apply",
++    reviewed_link_changed_during_apply:
++      "Provider adoption refused: reviewed link changed during apply",
++    post_write_preservation_checks_failed:
++      "Provider adoption refused: post-write preservation checks failed",
++  },
++  provider_apps_plan: {
++    provider_adoption_plan_contains_a_duplicate_destination:
++      "Provider adoption plan contains a duplicate destination",
++    an_existing_acquisition_is_not_this_exact_migration_result:
++      "Provider adoption refused: an existing acquisition is not this exact migration result",
++    source_account_no_longer_matches_its_expected_provider_and_method:
++      "Provider adoption refused: source account no longer matches its expected provider and method",
++    completed_provenance_differs_from_this_migration:
++      "Provider adoption refused: completed provenance differs from this migration",
++    legacy_acquisition_provenance_is_missing_retired_or_inconsistent:
++      "Provider adoption refused: legacy acquisition provenance is missing, retired or inconsistent",
++    no_unambiguous_completed_home_acquisition_proves_this_account:
++      "Provider adoption refused: no unambiguous completed Home acquisition proves this account",
++    adopted_pool_link_changed: "Provider adoption refused: adopted pool link changed",
++    link_mapping_is_missing_or_its_destination_is_occupied:
++      "Provider adoption refused: link mapping is missing or its destination is occupied",
++    provider_app_already_has_an_unexpected_legacy_link:
++      "Provider adoption refused: provider app already has an unexpected legacy link",
++    adopted_provider_app_link_was_removed:
++      "Provider adoption refused: adopted provider app link was removed",
++  },
++  provider_apps_read: {
++    organization_metadata_is_unreadable: "Organization metadata is unreadable",
++    actor_must_be_a_current_organization_owner_or_admin:
++      "Provider adoption refused: actor must be a current organization owner or admin",
++    provider_app_must_be_the_actor_s_private_catalog_installation:
++      "Provider adoption refused: provider app must be the actor's private catalog installation",
++    provider_app_has_no_exact_canonical_active_requirement:
++      "Provider adoption refused: provider app has no exact canonical active requirement",
++    canonical_provider_definition_changed:
++      "Provider adoption refused: canonical provider definition changed",
++    account_ownership_generation_or_credential_kind_is_not_the_reviewed_legacy_binding:
++      "Provider adoption refused: account ownership, generation or credential kind is not the reviewed legacy binding",
++    account_must_remain_the_actor_s_personal_account:
++      "Provider adoption refused: account must remain the actor's personal account",
++    personal_account_has_inconsistent_group_grants:
++      "Provider adoption refused: personal account has inconsistent group grants",
++    source_is_not_the_reviewed_legacy_subscription_method:
++      "Provider adoption refused: source is not the reviewed legacy subscription method",
++    account_has_a_pending_or_batched_connection:
++      "Provider adoption refused: account has a pending or batched connection",
++    only_explicit_actor_owned_legacy_subscription_links_can_move:
++      "Provider adoption refused: only explicit actor-owned legacy subscription links can move",
++    pool_source_or_active_deployment_differs_from_the_reviewed_preparation:
++      "Provider adoption refused: pool source or active deployment differs from the reviewed preparation",
++    pool_preparation_must_precede_native_membership_activation:
++      "Provider adoption refused: pool preparation must precede native membership activation",
++    pool_is_missing_compatible_canonical_and_retained_legacy_requirements:
++      "Provider adoption refused: pool is missing compatible canonical and retained legacy requirements",
++    user_scoped_legacy_links_require_a_separate_migration:
++      "Provider adoption refused: user-scoped legacy links require a separate migration",
++    legacy_pool_sign_in_is_still_in_flight:
++      "Provider adoption refused: legacy pool sign-in is still in flight",
++    connection_provenance_has_no_matching_saved_target:
++      "Provider adoption refused: connection provenance has no matching saved target",
++    acquiring_deployment_does_not_prove_the_legacy_provider_method:
++      "Provider adoption refused: acquiring deployment does not prove the legacy provider method",
++    account_has_an_unrelated_or_unmapped_link:
++      "Provider adoption refused: account has an unrelated or unmapped link",
++    ambiguous_native_acquisition: "Provider adoption refused: ambiguous native acquisition",
++  },
++  provider_apps_rows: {
++    provider_adoption_data_is_unreadable: "Provider adoption data is unreadable",
++    missing_or_ambiguous_organization:
++      "Provider adoption refused: missing or ambiguous organization",
++    missing_or_ambiguous_actor_membership:
++      "Provider adoption refused: missing or ambiguous actor membership",
++    missing_or_ambiguous_canonical_provider:
++      "Provider adoption refused: missing or ambiguous canonical provider",
++    missing_or_ambiguous_account: "Provider adoption refused: missing or ambiguous account",
++    missing_or_ambiguous_account_access:
++      "Provider adoption refused: missing or ambiguous account access",
++    missing_or_ambiguous_source_provider:
++      "Provider adoption refused: missing or ambiguous source provider",
++    missing_or_ambiguous_app: "Provider adoption refused: missing or ambiguous app",
++    missing_or_ambiguous_active_deployment:
++      "Provider adoption refused: missing or ambiguous active deployment",
++    missing_or_ambiguous_app_access: "Provider adoption refused: missing or ambiguous app access",
++    missing_or_ambiguous_acquiring_deployment:
++      "Provider adoption refused: missing or ambiguous acquiring deployment",
++  },
++  provider_apps_schema: {
++    at_must_be_an_exact_iso_timestamp:
++      "Provider adoption refused: at must be an exact ISO timestamp",
++    provider_apps_must_be_distinct: "Provider adoption refused: provider apps must be distinct",
++    duplicate_account_ids: "Provider adoption refused: duplicate account IDs",
++    the_source_method_does_not_identify_the_selected_lab:
++      "Provider adoption refused: the source method does not identify the selected lab",
++    duplicate_link_mappings: "Provider adoption refused: duplicate link mappings",
++  },
++  runner: {
++    invalid_migration_plan: "Invalid migration plan",
++    unknown_backup_selection: "Unknown backup selection",
++    unknown_preparation_selection: "Unknown preparation selection",
++    unknown_migration: "Unknown migration",
++    apply_requires_the_reviewed_plan_hash_and_exact_go:
++      "Apply requires the reviewed plan hash and exact GO",
++    database_identity_changed: "Database identity changed",
++    receipt_identity_differs: "Receipt identity differs",
++    migration_inputs_changed_after_review: "Migration inputs changed after review",
++    migration_verification_failed: "Migration verification failed",
++    committed_migration_needs_operator_investigation:
++      "Committed migration needs operator investigation",
++    stale_plan: "The reviewed plan is stale",
++  },
++  scope: {
++    organization_unavailable: "Organization unavailable",
++    migration_table_has_no_organization_scope: "Migration table has no organization scope",
++    invalid_migration_row_identity: "Invalid migration row identity",
++    migration_row_is_outside_the_selected_organization:
++      "Migration row is outside the selected organization",
++  },
++};
++
++const byMessage = new Map(
++  Object.entries(guards).flatMap(([guard, reasons]) =>
++    Object.entries(reasons).map(([reasonCode, message]) => [message, { guard, reasonCode }]),
++  ),
++);
++
++export const knownRefusalGuard = (message: unknown) =>
++  typeof message === "string" ? byMessage.get(message) : undefined;
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+--- a/e2e/tests/production-ops-migrations.spec.ts
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, FileSystem, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { body } from "../support/api.ts";
+ import { Target } from "../support/platform.ts";
+@@ -45,6 +45,20 @@
+           expect(JSON.stringify(response.body)).not.toContain("division by zero");
+         }
+         expect(yield* p.account()).toEqual(before);
++        const target = yield* Target;
++        const fs = yield* FileSystem.FileSystem;
++        const retained = (yield* fs.readFileString(`${target.directory}/cloud.log`))
++          .split("\n")
++          .filter((line) => line.includes('"production_ops.operation_refused"'));
++        expect(
++          retained.some(
++            (line) =>
++              line.includes('"guard":"provider_apps_read"') &&
++              line.includes('"reasonCode":"account_must_remain_the_actor_s_personal_account"'),
++          ),
++        ).toBe(true);
++        expect(retained.join("\n")).not.toContain("never-retain-diagnostic-password");
++        expect(retained.join("\n")).not.toContain("division by zero");
+       }),
+     ),
+   );

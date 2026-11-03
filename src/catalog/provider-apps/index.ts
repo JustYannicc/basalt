@@ -1,6 +1,7 @@
 import type { Addition } from "../feed.ts";
 import openai from "./openai.json" with { type: "json" };
 import anthropic from "./anthropic.json" with { type: "json" };
+import { anthropicIcons, openaiIcons } from "./logos.ts";
 
 export const providerApps: readonly Addition[] = [
   {
@@ -11,7 +12,7 @@ export const providerApps: readonly Addition[] = [
       description: "Connect ChatGPT subscriptions and reuse your OpenAI accounts in pools.",
       category: "AI providers",
       auth: [{ method: "codex", kind: "interactive", label: "ChatGPT subscription" }],
-      icons: [{ src: "https://openai.com/favicon.ico" }],
+      icons: [...openaiIcons],
       source: "apps/provider-openai.json",
     },
     source: openai,
@@ -24,7 +25,7 @@ export const providerApps: readonly Addition[] = [
       description: "Connect Claude subscriptions and reuse your Anthropic accounts in pools.",
       category: "AI providers",
       auth: [{ method: "claude", kind: "interactive", label: "Claude subscription" }],
-      icons: [{ src: "https://www.anthropic.com/favicon.ico" }],
+      icons: [...anthropicIcons],
       source: "apps/provider-anthropic.json",
     },
     source: anthropic,

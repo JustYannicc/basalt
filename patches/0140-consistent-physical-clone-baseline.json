@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-consistent-physical-clone-baseline",
+  "file": "0140-consistent-physical-clone-baseline.patch",
+  "content_sha256": "681ea5b93a925e6f0cd8b70b70a463163fe6063860b8412d1b5d4816c28f4de7",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
