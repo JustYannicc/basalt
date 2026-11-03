@@ -82,7 +82,16 @@ test("reconnect reserves an unchanged native app link before its new binding com
                 scope: "app",
                 provider,
                 cardinality: "one",
-                definition: { auth: { apiKey: { type: "apiKey" } } },
+                definition: {
+                  name: "Home",
+                  auth: {
+                    apiKey: {
+                      type: "secrets",
+                      label: "Home access",
+                      fields: { type: "object", properties: {}, additionalProperties: false },
+                    },
+                  },
+                },
               },
             },
           };

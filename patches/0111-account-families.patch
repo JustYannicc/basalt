@@ -82,7 +82,7 @@ index 41b0432..52e9fab 100644
          CredentialsError,
          AccountSiteInvalid,
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 01062bf..2be00bf 100644
+index 01062bf..09d1668 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -12,6 +12,10 @@ import { requireLinkRemovalAs, requireRequirementAccessAs } from "./contributed-
@@ -114,10 +114,10 @@ index 01062bf..2be00bf 100644
          d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'scope' as scope,
          d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'provider' as provider,
          d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'cardinality' as cardinality,
-@@ -441,6 +449,17 @@ const writeLink = (
-     if (required.provider === null || (required.scope ?? "user") !== scope)
-       return yield* refuse("requirement");
-     if (required.provider !== required.accountProvider) return yield* refuse("provider");
+@@ -463,6 +471,17 @@ const writeLink = (
+         ...input,
+         provider: ProviderId.make(required.provider),
+       });
 +    if (!provisioning && required.declaration !== null && required.method !== null) {
 +      const { registrations } = yield* AccountAcquisitionConfiguration;
 +      if (
@@ -129,9 +129,9 @@ index 01062bf..2be00bf 100644
 +          method: required.method,
 +        });
 +    }
-     if (required.interactive && !required.reusable && required.acquiringApp !== input.app)
-       return yield* refuse("app_bound");
-     const retiring =
+     const retired = yield* InteractiveRemovalDone;
+     for (const { account } of replaced) {
+       const bindings =
 diff --git a/apps/hosted/server/src/implementation/mcp-connections.ts b/apps/hosted/server/src/implementation/mcp-connections.ts
 index bd020a7..7839d5e 100644
 --- a/apps/hosted/server/src/implementation/mcp-connections.ts
@@ -502,6 +502,26 @@ index 5156be2..9e5ebc6 100644
    EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
    EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
  });
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+index 42722c5..dc125bc 100644
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -36,7 +36,14 @@ export const providerAppsCatalog = Effect.gen(function* () {
+     files: openai.files.map((file) =>
+       file.path === "package.json"
+         ? { ...file, content: JSON.stringify({ ...manifest, name: "provider-openai-tools" }) }
+-        : file,
++        : file.path === "index.ts"
++          ? {
++              path: "index.ts",
++              content: `import { defineApp } from "apps";
++import { providers } from "./providers.ts";
++export default defineApp({ app: { accounts: { openai: providers.openai.many() } } }, {});`,
++            }
++          : file,
+     ),
+   });
+   const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index bd7691d..7f3531e 100644
 --- a/e2e/test-plan.ts
@@ -5935,6 +5955,82 @@ index 40bf469..9348a64 100644
      yield* query(() =>
        db.updateMany("accounts", {
          where: (b) => b("id", "=", account.id),
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 482362e..567177c 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -99,6 +99,11 @@ export const createExecutor = (
+       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
+     const db = database(options.database);
+     const acquisition = options.acquisition ?? (yield* AccountAcquisitionConfiguration);
++    // Connection policy must use the same registrations as acquisition, including explicit options.
++    const withAcquisition =
++      <Input, A, E, R>(operation: (input: Input) => Effect.Effect<A, E, R>) =>
++      (input: Input) =>
++        operation(input).pipe(Effect.provideService(AccountAcquisitionConfiguration, acquisition));
+     const acquisitionRegistry = yield* makeAcquisitionRegistry(acquisition.registrations).pipe(
+       Effect.orDie,
+     );
+@@ -271,7 +276,7 @@ export const createExecutor = (
+       workflows.controls,
+       options.hooks,
+     );
+-    const interactive = makeInteractiveAccounts(
++    const interactiveOperations = makeInteractiveAccounts(
+       db,
+       credentials,
+       crypto,
+@@ -280,6 +285,13 @@ export const createExecutor = (
+       options.hooks,
+       makeAcquisitionConnect(db, credentials, acquisitionRegistry),
+     );
++    const interactive = {
++      ...interactiveOperations,
++      start: withAcquisition(interactiveOperations.start),
++      status: withAcquisition(interactiveOperations.status),
++      submit: withAcquisition(interactiveOperations.submit),
++      cancel: withAcquisition(interactiveOperations.cancel),
++    };
+     const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
+     const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
+       db,
+@@ -444,6 +456,7 @@ export const createExecutor = (
+       accountConnections: {
+         ...connections,
+         ...oauth.connections,
++        completeOAuth: withAcquisition(oauth.connections.completeOAuth),
+         ...makeConnectionInteractive(db, interactive, options.hooks),
+         cancel: (input) =>
+           Effect.gen(function* () {
+@@ -460,16 +473,25 @@ export const createExecutor = (
+         submit: (input) =>
+           interactive
+             .clearAttempt({ ...input, type: "secrets" })
+-            .pipe(Effect.andThen(connections.submit(input))),
++            .pipe(
++              Effect.andThen(connections.submit(input)),
++              Effect.provideService(AccountAcquisitionConfiguration, acquisition),
++            ),
+         startOAuth: (input) =>
+           interactive
+             .clearAttempt({ ...input, type: "oauth2" })
+-            .pipe(Effect.andThen(oauth.connections.startOAuth(input))),
++            .pipe(
++              Effect.andThen(oauth.connections.startOAuth(input)),
++              Effect.provideService(AccountAcquisitionConfiguration, acquisition),
++            ),
+         planOAuth: (input: typeof PlanConnectionOAuth.Type) =>
+           inspectOAuthConnection(db, credentials, options.oauth, options.hooks, input).pipe(
+             Effect.map(({ plan }) => plan),
++            Effect.provideService(AccountAcquisitionConfiguration, acquisition),
+           ),
+-        reuseOAuth: makeOAuthGrantReuse(db, credentials, crypto, options.oauth, options.hooks),
++        reuseOAuth: withAcquisition(
++          makeOAuthGrantReuse(db, credentials, crypto, options.oauth, options.hooks),
++        ),
+ 
+         findOAuth: (input) =>
+           Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
 diff --git a/packages/sdk/src/implementation/oauth-connection-plan.ts b/packages/sdk/src/implementation/oauth-connection-plan.ts
 index ed56f8a..15a0957 100644
 --- a/packages/sdk/src/implementation/oauth-connection-plan.ts
