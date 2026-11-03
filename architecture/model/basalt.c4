@@ -19,6 +19,7 @@ model {
     }
 
     build = module "Build" {
+      description "Managed Cloud startup retains sanitized Alchemy failure output through stream completion or a bounded quiet period before rejecting readiness. The same cause reaches cloud.log and the startup error; successful readiness has no extra wait."
       metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml|.github/workflows/client-desktop-mac.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
     }
 
