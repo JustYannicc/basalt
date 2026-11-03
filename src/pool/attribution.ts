@@ -8,6 +8,7 @@ import { AccountActions } from "./account-actions.ts";
 import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 import { HomeAccountAcquisitions } from "./account-acquisition.ts";
 import { nativeAccountHealth } from "./account-health.ts";
+import { PoolViewSnapshots } from "./view-snapshot.ts";
 
 export const attributionStorageKey = "pool-control-v1";
 // Home's device waiters use 16 minutes; callback exchanges use 5 minutes.
@@ -56,6 +57,7 @@ interface LockSignal { released: Promise<void>; resolve: () => void }
 
 /** The one control-plane DO serializes attribution for every pool. Views stay outside it. */
 export class PoolControl implements ControlAttribution {
+  private views: PoolViewSnapshots;
   readonly collection: QuotaCollection;
   private actions: AccountActions;
   private removals: PoolAccountRemovals;
@@ -78,7 +80,8 @@ export class PoolControl implements ControlAttribution {
     this.storage = storage;
     this.removals = new PoolAccountRemovals(storage);
     this.deps = deps;
-    this.client = new HomeClient(deps.home, () => this.now());
+    this.views = new PoolViewSnapshots(storage, (work) => deps.defer?.(work));
+    this.client = new HomeClient(deps.home, () => this.now(), () => this.invalidateViews());
     this.acquisitions = new HomeAccountAcquisitions(storage, this.client, deps.signingKey, {
       begin: async () => {
         const marker = await this.uploadStarted();
@@ -88,6 +91,7 @@ export class PoolControl implements ControlAttribution {
         return marker;
       },
       settle: async (marker, ids) => {
+        if (ids.length) await this.invalidateViews();
         // A native account stays globally saved. An older legacy sign-in must never claim it.
         for (const lock of Object.values(this.state.locks)) {
           lock.snapshot = [...new Set([...lock.snapshot, ...ids])];
@@ -213,7 +217,7 @@ export class PoolControl implements ControlAttribution {
       const { routeKey, isRead, isAccountAction } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
       if (isRead || isAccountAction) return handleControl(request, {
         ...this.deps, client: this.client, collection: this.collection, actions: this.actions, attribution: null,
-        removals: (pool) => this.removals.read(pool),
+        removals: (pool) => this.removals.read(pool), views: this.views,
       });
       const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
@@ -230,6 +234,10 @@ export class PoolControl implements ControlAttribution {
         if (!await this.wait(result.value.released, deadline - Date.now())) return result.value.response;
       }
     } catch (error) { return failureResponse(error); }
+  }
+  async invalidateViews(pool?: string): Promise<void> {
+    this.client.invalidateGroups();
+    await this.views.invalidate(pool);
   }
   async expire(): Promise<void> {
     const result = await this.run(async () => {

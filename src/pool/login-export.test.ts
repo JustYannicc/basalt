@@ -21,6 +21,7 @@ async function fixture(provider = "claude") {
     download: undefined as (() => Response | Promise<Response>) | undefined,
     storageAccesses: 0,
     storageReads: [] as string[],
+    storageWrites: [] as string[],
   };
   const calls: { path: string; init?: RequestInit }[] = [];
   const home = async (path: string, init?: RequestInit) => {
@@ -44,9 +45,11 @@ async function fixture(provider = "claude") {
     throw new Error("Unexpected fixture Home request");
   };
   const touchedStorage = async (): Promise<never> => { state.storageAccesses++; throw new Error("Export must not access attribution storage"); };
+  const values = new Map<string, unknown>();
   const storage: ControlStorage = {
-    async get(key) { state.storageReads.push(key); return undefined; },
-    put: touchedStorage, getAlarm: touchedStorage, setAlarm: touchedStorage,
+    async get<T>(key: string) { state.storageReads.push(key); return structuredClone(values.get(key)) as T | undefined; },
+    async put(key, value) { state.storageWrites.push(key); values.set(key, structuredClone(value)); },
+    getAlarm: touchedStorage, setAlarm: touchedStorage,
   };
   const control = new PoolControl(storage, { signingKey, home });
   const token = await signPoolToken(signingKey, { pool, owner, organization });
@@ -57,12 +60,18 @@ async function fixture(provider = "claude") {
     if (bearer !== null) headers.set("authorization", `Bearer ${bearer}`);
     if (caller !== null) headers.set("x-signalbox-caller", caller);
     const readsBefore = state.storageReads.length;
+    const writesBefore = state.storageWrites.length;
     const response = await control.handle(new Request(`https://pool.invalid/pool/v1${route}`, { headers, method: options.method }));
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(state.storageAccesses, 0);
-    assert.deepEqual(state.storageReads.slice(readsBefore),
-      route === "/pool" && caller === owner && bearer === token ? [`pool-account-removals:${pool}`] : [],
-      "Only the owner pool view may read removal history; export never accesses storage");
+    const reads = state.storageReads.slice(readsBefore), writes = state.storageWrites.slice(writesBefore);
+    if (route === "/pool" && caller === owner && bearer === token) {
+      assert.ok(reads.every((key) => key.startsWith("pool-view-") || key === `pool-account-removals:${pool}`));
+      assert.ok(writes.every((key) => key.startsWith("pool-view-")));
+    } else {
+      assert.deepEqual(reads, [], "Export never reads storage");
+      assert.deepEqual(writes, [], "Export never writes storage");
+    }
     return response;
   }
   return { state, calls, call, token };
@@ -112,6 +121,7 @@ test("export scopes membership to the signed pool and matches the canonical acco
 test("export refreshes group ownership instead of trusting cached group ids", async () => {
   const f = await fixture();
   assert.equal((await f.call("/pool")).status, 200);
+  assert.ok(f.state.storageWrites.length > 0, "The pool view must persist its snapshot before export");
   f.state.groups[0]!.channel_name = "signalbox-pool-renamed";
   await error(await f.call(), 404, "not_found");
   assert.equal(downloads(f.calls).length, 0);

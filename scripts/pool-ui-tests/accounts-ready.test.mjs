@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -12,7 +13,7 @@ import {
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -22,13 +23,159 @@ const { chromium } = require("playwright");
 const ready = { name: "basalt:pool-accounts-ready", version: 1 };
 const failed = { ok: false, error: "backend_unavailable", message: "Synthetic pool failure" };
 const empty = { isOwner: true, providers: [], accounts: [] };
+const emptyUsage = { ok: true, value: {
+  scope: "pool", from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z",
+  total: { requests: 0, cost: 0, unpriced: 0, tokens: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+  models: [], days: [], accounts: [], cap: null, readAt: null,
+} };
 
+// Optional PR evidence, never committed. Screenshots go to an absolute directory outside the checkout.
+const artifacts = process.env.POOL_UI_ARTIFACTS;
+// Optional baseline: build that commit's app.tsx and api.ts into the fixture instead of the working tree.
+const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const artifactLabel =
+  process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
+if (artifacts)
+  assert.ok(
+    isAbsolute(artifacts) && !`${resolve(artifacts)}/`.startsWith(root),
+    "POOL_UI_ARTIFACTS must be an absolute directory outside the checkout",
+  );
+
+const minute = 60_000;
+const hour = 60 * minute;
+const day = 24 * hour;
+const providers = [
+  { id: "codex", name: "Codex" },
+  { id: "claude", name: "Claude" },
+];
+
+/** A realistic three-seat pool. Provider observations keep their own times; `readAt` is Home's. */
+function poolView(now, { source, revalidationFailed = false, observedAgo, savedAgo, left }) {
+  const iso = (offset) => new Date(now + offset).toISOString();
+  const observedAt = iso(-observedAgo);
+  const seat = (id, provider, label, plan, [short, weekly]) => ({
+    id,
+    provider,
+    label,
+    plan,
+    state: "active",
+    message: null,
+    windows: [
+      { id: `${id}-5h`, label: "5 hours", remainingRatio: short, resetAt: iso(2 * hour + 14 * minute), windowSeconds: 5 * 3600, observedAt },
+      { id: `${id}-weekly`, label: "Weekly", remainingRatio: weekly, resetAt: iso(3 * day + 5 * hour), windowSeconds: 7 * 24 * 3600, observedAt },
+    ],
+    observedAt,
+    freshness: source === "snapshot" ? "stale" : "fresh",
+    readingFailed: false,
+    nextReadAt: iso(4 * minute),
+    earliestResetAt: iso(2 * hour + 14 * minute),
+    bankedResets: null,
+  });
+  return {
+    ok: true,
+    value: {
+      isOwner: true,
+      providers,
+      reading: {
+        source,
+        revalidationFailed,
+        readAt: { membership: iso(-savedAgo - 900), credentials: iso(-savedAgo - 400), quota: iso(-savedAgo) },
+      },
+      accounts: [
+        seat("seat-build-1", "codex", "build-seat-1@example.com", "Pro", left[0]),
+        seat("seat-build-2", "codex", "build-seat-2@example.com", "Plus", left[1]),
+        seat("seat-review", "claude", "review-seat@example.com", "Max 5x", left[2]),
+      ],
+    },
+  };
+}
+
+/** Runs in the parent and the pool frame before any page script. */
+function instrument() {
+  const mark = performance.mark.bind(performance);
+  performance.mark = (name, options) => {
+    const result = mark(name, options);
+    if (name === "basalt:pool-accounts-ready")
+      document.documentElement.dataset.committedAtReady = document.body.textContent ?? "";
+    return result;
+  };
+  // What the page showed when each fresh view request left, to prove the retained view committed first.
+  const followUps = [];
+  Reflect.set(window, "followUps", followUps);
+  const send = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const shown = document.body?.textContent ?? "";
+    const body = init?.body;
+    const text =
+      typeof body === "string"
+        ? body
+        : body instanceof Uint8Array || body instanceof ArrayBuffer
+          ? new TextDecoder().decode(body)
+          : null;
+    try {
+      const operation = text === null ? null : JSON.parse(text);
+      if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
+    } catch {}
+    return send(input, init);
+  };
+}
+
+// One file on purpose: every subtest shares this fixture's build, servers and tracked browser process.
 test(
-  "the committed pool view reports readiness once to its parent, including StrictMode and refresh",
-  { timeout: 90_000 },
+  "the committed pool view reports readiness once to its parent, including StrictMode, refresh and retained views",
+  { timeout: 120_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "pool-ready-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const servers = [];
+    let held = [];
+    let views = [];
+    let browserServer;
+    let browser;
+    let exited;
+    let evidenceVideo;
+    t.after(async () => {
+      const problems = [];
+      const step = async (work) => {
+        try {
+          await work();
+        } catch (error) {
+          problems.push(error);
+        }
+      };
+      // Pending view responses are released first so no request outlives the fixture.
+      for (const { response } of held.splice(0)) response.end(JSON.stringify(failed));
+      if (artifacts && evidenceVideo)
+        await step(() => evidenceVideo.saveAs(join(artifacts, `${artifactLabel}-transition.webm`)));
+      await step(() => browser?.close());
+      await step(() => browserServer?.close());
+      if (browserServer)
+        await step(async () => {
+          const child = browserServer.process();
+          let timer;
+          const outcome = await Promise.race([
+            exited,
+            new Promise((resolve) => (timer = setTimeout(() => resolve("timeout"), 10_000))),
+          ]);
+          clearTimeout(timer);
+          if (outcome === "timeout") {
+            await browserServer.kill();
+            await exited;
+          }
+          assert.notEqual(outcome, "timeout", `Browser process ${child.pid} outlived close`);
+          assert.ok(child.exitCode !== null || child.signalCode !== null, `Browser process ${child.pid} still running`);
+          assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+          t.diagnostic(`Owned browser process ${child.pid} exited; no browser remains.`);
+        });
+      for (const server of servers)
+        await step(() => {
+          server.closeAllConnections();
+          return new Promise((resolve) => server.close(() => resolve()));
+        });
+      await step(async () => require("esbuild").stop());
+      rmSync(directory, { recursive: true, force: true });
+      if (problems.length) throw new AggregateError(problems, "Fixture cleanup failed");
+    });
+
     let childOrigin = "";
     const parent = createServer((request, response) => {
       response.setHeader("content-type", "text/html");
@@ -38,7 +185,7 @@ test(
         );
         return;
       }
-      response.end(`<script>
+      response.end(`<style>body{margin:0}iframe{display:block;border:0;width:100%;height:100vh}</style><script>
       window.readiness = [];
       window.rejected = 0;
       addEventListener('message', event => {
@@ -51,8 +198,8 @@ test(
       });
     </script><iframe src="${childOrigin}"></iframe>`);
     });
+    servers.push(parent);
     await new Promise((resolve) => parent.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => parent.close(() => resolve())));
     const parentAddress = parent.address();
     assert.ok(parentAddress && typeof parentAddress !== "string");
     const parentOrigin = `http://127.0.0.1:${parentAddress.port}`;
@@ -63,6 +210,9 @@ test(
       recursive: true,
       filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
     });
+    if (sourceRef)
+      for (const file of ["ui/app.tsx", "ui/api.ts"])
+        writeFileSync(join(app, file), execFileSync("git", ["-C", root, "show", `${sourceRef}:apps/pool/${file}`]));
     writeFileSync(
       join(app, "deployment.ts"),
       `export const poolOrigin = ${JSON.stringify(parentOrigin)}; export const productName = "Signalbox";`,
@@ -95,48 +245,130 @@ test(
     );
     assert.equal(built.status, 0, built.stderr + built.stdout);
     const javascript = readFileSync(join(directory, "dist/main.js"));
-    let held = [];
+    // Screenshots need the real stylesheet, compiled the way scripts/setup-build.ts compiles it.
+    const stylesheet = artifacts ? await compileStyles(app, javascript.toString("utf8")) : null;
+
     let arrived = () => {};
     let viewResult = failed;
+    // When set, fresh view requests get this instead of `viewResult`.
+    let freshResult;
+    // When set, fresh view requests are answered as they arrive instead of held.
+    let answerFresh = false;
+    const answer = (entry) =>
+      entry.response.end(JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult));
     const child = createServer(async (request, response) => {
       if (request.url === "/main.js") {
         response.setHeader("content-type", "application/javascript");
         response.end(javascript);
+      } else if (request.url === "/main.css" && stylesheet !== null) {
+        response.setHeader("content-type", "text/css");
+        response.end(stylesheet);
       } else if (request.url === "/_executor/api/query") {
         let body = "";
         for await (const chunk of request) body += chunk;
-        const { name } = JSON.parse(body);
+        const { name, input } = JSON.parse(body);
         response.setHeader("content-type", "application/json");
         if (name === "view") {
-          held.push(response);
+          const entry = { response, fresh: input?.fresh === true };
+          views.push({ fresh: entry.fresh });
+          if (entry.fresh && answerFresh) answer(entry);
+          else held.push(entry);
           arrived();
-        } else response.end(JSON.stringify(failed));
+        } else response.end(JSON.stringify(name === "usage" ? emptyUsage : failed));
       } else if (request.url === "/") {
         response.setHeader("content-type", "text/html");
         response.end(
-          '<script type="application/json" id="executor-context">{"version":"fixture"}</script><div id="root"></div><script type="module" src="/main.js"></script>',
+          `<script type="application/json" id="executor-context">{"version":"fixture"}</script>${stylesheet === null ? "" : '<link rel="stylesheet" href="/main.css">'}<div id="root"></div><script type="module" src="/main.js"></script>`,
         );
       } else response.writeHead(204).end();
     });
+    servers.push(child);
     await new Promise((resolve) => child.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => child.close(() => resolve())));
     const childAddress = child.address();
     assert.ok(childAddress && typeof childAddress !== "string");
     childOrigin = `http://127.0.0.1:${childAddress.port}`;
-    const browser = await chromium.launch({ headless: true });
-    t.after(() => browser.close());
-    const release = () => {
-      for (const response of held.splice(0)) response.end(JSON.stringify(viewResult));
+
+    // A browser server whose process this test owns by PID, reached over its local endpoint.
+    browserServer = await chromium.launchServer({ headless: true });
+    const browserProcess = browserServer.process();
+    assert.ok(browserProcess.pid, "Browser server has no process");
+    exited = new Promise((resolve) => {
+      if (browserProcess.exitCode !== null || browserProcess.signalCode !== null) resolve("exited");
+      else browserProcess.once("exit", () => resolve("exited"));
+    });
+    browser = await chromium.connect(browserServer.wsEndpoint());
+
+    const release = (fresh) => {
+      const [now, later] = [[], []];
+      for (const entry of held) (fresh === undefined || entry.fresh === fresh ? now : later).push(entry);
+      held = later;
+      for (const entry of now) answer(entry);
     };
-    const requests = (count) =>
-      new Promise((resolve) => {
+    const pending = (fresh) => held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
+    const requests = (count, fresh) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          arrived = () => {};
+          reject(new Error(`Expected ${count} held${fresh ? " fresh" : ""} view request(s), saw ${pending(fresh)}`));
+        }, 10_000);
         arrived = () => {
-          if (held.length >= count) resolve();
+          if (pending(fresh) < count) return;
+          clearTimeout(timer);
+          arrived = () => {};
+          resolve();
         };
         arrived();
       });
+    const sent = () => ({
+      retained: views.filter((view) => !view.fresh).length,
+      fresh: views.filter((view) => view.fresh).length,
+    });
+    const capture = async (page, name) => {
+      if (!artifacts) return;
+      mkdirSync(artifacts, { recursive: true });
+      await page.screenshot({ path: join(artifacts, `${artifactLabel}-${name}.png`), fullPage: true });
+      if (name === "snapshot-updating") evidenceVideo = page.video();
+    };
+    const session = async (work) => {
+      held = [];
+      views = [];
+      freshResult = undefined;
+      answerFresh = false;
+      const context = await browser.newContext({ viewport: { width: 1100, height: 860 },
+        ...(artifacts ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } } : {}),
+      });
+      try {
+        await context.route("**/*", (route) => {
+          const origin = new URL(route.request().url()).origin;
+          return origin === parentOrigin || origin === childOrigin ? route.continue() : route.abort();
+        });
+        assert.deepEqual(await context.cookies(), []);
+        const page = await context.newPage();
+        await page.addInitScript(instrument);
+        await page.goto(parentOrigin);
+        await requests(2, false); // Development StrictMode replays the real mount effect.
+        const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
+        assert.ok(frame);
+        const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
+        const marks = () =>
+          frame.evaluate(() =>
+            performance.getEntriesByName("basalt:pool-accounts-ready").map((entry) => entry.detail),
+          );
+        const committedAtReady = () => frame.locator("html").getAttribute("data-committed-at-ready");
+        // Effects from a commit have run by the frame after it, so any extra request would have left.
+        const settled = () =>
+          frame.evaluate(
+            () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+          );
+        await work({ page, frame, accepted, marks, committedAtReady, settled });
+      } finally {
+        release();
+        assert.deepEqual(await context.cookies(), []);
+        await context.close();
+      }
+    };
 
-    for (const { populated, recovery } of [
+    for (const { populated, recovery } of sourceRef ? [] : [
       { populated: false },
       { populated: true },
       { populated: true, recovery: "manual" },
@@ -172,29 +404,7 @@ test(
               }
             : empty;
           viewResult = recovery ? failed : { ok: true, value };
-          held = [];
-          const context = await browser.newContext();
-          try {
-            const page = await context.newPage();
-            await page.addInitScript(() => {
-              const mark = performance.mark.bind(performance);
-              performance.mark = (name, options) => {
-                const result = mark(name, options);
-                if (name === "basalt:pool-accounts-ready")
-                  document.documentElement.dataset.committedAtReady =
-                    document.body.textContent ?? "";
-                return result;
-              };
-            });
-            await page.goto(parentOrigin);
-            await requests(2); // Development StrictMode replays the real mount effect.
-            const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
-            assert.ok(frame);
-            const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
-            const marks = () =>
-              frame.evaluate(
-                () => performance.getEntriesByName("basalt:pool-accounts-ready").length,
-              );
+          await session(async ({ page, frame, accepted, marks, committedAtReady }) => {
             const poll = async () => {
               await frame.evaluate(() => {
                 const now = Date.now();
@@ -202,14 +412,8 @@ test(
               });
               await page.evaluate((origin) => {
                 const frame = document.querySelector("iframe");
-                frame.contentWindow.postMessage(
-                  { type: "executor:app-active", active: false },
-                  origin,
-                );
-                frame.contentWindow.postMessage(
-                  { type: "executor:app-active", active: true },
-                  origin,
-                );
+                frame.contentWindow.postMessage({ type: "executor:app-active", active: false }, origin);
+                frame.contentWindow.postMessage({ type: "executor:app-active", active: true }, origin);
               }, childOrigin);
             };
             assert.deepEqual(await accepted(), []);
@@ -217,16 +421,16 @@ test(
             const visible = populated ? "Synthetic subscription" : "No accounts yet.";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
-              assert.equal(await marks(), 0);
+              assert.deepEqual(await marks(), []);
               assert.deepEqual(await accepted(), []);
               viewResult = { ok: true, value };
               if (recovery === "manual")
                 await frame.getByRole("button", { name: "Try again", exact: true }).click();
               else await poll();
-              await requests(1);
+              await requests(1, true);
               release();
               await frame.getByText(visible, { exact: true }).waitFor();
-              assert.equal(await marks(), 0);
+              assert.deepEqual(await marks(), []);
               assert.deepEqual(await accepted(), []);
               return;
             }
@@ -236,12 +440,10 @@ test(
               (await accepted()).map((entry) => entry.data),
               [ready],
             );
-            assert.ok(
-              (await frame.locator("html").getAttribute("data-committed-at-ready"))?.includes(
-                visible,
-              ),
-            );
-            assert.equal(await marks(), 1);
+            assert.ok((await committedAtReady())?.includes(visible));
+            // A view from a pool without retained views is live.
+            assert.deepEqual(await marks(), [{ source: "live" }]);
+            assert.deepEqual(sent(), { retained: 2, fresh: 0 });
             // Unrelated sources and unsupported contracts cannot satisfy the parent probe.
             await page.evaluate((data) => window.postMessage(data, location.origin), ready);
             await frame.evaluate(
@@ -251,25 +453,132 @@ test(
             await page.waitForFunction(() => Reflect.get(window, "rejected") === 2);
             assert.equal((await accepted()).length, 1);
             await poll();
-            await requests(1);
+            await requests(1, true);
             viewResult = { ok: true, value: empty };
             release();
             await frame.getByText("No accounts yet.", { exact: true }).waitFor();
-            assert.equal(await marks(), 1);
+            assert.equal((await marks()).length, 1);
             assert.equal((await accepted()).length, 1);
             // Keep the same WindowProxy, changing only its actual origin.
             await frame.goto(`${parentOrigin}/spoof`);
             await page.waitForFunction(() => Reflect.get(window, "rejected") === 3);
             assert.equal((await accepted()).length, 1);
-          } finally {
-            release();
-            await context.close();
-          }
+          });
         },
       );
+
+    const retained = () =>
+      poolView(Date.now(), { source: "snapshot", observedAgo: 18 * minute, savedAgo: 6 * minute, left: [[0.42, 0.71], [0.08, 0.33], [0.9, 0.64]] });
+    const live = () =>
+      poolView(Date.now(), { source: "live", observedAgo: 20_000, savedAgo: 2_000, left: [[0.37, 0.69], [0.55, 0.31], [0.88, 0.63]] });
+    const saved = "build-seat-1@example.com";
+    /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
+    const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
+      release(false);
+      await frame.getByText(saved, { exact: true }).waitFor();
+      await capture(page, name);
+      await page.waitForFunction(() => Reflect.get(window, "readiness").length === 1);
+      assert.deepEqual((await accepted()).map((entry) => entry.data), [ready]);
+      assert.deepEqual(await marks(), [{ source: "snapshot" }]);
+      assert.ok((await committedAtReady())?.includes(saved));
+      await frame.waitForFunction(() => Reflect.get(window, "followUps").length === 1);
+      const [shown] = await frame.evaluate(() => Reflect.get(window, "followUps"));
+      assert.ok(shown.includes(saved), "The fresh follow-up left before the retained view committed");
+      assert.ok(shown.includes("Saved view, updating…"));
+    };
+    const once = async ({ marks, accepted }) => {
+      assert.deepEqual(await marks(), [{ source: "snapshot" }]);
+      assert.equal((await accepted()).length, 1);
+    };
+
+    await t.test("a retained view commits first, then one fresh follow-up replaces it", async () => {
+      viewResult = retained();
+      await session(async (probe) => {
+        const { page, frame, settled } = probe;
+        await retainedCommitted(probe, "snapshot-updating");
+        await requests(1, true);
+        await frame.getByText("Saved view, updating…", { exact: true }).waitFor();
+        freshResult = live();
+        release(true);
+        await frame.getByText("Usage read just now", { exact: true }).waitFor();
+        assert.equal(await frame.getByText("Saved view", { exact: false }).count(), 0);
+        await capture(page, "live");
+        await settled();
+        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+        await once(probe);
+      });
+    });
+
+    await t.test("a follow-up answered at once still lands after the retained commit", { skip: Boolean(sourceRef) }, async () => {
+      viewResult = retained();
+      await session(async (probe) => {
+        const { frame, settled } = probe;
+        freshResult = live();
+        answerFresh = true;
+        await retainedCommitted(probe, "snapshot-immediate");
+        await frame.getByText("Usage read just now", { exact: true }).waitFor();
+        await settled();
+        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+        await once(probe);
+      });
+    });
+
+    await t.test("failed revalidation keeps the retained view, says so, and retries fresh only when asked", { skip: Boolean(sourceRef) }, async () => {
+      viewResult = retained();
+      await session(async (probe) => {
+        const { page, frame, settled } = probe;
+        await retainedCommitted(probe, "snapshot-before-failure");
+        await requests(1, true);
+        freshResult = { ...viewResult, value: { ...viewResult.value,
+          reading: { ...viewResult.value.reading, revalidationFailed: true } } };
+        release(true);
+        await frame.getByText(/^Couldn't update; showing a saved view from 6m ago$/).waitFor();
+        await frame.getByText(saved, { exact: true }).waitFor();
+        await capture(page, "revalidation-failed");
+        await settled();
+        // A failed revalidation is an answer, not a reason to ask again.
+        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+        await frame.getByRole("button", { name: "Try again", exact: true }).click();
+        await requests(1, true);
+        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+        freshResult = live();
+        release(true);
+        await frame.getByText("Usage read just now", { exact: true }).waitFor();
+        await settled();
+        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+        await once(probe);
+      });
+    });
+
+    await t.test("an unreachable follow-up keeps the retained view and its error", { skip: Boolean(sourceRef) }, async () => {
+      viewResult = retained();
+      await session(async (probe) => {
+        const { page, frame, settled } = probe;
+        await retainedCommitted(probe, "snapshot-before-unreachable");
+        await requests(1, true);
+        freshResult = failed;
+        release(true);
+        await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
+        await frame.getByText(saved, { exact: true }).waitFor();
+        await frame.getByText(/^Showing a saved view from 6m ago$/).waitFor();
+        await capture(page, "follow-up-unreachable");
+        await settled();
+        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+        await frame.getByRole("button", { name: "Try again", exact: true }).click();
+        await requests(1, true);
+        freshResult = live();
+        release(true);
+        await frame.getByText("Usage read just now", { exact: true }).waitFor();
+        assert.equal(await frame.getByText("Synthetic pool failure", { exact: true }).count(), 0);
+        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+        await once(probe);
+      });
+    });
+
     await t.test("the sender targets the exact configured parent origin", async () => {
       viewResult = { ok: true, value: empty };
       held = [];
+      views = [];
       const context = await browser.newContext();
       try {
         const page = await context.newPage();
@@ -285,7 +594,7 @@ test(
           });
         });
         await page.goto(childOrigin);
-        await requests(2);
+        await requests(2, false);
         release();
         await page.getByText("No accounts yet.", { exact: true }).waitFor();
         assert.deepEqual(await page.evaluate(() => Reflect.get(window, "sentReady")), {
@@ -299,3 +608,22 @@ test(
     });
   },
 );
+
+/** The pool stylesheet with the utilities the built bundle uses, as scripts/setup-build.ts builds it. */
+async function compileStyles(app, javascript) {
+  const { build } = require("esbuild");
+  const styles = await build({
+    entryPoints: [join(app, "ui/style.css")],
+    write: false,
+    bundle: true,
+    outfile: "main.css",
+    alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
+  });
+  const { compile } = createRequire(join(root, ".upstream/packages/sdk/package.json"))("tailwindcss");
+  const vite = createRequire(
+    realpathSync(join(root, ".upstream/apps/hosted/web/node_modules/@tailwindcss/vite/package.json")),
+  );
+  const { Scanner } = vite("@tailwindcss/oxide");
+  const candidates = new Scanner({ sources: [] }).scanFiles([{ content: javascript, extension: "js" }]);
+  return (await compile(styles.outputFiles[0].text)).build(candidates);
+}

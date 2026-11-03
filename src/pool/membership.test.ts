@@ -44,10 +44,14 @@ function fixture() {
 }
 
 test("signed reservation persists refusal and aborts only that pool before acknowledging the writer", async () => {
-  const f = fixture(), memberships = new NativeMemberships(f.deps);
+  const f = fixture();
+  const invalidated: string[] = [];
+  const memberships = new NativeMemberships({ ...f.deps, invalidateView: async (pool) => { invalidated.push(pool); } });
   await assert.rejects(memberships.reserve(await f.request("a", "4b".repeat(32))));
+  assert.deepEqual(invalidated, []);
   assert.equal(await memberships.configured(), false);
   await memberships.reserve(await f.request());
+  assert.deepEqual(invalidated, ["a"]);
   assert.deepEqual(f.aborted, ["a"]);
   assert.equal(f.installed.get("a")?.dirty, true);
   await assert.rejects(memberships.authority("a"), /refreshing/);
