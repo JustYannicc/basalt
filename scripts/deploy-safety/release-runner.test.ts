@@ -246,7 +246,7 @@ test("manual rollback records deployment or smoke failure and requires trusted m
     report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
     "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
   ), /public smoke failed/);
-  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "smoke", "mark:failure"]);
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "image", "smoke", "mark:failure"]);
 
   calls.length = 0;
   await assert.rejects(executeManualRollback(

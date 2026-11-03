@@ -26,6 +26,7 @@ let app = { id: "fixture-app", name: "fixture-pool", account_id: "fixture", vers
   configuration: { image: image(publishedDigest) }, scheduling_policy: "default", max_instances: 1, instances: 1 };
 let writes = 0;
 let registryReads = 0;
+let applicationExists = true;
 const http = HttpClient.make((request, url) => {
   if (url.hostname === "registry.cloudflare.com") {
     registryReads++;
@@ -41,10 +42,12 @@ const http = HttpClient.make((request, url) => {
     value = { id: "fixture-rollout" };
   } else if (request.method === "DELETE") {
     writes++;
+    applicationExists = false;
   } else if (request.method === "GET" && url.pathname.endsWith("/applications")) {
-    value = [app];
+    value = applicationExists ? [app] : [];
   } else if (request.method !== "GET") {
     writes++;
+    applicationExists = true;
     assert.equal(request.body._tag, "Uint8Array");
     const body = JSON.parse(Buffer.from(request.body.body).toString());
     app = { ...app, ...body, version: app.version + 1 };
@@ -88,8 +91,11 @@ const program = Effect.gen(function* () {
   const noDigest = { ...expected, hash: { ...expected.hash, digest: undefined } };
   const beforeMissing = registryReads;
   assert.equal((yield* diff(noDigest))?.action, "update");
-  expected = yield* reconcile(noDigest);
-  assert.ok(registryReads > beforeMissing, "missing provenance is resolved from the registry");
+  expected = yield* Effect.gen(function* () {
+    const freshProvider = yield* ContainerPlatform.Provider;
+    return yield* freshProvider.reconcile({ id: "PoolContainer", news: props, bindings: [], output: noDigest, session });
+  }).pipe(Effect.provide(LiveContainerProvider()));
+  assert.ok(registryReads > beforeMissing, "a fresh provider resolves missing provenance from the registry");
   assert.equal(expected.hash.digest, publishedDigest);
 
   writeFileSync(join(context, "runtime.txt"), "new runtime\n");
