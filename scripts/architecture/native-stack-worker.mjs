@@ -36,6 +36,7 @@ try {
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
   const settings = deployEnvironment(synthetic);
+  settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
   phase = "import";
   const [{ default: actualRoot }, { evalStack }, { AlchemyContextLive }, { provideFreshArtifactStore },
     { layerNonInteractive }, { Effect, ConfigProvider, Layer, Exit, Cause }, NodeServices, Output] = await Promise.all([
@@ -57,14 +58,14 @@ try {
   http.assertAllowed();
   if (Exit.isFailure(exit)) {
     const diagnostic = Cause.pretty(exit.cause);
-    const labels = ["Invalid native declaration name", "Invalid native declaration metadata", "Invalid native bindings", "Unknown native Worker export kind", "Unmatched native workflow export", "Invalid native binding contributions"];
+    const labels = ["Invalid native declaration name", "Invalid native declaration metadata", "Invalid native bindings", "Manual cron requires a local E2E Cloud.", "Unknown native Worker export kind", "Unmatched native workflow export", "Invalid native binding contributions"];
     const metadata = /Invalid native declaration metadata:(record|resource|props|env|contribution|data|exports|export|binding)-(undefined|object|array|function|string|number|boolean|symbol|bigint)/.exec(diagnostic)?.[0];
     throw new Error(metadata ?? labels.find(label => diagnostic.includes(label)) ?? "evaluation");
   }
   emit(JSON.stringify(exit.value));
 } catch (error) {
   // Never forward exception messages, causes, file paths, config, or request details.
-  const labels = ["Invalid native declaration name", "Invalid native declaration metadata", "Invalid native bindings", "Unknown native Worker export kind", "Unmatched native workflow export", "Invalid native binding contributions"];
+  const labels = ["Invalid native declaration name", "Invalid native declaration metadata", "Invalid native bindings", "Manual cron requires a local E2E Cloud.", "Unknown native Worker export kind", "Unmatched native workflow export", "Invalid native binding contributions"];
   const safe = labels.includes(error?.message) || /^Invalid native declaration metadata:(record|resource|props|env|contribution|data|exports|export|binding)-(undefined|object|array|function|string|number|boolean|symbol|bigint)$/.test(error?.message);
   emit(JSON.stringify({ error: `native-stack-${phase}-failed`, reason: safe ? error.message : "redacted" }));
   process.exitCode = 1;

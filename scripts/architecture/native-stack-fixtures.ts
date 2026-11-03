@@ -1,4 +1,4 @@
-/** Only declaration identities and binding names/types may cross the process boundary. */
+/** Only declaration identities, binding names/types and counts may cross the process boundary. */
 export interface NativeResource {
   type: string;
   fqn: string;
@@ -9,6 +9,7 @@ export interface WorkerMetadata {
   fqn: string;
   bindings: { name: string; kind: string }[];
   deferredBindingCount: number;
+  cronTriggerCount?: number;
 }
 
 export interface NativeInventory {
@@ -44,6 +45,7 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
     const names = new Map<string, Set<string>>();
     const localClasses = new Set<string>();
     let deferredBindingCount = 0;
+    const crons = new Set<string>();
     const add = (name: unknown, kind: string) => {
       const key = safeName(name);
       const kinds = names.get(key) ?? new Set<string>();
@@ -51,6 +53,11 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
       names.set(key, kinds);
     };
     const collect = (data: RecordValue) => {
+      if (data.crons !== undefined) {
+        if (!Array.isArray(data.crons) || !data.crons.every(value => typeof value === "string"))
+          throw new Error("Invalid native bindings");
+        for (const cron of data.crons) crons.add(cron);
+      }
       for (const [name, entry] of Object.entries(data.env == null ? {} : record(data.env, "env")))
         if (entry !== undefined) add(name, "env");
       if (data.bindings !== undefined) {
@@ -97,7 +104,7 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
     }
     for (const name of localClasses)
       result.resources.push({ type: "Cloudflare.DurableObject", fqn: `${fqn}/exports/${name}`, declaredName: name });
-    result.workers.push({ fqn, deferredBindingCount, bindings: [...names].flatMap(([name, kinds]) =>
+    result.workers.push({ fqn, deferredBindingCount, ...(crons.size ? { cronTriggerCount: crons.size } : {}), bindings: [...names].flatMap(([name, kinds]) =>
       [...kinds].map(kind => ({ name, kind }))).sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind)) });
   }
   return validateInventory(result);
@@ -124,7 +131,8 @@ export function validateInventory(value: unknown): NativeInventory {
   }).sort((a, b) => a.fqn.localeCompare(b.fqn) || a.type.localeCompare(b.type));
   const seenWorkers = new Set<string>();
   const workers = envelope.workers.map(value => {
-    const item = exact(value, ["fqn", "bindings", "deferredBindingCount"]);
+    const item = record(value);
+    exact(item, ["fqn", "bindings", "deferredBindingCount", ...("cronTriggerCount" in item ? ["cronTriggerCount"] : [])]);
     const fqn = safeName(item.fqn);
     if (!ids.has(`Cloudflare.Worker\0${fqn}`) || seenWorkers.has(fqn) || !Array.isArray(item.bindings))
       throw new Error("Invalid native Worker identity");
@@ -136,7 +144,10 @@ export function validateInventory(value: unknown): NativeInventory {
       const binding = exact(value, ["name", "kind"]);
       return { name: safeName(binding.name), kind: safeName(binding.kind) };
     });
-    return { fqn, bindings, deferredBindingCount };
+    const cronTriggerCount = item.cronTriggerCount;
+    if (cronTriggerCount !== undefined && (typeof cronTriggerCount !== "number" || !Number.isSafeInteger(cronTriggerCount) || cronTriggerCount < 1))
+      throw new Error("Invalid native cron trigger count");
+    return { fqn, bindings, deferredBindingCount, ...(typeof cronTriggerCount === "number" ? { cronTriggerCount } : {}) };
   }).sort((a, b) => a.fqn.localeCompare(b.fqn));
   if (resources.filter(r => r.type === "Cloudflare.Worker").length !== workers.length)
     throw new Error("Missing native Worker metadata");

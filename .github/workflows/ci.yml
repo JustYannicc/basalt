@@ -174,7 +174,12 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery' --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues' --manual-cron --workers 1
+      - name: Verify atomic pool setup with ordinary cron triggers
+        working-directory: .upstream
+        env:
+          BASALT_E2E_POOL_SETUP: "1"
+        run: bun run e2e:cloud --test-name '^Cloud pool account recovery publishes' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
