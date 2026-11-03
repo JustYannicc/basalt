@@ -131,7 +131,9 @@ export class QuotaCollection {
     } catch (error) {
       // Home owns the queued job. A local wait deadline, this budget or the caller's own request
       // deadline, does not fail or cancel collection. A caller that went away still throws.
-      if ((timeout.aborted && !callerSignal?.aborted) || deadline(callerSignal)) return stillCollecting(retained);
+      // Only the deadline's own abort counts; any other error, even after a deadline, still throws.
+      if ((timeout.aborted && !callerSignal?.aborted && error === timeout.reason)
+        || (deadline(callerSignal) && error === callerSignal!.reason)) return stillCollecting(retained);
       throw error;
     }
   }

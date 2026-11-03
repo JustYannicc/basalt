@@ -154,6 +154,20 @@ test("a caller that disconnects still fails its read", async () => {
   await assert.rejects(collector.read("a", caller.signal));
 });
 
+test("a real storage error after the request deadline still fails the read", async () => {
+  const f = fixture(), caller = new AbortController(), failure = new Error("storage unavailable");
+  const storage = {
+    get: async () => {
+      caller.abort(new DOMException("Request deadline", "TimeoutError"));
+      throw failure;
+    },
+    put: async () => {},
+  };
+  const collector = new QuotaCollection(storage, f.client, f.options);
+  await assert.rejects(collector.read("a", caller.signal), failure);
+  assert.equal(f.posts(), 0, "no Home collection was queued");
+});
+
 test("an awaited collection yields to another account read", async () => {
   const f = fixture();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
