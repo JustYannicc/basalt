@@ -254,3 +254,26 @@ test("the alarm forces an idle account's collection so later samples include its
   await usage.observe();
   assert.equal(collects, 1); assert.equal((await history.advice("pool-a", clock))[0]!.accounts, 1);
 });
+
+
+test("alarm never collects connector credentials or explicitly unlimited model accounts", async () => {
+  const storage = new Memory(), collected: string[] = [];
+  const readings = [
+    { credential_id: "google", observed_at: "2020-01-01T00:00:00Z", freshness: "stale", primary_windows: [] },
+    { credential_id: "unlimited", observed_at: "2020-01-01T00:00:00Z", freshness: "stale", primary_windows: [{ is_unlimited: true }] },
+  ];
+  const client = new HomeClient(async (path, init) => {
+    const route = new URL(path, "https://home.example.test").pathname.slice("/v8/management".length);
+    if (route === "/channel-groups") return Response.json({ channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }] });
+    if (route === "/channel-group-details") return Response.json({ channel_group_details: readings.map((r, i) => ({ id: i + 1, channel_group_id: 1, auth_id: r.credential_id })) });
+    if (route === "/capabilities") return Response.json({});
+    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+    if (route === "/credentials") return Response.json({ files: [{ id: "google", provider: "google" }, { id: "unlimited", provider: "codex" }] });
+    if (route === "/quota/credentials") return Response.json({ items: readings });
+    if (route === "/quota/collect") { collected.push(String(init?.body)); return Response.json({ accepted: 1 }); }
+    throw new Error(path);
+  });
+  const collection = new QuotaCollection(storage, client, { now: () => now.getTime() });
+  await new PoolUsage({ storage, client, signingKey, audience: async () => [], now: () => now, collection }).observe();
+  assert.deepEqual(collected, []);
+});

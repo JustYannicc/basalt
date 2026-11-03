@@ -1,3 +1,4 @@
+import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
 import { AppModels } from "./app-models.ts";
 import { appModelPath } from "./app-model-contract.ts";
@@ -213,6 +214,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.prices.run();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
     await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
+    await publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY)
+      .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try { await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests); }
       catch { console.error("POOL_MODEL_HISTORY_FAILURE count=1"); }
