@@ -1245,7 +1245,7 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 +    "./provider-account-definitions": "./src/implementation/provider-account-definitions.ts",
      "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
      "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
-     "./pool-token": "./src/implementation/pool-token.ts"
+     "./pool-token": "./src/implementation/pool-token.ts",
 diff --git a/apps/hosted/server/src/implementation/provider-account-definitions.ts b/apps/hosted/server/src/implementation/provider-account-definitions.ts
 new file mode 100644
 --- /dev/null
