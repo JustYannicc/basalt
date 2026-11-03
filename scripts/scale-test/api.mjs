@@ -5,20 +5,45 @@ function controlSignal() {
   if (remaining <= 0) throw new Error("Control-plane time reserve exhausted");
   return AbortSignal.timeout(Math.min(30_000, remaining));
 }
+function refusal(path, method, status, data) {
+  const collection = ["containers/applications", "workers/durable_objects/namespaces", "workers/scripts",
+    "workers/subdomain", "hyperdrive/configs", "mtls_certificates"].find(name =>
+    path === name || path.startsWith(`${name}/`) || path.startsWith(`${name}?`)) ?? "request";
+  const operation = collection + (path.endsWith("/rollouts") ? "/rollouts" : "");
+  const errors = Array.isArray(data?.errors) ? data.errors.slice(0, 20) : [];
+  const codes = [...new Set(errors.map(error => error?.code).filter(Number.isSafeInteger))];
+  // Only known schema field names survive; remote messages and arbitrary pointers may contain secrets.
+  const fields = ["description", "strategy", "target_configuration", "instance_type", "step_percentage", "image", "max_instances"]
+    .filter(field => errors.some(error => typeof error?.message === "string"
+      && new RegExp(`\\b${field}\\b`).test(error.message)));
+  const error = new Error(`Cloudflare ${method} ${operation} failed (${status})`);
+  error.diagnostic = { provider: "cloudflare", operation, method, status, codes, fields };
+  return error;
+}
 export async function cf(path, method = "GET", body) {
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/${path}`, {
     method, headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controlSignal(),
   });
-  if (response.status === 404) return null;
+  if (response.status === 404 && method === "GET") return null;
   if (!response.ok) {
-    const collection = ["containers/applications", "workers/durable_objects/namespaces", "workers/scripts",
-      "workers/subdomain", "hyperdrive/configs", "mtls_certificates"].find((name) =>
-      path === name || path.startsWith(`${name}/`) || path.startsWith(`${name}?`)) ?? "request";
-    throw new Error(`Cloudflare ${method} ${collection} failed (${response.status})`);
+    let data;
+    // Refusals are small JSON envelopes. Cancel unbounded bodies rather than retaining provider output.
+    const reader = response.body?.getReader();
+    let bytes = 0; const chunks = [];
+    try {
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); break; }
+        bytes += value.byteLength;
+        if (bytes > 65536) { await reader.cancel(); break; }
+        chunks.push(Buffer.from(value));
+      }
+    } catch { /* Diagnostics must not hide the original refusal. */ }
+    throw refusal(path, method, response.status, data);
   }
   const data = await response.json();
-  if (data.success === false) throw new Error("Cloudflare rejected the operation");
+  if (data.success === false) throw refusal(path, method, response.status, data);
   return data;
 }
 export async function list(path) {
