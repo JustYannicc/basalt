@@ -572,7 +572,7 @@ for (const route of ["remote", "local"])
             local?.installer ??
             (await launch(
               process.execPath,
-              [fileURLToPath(new URL("./client.mjs", import.meta.url)), "--payload-file", payload],
+              [fileURLToPath(new URL("./client.mjs", import.meta.url)), "--payload-file", payload, "--keep-mcp"],
               env,
               cwd,
             ));
