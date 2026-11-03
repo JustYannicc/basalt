@@ -1319,7 +1319,7 @@ index 70eb890..7d41e42 100644
  
  /**
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 3643ce7..0b6f731 100644
+index 3643ce7..f51e0fc 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
@@ -1330,16 +1330,7 @@ index 3643ce7..0b6f731 100644
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
-@@ -195,7 +196,7 @@ export const startCloudEnvironment = (input: {
-     const stack = poolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
-     const stage = `e2e-${randomBytes(8).toString("hex")}`;
-     const container = `executor-${stage}`;
--    const fixture =
-+    const baseFixture =
-       input.signInThrough === undefined
-         ? yield* createEmulatorFixture(input.origin)
-         : Redacted.make(
-@@ -205,13 +206,49 @@ export const startCloudEnvironment = (input: {
+@@ -205,6 +206,40 @@ export const startCloudEnvironment = (input: {
                services: input.signInThrough.services,
              }),
            );
@@ -1368,8 +1359,8 @@ index 3643ce7..0b6f731 100644
 +      );
 +      return yield* startMapsRoutesEmulator({ document, browserOrigin: browser });
 +    });
-+    const fixtureValue = Redacted.value(baseFixture);
-+    const fixture = Redacted.make(
++    const fixtureValue = Redacted.value(fixture);
++    const routesFixture = Redacted.make(
 +      mapsRoutes === undefined
 +        ? fixtureValue
 +        : {
@@ -1380,17 +1371,16 @@ index 3643ce7..0b6f731 100644
      const oauthProxy = {
        productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
        secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
-     };
-     yield* Effect.addFinalizer(() =>
-       Effect.forEach(
--        Object.values(Redacted.value(fixture).services),
-+        Object.entries(Redacted.value(fixture).services)
-+          .filter(([name]) => name !== "mapsRoutes")
-+          .map(([, service]) => service),
-         (service) => emulatorRequest(service.baseUrl, "/_emulate/reset", {}),
-         { concurrency: 5 },
+@@ -217,7 +252,7 @@ export const startCloudEnvironment = (input: {
        ).pipe(Effect.asVoid, Effect.orDie),
-@@ -289,7 +326,7 @@ export const startCloudEnvironment = (input: {
+     );
+     const emulators = `${directory}/emulators.json`;
+-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
++    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
+     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+     const analyticsPort = yield* startAnalyticsCollector(directory);
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+@@ -289,7 +324,7 @@ export const startCloudEnvironment = (input: {
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
        // Fresh test installs use the encrypted native journal, as production does.
        EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
@@ -1399,10 +1389,12 @@ index 3643ce7..0b6f731 100644
          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
          : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
-@@ -337,6 +374,12 @@ export const startCloudEnvironment = (input: {
+@@ -336,7 +371,13 @@ export const startCloudEnvironment = (input: {
+       CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
-       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+-      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
++      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(routesFixture).services),
 +      ...(mapsRoutes === undefined
 +        ? {}
 +        : {
@@ -1412,6 +1404,23 @@ index 3643ce7..0b6f731 100644
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+@@ -522,7 +563,7 @@ export const startCloudEnvironment = (input: {
+             databasePassword,
+             v1ReaderPassword,
+             v1WriterPassword,
+-            ...cloudStartupSecrets(env, Redacted.value(fixture).services),
++            ...cloudStartupSecrets(env, Redacted.value(routesFixture).services),
+           ],
+           (line) =>
+             Effect.gen(function* () {
+@@ -685,6 +726,6 @@ export const startCloudEnvironment = (input: {
+       emulators,
+       fixtures: controls,
+       origin: input.origin,
+-      oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
++      oauthProxy: { ...oauthProxy, services: Redacted.value(routesFixture).services },
+     };
+   });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 index ddd7b7e..a7b789b 100644
 --- a/e2e/support/emulators.ts
