@@ -1,0 +1,622 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts b/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts
+@@ -0,0 +1,65 @@
++import { useAtomValue } from "@effect/atom-react";
++import { Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { useMemo } from "react";
++import { sessionAtom } from "../../contracts/auth.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import type { ComputersView } from "./pool-setup.tsx";
++
++/*
++ * What Connect last read from the setup service, kept in the dashboard's registry so returning to
++ * the page shows it at once. One slot holds one organization and person; opening Connect for
++ * anyone or anywhere else clears it, so nobody's computers or pool choice reach another context.
++ * It holds the list and the choice only: intents and keys stay with the page that asked for them.
++ */
++
++/** The organization as the URL names it and the person the session verified. */
++export interface SetupScope {
++  readonly organization: string;
++  readonly person: string;
++}
++
++export const sameScope = (a: SetupScope | undefined, b: SetupScope | undefined) =>
++  a === b || (!!a && !!b && a.organization === b.organization && a.person === b.person);
++
++export interface RetainedSetup {
++  readonly scope: SetupScope;
++  readonly view: ComputersView;
++  readonly pool: string | undefined;
++  /** When the last accepted read started, by this browser's clock. */
++  readonly readAt: number;
++}
++
++/** As long as `revalidated` keeps the dashboard's other reads after their last view closes. */
++export const retainedSetupAtom = Atom.make<RetainedSetup | undefined>(undefined).pipe(
++  Atom.setIdleTTL("30 minutes"),
++);
++
++/** `revalidated`'s freshness: a page reopened within it shows its value without another read. */
++const freshness = 30_000;
++export const isFresh = (retained: RetainedSetup) => Date.now() - retained.readAt < freshness;
++
++// Each field is selected on its own so a read that changes nothing re-renders nothing.
++const selectScope = (retained: RetainedSetup | undefined) => retained?.scope;
++const selectView = (retained: RetainedSetup | undefined) => retained?.view;
++const selectPool = (retained: RetainedSetup | undefined) => retained?.pool;
++
++/** The retained list and choice, only while they belong to this scope. */
++export function useRetainedSetup(scope: SetupScope | undefined) {
++  const owner = useAtomValue(retainedSetupAtom, selectScope);
++  const view = useAtomValue(retainedSetupAtom, selectView);
++  const pool = useAtomValue(retainedSetupAtom, selectPool);
++  const mine = owner !== undefined && scope !== undefined && sameScope(owner, scope);
++  return mine ? { view, pool } : { view: undefined, pool: undefined };
++}
++
++/**
++ * The URL's slug, not the verified ID it resolves to, so that resolution is not a new organization.
++ * A failed session check keeps the person it last confirmed; a confirmed sign-out has none.
++ */
++export function useSetupScope(): SetupScope | undefined {
++  const { slug } = useOrganizationRoute();
++  const session = useAtomValue(sessionAtom);
++  const person = Option.getOrNull(AsyncResult.value(session))?.user.id;
++  return useMemo(() => (person ? { organization: slug, person } : undefined), [slug, person]);
++}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -1,4 +1,12 @@
+-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
++import { RegistryContext } from "@effect/atom-react";
++import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
++import {
++  isFresh,
++  retainedSetupAtom,
++  sameScope,
++  useRetainedSetup,
++  useSetupScope,
++} from "./pool-setup-retention.ts";
+
+ /*
+  * The deployment's pool setup on the Connect page. Everything here talks to the deployment's own
+@@ -25,7 +33,7 @@
+   readonly name: string;
+   readonly mine: boolean;
+ }
+-interface ComputersView {
++export interface ComputersView {
+   readonly computers: readonly Computer[];
+   readonly pools: readonly PoolChoice[];
+   readonly undoPrompt: string;
+@@ -42,10 +50,20 @@
+   readonly baseUrl: string;
+ }
+
+-class SetupFailure extends Error {}
++class SetupFailure extends Error {
++  constructor(
++    message: string,
++    readonly status?: number,
++  ) {
++    super(message);
++  }
++}
+
+ const failure = (error: unknown) =>
+   error instanceof SetupFailure ? error.message : "Setup failed. Try again.";
++/** The setup service turned this session away; unlike a lost connection, the list goes with it. */
++const refused = (error: unknown) =>
++  error instanceof SetupFailure && (error.status === 401 || error.status === 403);
+
+ /** Intents last five minutes; renew a little early so a click never races the expiry. */
+ const intentLife = 4 * 60_000;
+@@ -54,6 +72,8 @@
+ /** A claimed computer may take a while to send its first request; stop watching after this. */
+ const watchAfterClaim = 10 * 60_000;
+ const pollEvery = 4000;
++/** `pollingQuery`'s idle reconciliation, for changes made outside this page. */
++const reconcileEvery = 30_000;
+
+ async function send<T>(path: string, init?: RequestInit): Promise<T> {
+   let response: Response;
+@@ -65,7 +85,7 @@
+   const body: unknown = await response.json().catch(() => ({}));
+   const error =
+     typeof body === "object" && body !== null && "error" in body ? String(body.error) : "";
+-  if (!response.ok) throw new SetupFailure(error || "Setup failed. Try again.");
++  if (!response.ok) throw new SetupFailure(error || "Setup failed. Try again.", response.status);
+   return body as T;
+ }
+
+@@ -109,14 +129,38 @@
+   | { readonly kind: "connected"; readonly name: string }
+   | { readonly kind: "expired"; readonly computerId: string };
+
+-/** Shared state for the Connect page: one list, one pool choice and one setup in flight. */
++/**
++ * Shared state for the Connect page: one list, one pool choice and one setup in flight. The list
++ * and choice outlive the page in the registry (see pool-setup-retention.ts); the rest is this
++ * page's own.
++ */
+ export function usePoolSetup() {
++  const registry = useContext(RegistryContext);
++  const scope = useSetupScope();
++  const { view, pool } = useRetainedSetup(scope);
+   const intent = useRef<{ value: Promise<string>; at: number } | undefined>(undefined);
+-  const [view, setView] = useState<ComputersView>();
+-  const [pool, setPool] = useState<string>();
+   const [pending, setPending] = useState<Pending>();
+   const [problem, setProblem] = useState<string>();
++  /** Why the last read of the list failed; the next successful read clears it. */
++  const [readFailure, setReadFailure] = useState<string>();
+   const minting = useRef(false);
++  const cleared = useRef(new Set<string>());
++  /** The scope this page last loaded for. */
++  const loaded = useRef(scope);
++  // Each scope owns its reads. Old completions cannot release or block the next scope.
++  const reader = useRef({ inFlight: 0, issued: 0, committed: 0 });
++  /** Restarts idle reconciliation after each read, so a poll or mutation is not followed by one. */
++  const rearm = useRef(() => {});
++
++  /** Refused here: nothing this person saw stays to be shown again. */
++  const forget = useCallback(() => {
++    reader.current = { inFlight: 0, issued: 0, committed: 0 };
++    intent.current = undefined;
++    rearm.current();
++    const stored = registry.get(retainedSetupAtom);
++    if (stored && (!scope || sameScope(stored.scope, scope)))
++      registry.set(retainedSetupAtom, undefined);
++  }, [registry, scope]);
+
+   // One request at a time shares the intent; a failure is never cached.
+   const signed = useCallback(() => {
+@@ -129,29 +173,109 @@
+     return value;
+   }, []);
+
+-  const cleared = useRef(new Set<string>());
+   const refresh = useCallback(async () => {
+-    const current = await signed();
+-    const next = await send<ComputersView>(`computers?intent=${encodeURIComponent(current)}`);
+-    // A computer whose link lapsed unclaimed can never be set up; clear it from the list.
+-    for (const computer of next.computers) {
+-      if (!computer.lapsed || cleared.current.has(computer.id)) continue;
+-      cleared.current.add(computer.id);
+-      void revoke(computer.id, current);
++    const started = Date.now();
++    const own = reader.current;
++    const ticket = ++own.issued;
++    const read = async () => {
++      const current = await signed();
++      const next = await send<ComputersView>(`computers?intent=${encodeURIComponent(current)}`);
++      return { current, next };
++    };
++    own.inFlight += 1;
++    try {
++      const { current, next } = await read();
++      if (!scope || reader.current !== own || ticket < own.committed) return next;
++      own.committed = ticket;
++      // A computer whose link lapsed unclaimed can never be set up; clear it from the list.
++      for (const computer of next.computers) {
++        if (!computer.lapsed || cleared.current.has(computer.id)) continue;
++        cleared.current.add(computer.id);
++        void revoke(computer.id, current);
++      }
++      const stored = registry.get(retainedSetupAtom);
++      const previous = stored && sameScope(stored.scope, scope) ? stored : undefined;
++      // Another page may have read since this one started; the later read's answer stands.
++      if (previous && previous.readAt > started) return next;
++      const chosen = previous?.pool;
++      // The same list keeps its identity, so a quiet poll re-renders nothing.
++      const same = previous && JSON.stringify(previous.view) === JSON.stringify(next);
++      registry.set(retainedSetupAtom, {
++        scope: previous?.scope ?? scope,
++        view: same ? previous.view : next,
++        pool:
++          chosen && next.pools.some(({ id }) => id === chosen)
++            ? chosen
++            : (next.pools.find((choice) => choice.mine)?.id ?? next.pools[0]?.id),
++        readAt: started,
++      });
++      setReadFailure(undefined);
++      return next;
++    } catch (error) {
++      if (reader.current !== own) return undefined;
++      if (refused(error)) forget();
++      throw error;
++    } finally {
++      own.inFlight -= 1;
++      if (reader.current === own) rearm.current();
+     }
+-    setView((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next));
+-    setPool((current) =>
+-      current && next.pools.some(({ id }) => id === current)
+-        ? current
+-        : (next.pools.find((choice) => choice.mine)?.id ?? next.pools[0]?.id),
+-    );
+-    return next;
+-  }, [signed]);
++  }, [forget, registry, scope, signed]);
++
++  const setPool = useCallback(
++    (next: string) => {
++      const stored = registry.get(retainedSetupAtom);
++      if (stored && scope && sameScope(stored.scope, scope) && stored.pool !== next)
++        registry.set(retainedSetupAtom, { ...stored, pool: next });
++    },
++    [registry, scope],
++  );
+
+   useEffect(() => {
+-    // oxlint-disable-next-line react/set-state-in-effect -- loads the list from the setup service once
+-    refresh().catch((error: unknown) => setProblem(failure(error)));
+-  }, [refresh]);
++    if (!sameScope(loaded.current, scope)) {
++      // Another organization or person: nothing in flight or shown belongs to them.
++      loaded.current = scope;
++      intent.current = undefined;
++      cleared.current = new Set();
++      // oxlint-disable-next-line react/set-state-in-effect -- the previous scope's setup ends here
++      setPending(undefined);
++      // oxlint-disable-next-line react/set-state-in-effect -- the previous scope's setup ends here
++      setProblem(undefined);
++      // oxlint-disable-next-line react/set-state-in-effect -- the previous scope's setup ends here
++      setReadFailure(undefined);
++    }
++    const stored = registry.get(retainedSetupAtom);
++    const kept = stored && scope && sameScope(stored.scope, scope) ? stored : undefined;
++    if (stored && !kept) registry.set(retainedSetupAtom, undefined);
++    const fence = () => {
++      reader.current = { inFlight: 0, issued: 0, committed: 0 };
++      rearm.current = () => {};
++    };
++    if (!scope) return fence;
++    // A retained list stays on screen while it is read again; a failed read keeps it there too.
++    const failed = (error: unknown) => setReadFailure(failure(error));
++    // Like the dashboard's other reads: again on every return to the tab, and every 30 seconds
++    // while visible. One at a time; a read already under way answers for both.
++    const reconcile = () => {
++      if (document.visibilityState === "visible" && reader.current.inFlight === 0)
++        refresh().catch(failed);
++    };
++    let idle: number | undefined;
++    rearm.current = () => {
++      window.clearTimeout(idle);
++      idle = window.setTimeout(reconcile, reconcileEvery);
++    };
++    window.addEventListener("visibilitychange", reconcile);
++    if (kept && isFresh(kept)) rearm.current();
++    else {
++      // oxlint-disable-next-line react/set-state-in-effect -- reports an asynchronous read failure
++      refresh().catch(failed);
++    }
++    return () => {
++      fence();
++      window.clearTimeout(idle);
++      window.removeEventListener("visibilitychange", reconcile);
++    };
++  }, [refresh, registry, scope]);
+
+   // While a link is out, watch for its computer's first request, then stop. A hidden tab waits.
+   useEffect(() => {
+@@ -192,6 +316,7 @@
+     if (minting.current) return;
+     minting.current = true;
+     setProblem(undefined);
++    setReadFailure(undefined);
+     const earlier =
+       pending?.kind === "waiting" || pending?.kind === "expired" ? pending : undefined;
+     setPending({ kind: "minting" });
+@@ -279,9 +404,10 @@
+   );
+
+   // Stable while nothing changed, so a quiet poll re-renders nothing.
++  const shown = problem ?? readFailure;
+   return useMemo(
+-    () => ({ view, pool, setPool, pending, problem, copyPrompt, issueKey, act, failure }),
+-    [view, pool, pending, problem, copyPrompt, issueKey, act],
++    () => ({ view, pool, setPool, pending, problem: shown, copyPrompt, issueKey, act, failure }),
++    [view, pool, setPool, pending, shown, copyPrompt, issueKey, act],
+   );
+ }
+ export type PoolSetup = ReturnType<typeof usePoolSetup>;
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -11,6 +11,13 @@
+ import { Actors } from "../support/actors.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import {
++  advanceToReconciliation,
++  holdQuery,
++  installBrowserClock,
++  refreshVisiblePage,
++} from "../support/query-transition.ts";
+
+ interface FakeComputer {
+   id: string;
+@@ -113,6 +120,11 @@
+     computer.firstModelRequestAt = new Date().toISOString();
+     computer.firstToolCallAt = new Date().toISOString();
+   };
++  /** Someone renames a computer from another device while this page is closed. */
++  const renameElsewhere = (id: string, name: string) => {
++    const computer = computers.find((item) => item.id === id);
++    if (computer) computer.name = name;
++  };
+   /** The one-time link a page claims itself, for a key it shows once. */
+   const claim = (route: Route) =>
+     reply(route, {
+@@ -127,7 +139,7 @@
+     route.fulfill({
+       path: `../public/brand/assistants/${new URL(route.request().url()).pathname.split("/").pop()}`,
+     });
+-  return { handle, claim, capture, arrive, calls };
++  return { handle, claim, capture, arrive, renameElsewhere, calls };
+ }
+
+ /** Resolves once the element's own transitions end, so a checkpoint shows it at rest. */
+@@ -363,4 +375,233 @@
+       }),
+     ),
+   );
++
++  it.effect(scenarios.poolSetupRetainedReturn.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const service = setupService();
++        const connect = `/org/${actors.organization.slug}/connect`;
++        // The intent and the computer list are the reads that made Connect wait on every visit.
++        const setupRead = /^\/setup\/v1\/(?:context|computers)$/;
++        let setupReads = 0;
++        yield* browser.login(actors.owner);
++        yield* installBrowserClock;
++        yield* browser.use("Stand in for the setup service and count its reads", (page) =>
++          page.route("**/setup/v1/**", service.handle).then(() =>
++            page.on("request", (request) => {
++              if (request.method() === "GET" && setupRead.test(new URL(request.url()).pathname))
++                setupReads += 1;
++            }),
++          ),
++        );
++        const picker = (page: Page) =>
++          guide(page, "Claude Code").getByRole("combobox", { name: "Pool for models" });
++        const chooseClaudeCode = browser.use("Choose Claude Code", (page) =>
++          page
++            .getByRole("button", { name: "Claude Code", exact: true })
++            .click()
++            .then(() => picker(page).waitFor()),
++        );
++        const chosenPool = (phase: string) =>
++          browser.use(`${phase}: the pool picker`, (page) =>
++            Promise.all([picker(page).innerText(), picker(page).isEnabled()]).then(
++              ([label, enabled]) => ({ label: label.trim(), enabled }),
++            ),
++          );
++        const computerRows = (phase: string, name: string) =>
++          browser.use(`${phase}: ${name} on the team pool`, (page) =>
++            rows(page).filter({ hasText: name }).filter({ hasText: "Team pool" }).count(),
++          );
++        const leaveConnect = Effect.gen(function* () {
++          yield* openInApp("Open the apps list", `/org/${actors.organization.slug}/apps`);
++          yield* browser.use("Connect has closed", (page) =>
++            guide(page, "Claude Code").waitFor({ state: "detached" }),
++          );
++        });
++
++        yield* browser.use("Open Connect", (page) => page.goto(connect));
++        yield* browser.use("The person's computers have loaded", (page) =>
++          rows(page).filter({ hasText: "Work laptop" }).filter({ hasText: "Team pool" }).waitFor(),
++        );
++        yield* chooseClaudeCode;
++        expect(yield* chosenPool("First visit")).toEqual({ label: "Your pool", enabled: true });
++        yield* browser.use("Open the pool picker", (page) => picker(page).click());
++        yield* browser.use("Pick the team pool", (page) =>
++          page.getByRole("option", { name: "Team pool" }).click(),
++        );
++        expect(yield* chosenPool("Explicit choice")).toEqual({ label: "Team pool", enabled: true });
++        const firstReads = setupReads;
++        expect(firstReads, "The counter sees the first visit's setup reads").toBeGreaterThan(0);
++
++        yield* leaveConnect;
++        // Long enough for Connect's views to close, within the retained value's freshness.
++        yield* browser.use("Leave Connect for a few seconds", (page) => page.clock.runFor(5_000));
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            // Nothing the network answers can reach the page, so anything it shows was retained.
++            yield* holdQuery(setupRead, "continue", { allRequests: true });
++            yield* openInApp("Return to Connect with setup reads held", connect);
++            yield* chooseClaudeCode;
++            expect(yield* chosenPool("Quick return")).toEqual({
++              label: "Team pool",
++              enabled: true,
++            });
++            expect(yield* computerRows("Quick return", "Work laptop")).toBe(1);
++            expect(setupReads, "A fresh retained setup is not read again").toBe(firstReads);
++            yield* browser.checkpoint("Connect on a quick return");
++          }),
++        );
++
++        yield* leaveConnect;
++        service.renameElsewhere("existing", "Studio laptop");
++        yield* browser.use("Leave Connect until its setup is stale", (page) =>
++          page.clock.runFor(31_000),
++        );
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const refresh = yield* holdQuery(setupRead, "continue");
++            yield* openInApp("Return to Connect with its refresh held", connect);
++            yield* refresh.requested;
++            yield* chooseClaudeCode;
++            expect(yield* chosenPool("Background refresh")).toEqual({
++              label: "Team pool",
++              enabled: true,
++            });
++            expect(yield* computerRows("Background refresh", "Work laptop")).toBe(1);
++            yield* browser.checkpoint("Connect while a background refresh is held");
++            yield* refresh.release;
++            yield* browser.use("The refreshed list shows the rename", (page) =>
++              rows(page)
++                .filter({ hasText: "Studio laptop" })
++                .filter({ hasText: "Team pool" })
++                .waitFor(),
++            );
++          }),
++        );
++        expect(yield* computerRows("Refreshed", "Work laptop")).toBe(0);
++        expect(yield* chosenPool("Refreshed")).toEqual({ label: "Team pool", enabled: true });
++
++        yield* leaveConnect;
++        yield* browser.use("Leave Connect until its setup is stale again", (page) =>
++          page.clock.runFor(31_000),
++        );
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const failed = yield* holdQuery(setupRead, "fail");
++            yield* openInApp("Return to Connect with its refresh failing", connect);
++            yield* failed.requested;
++            yield* chooseClaudeCode;
++            yield* failed.release;
++            yield* browser.use("The failed refresh is explained", (page) =>
++              guide(page, "Claude Code")
++                .getByText("Setup couldn't be reached. Try again.", { exact: true })
++                .waitFor(),
++            );
++            expect(yield* computerRows("Failed refresh", "Studio laptop")).toBe(1);
++            expect(yield* chosenPool("Failed refresh")).toEqual({
++              label: "Team pool",
++              enabled: true,
++            });
++            yield* browser.checkpoint("Connect keeps its setup through a failed refresh");
++          }),
++        );
++
++        // While Connect stays open, a return to the tab reads the list again.
++        service.renameElsewhere("existing", "Lab laptop");
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const focused = yield* holdQuery(setupRead, "continue");
++            yield* refreshVisiblePage;
++            yield* focused.requested;
++            expect(yield* computerRows("Focus refresh", "Studio laptop")).toBe(1);
++            yield* focused.release;
++            yield* browser.use("The focus refresh shows the rename", (page) =>
++              rows(page)
++                .filter({ hasText: "Lab laptop" })
++                .filter({ hasText: "Team pool" })
++                .waitFor(),
++            );
++          }),
++        );
++        yield* browser.use("A successful read clears the failure", (page) =>
++          guide(page, "Claude Code")
++            .getByText("Setup couldn't be reached. Try again.", { exact: true })
++            .waitFor({ state: "hidden" }),
++        );
++        expect(yield* chosenPool("Focus refresh")).toEqual({ label: "Team pool", enabled: true });
++
++        // And a visible page reconciles on its own, as the dashboard's other reads do.
++        service.renameElsewhere("existing", "Desk laptop");
++        yield* advanceToReconciliation;
++        yield* browser.use("Idle reconciliation shows the next rename", (page) =>
++          rows(page).filter({ hasText: "Desk laptop" }).filter({ hasText: "Team pool" }).waitFor(),
++        );
++
++        // A newer authority refusal must also fence a successful read already on its way back.
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const computers = /^\/setup\/v1\/computers$/;
++            const older = yield* holdQuery(computers, "continue");
++            yield* refreshVisiblePage;
++            yield* older.requested;
++            yield* browser.use("Refuse the next computer read", (page) =>
++              page.route(
++                (url) => computers.test(url.pathname),
++                (route) =>
++                  route.fulfill({
++                    status: 403,
++                    contentType: "application/json",
++                    body: JSON.stringify({ error: "Setup access refused." }),
++                  }),
++                { times: 1 },
++              ),
++            );
++            yield* browser.use("Open the computer menu while the earlier read waits", (page) =>
++              page.getByRole("button", { name: "Manage Desk laptop" }).click(),
++            );
++            yield* browser.use("Choose Rename before the newer read", (page) =>
++              page.getByRole("menuitem", { name: "Rename", exact: true }).click(),
++            );
++            yield* browser.use("Set the name through the ordinary action", (page) =>
++              page.getByRole("textbox", { name: "Computer name" }).fill("Denied laptop"),
++            );
++            yield* browser.use("Save and receive the newer refusal", (page) =>
++              page.getByRole("button", { name: "Save", exact: true }).click(),
++            );
++            yield* browser.use("The refused read clears the computer list", (page) =>
++              rows(page).filter({ hasText: "Desk laptop" }).waitFor({ state: "detached" }),
++            );
++            expect((yield* chosenPool("Refused read")).enabled).toBe(false);
++            const late = yield* browser.use("Observe the earlier successful response", (page) =>
++              Promise.resolve({
++                response: page.waitForResponse(
++                  (response) =>
++                    computers.test(new URL(response.url()).pathname) && response.status() === 200,
++                ),
++              }),
++            );
++            yield* older.release;
++            yield* browser.use("The earlier response finishes and the browser commits it", (page) =>
++              late.response
++                .then((response) => response.finished())
++                .then(() =>
++                  page.evaluate(
++                    () =>
++                      new Promise<void>((resolve) =>
++                        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                      ),
++                  ),
++                ),
++            );
++            expect((yield* chosenPool("Late response after refusal")).enabled).toBe(false);
++            expect(yield* computerRows("Late response after refusal", "Denied laptop")).toBe(0);
++            yield* browser.checkpoint("A late response cannot restore refused setup data");
++          }),
++        );
++      }),
++    ),
++  );
+ });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -10260,6 +10260,18 @@
+     file: "pool-setup-connect.spec.ts",
+     serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
+     title: "Claude Desktop and the pool endpoint show a pool key once with their setup",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),
++      local: na("Local has no organization members or hosted Connect page."),
++    },
++  },
++  poolSetupRetainedReturn: {
++    fixtures: "actors",
++    file: "pool-setup-connect.spec.ts",
++    serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
++    title:
++      "Returning to Connect shows the chosen pool and computers at once and refreshes them in the background",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),

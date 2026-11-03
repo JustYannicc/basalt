@@ -465,7 +465,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^Approvals answers free text|^Approvals renders custom|^hosted schedule controls enable|^Before a route|^Returning to loaded console pages|^Organization entry prefetches|^Dashboard loading shows content"
+          "^Approvals answers free text|^Approvals renders custom|^hosted schedule controls enable|^Before a route|^Returning to loaded console pages|^Returning to Connect|^Organization entry prefetches|^Dashboard loading shows content"
           --workers 1
       - name: Verify local navigation, custom displays and scheduled approvals
         working-directory: .upstream

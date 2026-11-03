@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connect-pool-retention",
+  "file": "0137-connect-pool-retention.patch",
+  "content_sha256": "3d9b7037353eb750d8818460d09ca647008451eb1e9d97679c67c5df5838ab7f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
