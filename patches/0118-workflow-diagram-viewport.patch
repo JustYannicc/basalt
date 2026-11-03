@@ -1,0 +1,1723 @@
+diff --git a/e2e/tests/workflow-diagram.spec.ts b/e2e/tests/workflow-diagram.spec.ts
+index d2bbd23..f2729f4 100644
+--- a/e2e/tests/workflow-diagram.spec.ts
++++ b/e2e/tests/workflow-diagram.spec.ts
+@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App } from "../support/contracts.ts";
+ import { openThroughBrowser } from "../support/in-app-navigation.ts";
+@@ -121,7 +122,262 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
+         );
+         yield* browser.checkpoint("Workflow drawn from its code");
+ 
+-        yield* browser.use("Select a step", (page) => step(page, "Classify #…").click());
++        const canvas = (page: Parameters<Parameters<typeof browser.use>[1]>[0]) =>
++          page.getByRole("region", { name: "Workflow canvas", exact: true });
++        yield* browser.use("Close the details panel", (page) =>
++          details(page).getByRole("button", { name: "Close details", exact: true }).click(),
++        );
++        expect(
++          yield* browser.use("Closing returns focus to the canvas", (page) =>
++            Promise.all([
++              details(page).count(),
++              canvas(page).evaluate((element) => element === document.activeElement),
++            ]),
++          ),
++        ).toEqual([0, true]);
++        yield* browser.use("Keyboard users can reopen the start card", (page) => {
++          const start = diagram(page).getByRole("button", { name: /owner, name/ });
++          return start
++            .focus()
++            .then(() => start.press("Enter"))
++            .then(() =>
++              details(page).getByText("triageNow", { exact: true }).waitFor({ state: "visible" }),
++            );
++        });
++        const width = yield* browser.use("Measure the card before zooming", (page) =>
++          diagram(page)
++            .getByRole("button", { name: /owner, name/ })
++            .evaluate((element) => element.getBoundingClientRect().width),
++        );
++        yield* browser.use("Zoom into the workflow", (page) =>
++          canvas(page).getByRole("button", { name: "Zoom in", exact: true }).click(),
++        );
++        expect(
++          yield* browser.use("Zoom increases the drawn card size", (page) =>
++            diagram(page)
++              .getByRole("button", { name: /owner, name/ })
++              .evaluate((element) => element.getBoundingClientRect().width),
++          ),
++        ).toBeGreaterThan(width);
++        yield* browser.use("Fit the workflow back to its width", (page) =>
++          canvas(page).getByRole("button", { name: "Fit to view", exact: true }).click(),
++        );
++        const top = yield* browser.use("Measure the first card before panning", (page) =>
++          diagram(page)
++            .getByRole("button", { name: /owner, name/ })
++            .evaluate((element) => element.getBoundingClientRect().top),
++        );
++        yield* browser.use("Pan down with the keyboard", (page) =>
++          canvas(page)
++            .focus()
++            .then(() => canvas(page).press("ArrowDown")),
++        );
++        expect(
++          yield* browser.use("Panning reaches the lower part of the workflow", (page) =>
++            diagram(page)
++              .getByRole("button", { name: /owner, name/ })
++              .evaluate((element) => element.getBoundingClientRect().top),
++          ),
++        ).toBeLessThan(top);
++        yield* browser.use("Reset the canvas with its keyboard shortcut", (page) =>
++          canvas(page).press("0"),
++        );
++        const startOffset = (page: Parameters<Parameters<typeof browser.use>[1]>[0]) =>
++          Promise.all([
++            diagram(page)
++              .getByRole("button", { name: /owner, name/ })
++              .evaluate((element) => element.getBoundingClientRect().top),
++            canvas(page).evaluate((element) => element.getBoundingClientRect().top),
++          ]).then(([card, frame]) => card - frame);
++        const beforeDrag = yield* browser.use(
++          "Measure the card inside the canvas before dragging",
++          startOffset,
++        );
++        yield* browser.use("Drag the canvas upward with the mouse", (page) =>
++          canvas(page)
++            .evaluate((element) => ({
++              x: element.getBoundingClientRect().left + 12,
++              y: element.getBoundingClientRect().top + 220,
++            }))
++            .then(({ x, y }) =>
++              page.mouse
++                .move(x, y)
++                .then(() => page.mouse.down())
++                .then(() => page.mouse.move(x, y - 80, { steps: 8 }))
++                .then(() => page.mouse.up()),
++            ),
++        );
++        expect(
++          yield* browser.use("Mouse dragging moves the workflow within its canvas", startOffset),
++        ).toBeLessThan(beforeDrag);
++        yield* browser.use("Reset after mouse dragging", (page) =>
++          canvas(page).getByRole("button", { name: "Fit to view", exact: true }).click(),
++        );
++        const beforeWheel = yield* browser.use("Read the zoom level before Ctrl-wheel", (page) =>
++          canvas(page).locator('[aria-live="polite"]').innerText(),
++        );
++        const beforeWheelWidth = yield* browser.use("Measure the card before Ctrl-wheel", (page) =>
++          diagram(page)
++            .getByRole("button", { name: /owner, name/ })
++            .evaluate((element) => element.getBoundingClientRect().width),
++        );
++        yield* browser.use("Zoom using real Ctrl-wheel input", (page) =>
++          canvas(page)
++            .hover({ position: { x: 12, y: 220 } })
++            .then(() => page.keyboard.down("Control"))
++            .then(() => page.mouse.wheel(0, -120))
++            .finally(() => page.keyboard.up("Control")),
++        );
++        yield* browser.use("Wait for the wheel zoom readout to change", (page) =>
++          canvas(page).getByText(beforeWheel, { exact: true }).waitFor({ state: "hidden" }),
++        );
++        expect(
++          yield* browser.use("Ctrl-wheel increases the drawn card size", (page) =>
++            diagram(page)
++              .getByRole("button", { name: /owner, name/ })
++              .evaluate((element) => element.getBoundingClientRect().width),
++          ),
++        ).toBeGreaterThan(beforeWheelWidth);
++        const zoomBeforeResize = yield* browser.use(
++          "Read the manually changed zoom before resizing",
++          (page) => canvas(page).locator('[aria-live="polite"]').innerText(),
++        );
++        yield* browser.use("Focus the lower card before resizing the moved canvas", (page) =>
++          step(page, "Queue the weekly digest").focus(),
++        );
++        yield* browser.use("Resize that same canvas and wait for its layout to paint", (page) =>
++          page
++            .setViewportSize({ width: 1000, height: 900 })
++            .then(() =>
++              page.evaluate(
++                () =>
++                  new Promise<void>((resolve) =>
++                    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                  ),
++              ),
++            ),
++        );
++        expect(
++          yield* browser.use("Resizing keeps the moved zoom and the focused card visible", (page) =>
++            Promise.all([
++              canvas(page).locator('[aria-live="polite"]').innerText(),
++              canvas(page).evaluate((element) => ({
++                top: Math.max(0, element.getBoundingClientRect().top),
++                bottom: Math.min(window.innerHeight, element.getBoundingClientRect().bottom),
++                left: element.getBoundingClientRect().left,
++                right: element.getBoundingClientRect().right,
++              })),
++              step(page, "Queue the weekly digest").evaluate((element) => ({
++                focused: element === document.activeElement,
++                top: element.getBoundingClientRect().top,
++                bottom: element.getBoundingClientRect().bottom,
++                left: element.getBoundingClientRect().left,
++                right: element.getBoundingClientRect().right,
++              })),
++            ]).then(
++              ([zoom, frame, card]) =>
++                zoom === zoomBeforeResize &&
++                card.focused &&
++                card.top >= frame.top &&
++                card.bottom <= frame.bottom &&
++                card.left >= frame.left &&
++                card.right <= frame.right,
++            ),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Moved and zoomed canvas after resize");
++        yield* browser.use("Restore the desktop size after testing a moved canvas", (page) =>
++          page.setViewportSize({ width: 1440, height: 960 }),
++        );
++        yield* browser.use("Reset after Ctrl-wheel zoom", (page) =>
++          canvas(page).getByRole("button", { name: "Fit to view", exact: true }).click(),
++        );
++
++        yield* browser.use("Focus a card beyond the bottom edge", (page) =>
++          step(page, "Queue the weekly digest").focus(),
++        );
++        expect(
++          yield* browser.use("Focused cards stay visible in both the canvas and the page", (page) =>
++            Promise.all([
++              canvas(page).evaluate((element) => ({
++                top: Math.max(0, element.getBoundingClientRect().top),
++                bottom: Math.min(window.innerHeight, element.getBoundingClientRect().bottom),
++              })),
++              step(page, "Queue the weekly digest").evaluate((element) => ({
++                top: element.getBoundingClientRect().top,
++                bottom: element.getBoundingClientRect().bottom,
++              })),
++            ]).then(
++              ([viewport, card]) => card.top >= viewport.top && card.bottom <= viewport.bottom,
++            ),
++          ),
++        ).toBe(true);
++
++        yield* browser.use("Select the focused lower card with the keyboard", (page) =>
++          step(page, "Queue the weekly digest").press("Enter"),
++        );
++        yield* browser.use("Escape closes details from a focused card", (page) =>
++          step(page, "Queue the weekly digest").press("Escape"),
++        );
++        expect(
++          yield* browser.use("Escape returns to the canvas", (page) =>
++            Promise.all([
++              details(page).count(),
++              canvas(page).evaluate((element) => element === document.activeElement),
++            ]),
++          ),
++        ).toEqual([0, true]);
++
++        const startForm = (page: Parameters<Parameters<typeof browser.use>[1]>[0]) =>
++          page.getByRole("region", { name: "Start workflow", exact: true });
++        yield* browser.use("Open the input schema in the start panel", (page) =>
++          startForm(page).getByText("Input schema", { exact: true }).click(),
++        );
++        yield* browser.use("The schema is readable alongside the run input", (page) =>
++          startForm(page)
++            .locator("details")
++            .getByText('"owner"', { exact: true })
++            .first()
++            .waitFor({ state: "visible" }),
++        );
++        const evidence = yield* Evidence;
++        yield* evidence.attach(
++          "input-schema.png",
++          "image/png",
++          yield* browser.use("Capture the input schema panel", (page) =>
++            startForm(page).screenshot(),
++          ),
++        );
++        yield* evidence.attach(
++          "run-history.png",
++          "image/png",
++          yield* browser.use("Capture the run history panel", (page) =>
++            page.getByRole("region", { name: "Runs", exact: true }).screenshot(),
++          ),
++        );
++        yield* browser.use("The schema can be collapsed again", (page) =>
++          startForm(page).getByText("Input schema", { exact: true }).click(),
++        );
++        yield* browser.use("Validate the input without leaving the workflow", (page) => {
++          const input = startForm(page).getByRole("textbox", { name: "triage input", exact: true });
++          return input
++            .fill("{")
++            .then(() =>
++              startForm(page).getByRole("button", { name: "Start workflow", exact: true }).click(),
++            )
++            .then(() =>
++              startForm(page)
++                .getByRole("alert")
++                .filter({ hasText: "Enter valid JSON." })
++                .waitFor({ state: "visible" }),
++            )
++            .then(() => input.fill("{}"));
++        });
++        yield* browser.use("Select a step", (page) =>
++          step(page, "Classify #…")
++            .focus()
++            .then(() => step(page, "Classify #…").click()),
++        );
+         expect(
+           yield* browser.use("Selection moves to the step", (page) =>
+             Promise.all([
+@@ -150,7 +406,9 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
+         yield* browser.checkpoint("Step details");
+ 
+         yield* browser.use("Select a step written in a helper", (page) =>
+-          step(page, "Post to Slack").click(),
++          step(page, "Post to Slack")
++            .focus()
++            .then(() => step(page, "Post to Slack").click()),
+         );
+         yield* browser.use("Its code is shown from the helper's own file", (page) =>
+           details(page)
+@@ -158,9 +416,15 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
+             .waitFor({ state: "visible" }),
+         );
+ 
+-        yield* browser.use("Follow the step that starts another workflow", (page) =>
+-          diagram(page).getByRole("button", { name: "Open digest", exact: true }).click(),
+-        );
++        yield* browser.use("Follow the step that starts another workflow", (page) => {
++          const reference = diagram(page).getByRole("button", { name: "Open digest", exact: true });
++          return reference.focus().then(() => reference.press("Enter"));
++        });
++        expect(
++          yield* browser.use("Keyboard navigation keeps focus in the new canvas", (page) =>
++            canvas(page).evaluate((element) => element === document.activeElement),
++          ),
++        ).toBe(true);
+         const trail = (page: Parameters<Parameters<typeof browser.use>[1]>[0]) =>
+           page.getByRole("navigation", { name: "Workflow trail" });
+         expect(
+@@ -186,9 +450,15 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
+         expect(
+           yield* browser.use("Going back shortens the trail", (page) => trail(page).textContent()),
+         ).toBe("triage");
+-        yield* browser.use("Drill into digest again", (page) =>
+-          diagram(page).getByRole("button", { name: "Open digest", exact: true }).click(),
+-        );
++        yield* browser.use("Drill into digest again", (page) => {
++          const reference = diagram(page).getByRole("button", { name: "Open digest", exact: true });
++          return reference.focus().then(() => reference.press("Enter"));
++        });
++        expect(
++          yield* browser.use("Reopening a workflow keeps keyboard focus in its canvas", (page) =>
++            canvas(page).evaluate((element) => element === document.activeElement),
++          ),
++        ).toBe(true);
+         yield* browser.use("Go back along the trail", (page) =>
+           trail(page).getByRole("button", { name: "triage", exact: true }).click(),
+         );
+@@ -199,6 +469,34 @@ layer(HostedLive, { excludeTestServices: true })("Workflow diagrams", (it) => {
+           yield* browser.use("The trail is back at its start", (page) => trail(page).textContent()),
+         ).toBe("triage");
+ 
++        expect(
++          yield* browser.use("Returning along the trail focuses the previous canvas", (page) =>
++            canvas(page).evaluate((element) => element === document.activeElement),
++          ),
++        ).toBe(true);
++        yield* browser.use("Use the diagram on a narrow screen", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* browser.use("Reach a lower card on a narrow screen", (page) =>
++          step(page, "Queue the weekly digest")
++            .focus()
++            .then(() => step(page, "Queue the weekly digest").press("Enter"))
++            .then(() =>
++              details(page)
++                .getByRole("button", { name: /^digest/ })
++                .waitFor({ state: "visible" }),
++            ),
++        );
++        expect(
++          yield* browser.use("The phone layout fits the page width", (page) =>
++            page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Workflow diagram at phone width");
++        yield* browser.use("Return to the desktop width", (page) =>
++          page.setViewportSize({ width: 1440, height: 960 }),
++        );
++
+         // Members who cannot read the source keep today's run history, without the diagram.
+         const sourceReads: string[] = [];
+         yield* browser.use("Watch for source reads", (page) => {
+diff --git a/packages/ui/src/implementation/dashboard/app-browser-loading.tsx b/packages/ui/src/implementation/dashboard/app-browser-loading.tsx
+index 58ecd87..59b8d15 100644
+--- a/packages/ui/src/implementation/dashboard/app-browser-loading.tsx
++++ b/packages/ui/src/implementation/dashboard/app-browser-loading.tsx
+@@ -118,7 +118,7 @@ export function WorkflowBrowserLoading() {
+ export function WorkflowDiagramLoading() {
+   return (
+     <div className="grid grid-cols-1 @[760px]:grid-cols-[minmax(0,1fr)_320px]" aria-busy>
+-      <div className="flex flex-col items-center gap-8 bg-muted px-4 py-8">
++      <div className="flex h-[560px] flex-col items-center gap-8 bg-background px-4 py-8">
+         <Skeleton className="h-14 w-63 rounded-[10px]" />
+         <Skeleton className="h-14 w-63 rounded-[10px]" />
+         <Skeleton className="h-12 w-63 rounded-full" />
+diff --git a/packages/ui/src/implementation/dashboard/app-workflows.tsx b/packages/ui/src/implementation/dashboard/app-workflows.tsx
+index 2d770fb..6fe0ede 100644
+--- a/packages/ui/src/implementation/dashboard/app-workflows.tsx
++++ b/packages/ui/src/implementation/dashboard/app-workflows.tsx
+@@ -1,3 +1,5 @@
++import { HugeiconsIcon } from "@hugeicons/react";
++import { Clock01Icon } from "@hugeicons/core-free-icons";
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { EmptyState, EmptyStatePanel } from "./empty-state.tsx";
+ import { useState, type ReactNode, type ComponentType } from "react";
+@@ -197,45 +199,53 @@ function WorkflowRuns<E>({
+   return (
+     <>
+       {selected && start?.(selected, () => setPages([undefined]))}
+-      <QueryView
+-        query={bindings.runs(workflow, cursor)}
+-        Failure={Failure}
+-        pending={<WorkflowRunsLoading />}
+-      >
+-        {(page) => (
+-          <>
+-            <RunList
+-              key={cursor ?? "first"}
+-              runs={page.items}
+-              workflows={workflows}
+-              action={(run) => runAction?.(run, workflow, cursor)}
+-            />
+-            {(pages.length > 1 || page.next !== undefined) && (
+-              <div className="mt-4 flex items-center justify-between gap-3">
+-                <Button
+-                  variant="outline"
+-                  size="sm"
+-                  disabled={pages.length === 1}
+-                  onClick={() => setPages(pages.slice(0, -1))}
+-                >
+-                  Newer runs
+-                </Button>
+-                <span className="text-xs text-muted-foreground">Page {pages.length}</span>
+-                <Button
+-                  variant="outline"
+-                  size="sm"
+-                  disabled={page.next === undefined}
+-                  onClick={() => {
+-                    if (page.next !== undefined) setPages([...pages, page.next]);
+-                  }}
+-                >
+-                  Older runs
+-                </Button>
+-              </div>
+-            )}
+-          </>
+-        )}
+-      </QueryView>
++      <section aria-label="Runs" className="overflow-hidden rounded-xl border bg-card">
++        <header className="flex items-center gap-2.5 border-b px-4 py-3">
++          <span className="flex size-7 items-center justify-center rounded-lg bg-muted text-muted-foreground">
++            <HugeiconsIcon icon={Clock01Icon} size={15} aria-hidden />
++          </span>
++          <h4 className="text-sm font-medium">Run history</h4>
++        </header>
++        <QueryView
++          query={bindings.runs(workflow, cursor)}
++          Failure={Failure}
++          pending={<WorkflowRunsLoading />}
++        >
++          {(page) => (
++            <>
++              <RunList
++                key={cursor ?? "first"}
++                runs={page.items}
++                workflows={workflows}
++                action={(run) => runAction?.(run, workflow, cursor)}
++              />
++              {(pages.length > 1 || page.next !== undefined) && (
++                <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
++                  <Button
++                    variant="outline"
++                    size="sm"
++                    disabled={pages.length === 1}
++                    onClick={() => setPages(pages.slice(0, -1))}
++                  >
++                    Newer runs
++                  </Button>
++                  <span className="text-xs text-muted-foreground">Page {pages.length}</span>
++                  <Button
++                    variant="outline"
++                    size="sm"
++                    disabled={page.next === undefined}
++                    onClick={() => {
++                      if (page.next !== undefined) setPages([...pages, page.next]);
++                    }}
++                  >
++                    Older runs
++                  </Button>
++                </div>
++              )}
++            </>
++          )}
++        </QueryView>
++      </section>
+     </>
+   );
+ }
+@@ -257,12 +267,12 @@ function RunList({
+     );
+   return (
+     <div>
+-      <div className="hidden grid-cols-[minmax(0,1fr)_100px_150px] gap-4 border-b px-3 pb-3 text-xs text-muted-foreground min-[640px]:grid">
++      <div className="hidden grid-cols-[minmax(0,1fr)_100px_150px] gap-4 border-b bg-muted/35 px-4 py-2.5 text-[11.5px] text-muted-foreground min-[640px]:grid">
+         <span>Workflow</span>
+         <span>Status</span>
+         <span>Started</span>
+       </div>
+-      <div className="divide-y border-b">
++      <div className="divide-y">
+         {runs.map((run) => (
+           <div key={run.id}>
+             <button
+@@ -270,7 +280,7 @@ function RunList({
+               onClick={() => setSelected(selected === run.id ? undefined : run.id)}
+               aria-expanded={selected === run.id}
+               aria-label={`View ${run.workflow} run: ${statuses[run.status]}`}
+-              className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-3 py-4 text-left hover:bg-muted/40 aria-expanded:bg-muted/40 min-[640px]:grid-cols-[minmax(0,1fr)_100px_150px]"
++              className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3.5 text-left hover:bg-muted/40 aria-expanded:bg-muted/40 min-[640px]:grid-cols-[minmax(0,1fr)_100px_150px]"
+             >
+               <span className="min-w-0">
+                 <span className="block break-words text-sm font-medium">{run.workflow}</span>
+diff --git a/packages/ui/src/implementation/dashboard/workflow-actions.tsx b/packages/ui/src/implementation/dashboard/workflow-actions.tsx
+index 4379670..31fca5c 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-actions.tsx
+@@ -3,6 +3,8 @@ import { Json, type HostedWorkflow, type WorkflowRun } from "@executor-js/sdk";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult, type Atom } from "effect/reactivity";
+ import { Exit, Schema } from "effect";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { PlayCircleIcon, CodeIcon } from "@hugeicons/core-free-icons";
+ import { useState, type ComponentType } from "react";
+ import type { FailureProps } from "../../contracts/dashboard.ts";
+ import { Code } from "./code.tsx";
+@@ -33,13 +35,18 @@ export function WorkflowStart<E>({
+   const [pending, setPending] = useState(false);
+   const submit = useAtomSet(start, { mode: "promiseExit" });
+   return (
+-    <div className="mt-3 space-y-3">
+-      <details>
+-        <summary className="cursor-pointer text-xs text-muted-foreground">Input schema</summary>
+-        <Code code={JSON.stringify(definition.inputSchema, null, 2)} />
+-      </details>
++    <section aria-label="Start workflow" className="mb-5 overflow-hidden rounded-xl border bg-card">
++      <header className="flex items-center gap-2.5 border-b px-4 py-3">
++        <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
++          <HugeiconsIcon icon={PlayCircleIcon} size={15} aria-hidden />
++        </span>
++        <div>
++          <h4 className="text-sm font-medium">Start workflow</h4>
++          <p className="text-xs text-muted-foreground">Run {definition.name} with your input.</p>
++        </div>
++      </header>
+       <form
+-        className="max-w-xl space-y-3"
++        className="space-y-3 p-4"
+         onSubmit={async (event) => {
+           event.preventDefault();
+           if (!editable) return;
+@@ -56,6 +63,15 @@ export function WorkflowStart<E>({
+           }
+         }}
+       >
++        <details className="overflow-hidden rounded-lg border">
++          <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
++            <HugeiconsIcon icon={CodeIcon} size={13} aria-hidden />
++            Input schema
++          </summary>
++          <div className="max-h-60 overflow-auto border-t">
++            <Code code={JSON.stringify(definition.inputSchema, null, 2)} lineNumbers={false} />
++          </div>
++        </details>
+         <label className="block space-y-2 text-xs">
+           Input
+           <Textarea
+@@ -95,7 +111,7 @@ export function WorkflowStart<E>({
+           </p>
+         )}
+       </form>
+-    </div>
++    </section>
+   );
+ }
+ export function WorkflowTerminate<E>({
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-canvas.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-canvas.tsx
+index 42d46d8..716ab7c 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram-canvas.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-canvas.tsx
+@@ -1,51 +1,38 @@
+ import type { App } from "@executor-js/sdk";
++import type { Starter } from "@executor-js/workflow-graph/contracts/graph";
+ import { roundedPath, type WorkflowLayout } from "@executor-js/workflow-graph/layout";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+-import { useEffect, useMemo, useRef, useState } from "react";
++import { useEffect, useMemo, type RefObject } from "react";
+ import { Button } from "../components/button.tsx";
+ import { cn } from "../lib/utils.ts";
+ import { Box, Card } from "./workflow-diagram-cards.tsx";
++import { useWorkflowViewport } from "./workflow-diagram-viewport.ts";
+ 
+-/**
+- * A laid-out workflow: boxes underneath, then the connecting lines and option labels, then the
+- * cards. It fits the panel's width by default, down to a size that stays readable and scrolls
+- * sideways past that; the zoom controls step from there.
+- */
+-
+-const ZOOM_STEP = 0.15;
+-const MIN_FIT = 0.75;
+-const MIN_ZOOM = 0.3;
+-const MAX_ZOOM = 1.5;
+-
++/** The source layout stays fixed while the person's viewport pans and zooms. */
+ export function WorkflowCanvas({
++  frame,
+   app,
+   layout,
+   input,
++  startedBy,
+   selected,
+   onSelect,
+   onOpenWorkflow,
+ }: {
++  readonly frame: RefObject<HTMLDivElement | null>;
+   readonly app: App;
+   readonly layout: WorkflowLayout;
+   readonly input: ReadonlyArray<string>;
+-  readonly selected: string;
+-  readonly onSelect: (id: string) => void;
++  readonly startedBy: ReadonlyArray<Starter>;
++  readonly selected: string | null;
++  readonly onSelect: (id: string | null) => void;
+   readonly onOpenWorkflow: (name: string, step: string) => void;
+ }) {
+-  const frame = useRef<HTMLDivElement>(null);
+-  const [available, setAvailable] = useState<number>();
+-  const [zoom, setZoom] = useState<number>();
++  const { view, fit, zoom, handlers } = useWorkflowViewport(frame, layout, () => onSelect(null));
+   useEffect(() => {
+-    const element = frame.current;
+-    if (!element) return;
+-    const observer = new ResizeObserver(([entry]) => setAvailable(entry?.contentRect.width));
+-    observer.observe(element);
+-    return () => observer.disconnect();
+-  }, []);
+-  const fit = available ? Math.max(MIN_FIT, Math.min(1, available / layout.width)) : 1;
+-  const scale = zoom ?? fit;
+-  // Boxes and cards in reading order, so Tab follows the drawing; z-index keeps boxes underneath.
++    if (selected === null) frame.current?.focus({ preventScroll: true });
++  }, [selected, frame]);
+   const items = useMemo(
+     () =>
+       [
+@@ -55,89 +42,111 @@ export function WorkflowCanvas({
+     [layout],
+   );
+   return (
+-    <div className="relative min-w-0 bg-muted bg-[radial-gradient(circle_at_1px_1px,var(--border)_1px,transparent_0)] bg-size-[18px_18px]">
+-      <div ref={frame} className="max-h-[560px] overflow-auto px-4 py-7 [scrollbar-gutter:stable]">
+-        <div
+-          className="mx-auto"
+-          style={{ width: layout.width * scale, height: layout.height * scale }}
+-        >
+-          <div
+-            className="relative origin-top-left"
+-            style={{ width: layout.width, height: layout.height, transform: `scale(${scale})` }}
+-          >
+-            <Edges layout={layout} />
+-            {layout.labels.map((label, index) => (
+-              <span
+-                // Labels have no identity of their own; their order is fixed for one layout.
+-                key={index}
+-                className={cn(
+-                  "pointer-events-none absolute z-[2] -translate-x-1/2 rounded-full border bg-background px-2 text-[11px] leading-[18px] whitespace-nowrap",
+-                  label.failure && "border-transparent bg-transparent font-medium text-destructive",
+-                )}
+-                style={{ left: label.x, top: label.y }}
+-              >
+-                {label.text}
+-              </span>
+-            ))}
+-            {items.map((item) =>
+-              item.kind === "box" ? (
+-                <Box
+-                  key={item.box.id}
+-                  box={item.box}
+-                  selected={selected === item.box.id}
+-                  onSelect={onSelect}
+-                />
+-              ) : (
+-                <Card
+-                  key={item.card.id}
+-                  app={app}
+-                  card={item.card}
+-                  input={input}
+-                  selected={selected === item.card.id}
+-                  onSelect={onSelect}
+-                  onOpenWorkflow={onOpenWorkflow}
+-                />
+-              ),
++    <div
++      ref={frame}
++      role="region"
++      aria-label="Workflow canvas"
++      aria-description="Drag or scroll to pan. Arrow keys pan, plus and minus zoom, and 0 fits the width."
++      tabIndex={0}
++      className="relative h-[560px] min-w-0 touch-none overflow-clip bg-background outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
++      style={{
++        backgroundImage:
++          "radial-gradient(circle, color-mix(in srgb, var(--muted-foreground) 22%, transparent) 1px, transparent 1.5px)",
++        backgroundSize: `${20 * view.zoom}px ${20 * view.zoom}px`,
++        backgroundPosition: `${view.x}px ${view.y}px`,
++      }}
++      {...handlers}
++    >
++      <div
++        className="absolute top-0 left-0 origin-top-left"
++        style={{
++          width: layout.width,
++          height: layout.height,
++          transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
++        }}
++      >
++        <Edges layout={layout} selected={selected} />
++        {layout.labels.map((label, index) => (
++          <span
++            key={index}
++            className={cn(
++              "pointer-events-none absolute z-[2] -translate-x-1/2 rounded-full border bg-background px-2 text-[11px] leading-[18px] whitespace-nowrap",
++              label.failure && "border-transparent bg-transparent font-medium text-destructive",
+             )}
+-          </div>
+-        </div>
++            style={{ left: label.x, top: label.y }}
++          >
++            {label.text}
++          </span>
++        ))}
++        {items.map((item) =>
++          item.kind === "box" ? (
++            <Box
++              key={item.box.id}
++              box={item.box}
++              selected={selected === item.box.id}
++              onSelect={onSelect}
++            />
++          ) : (
++            <Card
++              key={item.card.id}
++              app={app}
++              card={item.card}
++              input={input}
++              startedBy={startedBy}
++              selected={selected === item.card.id}
++              onSelect={onSelect}
++              onOpenWorkflow={onOpenWorkflow}
++            />
++          ),
++        )}
+       </div>
+-      <div className="absolute bottom-3 left-3 flex overflow-hidden rounded-md border bg-background">
+-        <Button
+-          variant="ghost"
+-          size="xs"
+-          className="rounded-none"
+-          aria-pressed={zoom === undefined}
+-          onClick={() => setZoom(undefined)}
+-        >
+-          Fit
+-        </Button>
++      <div
++        data-canvas-control
++        className="absolute bottom-3 left-3 flex items-center gap-0.5 rounded-lg border bg-background p-0.5"
++      >
+         <Button
+           variant="ghost"
+           size="icon-xs"
+-          className="rounded-none border-l"
+           aria-label="Zoom out"
+-          disabled={scale <= MIN_ZOOM}
+-          onClick={() => setZoom(Math.max(MIN_ZOOM, scale - ZOOM_STEP))}
++          disabled={view.zoom <= 0.25}
++          onClick={() => zoom(1 / 1.2)}
+         >
+           <HugeiconsIcon icon={MinusSignIcon} strokeWidth={2} aria-hidden />
+         </Button>
++        <span
++          className="w-10 text-center text-[11px] text-muted-foreground tabular-nums"
++          aria-live="polite"
++        >
++          {Math.round(view.zoom * 100)}%
++        </span>
+         <Button
+           variant="ghost"
+           size="icon-xs"
+-          className="rounded-none border-l"
+           aria-label="Zoom in"
+-          disabled={scale >= MAX_ZOOM}
+-          onClick={() => setZoom(Math.min(MAX_ZOOM, scale + ZOOM_STEP))}
++          disabled={view.zoom >= 1.75}
++          onClick={() => zoom(1.2)}
+         >
+           <HugeiconsIcon icon={PlusSignIcon} strokeWidth={2} aria-hidden />
+         </Button>
++        <span aria-hidden className="mx-1 h-4 w-px bg-border" />
++        <Button variant="ghost" size="xs" onClick={fit}>
++          Fit to view
++        </Button>
+       </div>
++      <p className="pointer-events-none absolute right-3 bottom-4 hidden text-[11px] text-muted-foreground @[900px]:block">
++        Drag to pan · Ctrl/⌘ scroll to zoom
++      </p>
+     </div>
+   );
+ }
+ 
+-function Edges({ layout }: { readonly layout: WorkflowLayout }) {
++function Edges({
++  layout,
++  selected,
++}: {
++  readonly layout: WorkflowLayout;
++  readonly selected: string | null;
++}) {
+   return (
+     <svg
+       aria-hidden
+@@ -155,7 +164,7 @@ function Edges({ layout }: { readonly layout: WorkflowLayout }) {
+           markerHeight="7"
+           orient="auto"
+         >
+-          <path d="M0 .5L7.5 4 0 7.5z" className="fill-muted-foreground/80" />
++          <path d="M0 .5L7.5 4 0 7.5z" className="fill-muted-foreground/45" />
+         </marker>
+         <marker
+           id="workflow-arrow-failure"
+@@ -178,7 +187,13 @@ function Edges({ layout }: { readonly layout: WorkflowLayout }) {
+           strokeWidth={1.5}
+           strokeLinejoin="round"
+           strokeDasharray={edge.failure ? "4 4" : undefined}
+-          className={edge.failure ? "stroke-destructive/70" : "stroke-muted-foreground/80"}
++          className={
++            edge.failure
++              ? "stroke-destructive/70"
++              : edge.from === selected || edge.to === selected
++                ? "stroke-foreground/75"
++                : "stroke-muted-foreground/45"
++          }
+           markerEnd={
+             edge.to === null
+               ? undefined
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx
+index a556cd9..4f7addb 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx
+@@ -14,7 +14,7 @@ import {
+   ArrowUpRight01Icon,
+ } from "@hugeicons/core-free-icons";
+ import type { App } from "@executor-js/sdk";
+-import type { StepNode, WorkflowNode } from "@executor-js/workflow-graph/contracts/graph";
++import type { StepNode, WorkflowNode, Starter } from "@executor-js/workflow-graph/contracts/graph";
+ import type { LayoutBox, LayoutCard } from "@executor-js/workflow-graph/layout";
+ import type { ReactNode } from "react";
+ import { cn } from "../lib/utils.ts";
+@@ -24,9 +24,8 @@ import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+ /** The cards and boxes a workflow is drawn with, and the words and tiles they share with the details panel. */
+ 
+ const frame =
+-  "absolute z-[2] flex cursor-pointer items-center gap-3 border bg-background px-3 text-left shadow-[0_1px_2px_#0000000a] outline-none transition-[border-color,box-shadow] duration-150 hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring";
+-const selectedFrame =
+-  "border-primary shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)] hover:border-primary";
++  "absolute z-[2] flex cursor-pointer items-center gap-3 border bg-card px-3 text-left outline-none transition-colors duration-150 hover:border-foreground/25 focus-visible:ring-2 focus-visible:ring-ring";
++const selectedFrame = "border-primary ring-2 ring-primary/15 hover:border-primary";
+ 
+ const END_LABEL = {
+   done: "Done",
+@@ -40,6 +39,7 @@ export function Card({
+   app,
+   card,
+   input,
++  startedBy,
+   selected,
+   onSelect,
+   onOpenWorkflow,
+@@ -47,6 +47,7 @@ export function Card({
+   readonly app: App;
+   readonly card: LayoutCard;
+   readonly input: ReadonlyArray<string>;
++  readonly startedBy: ReadonlyArray<Starter>;
+   readonly selected: boolean;
+   readonly onSelect: (id: string) => void;
+   readonly onOpenWorkflow: (name: string, step: string) => void;
+@@ -59,15 +60,15 @@ export function Card({
+         data-workflow-node="start"
+         aria-current={selected ? "true" : undefined}
+         onClick={() => onSelect(card.id)}
+-        className={cn(frame, "rounded-[10px]", selected && selectedFrame)}
++        className={cn(frame, "rounded-xl", selected && selectedFrame)}
+         style={style}
+       >
+         <span className="flex size-8.5 shrink-0 items-center justify-center rounded-[8px] bg-primary text-primary-foreground">
+           <HugeiconsIcon icon={PlayCircleIcon} size={17} strokeWidth={1.7} aria-hidden />
+         </span>
+         <CardText
+-          kind={input.length > 0 ? "Starts with" : "Start"}
+-          label={input.length > 0 ? input.join(", ") : "No input"}
++          kind={input.length > 0 ? `Start · ${input.join(", ")}` : "Start · no input"}
++          label={starterSummary(startedBy)}
+         />
+       </button>
+     );
+@@ -113,15 +114,23 @@ export function Card({
+   if (node.type !== "step") return null;
+   const workflow = node.uses.find((use) => use.kind === "workflow");
+   return (
+-    <>
++    <div
++      className={cn(
++        "absolute z-[2] overflow-hidden rounded-xl border bg-card",
++        selected && selectedFrame,
++      )}
++      style={style}
++    >
+       <button
+         type="button"
+         data-workflow-node="step"
+         title={node.label.text}
+         aria-current={selected ? "true" : undefined}
+         onClick={() => onSelect(card.id)}
+-        className={cn(frame, "rounded-[10px]", selected && selectedFrame)}
+-        style={style}
++        className={cn(
++          "flex w-full items-center gap-3 px-3 text-left outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
++          workflow ? "h-[calc(100%-30px)]" : "h-full",
++        )}
+       >
+         <StepTile app={app} node={node} />
+         <CardText kind={stepKind(node)} label={<StepName node={node} />} />
+@@ -129,17 +138,19 @@ export function Card({
+       {workflow?.kind === "workflow" && (
+         <button
+           type="button"
++          data-workflow-node="reference"
+           aria-label={`Open ${workflow.name}`}
+           onClick={() => onOpenWorkflow(workflow.name, node.label.text)}
+-          className="absolute z-[3] inline-flex h-6 -translate-x-full items-center gap-1 rounded-full border border-input bg-background px-2 text-[11px] font-medium outline-none hover:border-foreground/40 focus-visible:ring-2 focus-visible:ring-ring"
+-          style={{ left: card.x + card.width - 12, top: card.y + card.height - 12 }}
++          className="flex h-7.5 w-full items-center gap-1.5 border-t bg-muted/35 px-3 text-left text-[11.5px] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+         >
+-          <HugeiconsIcon icon={WorkflowSquare01Icon} size={11} strokeWidth={2} aria-hidden />
+-          {workflow.name}
+-          <HugeiconsIcon icon={ArrowUpRight01Icon} size={11} strokeWidth={2} aria-hidden />
++          <HugeiconsIcon icon={WorkflowSquare01Icon} size={12} strokeWidth={1.7} aria-hidden />
++          <span className="min-w-0 flex-1 truncate">
++            Opens <span className="font-medium">{workflow.name}</span>
++          </span>
++          <HugeiconsIcon icon={ArrowUpRight01Icon} size={12} strokeWidth={1.7} aria-hidden />
+         </button>
+       )}
+-    </>
++    </div>
+   );
+ }
+ 
+@@ -248,7 +259,7 @@ export function Box({
+   return (
+     <div
+       className={cn(
+-        "absolute z-0 rounded-[14px] border bg-background/55 transition-[border-color] duration-150",
++        "absolute z-0 rounded-2xl border bg-muted/45 transition-colors duration-150",
+         selected ? "border-primary/60" : "border-input/70",
+       )}
+       style={{ left: box.x, top: box.y, width: box.width, height: box.height }}
+@@ -298,3 +309,10 @@ export function declaresHost(app: App, host: string): boolean {
+     return url !== null && URL.canParse(url) && site(new URL(url).hostname) === site(host);
+   });
+ }
++
++function starterSummary(starters: ReadonlyArray<Starter>) {
++  const first = starters.find((starter) => starter.kind === "workflow") ?? starters[0];
++  if (!first) return "Started here or by API";
++  const name = first.kind === "tool" ? first.path : first.name;
++  return `Started by ${name}${starters.length > 1 ? ` +${starters.length - 1}` : ""}`;
++}
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-details.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-details.tsx
+index 0a041a2..4c37e0d 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram-details.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-details.tsx
+@@ -1,5 +1,6 @@
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import {
++  Cancel01Icon,
+   GitForkIcon,
+   LayoutTwoColumnIcon,
+   PlayCircleIcon,
+@@ -14,8 +15,8 @@ import type {
+   WorkflowNode,
+ } from "@executor-js/workflow-graph/contracts/graph";
+ import type { ComponentProps, ReactNode } from "react";
+-import { Code } from "./code.tsx";
+-import { useDashboard } from "./context.tsx";
++import { WorkflowExcerpt } from "./workflow-diagram-excerpt.tsx";
++import { Button } from "../components/button.tsx";
+ import { boxTitle, StepName, StepTile, stepKind } from "./workflow-diagram-cards.tsx";
+ import {
+   ReferenceRow,
+@@ -27,7 +28,6 @@ import {
+ 
+ /** What the selected card is, what it uses and the code it came from. */
+ 
+-const MAX_EXCERPT = 16;
+ /** The start card shows the declaration through the options and handler signature. */
+ const START_EXCERPT = 4;
+ 
+@@ -40,6 +40,7 @@ export function WorkflowDetails({
+   files,
+   onOpenWorkflow,
+   onShowWorkflow,
++  onClose,
+ }: {
+   readonly app: App;
+   readonly graph: WorkflowGraph;
+@@ -48,22 +49,32 @@ export function WorkflowDetails({
+   readonly files: ReadonlyArray<SourceFile>;
+   readonly onOpenWorkflow: (name: string, step: string) => void;
+   readonly onShowWorkflow: (name: string) => void;
++  readonly onClose: () => void;
+ }) {
+   if (node === undefined)
+-    return <StartDetails app={app} graph={graph} files={files} onShowWorkflow={onShowWorkflow} />;
++    return (
++      <StartDetails
++        app={app}
++        graph={graph}
++        files={files}
++        onShowWorkflow={onShowWorkflow}
++        onClose={onClose}
++      />
++    );
+   const excerpt = (from: number, to = from) => (
+-    <Excerpt app={app} files={files} file={node.file} from={from} to={to} />
++    <WorkflowExcerpt app={app} files={files} file={node.file} from={from} to={to} />
+   );
+   switch (node.type) {
+     case "step": {
+       const workflows = node.uses.filter((use) => use.kind === "workflow");
+       return (
+         <Panel
++          onClose={onClose}
+           tile={<StepTile app={app} node={node} />}
+           kind={stepKind(node)}
+           title={<StepName node={node} />}
+         >
+-          <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-[12.5px]">
++          <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 border-t px-4 py-3 text-[12.5px]">
+             {node.uses.map((use) => (
+               <UseRow key={JSON.stringify(use)} app={app} use={use} />
+             ))}
+@@ -96,6 +107,7 @@ export function WorkflowDetails({
+     case "branch":
+       return (
+         <Panel
++          onClose={onClose}
+           tile={
+             <span className="mx-1 flex size-6.5 shrink-0 rotate-45 items-center justify-center rounded-md bg-primary text-primary-foreground">
+               <HugeiconsIcon
+@@ -110,7 +122,7 @@ export function WorkflowDetails({
+           kind="Decision"
+           title={<span className="font-mono text-[13px] tracking-normal">{node.label.text}</span>}
+         >
+-          <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-[12.5px]">
++          <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 border-t px-4 py-3 text-[12.5px]">
+             <Row name="Options">{node.arms.map((arm) => arm.label).join(", ")}</Row>
+           </dl>
+           {excerpt(node.line)}
+@@ -121,6 +133,7 @@ export function WorkflowDetails({
+     case "try":
+       return (
+         <Panel
++          onClose={onClose}
+           tile={
+             <IconTile
+               icon={
+@@ -142,7 +155,7 @@ export function WorkflowDetails({
+           title={boxTitle(node)}
+         >
+           {node.type === "loop" && node.detail && (
+-            <p className="mb-3.5 text-[12.5px] text-muted-foreground">{node.detail}</p>
++            <p className="border-t px-4 py-3 text-[12.5px] text-muted-foreground">{node.detail}</p>
+           )}
+           {excerpt(node.line)}
+         </Panel>
+@@ -157,11 +170,13 @@ function StartDetails({
+   graph,
+   files,
+   onShowWorkflow,
++  onClose,
+ }: {
+   readonly app: App;
+   readonly graph: WorkflowGraph;
+   readonly files: ReadonlyArray<SourceFile>;
+   readonly onShowWorkflow: (name: string) => void;
++  readonly onClose: () => void;
+ }) {
+   const uses = new Map<string, Reference>();
+   const collect = (nodes: ReadonlyArray<WorkflowNode>) => {
+@@ -182,6 +197,7 @@ function StartDetails({
+   collect(graph.nodes);
+   return (
+     <Panel
++      onClose={onClose}
+       tile={
+         <span className="flex size-8 shrink-0 items-center justify-center rounded-[8px] bg-primary text-primary-foreground">
+           <HugeiconsIcon icon={PlayCircleIcon} size={17} strokeWidth={1.7} aria-hidden />
+@@ -191,7 +207,7 @@ function StartDetails({
+       title={graph.name}
+     >
+       {graph.input.length > 0 && (
+-        <dl className="mb-3.5 grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 text-[12.5px]">
++        <dl className="grid grid-cols-[82px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5 border-t px-4 py-3 text-[12.5px]">
+           <Row name="Input">
+             <span className="font-mono text-[11.5px]">{graph.input.join(", ")}</span>
+           </Row>
+@@ -220,7 +236,7 @@ function StartDetails({
+           ))}
+         </Section>
+       )}
+-      <Excerpt
++      <WorkflowExcerpt
+         app={app}
+         files={files}
+         file={graph.file}
+@@ -236,7 +252,9 @@ function Panel({
+   kind,
+   title,
+   children,
++  onClose,
+ }: {
++  readonly onClose: () => void;
+   readonly tile: ReactNode;
+   readonly kind: ReactNode;
+   readonly title: ReactNode;
+@@ -245,14 +263,17 @@ function Panel({
+   return (
+     <aside
+       aria-label="Workflow diagram details"
+-      className="min-w-0 border-t p-4 @[760px]:border-t-0 @[760px]:border-l"
++      className="max-h-[560px] min-w-0 overflow-y-auto border-t bg-card @[760px]:border-t-0 @[760px]:border-l"
+     >
+-      <div className="mb-3.5 flex items-center gap-3 [&_.provider-icon]:size-8">
++      <div className="flex items-center gap-3 px-4 py-3 [&_.provider-icon]:size-8">
+         {tile}
+-        <div className="min-w-0">
++        <div className="min-w-0 flex-1">
+           <div className="truncate text-[11px] text-muted-foreground">{kind}</div>
+           <div className="truncate text-sm font-semibold tracking-tight">{title}</div>
+         </div>
++        <Button variant="ghost" size="icon-xs" aria-label="Close details" onClick={onClose}>
++          <HugeiconsIcon icon={Cancel01Icon} size={14} aria-hidden />
++        </Button>
+       </div>
+       {children}
+     </aside>
+@@ -261,8 +282,8 @@ function Panel({
+ 
+ function Section({ title, children }: { readonly title: string; readonly children: ReactNode }) {
+   return (
+-    <section className="mb-4">
+-      <h4 className="mb-2 text-[11.5px] font-medium text-muted-foreground">{title}</h4>
++    <section className="border-t px-4 py-3">
++      <h4 className="mb-2 text-xs font-medium text-muted-foreground">{title}</h4>
+       <div className="grid gap-1.5">{children}</div>
+     </section>
+   );
+@@ -275,51 +296,3 @@ function IconTile({ icon }: { readonly icon: IconSvgElement }) {
+     </span>
+   );
+ }
+-
+-/** The lines a card was drawn from. */
+-function Excerpt({
+-  app,
+-  files,
+-  file,
+-  from,
+-  to,
+-}: {
+-  readonly app: App;
+-  readonly files: ReadonlyArray<SourceFile>;
+-  readonly file: string;
+-  readonly from: number;
+-  readonly to: number;
+-}) {
+-  const { AppLink } = useDashboard();
+-  const source = files.find((entry) => entry.path === file);
+-  if (!source || "encoding" in source || !("content" in source)) return null;
+-  const last = Math.min(to, from + MAX_EXCERPT - 1);
+-  const lines = source.content.split("\n").slice(from - 1, last);
+-  // A call nested in loops starts deep in; the excerpt reads better without the shared indent.
+-  const indent = Math.min(
+-    ...lines
+-      .filter((text) => text.trim() !== "")
+-      .map((text) => /^\s*/u.exec(text)?.[0].length ?? 0),
+-  );
+-  const code = lines.map((text) => text.slice(Number.isFinite(indent) ? indent : 0)).join("\n");
+-  return (
+-    <section className="mt-1">
+-      <h4 className="mb-2 text-[11.5px] font-medium text-muted-foreground">Code</h4>
+-      <div className="max-h-72 overflow-hidden rounded-md border [&_.code-view]:max-h-72">
+-        <Code code={code} path={file} lineNumbers={false} />
+-      </div>
+-      <div className="mt-1.5 flex justify-between gap-2 text-[11.5px] text-muted-foreground">
+-        <span className="truncate">
+-          {file} · {last > from ? `lines ${from}–${last}` : `line ${from}`}
+-        </span>
+-        <AppLink
+-          app={app.id}
+-          view="source"
+-          className="shrink-0 font-medium text-foreground hover:underline"
+-        >
+-          Open in Source →
+-        </AppLink>
+-      </div>
+-    </section>
+-  );
+-}
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-excerpt.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-excerpt.tsx
+new file mode 100644
+index 0000000..cd76bf8
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-excerpt.tsx
+@@ -0,0 +1,59 @@
++import type { App, SourceFile } from "@executor-js/sdk";
++import { Code } from "./code.tsx";
++import { useDashboard } from "./context.tsx";
++
++const MAX_EXCERPT = 16;
++
++/** The lines a card was drawn from. */
++export function WorkflowExcerpt({
++  app,
++  files,
++  file,
++  from,
++  to,
++}: {
++  readonly app: App;
++  readonly files: ReadonlyArray<SourceFile>;
++  readonly file: string;
++  readonly from: number;
++  readonly to: number;
++}) {
++  const { AppLink } = useDashboard();
++  const source = files.find((entry) => entry.path === file);
++  if (!source || "encoding" in source || !("content" in source)) return null;
++  const last = Math.min(to, from + MAX_EXCERPT - 1);
++  const lines = source.content.split("\n").slice(from - 1, last);
++  // A call nested in loops starts deep in; the excerpt reads better without the shared indent.
++  const indent = Math.min(
++    ...lines
++      .filter((text) => text.trim() !== "")
++      .map((text) => /^\s*/u.exec(text)?.[0].length ?? 0),
++  );
++  const code = lines.map((text) => text.slice(Number.isFinite(indent) ? indent : 0)).join("\n");
++  return (
++    <section className="border-t px-4 py-3">
++      <h4 className="mb-2 text-xs font-medium text-muted-foreground">Code</h4>
++      <div className="grid max-h-72 grid-cols-[auto_minmax(0,1fr)] overflow-auto rounded-lg border bg-muted">
++        <span
++          aria-hidden
++          className="border-r py-4 pr-2 pl-3 text-right font-mono text-[11px] leading-[1.8] whitespace-pre text-muted-foreground/70 select-none"
++        >
++          {lines.map((_, index) => from + index).join("\n")}
++        </span>
++        <Code code={code} path={file} lineNumbers={false} />
++      </div>
++      <div className="mt-1.5 flex justify-between gap-2 text-[11.5px] text-muted-foreground">
++        <span className="truncate">
++          {file} · {last > from ? `lines ${from}–${last}` : `line ${from}`}
++        </span>
++        <AppLink
++          app={app.id}
++          view="source"
++          className="shrink-0 font-medium text-foreground hover:underline"
++        >
++          Open in Source →
++        </AppLink>
++      </div>
++    </section>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-references.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-references.tsx
+index c3efb7f..7f2e95d 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram-references.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-references.tsx
+@@ -29,7 +29,7 @@ export function Row({ name, children }: { readonly name: string; readonly childr
+ }
+ 
+ const referenceRow =
+-  "flex w-full min-w-0 items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-[12.5px] hover:bg-muted/60 [&_.provider-icon]:size-6.5 [&_.provider-icon]:rounded-[6px]";
++  "flex w-full min-w-0 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[12.5px] outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring [&_.provider-icon]:size-6.5 [&_.provider-icon]:rounded-[6px]";
+ 
+ export function ReferenceRow({
+   icon,
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx
+index 1b777ba..490bbd0 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx
+@@ -47,7 +47,7 @@ export function WorkflowDiagramSection<E>({
+     <div
+       role="group"
+       aria-label="Workflow diagram"
+-      className="@container mb-7 overflow-hidden rounded-lg border"
++      className="@container mb-5 overflow-hidden rounded-xl border"
+     >
+       {!hydrated ? (
+         <WorkflowDiagramLoading />
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-viewport.ts b/packages/ui/src/implementation/dashboard/workflow-diagram-viewport.ts
+new file mode 100644
+index 0000000..65001b3
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram-viewport.ts
+@@ -0,0 +1,226 @@
++import {
++  useEffect,
++  useRef,
++  useState,
++  type RefObject,
++  type PointerEvent,
++  type KeyboardEvent,
++  type FocusEvent,
++} from "react";
++
++const MIN_ZOOM = 0.25;
++const MAX_ZOOM = 1.75;
++const PADDING = 28;
++const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
++
++/** Keeps zoom anchored at the pointer and lets page scrolling resume at the canvas edges. */
++export function useWorkflowViewport(
++  frame: RefObject<HTMLDivElement | null>,
++  bounds: { readonly width: number; readonly height: number },
++  clear: () => void,
++) {
++  const [view, setView] = useState({ x: 0, y: PADDING, zoom: 1 });
++  const moved = useRef(false);
++  const drag = useRef<{ id: number; x: number; y: number; origin: typeof view } | undefined>(
++    undefined,
++  );
++  const constrain = (current: typeof view) => constrainView(current, frame.current, bounds);
++  const fit = () => {
++    if (!frame.current) return;
++    moved.current = false;
++    setView(fittedView(frame.current, bounds));
++  };
++  useEffect(() => {
++    const element = frame.current;
++    if (!element) return;
++    const resize = new ResizeObserver(() => {
++      if (!moved.current) setView(fittedView(element, bounds));
++      else setView((current) => constrainView(current, element, bounds));
++    });
++    resize.observe(element);
++    return () => resize.disconnect();
++  }, [frame, bounds]);
++  const zoom = (factor: number, clientX?: number, clientY?: number) => {
++    const element = frame.current;
++    if (!element) return;
++    const rect = element.getBoundingClientRect();
++    const x = clientX === undefined ? rect.width / 2 : clientX - rect.left;
++    const y = clientY === undefined ? rect.height / 2 : clientY - rect.top;
++    moved.current = true;
++    setView((current) => zoomedView(current, factor, x, y, element, bounds));
++  };
++  useEffect(() => {
++    const element = frame.current;
++    if (!element) return;
++    const wheel = (event: WheelEvent) => {
++      if (event.ctrlKey || event.metaKey) {
++        event.preventDefault();
++        const rect = element.getBoundingClientRect();
++        moved.current = true;
++        setView((current) =>
++          zoomedView(
++            current,
++            Math.exp(-event.deltaY * 0.0025),
++            event.clientX - rect.left,
++            event.clientY - rect.top,
++            element,
++            bounds,
++          ),
++        );
++        return;
++      }
++      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1;
++      const next = constrainView(
++        {
++          ...view,
++          x: view.x - event.deltaX * unit,
++          y: view.y - event.deltaY * unit,
++        },
++        element,
++        bounds,
++      );
++      if (next.x === view.x && next.y === view.y) return;
++      event.preventDefault();
++      moved.current = true;
++      setView(next);
++    };
++    element.addEventListener("wheel", wheel, { passive: false });
++    return () => element.removeEventListener("wheel", wheel);
++  }, [frame, view, bounds]);
++  const end = (event: PointerEvent<HTMLDivElement>) => {
++    if (drag.current?.id !== event.pointerId) return;
++    const finished = drag.current;
++    drag.current = undefined;
++    if (
++      event.type === "pointerup" &&
++      Math.hypot(event.clientX - finished.x, event.clientY - finished.y) < 3
++    )
++      clear();
++    if (event.currentTarget.hasPointerCapture(event.pointerId))
++      event.currentTarget.releasePointerCapture(event.pointerId);
++  };
++  return {
++    view,
++    fit,
++    zoom,
++    handlers: {
++      onFocusCapture: (event: FocusEvent<HTMLDivElement>) => {
++        const target = event.target;
++        if (!target.matches("[data-workflow-node]")) return;
++        const viewport = event.currentTarget.getBoundingClientRect();
++        const card = target.getBoundingClientRect();
++        const shift = (start: number, end: number, low: number, high: number) =>
++          start < low ? low - start : end > high ? high - end : 0;
++        const dx = shift(card.left, card.right, viewport.left + PADDING, viewport.right - PADDING);
++        const dy = shift(
++          card.top,
++          card.bottom,
++          viewport.top + PADDING,
++          viewport.bottom - PADDING - 36,
++        );
++        if (!dx && !dy) return;
++        moved.current = true;
++        setView((current) => constrain({ ...current, x: current.x + dx, y: current.y + dy }));
++      },
++      onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
++        if (
++          event.button !== 0 ||
++          !(event.target instanceof Element) ||
++          event.target.closest("button, a, [data-workflow-node], [data-canvas-control]")
++        )
++          return;
++        event.currentTarget.setPointerCapture(event.pointerId);
++        drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, origin: view };
++      },
++      onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
++        const current = drag.current;
++        if (current?.id !== event.pointerId) return;
++        const dx = event.clientX - current.x,
++          dy = event.clientY - current.y;
++        if (Math.hypot(dx, dy) < 3) return;
++        moved.current = true;
++        setView(
++          constrain({ ...current.origin, x: current.origin.x + dx, y: current.origin.y + dy }),
++        );
++      },
++      onPointerUp: end,
++      onPointerCancel: end,
++      onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
++        if (event.key === "Escape") {
++          clear();
++          event.preventDefault();
++          return;
++        }
++        if (event.target !== event.currentTarget) return;
++        if (event.key === "+" || event.key === "=") zoom(1.2);
++        else if (event.key === "-") zoom(1 / 1.2);
++        else if (event.key === "0") fit();
++        else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
++          moved.current = true;
++          setView((current) =>
++            constrain({
++              ...current,
++              x:
++                current.x + (event.key === "ArrowLeft" ? 80 : event.key === "ArrowRight" ? -80 : 0),
++              y: current.y + (event.key === "ArrowUp" ? 80 : event.key === "ArrowDown" ? -80 : 0),
++            }),
++          );
++        } else return;
++        event.preventDefault();
++      },
++    },
++  };
++}
++
++interface View {
++  readonly x: number;
++  readonly y: number;
++  readonly zoom: number;
++}
++interface Bounds {
++  readonly width: number;
++  readonly height: number;
++}
++
++function constrainView(current: View, element: HTMLDivElement | null, bounds: Bounds): View {
++  if (!element) return current;
++  const width = bounds.width * current.zoom,
++    height = bounds.height * current.zoom;
++  return {
++    ...current,
++    x:
++      width <= element.clientWidth - PADDING * 2
++        ? (element.clientWidth - width) / 2
++        : clamp(current.x, element.clientWidth - width - PADDING, PADDING),
++    y:
++      height <= element.clientHeight - PADDING * 2
++        ? (element.clientHeight - height) / 2
++        : clamp(current.y, element.clientHeight - height - PADDING, PADDING),
++  };
++}
++
++function fittedView(element: HTMLDivElement, bounds: Bounds): View {
++  const zoom = clamp(Math.min(1, (element.clientWidth - PADDING * 2) / bounds.width), 0.45, 1);
++  return constrainView(
++    { x: (element.clientWidth - bounds.width * zoom) / 2, y: PADDING, zoom },
++    element,
++    bounds,
++  );
++}
++
++function zoomedView(
++  current: View,
++  factor: number,
++  x: number,
++  y: number,
++  element: HTMLDivElement,
++  bounds: Bounds,
++): View {
++  const zoom = clamp(current.zoom * factor, MIN_ZOOM, MAX_ZOOM);
++  const ratio = zoom / current.zoom;
++  return constrainView(
++    { zoom, x: x - (x - current.x) * ratio, y: y - (y - current.y) * ratio },
++    element,
++    bounds,
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram.tsx
+index 3a4fe47..2174d49 100644
+--- a/packages/ui/src/implementation/dashboard/workflow-diagram.tsx
++++ b/packages/ui/src/implementation/dashboard/workflow-diagram.tsx
+@@ -2,7 +2,11 @@ import type { App, Version } from "@executor-js/sdk";
+ import type { WorkflowNode } from "@executor-js/workflow-graph/contracts/graph";
+ import { deriveAppGraph } from "@executor-js/workflow-graph/derive";
+ import { layoutWorkflow } from "@executor-js/workflow-graph/layout";
+-import { Fragment, useMemo, useState } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowLeft01Icon, CodeIcon, WorkflowSquare01Icon } from "@hugeicons/core-free-icons";
++import { useDashboard } from "./context.tsx";
++import { Button } from "../components/button.tsx";
++import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+ import { WorkflowCanvas } from "./workflow-diagram-canvas.tsx";
+ import { WorkflowDetails } from "./workflow-diagram-details.tsx";
+ 
+@@ -36,19 +40,40 @@ export default function WorkflowDiagram({
+   readonly onShowWorkflow: (name: string) => void;
+   readonly onCrumb: (index: number) => void;
+ }) {
++  const { AppLink } = useDashboard();
++  const frame = useRef<HTMLDivElement>(null);
++  const previousWorkflow = useRef(workflow);
++  useEffect(() => {
++    if (previousWorkflow.current === workflow) return;
++    previousWorkflow.current = workflow;
++    frame.current?.focus({ preventScroll: true });
++  }, [workflow]);
+   const graphs = useMemo(() => deriveAppGraph(version.files), [version.files]);
+   const graph = graphs.workflows.find((item) => item.name === workflow);
+   const layout = useMemo(() => (graph ? layoutWorkflow(graph) : undefined), [graph]);
+   // A selection belongs to the workflow it was made in; another workflow opens at its start.
+-  const [selection, setSelection] = useState({ workflow, id: "start" });
++  const [selection, setSelection] = useState<{ workflow: string; id: string | null }>({
++    workflow,
++    id: "start",
++  });
+   const selected = selection.workflow === workflow ? selection.id : "start";
+   const node = useMemo(
+-    () => (graph ? findNode(graph.nodes, selected) : undefined),
++    () => (graph ? (selected === null ? undefined : findNode(graph.nodes, selected)) : undefined),
+     [graph, selected],
+   );
+   return (
+     <>
+-      <div className="flex min-h-11 flex-wrap items-center gap-x-2.5 gap-y-1 border-b px-3.5 py-2 text-[13px]">
++      <div className="flex min-h-11 flex-wrap items-center gap-x-2.5 gap-y-1 border-b bg-card px-3.5 py-2 text-[13px]">
++        {trail.length > 0 && (
++          <Button
++            variant="ghost"
++            size="icon-xs"
++            aria-label="Back to previous workflow"
++            onClick={() => onCrumb(trail.length - 1)}
++          >
++            <HugeiconsIcon icon={ArrowLeft01Icon} size={14} aria-hidden />
++          </Button>
++        )}
+         <nav aria-label="Workflow trail" className="flex min-w-0 flex-wrap items-center gap-1.5">
+           {trail.map((crumb, index) => (
+             <Fragment key={`${crumb.workflow}:${index}`}>
+@@ -72,14 +97,20 @@ export default function WorkflowDiagram({
+               )}
+             </Fragment>
+           ))}
+-          <span className="font-medium" aria-current="page">
++          <span className="inline-flex items-center gap-1.5 font-medium" aria-current="page">
++            <HugeiconsIcon icon={WorkflowSquare01Icon} size={14} aria-hidden />
+             {workflow}
+           </span>
+         </nav>
+         {graph && (
+-          <span className="text-xs text-muted-foreground">
+-            from <span className="font-mono text-[11.5px] text-foreground">{graph.file}</span>
+-          </span>
++          <AppLink
++            app={app.id}
++            view="source"
++            className="ml-auto inline-flex min-w-0 items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-[11.5px] text-muted-foreground hover:text-foreground"
++          >
++            <HugeiconsIcon icon={CodeIcon} size={12} aria-hidden />
++            <span className="truncate font-mono">{graph.file}</span>
++          </AppLink>
+         )}
+         {graph?.partial && (
+           <span className="text-xs text-muted-foreground">
+@@ -88,23 +119,35 @@ export default function WorkflowDiagram({
+         )}
+       </div>
+       {graph && layout ? (
+-        <div className="grid grid-cols-1 @[760px]:grid-cols-[minmax(0,1fr)_320px]">
++        <div
++          className={
++            selected === null
++              ? "grid grid-cols-1"
++              : "grid grid-cols-1 @[760px]:grid-cols-[minmax(0,1fr)_320px]"
++          }
++        >
+           <WorkflowCanvas
++            key={workflow}
++            frame={frame}
+             app={app}
+             layout={layout}
+             input={graph.input}
++            startedBy={graph.startedBy}
+             selected={selected}
+             onSelect={(id) => setSelection({ workflow, id })}
+             onOpenWorkflow={onOpenWorkflow}
+           />
+-          <WorkflowDetails
+-            app={app}
+-            graph={graph}
+-            node={node}
+-            files={version.files}
+-            onOpenWorkflow={onOpenWorkflow}
+-            onShowWorkflow={onShowWorkflow}
+-          />
++          {selected !== null && (
++            <WorkflowDetails
++              app={app}
++              graph={graph}
++              node={node}
++              files={version.files}
++              onOpenWorkflow={onOpenWorkflow}
++              onShowWorkflow={onShowWorkflow}
++              onClose={() => setSelection({ workflow, id: null })}
++            />
++          )}
+         </div>
+       ) : (
+         <p className="px-4 py-5 text-sm text-muted-foreground">
+diff --git a/packages/workflow-graph/src/implementation/layout.ts b/packages/workflow-graph/src/implementation/layout.ts
+index c10df58..5b5d2b7 100644
+--- a/packages/workflow-graph/src/implementation/layout.ts
++++ b/packages/workflow-graph/src/implementation/layout.ts
+@@ -72,15 +72,17 @@ export interface WorkflowLayout {
+   readonly labels: ReadonlyArray<LayoutLabel>;
+ }
+ 
+-const CARD_WIDTH = 252;
+-const STEP_HEIGHT = 58;
+-const DECISION_HEIGHT = 50;
++const CARD_WIDTH = 248;
++const STEP_HEIGHT = 60;
++const START_HEIGHT = 52;
++const REFERENCE_HEIGHT = 30;
++const DECISION_HEIGHT = 52;
+ const END_WIDTH = 74;
+ const END_HEIGHT = 26;
+-const GAP = 34;
++const GAP = 36;
+ const PAD = 18;
+ const HEAD = 34;
+-const COLUMN_GAP = 30;
++const COLUMN_GAP = 28;
+ const ARM_DROP = 30;
+ const EMPTY_ARM = 96;
+ const FAILURE_DROP = 58;
+@@ -117,18 +119,22 @@ export function layoutWorkflow(graph: WorkflowGraph): WorkflowLayout {
+     x: axis - CARD_WIDTH / 2,
+     y: 0,
+     width: CARD_WIDTH,
+-    height: STEP_HEIGHT,
++    height: START_HEIGHT,
+   });
+-  drawBlock(out, graph.nodes, axis, STEP_HEIGHT + GAP, [
+-    { x: axis, y: STEP_HEIGHT, from: "start", arm: undefined },
++  drawBlock(out, graph.nodes, axis, START_HEIGHT + GAP, [
++    { x: axis, y: START_HEIGHT, from: "start", arm: undefined },
+   ]);
+-  return { width, height: STEP_HEIGHT + GAP + body.height, ...out };
++  return { width, height: START_HEIGHT + GAP + body.height, ...out };
+ }
+ 
+ function nodeSize(node: WorkflowNode): Size {
+   switch (node.type) {
+     case "step":
+-      return { width: CARD_WIDTH, height: STEP_HEIGHT };
++      return {
++        width: CARD_WIDTH,
++        height:
++          STEP_HEIGHT + (node.uses.some((use) => use.kind === "workflow") ? REFERENCE_HEIGHT : 0),
++      };
+     case "end":
+       return { width: END_WIDTH, height: END_HEIGHT };
+     case "branch": {
+@@ -253,7 +259,7 @@ function drawNode(out: Out, node: WorkflowNode, size: Size, axis: number, y: num
+   switch (node.type) {
+     case "step":
+       out.cards.push({ kind: "node", id: node.id, node, ...box });
+-      return [{ x: axis, y: y + STEP_HEIGHT, from: node.id, arm: undefined }];
++      return [{ x: axis, y: y + size.height, from: node.id, arm: undefined }];
+     case "end":
+       out.cards.push({ kind: "node", id: node.id, node, ...box });
+       return [];

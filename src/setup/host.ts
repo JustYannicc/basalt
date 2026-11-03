@@ -147,7 +147,7 @@ function linkResponse(request: Request, result: Record<string, unknown>): Respon
   const link = `${origin}/setup/claim/${result.token}`;
   return json({
     computer: computerSummary(result.computer), computerId: record(result.computer).id, link,
-    prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+, delete the file, and tell me what it changed.`,
+    prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+. If it finds existing MCP connections, ask me whether to replace the old Executor connection or keep both; don't choose for me. Run it again with my choice, delete the file, and tell me what it changed.`,
     ...commands(origin, ["--link", link]), undoPrompt: undo(origin), expiresAt: result.expiresAt,
   });
 }

@@ -1,3 +1,4 @@
+import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
 import { AppModels } from "./app-models.ts";
 import { appModelPath } from "./app-model-contract.ts";
@@ -32,6 +33,7 @@ import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websock
 import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
+import { handleUsageSeries, lastSuccessAtPath, poolUsageSeriesPath } from "./model-history/series-http.ts";
 import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -213,6 +215,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.prices.run();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
     await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
+    await publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY)
+      .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try { await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests); }
       catch { console.error("POOL_MODEL_HISTORY_FAILURE count=1"); }
@@ -267,6 +271,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         });
       } catch (error) { return failureResponse(error); }
     }
+    if (pathname === poolUsageSeriesPath || pathname === lastSuccessAtPath) return handleUsageSeries(request, {
+      signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+    });
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);

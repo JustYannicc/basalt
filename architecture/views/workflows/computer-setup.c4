@@ -17,14 +17,24 @@ views {
       computers through a signed rename action. On the tools gateway's Connect page, the coding-agent
       guides lead with a one-click setup prompt that calls the same /setup/v1 routes from the dashboard
       origin, keep their built-in steps behind an expander, and list the caller's computers among the
-      connected agents. The desktop chat guide and the pool endpoint tab mint a models-only computer and
+      connected agents. The dashboard registry retains only that person's list and selected pool for
+      the current organization. Fresh returns use it immediately; stale returns, visible idle periods
+      and tab re-entry reconcile in place. The organization layout clears that slot when the person
+      or organization changes, even while Connect is closed. Closing the page or a confirmed access
+      refusal invalidates its outstanding reads and later mutation refreshes. Signed intents and
+      one-time keys remain page-local.
+      The desktop chat guide and the pool endpoint tab mint a models-only computer and
       claim its one-time link in the browser, so the key shows once on that page; the desktop client's
       tools come from its own managed MCP entry with OAuth sign-in, not a stored token.
       Private pool actions carry an action-bound signature and a 30-second expiry.
       The model gateway owns the registry in the existing pool controller, generates a model key and
       registers it to the user's backend record with a nonempty pool channel-group list. Both credentials
       are encrypted under a five-minute one-time link. Claim consumption is durable before the response.
-      The Node.js installer backs up and marks config, preserves unrelated settings and supports undo.
+      Before consuming the link, the Node.js installer lists existing MCP connection names and asks the
+      person whether to replace named old connections or keep both. A noninteractive agent must relay
+      the choice and supply the person's answer explicitly; it cannot silently choose. Replacement never
+      infers that unrelated local servers are old tools gateway connections. The installer backs up and marks
+      config, records approved connection removals in the same manifest and restores them with undo.
       Build prepares frozen setup dependencies; scripts/setup-build.ts bundles the installer with esbuild
       from the pinned dependency; src/setup/package.json pins smol-toml 1.8.0 with its own bun.lock.
     """
@@ -59,6 +69,8 @@ views {
     basalt.router <- basalt.setupHost "setup prompt, shell command and undo prompt"
     localClient <- basalt.router "one-time link and setup commands"
     localClient -> basalt.setupInstaller "run downloaded installer with one-time link"
+    basalt.setupInstaller -> poolOwner "existing MCP names: replace named connections or keep both"
+    poolOwner -> basalt.setupInstaller "explicit connection choice; no writes or claim before answer"
     basalt.setupInstaller -> basalt.router "GET /setup/claim/:token as JSON"
     basalt.router -> basalt.setupHost "handle claim"
     basalt.setupHost -> basalt.modelGateway "signed claim action with 30-second expiry via private binding"
