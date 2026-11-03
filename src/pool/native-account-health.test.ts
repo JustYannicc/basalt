@@ -13,7 +13,7 @@ import type { Json } from "./json.ts";
 const key = "ab".repeat(32),
   now = Date.parse("2030-01-01T00:00:00Z");
 function fixture(
-  options: { error?: string; stale?: boolean; disabled?: boolean; exhausted?: boolean; provider?: string } = {},
+  options: { error?: string; stale?: boolean; disabled?: boolean; exhausted?: boolean; unlimited?: boolean; provider?: string } = {},
 ) {
   const calls: string[] = [],
     storage = new Map<string, unknown>();
@@ -58,6 +58,7 @@ function fixture(
             remaining_ratio: options.exhausted ? 0 : 0.8,
             observed_at: new Date(now).toISOString(),
             period: { seconds: 604800 },
+            ...(options.unlimited ? { is_unlimited: true } : {}),
           },
         ],
       });
@@ -177,6 +178,12 @@ test("alarm observations read unlinked bindings without a health check or reset 
   assert.ok(f.calls.every((path) => /\/(credentials|quota\/collect|quota\/credentials\/bound-id)$/.test(path)));
 });
 
+
+test("an account whose collected windows are all unlimited publishes no usage report", async () => {
+  const f = fixture({ unlimited: true });
+  const response = await f.check({ action: "observe" });
+  assert.deepEqual(await response!.json(), { result: null });
+});
 
 test("mirrored API-limited accounts share interval collection and the same persisted cap", async () => {
   const f = fixture({ provider: "typesafe", stale: true });
