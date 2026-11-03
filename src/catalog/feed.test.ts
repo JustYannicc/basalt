@@ -110,7 +110,7 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
       assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
     else {
       assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
-      assert.match(entry.description, /GitLab\.com or a self-managed instance/);
+      assert.match(entry.description, /GitLab\.com or your own GitLab server/);
     }
     assert.equal(entry.source, `apps/${entry.id}.json`);
     const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });

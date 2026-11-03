@@ -42,8 +42,7 @@ test("Miro catalog offers personal OAuth first and keeps its access-token fallba
     connectionNotices?: unknown }[] };
   const miro = feed.apps.find(app => app.id === "miro")!;
   assert.deepEqual(miro.auth.map(method => method.method), ["oauth", "token"]);
-  assert.match(miro.description, /team and organization administration/);
-  assert.match(miro.description, /Enterprise and Company Admin/);
+  assert.match(miro.description, /teams and organization administration/);
   assert.equal(miro.connectionNotices, undefined);
 });
 

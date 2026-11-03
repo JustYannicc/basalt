@@ -8,8 +8,7 @@ const entry: FeedEntry = {
   id: "zendesk",
   package: snapshot.package,
   name: "Zendesk",
-  description:
-    "Zendesk Support API v2 reads and writes for the connected user; every mutation requires approval.",
+  description: "Read, create and update Zendesk tickets, users, organizations, views and macros.",
   auth: [{ method: "oauth", kind: "oauth2" }],
   icons: [...zendeskIcons],
   source: "apps/zendesk.json",
