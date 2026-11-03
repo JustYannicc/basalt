@@ -71,7 +71,7 @@ def plan(root, release, commit, source_digest, module_sums):
     go_sum = (root / "containers/pool/typesafe/go.sum").read_text()
     retained = [line for line in go_sum.splitlines() if not line.startswith(module + " ")]
     architecture = (root / "architecture/model/basalt.c4").read_text()
-    old_version = f"CPA version {base['tag']}"
+    old_version = f"Model gateway version {base['tag']}"
     if architecture.count(old_version) != 1:
         raise ValueError("Architecture CPA version differs from the release pin")
     return {
@@ -81,7 +81,7 @@ def plan(root, release, commit, source_digest, module_sums):
         "scripts/releases/receipts/node.json": encode(receipt),
         "containers/pool/typesafe/go.mod": go_mod.replace(old, f"require {module} {tag}"),
         "containers/pool/typesafe/go.sum": "\n".join(sorted(retained + sums)) + "\n",
-        "architecture/model/basalt.c4": architecture.replace(old_version, f"CPA version {tag}"),
+        "architecture/model/basalt.c4": architecture.replace(old_version, f"Model gateway version {tag}"),
     }
 
 
