@@ -1,0 +1,261 @@
+diff --git a/.changeset/openapi-stale-patches.md b/.changeset/openapi-stale-patches.md
+new file mode 100644
+index 0000000..50faa17
+--- /dev/null
++++ b/.changeset/openapi-stale-patches.md
+@@ -0,0 +1,9 @@
++---
++"apps": patch
++---
++
++OpenAPI sources skip a `patches` entry whose path item or operation, in
++`paths`, `webhooks` or `components.pathItems`, the definition no longer has,
++and log the skipped patches, instead of failing every tool the app offers. Any
++other missing target, such as a field of an operation that still exists, and a
++malformed patch still fail the definition.
+diff --git a/e2e/support/live-openapi.ts b/e2e/support/live-openapi.ts
+index d502eda..69fd682 100644
+--- a/e2e/support/live-openapi.ts
++++ b/e2e/support/live-openapi.ts
+@@ -14,11 +14,12 @@ import { appsManifest } from "./apps-release.ts";
+  * Omit staleFor to use the framework default stale-while-revalidate window. With `retiring`, the
+  * first document also has `/legacy`, which a published document drops and whose route then answers
+  * 404, and every document has `/missing`, whose item never exists: it answers 404 with a body that
+- * repeats the request's credential, which no failure may show.
++ * repeats the request's credential, which no failure may show. `patches` are the app's static
++ * document patches.
+  */
+ export const liveOpenapiFixture = (
+   freshFor: number,
+-  options: { staleFor?: number; retiring?: boolean } = {},
++  options: { staleFor?: number; retiring?: boolean; patches?: readonly unknown[] } = {},
+ ) =>
+   Effect.gen(function* () {
+     let version = 1;
+@@ -170,7 +171,7 @@ export const liveOpenapiFixture = (
+ export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
+  source:{url:${JSON.stringify(origin + "/openapi.json")}}, allowedOrigin:${JSON.stringify(origin)}, freshFor:${freshFor},${options.staleFor === undefined ? "" : ` staleFor:${options.staleFor},`}
+  securitySchemes:{token:{type:'apiKey',in:'header',name:'x-token'}}, methods:{apiKey:[{scheme:'token',field:'token',part:'value',prefix:''}]}, oauth:[],
+- account:{method:'apiKey',fields:{token:'synthetic-live-key'}}
++ account:{method:'apiKey',fields:{token:'synthetic-live-key'}},${options.patches === undefined ? "" : ` patches:${JSON.stringify(options.patches)},`}
+ }) }));`,
+       },
+       appsManifest,
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..4768cc8 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1183,6 +1183,17 @@ export const scenarios = plan({
+       local: na("Hosted version API scenario"),
+     },
+   },
++  liveOpenapiStalePatches: {
++    fixtures: "actors",
++    file: "live-openapi.spec.ts",
++    title:
++      "Live OpenAPI skips app patches whose target the document no longer has and still rejects malformed ones",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Loopback upstream fixture"),
++      local: na("Hosted version API scenario"),
++    },
++  },
+   liveOpenapiRetired: {
+     fixtures: "actors",
+     file: "live-openapi.spec.ts",
+diff --git a/e2e/tests/live-openapi.spec.ts b/e2e/tests/live-openapi.spec.ts
+index c4cca5a..87f958f 100644
+--- a/e2e/tests/live-openapi.spec.ts
++++ b/e2e/tests/live-openapi.spec.ts
+@@ -61,6 +61,48 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
+       }),
+     ),
+   );
++  it.effect(scenarios.liveOpenapiStalePatches.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        // The API dropped the path item or operation three patches were written for; the fourth
++        // still applies.
++        const fixture = yield* liveOpenapiFixture(0, {
++          staleFor: 0,
++          patches: [
++            { op: "replace", path: "/paths/~1speech~1{voice_id}/post/parameters", value: [] },
++            { op: "remove", path: "/paths/~1echo/delete" },
++            { op: "add", path: "/paths/~1echo/post/security", value: [] },
++            { op: "replace", path: "/paths/~1echo/get/operationId", value: "echoes_patched" },
++          ],
++        });
++        const called = yield* fixture.call("patched", "old");
++        expect(called.status, JSON.stringify(called.body)).toBe(200);
++        expect(yield* body(Schema.Json, called)).toEqual({
++          token: "synthetic-live-key",
++          stolen: null,
++        });
++        const tools = yield* fixture.api.request(
++          fixture.actors.owner,
++          "GET",
++          `${fixture.path}/tools`,
++        );
++        expect(tools.status).toBe(200);
++        expect((yield* body(Listing, tools)).items.map((tool) => tool.name)).toEqual([
++          "echoes.patched",
++        ]);
++
++        // A patch the app wrote wrong still fails its tools instead of being skipped.
++        const malformed = yield* liveOpenapiFixture(0, {
++          staleFor: 0,
++          patches: [{ op: "replace", path: "/paths/~1echo/get/operationId" }],
++        });
++        const refused = yield* malformed.call("old", "old");
++        expect(refused.status, JSON.stringify(refused.body)).toBe(502);
++        expect(JSON.stringify(refused.body)).toContain("invalid_definition");
++      }),
++    ),
++  );
+   it.effect(scenarios.liveOpenapiRetired.title, (context) =>
+     withHostedCase(
+       context,
+diff --git a/packages/app-templates/executor/skills/app-authoring/integrations.md b/packages/app-templates/executor/skills/app-authoring/integrations.md
+index 9f47005..a6d3a55 100644
+--- a/packages/app-templates/executor/skills/app-authoring/integrations.md
++++ b/packages/app-templates/executor/skills/app-authoring/integrations.md
+@@ -285,7 +285,11 @@ settings the definition cannot be trusted to decide:
+   Pointer through objects only: every segment before the last must name an
+   existing object, so a pointer cannot index into an array. Replace the whole
+   array at its key instead. `add` creates or overwrites a key; `remove` and
+-  `replace` need it to exist.
++  `replace` need it to exist. When the definition no longer has the path item
++  or operation a patch is under, in `paths`, `webhooks` or
++  `components.pathItems`, the patch is skipped and logged, so an API that drops
++  an operation leaves the other tools working. Any other missing target, such
++  as a field of an operation that still exists, fails the definition.
+ - Optional `pathPrefix`, such as `/projects/{project}`, when the definition's
+   paths omit leading segments. It goes between the server and every path; each
+   `{name}` becomes a required path parameter of every tool.
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+index 8048464..4dd5c63 100644
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -6,7 +6,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+   "app-authoring/accounts.md": "43c37bbe785e0ab99a70464db056b15ce33c04970e9d840aadaca104c1873bc2",
+   "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
+   "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
+-  "app-authoring/integrations.md": "cb0ac98ad26d840e7ec18e79756a9592acfc65045aa67caf28b18c102ca01690",
++  "app-authoring/integrations.md": "c349fe81ad1c5c0d2f7fd9f7c77afdeb5297b65adb769135d313e4370864b9ea",
+   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
+   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
+   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+diff --git a/packages/apps/src/implementation/openapi-source.ts b/packages/apps/src/implementation/openapi-source.ts
+index 82b6ded..29dbb76 100644
+--- a/packages/apps/src/implementation/openapi-source.ts
++++ b/packages/apps/src/implementation/openapi-source.ts
+@@ -346,10 +346,32 @@ export interface OpenapiSourceOptions extends Omit<
+   }[];
+ }
+ 
+-/** JSON-object patches are static app configuration and are reapplied to every revision. */
++/** One static patch an OpenAPI source applies to every revision of its definition. */
++export type OpenapiPatch = NonNullable<OpenapiSourceOptions["patches"]>[number];
++
++// Where a definition keeps path items. The item's key and its method follow these segments.
++const pathItemContainers = [["paths"], ["webhooks"], ["x-webhooks"], ["components", "pathItems"]];
++
++/** Pointer positions where a missing key means the provider dropped a path item or operation. */
++const droppedAt = (path: readonly string[]) => {
++  const container = pathItemContainers.find((prefix) =>
++    prefix.every((part, index) => path[index] === part),
++  );
++  return container === undefined ? [] : [container.length, container.length + 1];
++};
++
++/**
++ * JSON-object patches are static app configuration and are reapplied to every revision. A live
++ * definition can drop a path item or operation a patch was written for; that patch has nothing
++ * left to change, so it is passed to `stale` and skipped instead of failing every tool. Any other
++ * missing target fails, such as a field of an operation that still exists or a security scheme,
++ * so such a patch is never silently lost. So does a malformed patch, or one that walks into a
++ * value that is not an object.
++ */
+ export function patchOpenapi(
+   root: JsonObject,
+   patches: OpenapiSourceOptions["patches"],
++  stale: (patch: OpenapiPatch) => void,
+ ): JsonObject {
+   let result = root;
+   for (const patch of patches ?? []) {
+@@ -358,28 +380,34 @@ export function patchOpenapi(
+       .slice(1)
+       .split("/")
+       .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
+-    if (path.some((part) => ["__proto__", "constructor", "prototype"].includes(part)))
++    if (
++      path.some((part) => part === "" || ["__proto__", "constructor", "prototype"].includes(part))
++    )
+       throw invalid();
+-    const update = (node: JsonObject, parts: readonly string[]): JsonObject => {
+-      const [head, ...rest] = parts;
+-      if (head === undefined) throw invalid();
+-      if (rest.length)
+-        return {
+-          ...node,
+-          [head]: update(
+-            Schema.decodeUnknownSync(JsonObject)(
+-              Object.hasOwn(node, head) ? node[head] : undefined,
+-            ),
+-            rest,
+-          ),
+-        };
+-      if (patch.op !== "add" && !Object.hasOwn(node, head)) throw invalid();
++    const value = patch.value;
++    if (patch.op !== "remove" && value === undefined) throw invalid();
++    const dropped = droppedAt(path);
++    // Undefined when the definition dropped the path item or operation holding the target.
++    const missing = (at: number) => {
++      if (dropped.includes(at)) return undefined;
++      throw invalid();
++    };
++    const update = (node: JsonObject, at: number): JsonObject | undefined => {
++      const head = path[at]!;
++      if (at < path.length - 1) {
++        if (!Object.hasOwn(node, head)) return missing(at);
++        const child = update(Schema.decodeUnknownSync(JsonObject)(node[head]), at + 1);
++        return child === undefined ? undefined : { ...node, [head]: child };
++      }
++      if (patch.op !== "add" && !Object.hasOwn(node, head)) return missing(at);
+       if (patch.op === "remove")
+         return Object.fromEntries(Object.entries(node).filter(([name]) => name !== head));
+-      if (patch.value === undefined) throw invalid();
+-      return { ...node, [head]: patch.value };
++      if (value === undefined) throw invalid();
++      return { ...node, [head]: value };
+     };
+-    result = update(result, path);
++    const patched = update(result, 0);
++    if (patched === undefined) stale(patch);
++    else result = patched;
+   }
+   return result;
+ }
+@@ -488,13 +516,20 @@ const sourceDocument = (
+   context: Parameters<typeof download>[1],
+ ) =>
+   Effect.gen(function* () {
+-    return patchOpenapi(
++    const stale: string[] = [];
++    const document = patchOpenapi(
+       "url" in options.source
+         ? yield* download(options.source.url, context)
+         : // A copy the compilation can own, as a tree.
+           Schema.decodeUnknownSync(JsonObject)(JSON.parse(JSON.stringify(options.source.document))),
+       options.patches,
++      (patch) => stale.push(`${patch.op} ${patch.path}`),
+     );
++    if (stale.length > 0)
++      yield* Effect.logWarning(
++        "OpenAPI patches skipped: the document no longer has their targets",
++      ).pipe(Effect.annotateLogs({ patches: stale }));
++    return document;
+   });
+ 
+ /** Compile a definition with the source's static settings. */
