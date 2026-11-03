@@ -80,14 +80,17 @@ export function seriesBounds(input: PoolUsageSeriesInput) {
 }
 
 /** Only signed host assertions supply account bindings. The API caller cannot choose this authority. */
-export function seriesAuthority(raw: unknown): SeriesAuthority {
+export function seriesAuthority(
+  raw: unknown,
+  mappingProven = homeAccountMappingProven,
+): SeriesAuthority {
   const value = historyObject(raw);
   if (value.canManage !== true)
     return fail(403, "unauthorized", "Only a pool manager can read usage series.");
   if (!Array.isArray(value.accounts) || value.accounts.length > 500) return invalidHistory();
   return {
     canManage: true,
-    mappingProven: homeAccountMappingProven,
+    mappingProven,
     accounts: value.accounts.map((raw) => {
       const account = historyObject(raw);
       if (account.account !== null && !id(account.account)) return invalidHistory();

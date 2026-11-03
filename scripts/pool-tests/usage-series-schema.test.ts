@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { digest } from "../../src/pool/backend-users.ts";
@@ -195,7 +195,7 @@ test("EXPLAIN bounded account aggregates use v3 account-time indexes and pool ag
       const response = await db.query(`EXPLAIN (FORMAT JSON) ${query.text}`, query.values);
       const [root] = response.rows[0]!["QUERY PLAN"] as { Plan: Plan }[];
       assert.ok(root);
-      return scans(root.Plan);
+      return root;
     };
     const filtered = await seriesQuery(
       db,
@@ -208,7 +208,8 @@ test("EXPLAIN bounded account aggregates use v3 account-time indexes and pool ag
       },
       native.authority,
     );
-    const accountScans = await explain(filtered);
+    const accountPlan = await explain(filtered);
+    const accountScans = scans(accountPlan.Plan);
     assert.ok(accountScans.length > 0);
     assert.ok(
       accountScans.every((name) => accountIndexes.includes(name)),
@@ -224,12 +225,43 @@ test("EXPLAIN bounded account aggregates use v3 account-time indexes and pool ag
       },
       authority,
     );
-    const poolScans = await explain(grouped);
+    const poolPlan = await explain(grouped);
+    const poolScans = scans(poolPlan.Plan);
     assert.ok(poolScans.length > 0);
     assert.ok(
       poolScans.every((name) => poolIndexes.includes(name)),
       JSON.stringify(poolScans),
     );
+    // Refresh representative plans with UPDATE_USAGE_SERIES_PLANS=1 against local Postgres.
+    const evidencePath = new URL("./usage-series-plans.json", import.meta.url);
+    if (process.env.UPDATE_USAGE_SERIES_PLANS === "1") {
+      const version = (await db.query("SHOW server_version")).rows[0]!.server_version;
+      await writeFile(
+        evidencePath,
+        `${JSON.stringify(
+          {
+            postgresVersion: version,
+            fixtureRows: 100_000,
+            accountFiltered: accountPlan,
+            groupedPool: poolPlan,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
+    const retained = JSON.parse(await readFile(evidencePath, "utf8")) as {
+      accountFiltered: { Plan: Plan };
+      groupedPool: { Plan: Plan };
+    };
+    for (const [plan, indexes] of [
+      [retained.accountFiltered.Plan, accountIndexes],
+      [retained.groupedPool.Plan, poolIndexes],
+    ] as const) {
+      const retainedScans = scans(plan);
+      assert.ok(retainedScans.length > 0);
+      assert.ok(retainedScans.every((name) => indexes.includes(name)));
+    }
   });
 });
 

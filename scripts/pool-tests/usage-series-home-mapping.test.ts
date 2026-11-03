@@ -23,12 +23,14 @@ const credentialId = "12345678-abcd-4def-8123-0123456789ab";
 test(
   "pinned live Home usage auth_index equals the credential UUID carried by the saved account homeReference",
   {
-    skip: image
-      ? false
-      : "A prebuilt pinned POOL_TEST_IMAGE is required; no image download or build is attempted.",
+    skip:
+      image || process.env.CI
+        ? false
+        : "A prebuilt pinned POOL_TEST_IMAGE is required; no image download or build is attempted.",
     timeout: 180_000,
   },
   async () => {
+    assert.ok(image, "POOL_TEST_IMAGE is required in CI for the pinned live Home mapping proof.");
     // Refuse an absent image rather than letting Docker fetch one during this proof.
     execFileSync("docker", ["image", "inspect", image!], { stdio: "ignore" });
     const provider = new SyntheticOAuthProvider();

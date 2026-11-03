@@ -126,10 +126,9 @@ test("currency always groups separately, costs never mix bases, and import-owner
   });
 });
 
-test("the host mapping gate remains closed without live proof; foreign references never join native accounts", async () => {
+test("the configured host mapping gate controls native accounts; foreign references never join them", async () => {
   await seriesFixture(async ({ db, insert }) => {
     const native = await accountAuthority();
-    assert.equal(homeAccountMappingProven, false);
     const access = seriesAuthority({
       canManage: true,
       mappingProven: true,
@@ -137,29 +136,27 @@ test("the host mapping gate remains closed without live proof; foreign reference
     });
     assert.equal(
       access.mappingProven,
-      false,
-      "a signed assertion cannot manufacture the missing live proof",
+      homeAccountMappingProven,
+      "a signed assertion cannot override the configured mapping gate",
     );
     await insert(
       { source: native.source, account: native.visible },
       { account: native.visible, provider: "imported-provider" },
     );
     const result = await poolUsageSeries(db, { ...input, by: ["account", "provider"] }, access);
-    assert.ok(result.groups.every((group) => group.key.account === "unmapped"));
-    assert.equal(JSON.stringify(result).includes("saved-visible"), false);
-    assert.equal(result.coverage.mapping.proof, "unavailable");
-    assert.equal(result.coverage.mapping.unmapped, 2);
-    assert.equal(result.coverage.pricing.missing, 1);
-    const filteredBeforeProof = await poolUsageSeries(
-      db,
-      { ...input, accounts: ["saved-visible"] },
-      access,
-    );
-    assert.deepEqual(filteredBeforeProof.groups, []);
+    assert.equal(JSON.stringify(result).includes("saved-visible"), homeAccountMappingProven);
     assert.equal(
-      filteredBeforeProof.coverage.mapping.unmapped,
-      2,
-      "an unavailable mapping cannot be used as an account filter or imply zero use",
+      result.coverage.mapping.proof,
+      homeAccountMappingProven ? "proven" : "unavailable",
+    );
+    assert.equal(result.coverage.mapping.unmapped, homeAccountMappingProven ? 1 : 2);
+    assert.equal(result.coverage.pricing.missing, homeAccountMappingProven ? 0 : 1);
+    const filtered = await poolUsageSeries(db, { ...input, accounts: ["saved-visible"] }, access);
+    assert.equal(filtered.groups.length, homeAccountMappingProven ? 1 : 0);
+    assert.equal(
+      filtered.coverage.mapping.unmapped,
+      homeAccountMappingProven ? 0 : 2,
+      "only a proven mapping can filter accounts",
     );
     const foreign = await poolUsageSeries(
       db,
