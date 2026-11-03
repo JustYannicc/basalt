@@ -1,0 +1,2701 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+index 4ee1a68..ef50bd1 100644
+--- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+@@ -36,13 +36,11 @@ export function HostedAccountObservations({
+   apps,
+   app,
+   canReconnect,
+-  plan = false,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+-  readonly plan?: boolean;
+ }) {
+   const { organization } = useOrganizationRoute();
+   const key = { organization, account: account.id };
+@@ -67,7 +65,6 @@ export function HostedAccountObservations({
+               },
+             }
+         : { health: { apps: [app], check: () => check(), showStatus: false } })}
+-      plan={plan}
+       Failure={HostedFailure}
+     />
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 10c8bac..df8326e 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -127,16 +127,14 @@ export function AccountsPage({
+             ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
+             : undefined;
+           return (
+-            <>
+-              {access && (
+-                <span className="rounded border px-1.5 py-0.5 text-[10px]">
+-                  {access.ownership.kind === "personal" ? "Personal" : "Shared"}
+-                </span>
+-              )}
+-              <HostedAccountPlan account={account} />
+-            </>
++            access && (
++              <span className="shrink-0 rounded-sm border px-1.5 text-[10px] leading-4 text-muted-foreground">
++                {access.ownership.kind === "personal" ? "Personal" : "Shared"}
++              </span>
++            )
+           );
+         }}
++        accountPlan={(account) => <HostedAccountPlan account={account} />}
+         accountDetails={(account, apps) => (
+           <HostedAccountObservations
+             account={account}
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 28e67e8..6756099 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -50,7 +50,7 @@ import {
+ } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { HostedAccountDialog } from "./account-actions.tsx";
+-import { HostedAccountObservations } from "./account-observations.tsx";
++import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { catalogAtom } from "../../contracts/api.ts";
+ 
+ /**
+@@ -198,7 +198,8 @@ export function AppAccounts({
+             : { contribute: editing(scope), readOnly }),
+           // Only accounts the caller can use; a shared account's own policy decides its usage.
+           accountDetails: (account) =>
+-            usable(account) && <HostedAccountObservations account={account} app={app} plan />,
++            usable(account) && <HostedAccountObservations account={account} app={app} />,
++          accountPlan: (account) => usable(account) && <HostedAccountPlan account={account} />,
+           accountMenu: (account, slot, requirement, linked) =>
+             linked &&
+             (usable(account) || removable(links, slot, account)) && (
+diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+index b12eaeb..870fdb4 100644
+--- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
+@@ -23,13 +23,11 @@ export function LocalAccountObservations({
+   apps,
+   app,
+   canReconnect,
+-  plan = false,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
+-  readonly plan?: boolean;
+ }) {
+   const refresh = useAtomSet(refreshAccountObservationsAtom(account.id), { mode: "promiseExit" });
+   const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
+@@ -49,7 +47,6 @@ export function LocalAccountObservations({
+               },
+             }
+         : { health: { apps: [app], check: () => check(), showStatus: false } })}
+-      plan={plan}
+       Failure={Failure}
+     />
+   );
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index a62e138..d940efb 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -75,7 +75,7 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+             open={(kind) => setDialog({ account: account.id, kind, binding })}
+           />
+         )}
+-        accountMeta={(account) => <LocalAccountPlan account={account} />}
++        accountPlan={(account) => <LocalAccountPlan account={account} />}
+         accountDetails={(account, apps) => (
+           <LocalAccountObservations
+             account={account}
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 392d568..93ec966 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -17,7 +17,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
+ import { AppAccountForm } from "./account-form.tsx";
+ import { ReplaceCredentials } from "./account-credentials.tsx";
+ import { LocalAccountDialog } from "./account-actions.tsx";
+-import { LocalAccountObservations } from "./account-observations.tsx";
++import { LocalAccountObservations, LocalAccountPlan } from "./account-observations.tsx";
+ import { Button } from "@executor-js/ui/components/button";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+ import { QueryView } from "@executor-js/ui/dashboard/context";
+@@ -100,7 +100,8 @@ export function AppAccounts({
+   ): ScopeAccounts<DashboardError> => ({
+     links,
+     revalidate,
+-    accountDetails: (account) => <LocalAccountObservations account={account} app={app} plan />,
++    accountDetails: (account) => <LocalAccountObservations account={account} app={app} />,
++    accountPlan: (account) => <LocalAccountPlan account={account} />,
+     edit: {
+       choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
+       link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
+new file mode 100644
+index 0000000..9e6303a
+--- /dev/null
++++ b/e2e/support/account-rows.ts
+@@ -0,0 +1,31 @@
++/** Compact account rows: a row by its menu, and the row actions that menu holds. */
++import type { Locator, Page } from "playwright";
++
++/**
++ * The Accounts list row of the account saved as `label`, found by its ⋯ menu, which names the
++ * saved label whatever the row's title shows. An account saved without a label is "unnamed
++ * account".
++ */
++export const accountRow = (page: Page, label: string) =>
++  page
++    .locator(".inventory-row")
++    .filter({ has: page.getByRole("button", { name: `Manage ${label}`, exact: true }) });
++
++/** The row's ⋯ menu, opened; `label` is the saved label the menu button names. */
++export const openRowMenu = (page: Page, row: Locator, label: string) =>
++  row
++    .getByRole("button", { name: `Manage ${label}`, exact: true })
++    .click()
++    .then(() => page.getByRole("menu"));
++
++/** Opens the row's details: usage source and age, checks, balances and unlimited windows. */
++export const openRowDetails = (page: Page, row: Locator, label: string) =>
++  openRowMenu(page, row, label)
++    .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
++    .then(() => row.locator("[data-account-details]").waitFor());
++
++/** Collects usage again from the row's menu, as a keyboard or pointer user would. */
++export const refreshRowUsage = (page: Page, row: Locator, label: string) =>
++  openRowMenu(page, row, label).then((menu) =>
++    menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
++  );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index d8cc1e3..c50f597 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8948,6 +8948,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows."),
+     },
+   },
++  accountCompactRows: {
++    fixtures: "actors",
++    file: "account-compact-rows.spec.ts",
++    title:
++      "compact account rows stay about one line tall, wrap on a phone, mark only verified identities, leave Type blank and refresh usage from the row menu",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback allowance services."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
+   accountUsageHomeReporter: {
+     fixtures: "actors",
+     file: "account-usage-home-reporter.spec.ts",
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+new file mode 100644
+index 0000000..82b605c
+--- /dev/null
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -0,0 +1,294 @@
++/** Account rows are compact two-line rows: aligned columns, health in a word, actions in the menu. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
++import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { accountRow, openRowMenu } from "../support/account-rows.ts";
++import { scenarios } from "../test-plan.ts";
++
++const box = (page: Page, label: string, selector: string) =>
++  accountRow(page, label)
++    .locator(selector)
++    .first()
++    .evaluate((element) => {
++      const rect = element.getBoundingClientRect();
++      return { top: rect.top, bottom: rect.bottom, middle: rect.top + rect.height / 2 };
++    });
++
++layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) => {
++  it.effect(scenarios.accountCompactRows.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        // A connector whose check reports an email but no host-verified identity.
++        const plain = yield* observationFixture({
++          name: "Plain fixture",
++          observe: false,
++          health: true,
++        });
++        yield* plain.backend.health({
++          status: 200,
++          body: { accountInfo: { email: "reported@example.test" } },
++        });
++        // A connector whose current check rejects the sign-in.
++        const rejected = yield* observationFixture({
++          name: "Rejected fixture",
++          observe: false,
++          health: true,
++        });
++        yield* rejected.backend.health({ status: 401, body: {} });
++        // A connector whose only check predates its app's current version.
++        const outdated = yield* observationFixture({
++          name: "Outdated fixture",
++          observe: false,
++          health: true,
++        });
++        // A reporter with a plan label and one limited window.
++        const usage = yield* observationFixture({
++          name: "Usage fixture",
++          observe: true,
++          health: true,
++        });
++        const reading = allowance();
++        yield* usage.backend.answer({
++          status: 200,
++          body: {
++            ...reading,
++            observation: {
++              ...reading.observation,
++              plan: { label: "Max 20x", observedAt: reading.observedAt },
++            },
++          },
++        });
++        for (const [fixture, label] of [
++          [plain, "Plain mail"],
++          [rejected, "Rejected mail"],
++          [outdated, "Outdated mail"],
++          [usage, "Usage account"],
++        ] as const) {
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.check()).status).toBe(200);
++        }
++        expect((yield* usage.refresh()).status).toBe(200);
++        expect((yield* outdated.deploy({ observe: true, health: true })).status).toBe(200);
++        const checkOf = (detail: { readonly body: unknown }) =>
++          JSON.stringify((detail.body as { health?: unknown }).health ?? null);
++        expect(checkOf(yield* outdated.detail()), "the redeploy outdates the check").toContain(
++          '"current":false',
++        );
++        expect(checkOf(yield* rejected.detail())).toContain('"credentials_rejected"');
++
++        // A reporter with nothing retained, refreshed only from its row menu.
++        const driver = yield* acquisitionFixture();
++        const { account: reporter } = yield* driver.create(driver.actors.owner, {
++          kind: "shared",
++          audience: { kind: "everyone" },
++        });
++        expect(
++          (yield* driver.api.request(
++            driver.actors.owner,
++            "PATCH",
++            `${driver.prefix}/accounts/${reporter}`,
++            { label: "New reporter" },
++          )).status,
++        ).toBe(200);
++
++        const accounts = `/org/${plain.actors.organization.slug}/accounts`;
++        const ready = (page: Page) =>
++          Promise.all([
++            accountRow(page, "Plain mail").locator('[data-health-state="healthy"]').waitFor(),
++            accountRow(page, "Rejected mail")
++              .locator('[data-health-state="credentials_rejected"]')
++              .waitFor(),
++            accountRow(page, "Outdated mail")
++              .locator('[data-health-state="not-rechecked"]')
++              .waitFor(),
++            accountRow(page, "Usage account").locator('[data-reading="requests"]').waitFor(),
++            accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
++            accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
++          ]);
++        yield* browser.login(plain.actors.owner);
++        const surfaces = [
++          ["accounts", accounts],
++          [
++            "app-accounts",
++            `/org/${plain.actors.organization.slug}/apps/${usage.app.id}?view=accounts`,
++          ],
++        ] as const;
++        for (const width of [1280, 390])
++          for (const scheme of ["light", "dark"] as const)
++            for (const [name, url] of surfaces) {
++              yield* browser.use(`Open ${name} at ${width}px in ${scheme} mode`, (page) =>
++                page
++                  .setViewportSize({ width, height: 900 })
++                  .then(() => page.emulateMedia({ colorScheme: scheme }))
++                  .then(() => page.goto(url))
++                  .then(async () => {
++                    if (name === "accounts") await ready(page);
++                    else
++                      await page
++                        .getByRole("region", { name: "Your accounts", exact: true })
++                        .locator('[data-reading="requests"]')
++                        .waitFor();
++                  }),
++              );
++              yield* evidence.attach(
++                `compact-rows-${name}-${width}-${scheme}.png`,
++                "image/png",
++                yield* browser.use(`Capture ${name}`, (page) =>
++                  page.screenshot({ fullPage: true }),
++                ),
++              );
++            }
++
++        const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.emulateMedia({ colorScheme: "light" }))
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() =>
++              Promise.all([
++                accountRow(page, "Plain mail").evaluate(
++                  (row) => row.getBoundingClientRect().height,
++                ),
++                accountRow(page, "Outdated mail").evaluate(
++                  (row) => row.getBoundingClientRect().height,
++                ),
++                accountRow(page, "Usage account").evaluate(
++                  (row) => row.getBoundingClientRect().height,
++                ),
++                page.locator("[data-account-type]").allTextContents(),
++                accountRow(page, "Usage account").locator("[data-account-plan]").allInnerTexts(),
++                accountRow(page, "Plain mail").locator("[data-reading]").count(),
++                accountRow(page, "Rejected mail").locator("[data-reading]").count(),
++                accountRow(page, "Plain mail").locator("[data-account-identity]").innerText(),
++                page.locator("[data-account-verified]").count(),
++                accountRow(page, "Plain mail").locator("[data-account-name]").innerText(),
++                accountRow(page, "Outdated mail").locator("[data-account-health-cell]").innerText(),
++                accountRow(page, "Rejected mail")
++                  .getByRole("link", { name: /^Needs re-auth/ })
++                  .getAttribute("href"),
++                accountRow(page, "Usage account")
++                  .getByRole("button", { name: "Refresh", exact: true })
++                  .count(),
++              ]),
++            ),
++        );
++        const [
++          plainHeight,
++          outdatedHeight,
++          usageHeight,
++          types,
++          plans,
++          plainCells,
++          rejectedCells,
++          reported,
++          verified,
++          title,
++          notRechecked,
++          reauth,
++          inlineRefresh,
++        ] = wide;
++        // A plain row is about 48 to 52px; a usage band adds roughly one more row's height.
++        for (const height of [plainHeight, outdatedHeight]) {
++          expect(height).toBeGreaterThanOrEqual(44);
++          expect(height).toBeLessThanOrEqual(56);
++        }
++        expect(usageHeight).toBeGreaterThan(plainHeight);
++        expect(usageHeight - plainHeight).toBeLessThanOrEqual(90);
++        // No offering selector yet, so Type stays blank instead of guessing from the method.
++        expect(types.length).toBeGreaterThan(0);
++        expect(types.every((text) => text.trim() === "")).toBe(true);
++        expect(plans).toEqual(["Max 20x"]);
++        // Usage cells only on the reporter's row.
++        expect([plainCells, rejectedCells]).toEqual([0, 0]);
++        // A reported email is muted secondary text with no verified mark.
++        expect(title).toBe("Plain mail");
++        expect(reported).toBe("reported@example.test");
++        expect(verified, "only a host-verified identity carries the check mark").toBe(0);
++        expect(notRechecked).toBe("Not rechecked");
++        expect(reauth).toContain(rejected.app.id);
++        expect(inlineRefresh, "Refresh moved into the row menu").toBe(0);
++
++        // The phone layout: logo, name and menu on the first line, the cells wrap under it.
++        const phone = yield* browser.use("Measure the rows at 390px", (page) =>
++          page
++            .setViewportSize({ width: 390, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() =>
++              Promise.all([
++                page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                box(page, "Plain mail", "[data-account-name]"),
++                box(page, "Plain mail", "[data-account-row-menu] button"),
++                box(page, "Plain mail", "[data-account-health-cell]"),
++                page.locator(".inventory-header").isVisible(),
++              ]),
++            ),
++        );
++        expect(phone[0], "no horizontal scroll at 390px").toBe(true);
++        expect(Math.abs(phone[2].middle - phone[1].middle)).toBeLessThanOrEqual(2);
++        expect(phone[3].top).toBeGreaterThanOrEqual(phone[1].bottom);
++        expect(phone[4], "column names hide where the cells wrap").toBe(false);
++
++        // Refresh is a menu action, reachable from the keyboard.
++        const observed = () =>
++          driver.backend.calls.pipe(
++            Effect.map((calls) => calls.filter((call) => call.step === "observe").length),
++          );
++        expect(yield* observed()).toBe(0);
++        const menu = yield* browser.use("Read the reporter's menu", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() => openRowMenu(page, accountRow(page, "New reporter"), "New reporter"))
++            .then((open) =>
++              open
++                .getByRole("menuitem")
++                .allInnerTexts()
++                .then((items) => page.keyboard.press("Escape").then(() => items)),
++            ),
++        );
++        expect(menu.slice(0, 2)).toEqual(["Refresh usage", "Details"]);
++        yield* browser.use("Refresh the reporter from the keyboard", (page) => {
++          const trigger = accountRow(page, "New reporter").getByRole("button", {
++            name: "Manage New reporter",
++            exact: true,
++          });
++          return trigger
++            .focus()
++            .then(() => page.keyboard.press("Enter"))
++            .then(() =>
++              page.getByRole("menuitem", { name: "Refresh usage", exact: true }).waitFor(),
++            )
++            .then(() => page.keyboard.press("Enter"))
++            .then(() =>
++              accountRow(page, "New reporter").locator('[data-reading="requests"]').waitFor(),
++            );
++        });
++        expect(yield* observed(), "the menu's Refresh collects once").toBe(1);
++        // Details open from the menu with the usage source and its age.
++        const details = yield* browser.use("Open the reporter's details", (page) =>
++          openRowMenu(page, accountRow(page, "New reporter"), "New reporter")
++            .then((open) => open.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() =>
++              accountRow(page, "New reporter").locator("[data-usage-source] time").innerText(),
++            ),
++        );
++        expect(details).not.toBe("");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-directory-health.spec.ts b/e2e/tests/account-directory-health.spec.ts
+index 8f37220..a2bc093 100644
+--- a/e2e/tests/account-directory-health.spec.ts
++++ b/e2e/tests/account-directory-health.spec.ts
+@@ -7,6 +7,7 @@ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { Evidence } from "../support/evidence.ts";
++import { accountRow, openRowDetails } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = (
+@@ -100,6 +101,10 @@ layer(HostedLive, { excludeTestServices: true })("Account directory health", (it
+         yield* browser.use("Open the app-scoped account in Accounts", (page) =>
+           page
+             .goto(`/org/${actors.organization.slug}/accounts`)
++            // The row's checks open from its menu as details.
++            .then(() =>
++              openRowDetails(page, accountRow(page, "App-scoped account"), "App-scoped account"),
++            )
+             .then(() =>
+               page
+                 .getByRole("group", { name: "Usage and health of App-scoped account", exact: true })
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index b080476..b081f74 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -9,6 +9,7 @@ import { Evidence } from "../support/evidence.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+ import { linkAccount } from "../support/app-accounts.ts";
+ import { serverControl } from "../support/server-control.ts";
++import { accountRow, openRowDetails } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Revision = Schema.Struct({ revision: Schema.String });
+@@ -57,16 +58,16 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         const refreshButton = (page: Page) =>
+           block(page).getByRole("button", { name: "Refresh", exact: true });
+         const reading = (page: Page) => block(page).locator('[data-reading="requests"]');
+-        // The plan sits on the account's own metadata line, outside the usage block.
+-        const inventoryRow =
+-          "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]";
+-        const plan = (page: Page) =>
+-          block(page).locator(inventoryRow).locator("[data-account-plan]");
++        // The plan sits in the row's Plan column, outside the usage block.
++        const plan = (page: Page) => accountRow(page, label).locator("[data-account-plan]");
++        // The checks, the usage source and Refresh open from the row's menu as its details.
++        const show = (page: Page) => openRowDetails(page, accountRow(page, label), label);
+ 
+         yield* browser.login(f.actors.owner);
+         const unread = yield* browser.use("Open Accounts before anything was reported", (page) =>
+           page
+             .goto(accounts)
++            .then(() => show(page))
+             .then(() => block(page).locator("[data-account-health]").waitFor())
+             .then(() =>
+               Promise.all([
+@@ -86,7 +87,10 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         expect((yield* f.refresh()).status).toBe(200);
+         expect(yield* f.backend.calls).toBe(1);
+         yield* browser.use("Show the first reading as a usage cell", (page) =>
+-          page.reload().then(() => reading(page).getByText("Rem 88%").waitFor()),
++          page
++            .reload()
++            .then(() => show(page))
++            .then(() => reading(page).getByText("Rem 88%").waitFor()),
+         );
+         const fresh = yield* browser.use("Read the fresh row", (page) => {
+           const row = block(page);
+@@ -107,10 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         expect(fresh[7], "a fresh reading names no age").toBe(0);
+         expect(fresh[8], "the cell replaces the text readings").not.toMatch(/ left\b| of 100/);
+         const units = yield* browser.use("Keep RPM as a count while USD remains money", (page) =>
+-          block(page)
+-            .getByRole("button", { name: "Details", exact: true })
+-            .click()
+-            .then(() => block(page).locator("[data-observation-details]").innerText()),
++          block(page).locator("[data-observation-details]").innerText(),
+         );
+         expect(units).toContain("88 / 100 RPM remaining");
+         expect(units).toContain("$25.00");
+@@ -144,6 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         yield* browser.use("Refresh after the source stops answering", (page) =>
+           page
+             .reload()
++            .then(() => show(page))
+             .then(() => refreshButton(page).click())
+             .then(() => block(page).locator("[data-attempt-note]").waitFor()),
+         );
+@@ -184,6 +186,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         yield* browser.use("Open Accounts as a member who uses the account", (page) =>
+           page
+             .goto(accounts)
++            .then(() => show(page))
+             .then(() => block(page).locator("[data-account-health] [data-check-status]").waitFor()),
+         );
+         const denied = yield* browser.use("Read the restricted row", (page) => {
+@@ -195,29 +198,13 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             row.getByRole("button", { name: "Refresh", exact: true }).count(),
+             row.locator("[data-usage-source]").count(),
+             row.locator("[data-account-health] [data-check-status]").count(),
+-            row
+-              .getByRole("button", { name: "Details", exact: true })
+-              .click()
+-              .then(() => row.locator("[data-observation-provenance]").count()),
++            row.locator("[data-observation-provenance]").count(),
+           ]);
+         });
+         expect(denied).toEqual([0, 0, 0, 0, 0, 1, 0]);
+         expect(
+           (yield* f.api.request(f.actors.member, "GET", `${f.accountPath}/observations`)).body,
+         ).toMatchObject({ hasUsageReporter: false, usageReporterLabel: null });
+-        const restrictedLayout = yield* browser.use(
+-          "Keep restricted Details at the right edge",
+-          (page) =>
+-            block(page)
+-              .getByRole("button", { name: "Details", exact: true })
+-              .evaluate((button) => ({
+-                right: button.getBoundingClientRect().right,
+-                footerRight: button.parentElement!.getBoundingClientRect().right,
+-              })),
+-        );
+-        expect(Math.abs(restrictedLayout.right - restrictedLayout.footerRight)).toBeLessThanOrEqual(
+-          1,
+-        );
+         yield* evidence.attach(
+           "account-observation-row-restricted.png",
+           "image/png",
+@@ -255,7 +242,10 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+ 
+         yield* browser.login(f.actors.member);
+         yield* browser.use("Open Accounts after the grant", (page) =>
+-          page.goto(accounts).then(() => reading(page).getByText("Rem 88%").waitFor()),
++          page
++            .goto(accounts)
++            .then(() => show(page))
++            .then(() => reading(page).getByText("Rem 88%").waitFor()),
+         );
+         expect(
+           yield* browser.use("Refresh stays with the account managers", (page) =>
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index d0a0365..f8a317b 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -7,6 +7,12 @@ import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
+ import { observationFixture } from "../support/account-observation-fixture.ts";
++import {
++  accountRow,
++  openRowDetails,
++  openRowMenu,
++  refreshRowUsage,
++} from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const hour = 3_600_000;
+@@ -163,9 +169,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             cell(page, "Studio", "seven_day").waitFor(),
+             cell(page, "Spare", "seven_day").waitFor(),
+             cell(page, "Default", "seven_day").waitFor(),
+-            block(page, "Work mail").locator("[data-account-health]").waitFor(),
++            accountRow(page, "Work mail").waitFor(),
+             block(page, "New reporter")
+-              .getByText("no reading yet", { exact: true })
++              .locator("[data-usage-unread]", { hasText: "no reading yet" })
+               .waitFor({ timeout: 5000 }),
+           ]);
+ 
+@@ -190,11 +196,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+               ["New reporter", "new-reporter"],
+             ] as const) {
+               yield* browser.use(`Show the whole ${label} row`, (page) =>
+-                block(page, label)
+-                  .locator(
+-                    "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]",
+-                  )
+-                  .scrollIntoViewIfNeeded(),
++                accountRow(page, label).scrollIntoViewIfNeeded(),
+               );
+               yield* evidence.attach(
+                 `after-usage-cells-${width}-${scheme}-${file}.png`,
+@@ -212,7 +214,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             .then(() => ready(page))
+             .then(() => {
+               const view = (label: string) =>
+-                block(page, label)
++                accountRow(page, label)
+                   .locator("[data-reading]")
+                   .evaluateAll((cells) =>
+                     cells.map((element) => ({
+@@ -247,9 +249,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+                 view("Spare"),
+                 view("Default"),
+                 view("Work mail"),
+-                block(page, "Work mail").innerText(),
+-                block(page, "Work mail").locator("[data-usage]").count(),
+-                block(page, "Work mail").getByRole("meter").count(),
++                accountRow(page, "Work mail").innerText(),
++                accountRow(page, "Work mail").locator("[data-usage]").count(),
++                accountRow(page, "Work mail").getByRole("meter").count(),
+               ]);
+             }),
+         );
+@@ -302,23 +304,24 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         expect(connectorCells).toEqual([]);
+         expect(connectorParts).toEqual([0, 0]);
+         expect(connectorText).not.toMatch(/usage/i);
+-        const aligned = yield* browser.use("Keep connector Details at the right edge", (page) =>
+-          block(page, "Work mail")
+-            .getByRole("button", { name: "Details", exact: true })
+-            .evaluate((button) => ({
+-              right: button.getBoundingClientRect().right,
+-              footerRight: button.parentElement!.getBoundingClientRect().right,
+-            })),
+-        );
+-        expect(Math.abs(aligned.right - aligned.footerRight)).toBeLessThanOrEqual(1);
++        // The connector's menu opens its checks as Details and has no usage to refresh.
++        expect(
++          yield* browser.use("Read the connector's row menu", (page) =>
++            openRowMenu(page, accountRow(page, "Work mail"), "Work mail").then((menu) =>
++              Promise.all([
++                menu.getByRole("menuitem", { name: "Details", exact: true }).count(),
++                menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).count(),
++              ]).then((counts) => page.keyboard.press("Escape").then(() => counts)),
++            ),
++          ),
++        ).toEqual([1, 0]);
+         expect(
+           (yield* driver.backend.calls).filter((call) => call.step === "observe"),
+         ).toHaveLength(0);
+-        yield* browser.use("Collect the new reporter's first reading through Refresh", (page) =>
+-          block(page, "New reporter")
+-            .getByRole("button", { name: "Refresh", exact: true })
+-            .click()
+-            .then(() => block(page, "New reporter").locator('[data-reading="requests"]').waitFor()),
++        yield* browser.use("Collect the new reporter's first reading from its menu", (page) =>
++          refreshRowUsage(page, accountRow(page, "New reporter"), "New reporter").then(() =>
++            block(page, "New reporter").locator('[data-reading="requests"]').waitFor(),
++          ),
+         );
+         expect(
+           (yield* driver.backend.calls).filter((call) => call.step === "observe"),
+@@ -330,7 +333,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           hasUsageReporter: true,
+           reports: [{ lastAttempt: { outcome: "success" } }],
+         });
+-        // Non-cell readings stay in Details, including their only Refresh action.
++        // Non-cell readings stay in Details; the collapsed row shows no empty usage line.
+         for (const [label, windows, balances] of [
+           [
+             "Credits only",
+@@ -362,28 +365,23 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           ).toBe(200);
+           expect((yield* fixture.refresh()).status).toBe(200);
+           yield* browser.use(`Read ${label} without an empty usage line`, (page) =>
+-            page
+-              .goto(accounts)
+-              .then(() =>
+-                block(page, label).getByRole("button", { name: "Details", exact: true }).waitFor(),
+-              ),
++            page.goto(accounts).then(() => accountRow(page, label).waitFor()),
+           );
+           expect(
+             yield* browser.use(`Inspect the collapsed ${label} row`, (page) =>
+               Promise.all([
+-                block(page, label).locator("[data-reading]").count(),
+-                block(page, label).locator("[data-usage]").count(),
+-                block(page, label).getByRole("button", { name: "Refresh", exact: true }).count(),
++                accountRow(page, label).locator("[data-reading]").count(),
++                accountRow(page, label).locator("[data-usage]").count(),
++                accountRow(page, label)
++                  .getByRole("button", { name: "Refresh", exact: true })
++                  .count(),
+               ]),
+             ),
+           ).toEqual([0, 0, 0]);
+           yield* browser.use(`Open ${label} Details`, (page) =>
+-            block(page, label)
+-              .getByRole("button", { name: "Details", exact: true })
+-              .click()
+-              .then(() =>
+-                block(page, label).getByRole("button", { name: "Refresh", exact: true }).waitFor(),
+-              ),
++            openRowDetails(page, accountRow(page, label), label).then(() =>
++              block(page, label).getByRole("button", { name: "Refresh", exact: true }).waitFor(),
++            ),
+           );
+           expect(
+             yield* browser.use(`Read ${label} details`, (page) =>
+diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
+index feaa234..404453f 100644
+--- a/e2e/tests/account-usage-home-reporter.spec.ts
++++ b/e2e/tests/account-usage-home-reporter.spec.ts
+@@ -10,6 +10,7 @@ import { Resource } from "../support/contracts.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { accountRow, openRowMenu, refreshRowUsage } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Unread = Schema.Struct({
+@@ -96,8 +97,15 @@ layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) =>
+ 
+         const block = (page: Page, label: string) =>
+           page.getByRole("group", { name: new RegExp(`^Usage( and health)? of ${label}$`) });
+-        const refreshButton = (page: Page) =>
+-          block(page, "Home reporter").getByRole("button", { name: "Refresh", exact: true });
++        // Refresh lives in the row's menu; the row itself shows only the unread line.
++        const refreshEnabled = (page: Page) =>
++          openRowMenu(page, accountRow(page, "Home reporter"), "Home reporter")
++            .then((menu) =>
++              menu
++                .getByRole("menuitem", { name: "Refresh usage", exact: true })
++                .getAttribute("aria-disabled"),
++            )
++            .then((disabled) => page.keyboard.press("Escape").then(() => disabled !== "true"));
+         const browser = yield* Browser;
+         yield* browser.login(actors.owner);
+         const unread = yield* browser.use("Open Accounts before Home reported", (page) => {
+@@ -114,37 +122,34 @@ layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) =>
+             .goto(`/org/${actors.organization.slug}/accounts`)
+             .then(() => connectorLoaded)
+             .then(() => block(page, "Home reporter").locator("[data-usage-unread]").waitFor())
+-            .then(() =>
+-              Promise.all([
+-                block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
+-                refreshButton(page).isEnabled(),
+-                block(page, "Home reporter").getByText("Refresh failed").count(),
+-                block(page, "Work mail").locator("[data-usage]").count(),
+-                block(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
+-              ]),
+-            );
++            .then(async () => [
++              await block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
++              await refreshEnabled(page),
++              await block(page, "Home reporter").getByText("Refresh failed").count(),
++              await accountRow(page, "Work mail").locator("[data-usage]").count(),
++              await accountRow(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
++            ]);
+         });
+         expect(unread[0]).toMatch(/Usage from basalt-home\s*·\s*no reading yet/);
+         expect(unread.slice(1)).toEqual([true, 0, 0, 0]);
+         expect(yield* observed(), "showing the row collects nothing").toBe(0);
+ 
+         yield* home.observation(allowance());
+-        yield* browser.use("Refresh the Home account from its row", (page) =>
+-          refreshButton(page)
+-            .click()
+-            .then(() =>
+-              block(page, "Home reporter").locator('[data-reading="requests"]').waitFor(),
+-            ),
++        yield* browser.use("Refresh the Home account from its row menu", (page) =>
++          refreshRowUsage(page, accountRow(page, "Home reporter"), "Home reporter").then(() =>
++            block(page, "Home reporter").locator('[data-reading="requests"]').waitFor(),
++          ),
+         );
+         expect(yield* observed()).toBe(1);
+         const after = yield* browser.use("Read both rows after the refresh", (page) =>
+           Promise.all([
+             block(page, "Home reporter").locator("[data-usage-unread]").count(),
++            // The source and its age moved into the row's details.
+             block(page, "Home reporter").locator("[data-usage-source] time").count(),
+-            block(page, "Work mail").locator("[data-usage]").count(),
++            accountRow(page, "Work mail").locator("[data-usage]").count(),
+           ]),
+         );
+-        expect(after).toEqual([0, 1, 0]);
++        expect(after).toEqual([0, 0, 0]);
+         expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
+       }),
+     ),
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+index 82c8632..5251260 100644
+--- a/e2e/tests/native-subscription-health.spec.ts
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -13,6 +13,7 @@ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { subscriptionHealthBackend } from "../support/subscription-health-backend.ts";
++import { accountRow, openRowDetails } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import { defineApp, defineProvider, interactive, object, secrets, string } from "apps";
+@@ -87,6 +88,9 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+         const label =
+           (yield* body(Detail, yield* api.request(actors.owner, "GET", accountPath))).account
+             .label || "Unnamed account";
++        // The row's checks open from its menu as details.
++        const menuLabel = label === "Unnamed account" ? "unnamed account" : label;
++        const show = (page: Page) => openRowDetails(page, accountRow(page, menuLabel), menuLabel);
+         const line = (page: Page) =>
+           page
+             .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+@@ -136,7 +140,10 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+         const accounts = `/org/${actors.organization.slug}/accounts`;
+         yield* browser.login(actors.owner);
+         yield* browser.use("Open Accounts as the subscriber", (page) =>
+-          page.goto(accounts).then(() => line(page).waitFor()),
++          page
++            .goto(accounts)
++            .then(() => show(page))
++            .then(() => line(page).waitFor()),
+         );
+         // Captured before asserting, so a run without the fix still records its row.
+         yield* capture("healthy");
+@@ -167,7 +174,10 @@ layer(HostedLive, { excludeTestServices: true })("Native subscription health", (
+         // A current failure keeps the line compact and shows the reason the driver gave.
+         const reported = (yield* body(DriverMessage, failed)).driver.check.message;
+         yield* browser.use("Reload Accounts after the service stops answering", (page) =>
+-          page.reload().then(() => driverStatus(page).waitFor()),
++          page
++            .reload()
++            .then(() => show(page))
++            .then(() => driverStatus(page).waitFor()),
+         );
+         yield* capture("unavailable");
+         const unavailable = yield* readRow("Read the unavailable subscription row");
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 2fb00ba..5038abb 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -22,6 +22,7 @@ import {
+ import { ProviderIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** Account management lives on its list row; products supply the menu items they support. */
+@@ -34,6 +35,7 @@ export function AccountActionsMenu({
+ }) {
+   return (
+     <DropdownMenu>
++      <AccountRowMenuPresence />
+       <DropdownMenuTrigger asChild>
+         <Button
+           variant="ghost"
+@@ -44,6 +46,7 @@ export function AccountActionsMenu({
+         </Button>
+       </DropdownMenuTrigger>
+       <DropdownMenuContent align="end" className="min-w-44">
++        <AccountRowMenuItems />
+         {children}
+       </DropdownMenuContent>
+     </DropdownMenu>
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 217ba58..7110fc8 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -282,9 +282,11 @@ export function AccountCheckResult({
+   part = "all",
+ }: {
+   readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
+-  readonly part?: "all" | "header" | "details";
++  /** `notes` is what a compact row shows under its line: status badges and the reason given. */
++  readonly part?: "all" | "header" | "details" | "notes";
+ }) {
+-  if (part === "details" && (health === undefined || health.check === null)) return null;
++  if ((part === "details" || part === "notes") && (health === undefined || health.check === null))
++    return null;
+   if (health === undefined || (!health.checkable && health.check === null))
+     return <span className="text-[12px] text-muted-foreground">No check</span>;
+   if (health.check === null && part === "details") return null;
+@@ -333,6 +335,19 @@ export function AccountCheckResult({
+     );
+   if (part === "details")
+     return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
++  if (part === "notes")
++    return displayStatus === undefined && health.check.message === undefined ? null : (
++      <span className="flex w-full min-w-0 flex-col gap-1">
++        {displayStatus !== undefined && (
++          <AccountDisplayStatus
++            status={displayStatus}
++            current={health.check.current}
++            part="badges"
++          />
++        )}
++        {details}
++      </span>
++    );
+   return (
+     <span className="inline-flex w-full min-w-0 flex-col items-start gap-1 text-[12px] text-foreground/80">
+       <span className="inline-flex items-center gap-2">
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index a711e92..2c18a4e 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -2,7 +2,7 @@ import type { AccountObservationRecord, App } from "@executor-js/sdk";
+ import { useAtomValue } from "@effect/atom-react";
+ import { Exit, Option, type Cause } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+-import { useEffect, useId, useState, type ComponentType } from "react";
++import { useEffect, useId, useRef, useState, type ComponentType } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
+@@ -22,6 +22,7 @@ import {
+ } from "./account-observation-format.ts";
+ import { ObservationReadings } from "./account-observation-readings.tsx";
+ import { useQuery } from "./context.tsx";
++import { useAccountRow } from "./account-row.tsx";
+ 
+ /** What a product lets the caller see of an account's reported usage. */
+ export interface AccountObservationsView {
+@@ -46,13 +47,15 @@ const clock = Atom.readable((get) => {
+  * An account's reported usage under its row, with the latest credential checks when the row does
+  * not already show them. Usage and health have their own times, actions and failures, so a usage
+  * failure never reads as a sign-in problem. Products own both mutations and their authority.
++ *
++ * Inside a compact row with a menu, Refresh and Details move into that menu and the band shows
++ * only the usage cells; the source, its age and the checks open as the row's details.
+  */
+ export function AccountObservations<E>({
+   account,
+   query,
+   refresh,
+   health,
+-  plan = false,
+   Failure,
+ }: {
+   readonly account: AccountSummary;
+@@ -66,14 +69,15 @@ export function AccountObservations<E>({
+     readonly showStatus?: boolean;
+     readonly canReconnect?: (app: App) => boolean;
+   };
+-  /** Name the reported plan on the usage line, where the row has no metadata line for it. */
+-  readonly plan?: boolean;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const { result, refresh: reload } = useQuery(query);
+   const now = useAtomValue(clock);
+   const format = useDisplayFormat();
+-  const [open, setOpen] = useState(false);
++  const row = useAccountRow();
++  const compact = row?.menu === true;
++  const [ownOpen, setOwnOpen] = useState(false);
++  const open = compact ? row.details : ownOpen;
+   const details = useId();
+   const view = Option.getOrUndefined(AsyncResult.value(result));
+   const inspected = view?.canInspect === true ? view : undefined;
+@@ -82,17 +86,81 @@ export function AccountObservations<E>({
+   useEffect(() => {
+     if (collecting) reload();
+   }, [collecting, now, reload]);
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const run = async () => {
++    if (pending) return;
++    setPending(true);
++    setError(undefined);
++    const exit = await refresh();
++    setPending(false);
++    if (Exit.isFailure(exit)) setError(exit.cause);
++  };
++  // The row menu keeps one stable callback that always runs the latest refresh.
++  const latest = useRef(run);
++  useEffect(() => {
++    latest.current = run;
++  });
+   const label = account.label || "Unnamed account";
+   // Accounts with no reporter, such as most connectors, and callers who may not see usage get no
+   // usage area at all; only the account's own health, when given, remains.
+   const reported =
+     inspected !== undefined &&
+     (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
++  const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
++  const hasDetails = reported || health !== undefined;
++  const setUsage = row?.setUsage;
++  useEffect(() => {
++    if (setUsage === undefined) return;
++    setUsage(
++      hasDetails
++        ? {
++            ...(reported ? { refresh: () => void latest.current() } : {}),
++            pending,
++            disabledReason: pending ? undefined : blocked,
++          }
++        : undefined,
++    );
++  }, [setUsage, hasDetails, reported, pending, blocked]);
++  useEffect(() => (setUsage === undefined ? undefined : () => setUsage(undefined)), [setUsage]);
+   if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
++  const fact = (detailsOnly: boolean) => (
++    <UsageFact
++      result={result}
++      retry={reload}
++      run={run}
++      pending={pending}
++      error={detailsOnly ? undefined : error}
++      blocked={blocked}
++      now={now}
++      format={format}
++      detailsOnly={detailsOnly}
++      Failure={Failure}
++    />
++  );
++  const unread =
++    inspected !== undefined &&
++    inspected.reports.length === 0 &&
++    inspected.hasUsageReporter === true;
++  const cells = inspected?.reports.some((report) =>
++    report.result?.observation.windows.some((entry) => entry.measure.unlimited !== true),
++  );
++  // A collapsed compact band with nothing to show leaves no gap under the row.
++  if (
++    compact &&
++    !open &&
++    cells !== true &&
++    !unread &&
++    !pending &&
++    error === undefined &&
++    !AsyncResult.isFailure(result)
++  )
++    return null;
+   return (
+     <div
+       role="group"
+       aria-label={`${health === undefined ? "Usage" : "Usage and health"} of ${label}`}
++      aria-busy={pending}
+       data-account-observations
+       className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
+     >
+@@ -108,57 +176,68 @@ export function AccountObservations<E>({
+             />
+           ),
+       )}
+-      <div
+-        className={cn(
+-          "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
+-          health === undefined
+-            ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
+-            : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
+-        )}
+-      >
+-        {health !== undefined && (
+-          <AccountHealthLine account={account} {...health} Failure={Failure} />
+-        )}
+-        <UsageFact
+-          result={result}
+-          retry={reload}
+-          refresh={refresh}
+-          plan={plan}
+-          now={now}
+-          format={format}
+-          Failure={Failure}
+-        />
+-        {reported || health !== undefined ? (
+-          <Button
+-            variant="ghost"
+-            size="xs"
+-            className="justify-self-start text-muted-foreground hover:text-foreground @[740px]:col-start-[-2] @[740px]:justify-self-end"
+-            aria-expanded={open}
+-            aria-controls={details}
+-            onClick={() => setOpen((value) => !value)}
+-          >
+-            Details
+-            <HugeiconsIcon
+-              icon={ArrowDown01Icon}
+-              strokeWidth={2}
+-              aria-hidden
+-              className={cn("transition-transform", open && "rotate-180")}
++      {compact ? (
++        <>
++          {!open && unread && (
++            <p className="text-muted-foreground" data-usage-unread>
++              Usage from {inspected?.usageReporterLabel} · {unreadLabel()}
++            </p>
++          )}
++          {!open && pending && (
++            <p role="status" className="text-muted-foreground">
++              Refreshing usage…
++            </p>
++          )}
++          {!open && error && <Failure cause={error} layout="compact" />}
++          {!open && AsyncResult.isFailure(result) && (
++            <Failure
++              cause={result.cause}
++              retry={reload}
++              retrying={result.waiting}
++              layout="compact"
+             />
+-          </Button>
+-        ) : null}
+-      </div>
++          )}
++        </>
++      ) : (
++        <div
++          className={cn(
++            "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
++            health === undefined
++              ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
++              : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
++          )}
++        >
++          {health !== undefined && (
++            <AccountHealthLine account={account} {...health} Failure={Failure} />
++          )}
++          {fact(false)}
++          {hasDetails ? (
++            <Button
++              variant="ghost"
++              size="xs"
++              className="justify-self-start text-muted-foreground hover:text-foreground @[740px]:col-start-[-2] @[740px]:justify-self-end"
++              aria-expanded={open}
++              aria-controls={details}
++              onClick={() => setOwnOpen((value) => !value)}
++            >
++              Details
++              <HugeiconsIcon
++                icon={ArrowDown01Icon}
++                strokeWidth={2}
++                aria-hidden
++                className={cn("transition-transform", open && "rotate-180")}
++              />
++            </Button>
++          ) : null}
++        </div>
++      )}
+       {open && (
+-        <div id={details} className="grid gap-2.5">
+-          <UsageFact
+-            result={result}
+-            retry={reload}
+-            refresh={refresh}
+-            plan={plan}
+-            now={now}
+-            format={format}
+-            detailsOnly
+-            Failure={Failure}
+-          />
++        <div id={details} className="grid gap-2.5" data-account-details>
++          {compact && health !== undefined && (
++            <AccountHealthLine account={account} {...health} Failure={Failure} />
++          )}
++          {compact && fact(false)}
++          {fact(true)}
+           <ObservationDetails
+             id={`${details}-readings`}
+             reports={inspected?.reports ?? []}
+@@ -194,7 +273,7 @@ function PlanTags({ view }: { readonly view: AccountObservationsView }) {
+     <span
+       key={label}
+       data-account-plan
+-      className="rounded border px-1.5 py-0.5 text-[10px] text-foreground"
++      className="rounded-sm border px-1.5 text-[11px] leading-4.5 whitespace-nowrap text-foreground"
+     >
+       {label}
+     </span>
+@@ -218,8 +297,10 @@ const unreadLabel = (report?: AccountObservationRecord) =>
+ function UsageFact<E>({
+   result,
+   retry,
+-  refresh,
+-  plan,
++  run,
++  pending,
++  error,
++  blocked,
+   now,
+   format,
+   detailsOnly = false,
+@@ -227,15 +308,15 @@ function UsageFact<E>({
+ }: {
+   readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
+   readonly retry: () => void;
+-  readonly refresh: () => Promise<Exit.Exit<unknown, E>>;
+-  readonly plan: boolean;
++  readonly run: () => Promise<void>;
++  readonly pending: boolean;
++  readonly error: Cause.Cause<E> | undefined;
++  readonly blocked: string | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
+   readonly detailsOnly?: boolean;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+-  const [pending, setPending] = useState(false);
+-  const [error, setError] = useState<Cause.Cause<E>>();
+   const view = Option.getOrUndefined(AsyncResult.value(result));
+   const line = "flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5";
+   if (view === undefined)
+@@ -254,15 +335,6 @@ function UsageFact<E>({
+   });
+   const unread = !detailsOnly && view.reports.length === 0 && view.hasUsageReporter === true;
+   if (reports.length === 0 && !unread) return null;
+-  const run = async () => {
+-    if (pending) return;
+-    setPending(true);
+-    setError(undefined);
+-    const exit = await refresh();
+-    setPending(false);
+-    if (Exit.isFailure(exit)) setError(exit.cause);
+-  };
+-  const blocked = refreshBlocked(view, now, format);
+   const action = (
+     <Button
+       variant="outline"
+@@ -296,7 +368,6 @@ function UsageFact<E>({
+               data-usage-source={report.source.id}
+               data-usage-unread={read === undefined ? "" : undefined}
+             >
+-              {index === 0 && plan && <PlanTags view={view} />}
+               <span>Usage from {report.source.label}</span>
+               <span aria-hidden>·</span>
+               {read === undefined ? (
+@@ -323,7 +394,7 @@ function UsageFact<E>({
+           </div>
+         );
+       })}
+-      {error && <Failure cause={error} layout="compact" />}
++      {error !== undefined && <Failure cause={error} layout="compact" />}
+       {AsyncResult.isFailure(result) && (
+         <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
+       )}
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+new file mode 100644
+index 0000000..fb257b5
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -0,0 +1,221 @@
++import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
++import type { ReactNode } from "react";
++import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboard.ts";
++import { shortMoment } from "../components/local-time.tsx";
++import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
++import { cn } from "../lib/utils.ts";
++import { describeAccountCheck } from "./account-health.tsx";
++import type { AccountRowBinding } from "./account-row.tsx";
++import { useDashboard } from "./context.tsx";
++
++type Check = NonNullable<AccountDriverHealth["check"]>;
++
++/** What the Health column says, worst first. */
++export type AccountRowHealth =
++  | { readonly kind: "needs-sign-in" }
++  | { readonly kind: "unavailable" }
++  | {
++      readonly kind: "check";
++      readonly check: Check;
++      /** The app that reported it; absent for the account's own sign-in check. */
++      readonly app?: AppId | undefined;
++      readonly count: number;
++    }
++  | { readonly kind: "not-checked" }
++  /** Nothing can check the account, so the cell stays empty. */
++  | { readonly kind: "no-check" };
++
++const severity: readonly AccountCheckStatus[] = [
++  "credentials_rejected",
++  "tools_unavailable",
++  "forbidden",
++  "upstream_unavailable",
++  "check_failed",
++  "healthy",
++];
++
++/**
++ * One state for the account from its sign-in, its own driver check and each binding's app check.
++ * Current results outrank outdated ones, problems outrank health, and the driver outranks an app
++ * with the same result. An outdated result reads as not rechecked, never as the current state.
++ */
++export const accountRowHealth = (
++  account: AccountSummary,
++  bindings: readonly AccountRowBinding[],
++): AccountRowHealth => {
++  const signIns = [account.signIn, ...bindings.map((binding) => binding.signIn)].filter(
++    (signIn) => signIn !== undefined,
++  );
++  if (signIns.some((signIn) => accountNeedsSignIn({ ...account, signIn })))
++    return { kind: "needs-sign-in" };
++  if (signIns.some((signIn) => signIn.state === "unavailable")) return { kind: "unavailable" };
++  const driver = account.health?.driver;
++  const results = [
++    ...(driver?.check == null ? [] : [{ check: driver.check, app: undefined }]),
++    ...bindings.flatMap((binding) =>
++      binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
++    ),
++  ];
++  for (const current of [true, false])
++    for (const status of severity) {
++      const matching = results.filter(
++        (result) => result.check.current === current && result.check.status === status,
++      );
++      const [first] = matching;
++      if (first !== undefined) return { kind: "check", ...first, count: matching.length };
++    }
++  const checkable =
++    driver?.checkable === true || bindings.some((binding) => binding.check?.checkable === true);
++  return checkable ? { kind: "not-checked" } : { kind: "no-check" };
++};
++
++const dots = {
++  good: "bg-emerald-500",
++  bad: "bg-destructive",
++  warn: "bg-amber-500",
++  muted: "bg-muted-foreground/50",
++};
++const texts = {
++  good: "text-foreground",
++  bad: "text-destructive",
++  warn: "text-amber-700 dark:text-amber-400",
++  muted: "text-muted-foreground",
++};
++
++/**
++ * The account's health in a few words. A current rejection is the row's one inline recovery:
++ * `recover` when the page has it, else a link to the app that rejected the sign-in.
++ */
++export function AccountHealthCell({
++  health,
++  appName,
++  recover,
++  link = false,
++  unavailableLabel = "Account unavailable",
++}: {
++  readonly health: AccountRowHealth;
++  readonly appName: (app: AppId) => string;
++  readonly recover?: ReactNode;
++  /** Link a rejection to its app's accounts, where the account is reconnected. */
++  readonly link?: boolean;
++  readonly unavailableLabel?: string;
++}) {
++  const format = useDisplayFormat();
++  const { AppLink } = useDashboard();
++  const cell = "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
++  const dot = (tone: keyof typeof dots, hollow = false) => (
++    <span
++      aria-hidden
++      className={cn(
++        "size-1.5 shrink-0 rounded-full",
++        hollow ? "shadow-[inset_0_0_0_1.5px_var(--color-muted-foreground)]" : dots[tone],
++      )}
++    />
++  );
++  if (health.kind === "needs-sign-in" || health.kind === "unavailable")
++    return (
++      <span
++        className={cn(cell, "flex-wrap")}
++        data-account-health-cell
++        data-health-state={health.kind}
++      >
++        <span className="sign-in-status font-medium text-sign-in-warning">
++          {health.kind === "needs-sign-in" ? "Needs sign-in" : unavailableLabel}
++        </span>
++        {health.kind === "needs-sign-in" && recover}
++      </span>
++    );
++  if (health.kind === "no-check") return null;
++  if (health.kind !== "check")
++    return (
++      <span
++        className={cn(cell, "text-muted-foreground")}
++        data-account-health-cell
++        data-health-state={health.kind}
++      >
++        {dot("muted")}
++        Not checked
++      </span>
++    );
++  const { check, app, count } = health;
++  const { label, tone } = describeAccountCheck(check.status);
++  const where = app === undefined ? "Sign-in" : count > 1 ? `${count} apps` : appName(app);
++  const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
++  const title = check.current
++    ? `${label} · ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
++    : `Last check ${when} by ${where}, before the credentials or app changed`;
++  const state = check.current ? check.status : "not-rechecked";
++  // The same attributes as the check badges this cell replaced.
++  const marks = { "data-check-status": check.status, "data-check-current": check.current };
++  if (!check.current)
++    return (
++      <span
++        className={cn(cell, "text-muted-foreground")}
++        title={title}
++        data-account-health-cell
++        data-health-state={state}
++        {...marks}
++        suppressHydrationWarning
++      >
++        {dot("muted", true)}
++        Not rechecked
++      </span>
++    );
++  const content = (
++    <>
++      {dot(tone)}
++      <span
++        className={cn(
++          "truncate",
++          tone === "good" ? "text-muted-foreground" : texts[tone],
++          tone === "bad" && "font-medium",
++        )}
++      >
++        {label}
++      </span>
++    </>
++  );
++  const rejected = check.status === "credentials_rejected";
++  if (rejected && recover === undefined && link && app !== undefined)
++    return (
++      <span
++        className={cell}
++        title={title}
++        data-account-health-cell
++        data-health-state={state}
++        {...marks}
++        suppressHydrationWarning
++      >
++        <AppLink
++          app={app}
++          view="accounts"
++          className="-ml-1 inline-flex items-center gap-1.5 rounded-sm px-1 py-0.5 hover:bg-destructive/10"
++          aria-label={`Needs re-auth. Reconnect in ${appName(app)}`}
++        >
++          {content}
++          <HugeiconsIcon
++            icon={ArrowUpRight01Icon}
++            size={11}
++            strokeWidth={2}
++            aria-hidden
++            className="text-destructive"
++          />
++        </AppLink>
++      </span>
++    );
++  return (
++    <span
++      className={cn(cell, rejected && recover !== undefined && "flex-wrap")}
++      title={title}
++      data-account-health-cell
++      data-health-state={state}
++      {...marks}
++      suppressHydrationWarning
++    >
++      {content}
++      {rejected && recover}
++    </span>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+new file mode 100644
+index 0000000..2599688
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -0,0 +1,322 @@
++/**
++ * The compact account row: one aligned line of identity, type, plan, health and who uses the
++ * account, then full-width bands such as usage. The row renders from `AccountRowInput`, which maps
++ * one field to one field onto the saved account list's rows, so a page swaps only its adapter.
++ */
++import type { AccountAppHealth, AccountId, AppId } from "@executor-js/sdk";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { Tick02Icon } from "@hugeicons/core-free-icons";
++import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
++import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
++import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
++import { cn } from "../lib/utils.ts";
++
++/** One app or pool using the account, with that consumer's own sign-in state and check. */
++export interface AccountRowBinding {
++  readonly id: AccountId;
++  readonly app: AppId;
++  readonly signIn?: AccountSummary["signIn"];
++  readonly check?: AccountAppHealth | undefined;
++}
++
++/** What the compact row renders: the saved account at the root, its offering and its bindings. */
++export interface AccountRowInput {
++  /** Saved-account fields with `providerName`, `providerUrl` and `health`. */
++  readonly account: AccountSummary;
++  /** The declared offering, such as a subscription. Today's adapter has none to give. */
++  readonly offering?: string | undefined;
++  readonly bindings: readonly AccountRowBinding[];
++}
++
++/** Today's adapter: an inventory identity group, whose bindings are separate saved accounts. */
++export const accountRowFromInventory = (
++  inventory: Inventory,
++  account: AccountSummary,
++  bindings: readonly AccountSummary[],
++): AccountRowInput => {
++  const links = [...inventory.links, ...(inventory.appLinks ?? [])];
++  return {
++    account,
++    bindings: bindings.flatMap((binding) =>
++      links
++        .filter((link) => link.account === binding.id)
++        .map((link) => ({
++          id: binding.id,
++          app: link.app,
++          ...(binding.signIn === undefined ? {} : { signIn: binding.signIn }),
++          check: binding.health?.apps.find((entry) => entry.app === link.app),
++        })),
++    ),
++  };
++};
++
++/**
++ * The Type column's text. Blank until the host's declared offering and its label helper land;
++ * never inferred from OAuth or the credential mechanism.
++ */
++export const accountRowType = (_row: AccountRowInput): string | undefined => undefined;
++
++/** A usage band's row-level actions, offered from the row's menu. */
++export interface AccountRowUsage {
++  /** Absent for an account with no usage reporter. */
++  readonly refresh?: (() => void) | undefined;
++  readonly pending: boolean;
++  readonly disabledReason?: string | undefined;
++}
++
++interface AccountRowState {
++  /** A row menu is mounted, so row-level actions move into it. */
++  readonly menu: boolean;
++  readonly setMenu: (present: boolean) => void;
++  readonly details: boolean;
++  readonly setDetails: (open: boolean) => void;
++  readonly usage: AccountRowUsage | undefined;
++  readonly setUsage: (usage: AccountRowUsage | undefined) => void;
++}
++
++const AccountRowContext = createContext<AccountRowState | undefined>(undefined);
++
++/** The row's shared state; outside a row the usage band keeps its own inline controls. */
++export const useAccountRow = () => useContext(AccountRowContext);
++
++export function AccountRowProvider({ children }: { readonly children: ReactNode }) {
++  const [menu, setMenu] = useState(false);
++  const [details, setDetails] = useState(false);
++  const [usage, setUsage] = useState<AccountRowUsage>();
++  const value = useMemo(
++    () => ({ menu, setMenu, details, setDetails, usage, setUsage }),
++    [menu, details, usage],
++  );
++  return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
++}
++
++/** Menus for one binding of a grouped row act on that binding only, never the row's usage. */
++export function OutsideAccountRow({ children }: { readonly children: ReactNode }) {
++  return <AccountRowContext.Provider value={undefined}>{children}</AccountRowContext.Provider>;
++}
++
++/** Rendered by a row's menu so the row knows its actions have a home there. */
++export function AccountRowMenuPresence() {
++  const setMenu = useAccountRow()?.setMenu;
++  useEffect(() => {
++    if (setMenu === undefined) return;
++    setMenu(true);
++    return () => setMenu(false);
++  }, [setMenu]);
++  return null;
++}
++
++/** The row's own actions at the top of its menu: refreshing usage and opening details. */
++export function AccountRowMenuItems() {
++  const row = useAccountRow();
++  if (row?.usage === undefined) return null;
++  const { refresh, pending, disabledReason } = row.usage;
++  return (
++    <>
++      {refresh !== undefined && (
++        <DropdownMenuItem
++          disabled={pending || disabledReason !== undefined}
++          onSelect={() => refresh()}
++        >
++          <span className="flex min-w-0 flex-col">
++            <span>{pending ? "Refreshing usage…" : "Refresh usage"}</span>
++            {!pending && disabledReason !== undefined && (
++              <span className="text-[11px] text-muted-foreground">{disabledReason}</span>
++            )}
++          </span>
++        </DropdownMenuItem>
++      )}
++      <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
++        {row.details ? "Hide details" : "Details"}
++      </DropdownMenuItem>
++      <DropdownMenuSeparator />
++    </>
++  );
++}
++
++/** The list wrapper names the container the row's breakpoints measure. */
++export const accountRowsContainer = "@container/account-rows";
++
++const narrow = {
++  plain:
++    "@max-[640px]/account-rows:grid-cols-[24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
++  lead: "@max-[640px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
++};
++
++/** Columns: [choice] · logo · account · type · plan · health · used by · menu. */
++export const accountRowGrid = (lead: boolean) =>
++  cn(
++    "grid items-center gap-x-3 [&_.provider-icon]:size-6 [&_.provider-icon]:rounded-md [&_[data-slot=account-avatar]]:size-6 [&_[data-slot=account-avatar]]:rounded-md",
++    lead
++      ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
++      : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
++    lead ? narrow.lead : narrow.plain,
++  );
++
++/** A full-width band under the line, aligned with the account name. */
++export const accountRowBand = (lead: boolean) =>
++  lead ? "col-start-3 col-end-[-1] min-w-0" : "col-start-2 col-end-[-1] min-w-0";
++
++/** The cells after the name: grid columns on wide lists, one wrapping line on narrow ones. */
++export function AccountRowCells({
++  lead = false,
++  type,
++  plan,
++  health,
++  users,
++  usersLabel,
++}: {
++  readonly lead?: boolean;
++  readonly type?: ReactNode;
++  readonly plan?: ReactNode;
++  readonly health?: ReactNode;
++  readonly users?: ReactNode;
++  /** Names the users cell where the column header is hidden, such as "Used by". */
++  readonly usersLabel?: string | undefined;
++}) {
++  const empty = "@max-[640px]/account-rows:empty:hidden";
++  return (
++    <div
++      className={cn(
++        "contents @max-[640px]/account-rows:row-start-2 @max-[640px]/account-rows:col-end-[-1] @max-[640px]/account-rows:flex @max-[640px]/account-rows:min-w-0 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:items-center @max-[640px]/account-rows:gap-x-2.5 @max-[640px]/account-rows:gap-y-1",
++        lead ? "@max-[640px]/account-rows:col-start-3" : "@max-[640px]/account-rows:col-start-2",
++      )}
++    >
++      <span
++        data-account-type
++        className={cn("text-[13px] leading-[1.3] text-foreground/80 wrap-anywhere", empty)}
++      >
++        {type}
++      </span>
++      <span data-account-plan-cell className={cn("flex min-w-0 flex-wrap gap-1", empty)}>
++        {plan}
++      </span>
++      <span className={cn("flex min-w-0 items-center", empty)}>{health}</span>
++      <span
++        className={cn(
++          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground",
++          empty,
++        )}
++      >
++        {users !== undefined && users !== null && users !== false && usersLabel !== undefined && (
++          <span className="hidden @max-[640px]/account-rows:inline">{usersLabel}</span>
++        )}
++        {users}
++      </span>
++    </div>
++  );
++}
++
++/**
++ * The menu cell. On narrow lists it stays on the first line, centred on the name: the cell is one
++ * name line tall and a larger button overflows it evenly.
++ */
++export function AccountRowMenu({ children }: { readonly children?: ReactNode }) {
++  return (
++    <span
++      data-account-row-menu
++      className="flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
++    >
++      {children}
++    </span>
++  );
++}
++
++/** Column names for a list of rows without a choice column; hidden where the cells wrap. */
++export function AccountRowHeader({ users }: { readonly users: string }) {
++  return (
++    <div
++      className={cn(
++        accountRowGrid(false),
++        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
++      )}
++    >
++      <span className="col-span-2">Account</span>
++      <span>Type</span>
++      <span>Plan</span>
++      <span>Health</span>
++      <span>{users}</span>
++      <span className="sr-only">Actions</span>
++    </div>
++  );
++}
++
++/**
++ * Two lines: the name `title` gives, then the verified identity, muted. Only the host's proof in
++ * `account.identity` earns the check mark; an email or username a check reported never does. An
++ * account whose title is its verified identity shows it alone, unless an authored label differs.
++ */
++export function AccountRowName({
++  account,
++  title,
++  tags,
++  secondaryClassName,
++}: {
++  readonly account: AccountSummary;
++  readonly title: string;
++  /** Small labels after the name, such as Personal or Shared. */
++  readonly tags?: ReactNode;
++  /** A page's hook on the second line. */
++  readonly secondaryClassName?: string;
++}) {
++  const verified = account.identity?.label;
++  const reported = [account.health?.info?.email, account.health?.info?.username].find(
++    (value) => value !== undefined && value !== title,
++  );
++  const secondary =
++    verified !== undefined && verified !== title
++      ? { text: verified, verified: true }
++      : verified === title
++        ? account.label.trim() !== "" && account.label !== title
++          ? { text: account.label, verified: false, authored: true }
++          : undefined
++        : reported === undefined
++          ? undefined
++          : { text: reported, verified: false };
++  return (
++    <div
++      className="grid min-w-0 leading-[1.3] @max-[640px]/account-rows:self-start"
++      {...(account.description ? { title: account.description } : {})}
++    >
++      <span className="flex min-w-0 items-center gap-1.5">
++        <strong
++          className="min-w-0 truncate text-[13px] font-medium"
++          title={title}
++          data-account-name
++          {...(verified === title ? { "data-account-verified": "" } : {})}
++        >
++          {title}
++        </strong>
++        {verified === title && <VerifiedMark />}
++        {tags}
++      </span>
++      {secondary !== undefined && (
++        <span
++          className={cn(
++            "flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground",
++            secondaryClassName,
++          )}
++        >
++          <span
++            className="min-w-0 truncate"
++            title={secondary.text}
++            {...("authored" in secondary ? {} : { "data-account-identity": "" })}
++            {...(secondary.verified ? { "data-account-verified": "" } : {})}
++          >
++            {secondary.text}
++          </span>
++          {secondary.verified && <VerifiedMark />}
++        </span>
++      )}
++    </div>
++  );
++}
++
++function VerifiedMark() {
++  return (
++    <span className="inline-flex shrink-0 text-muted-foreground" title="Verified at sign-in">
++      <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2.5} aria-hidden />
++      <span className="sr-only">, verified</span>
++    </span>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index bc11018..196b586 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -1,19 +1,31 @@
+-import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { PageFrame, PageHeader } from "./page.tsx";
+ import { Option } from "effect";
+ import { AccountRowsSkeleton } from "./loading.tsx";
+-import { AccountCheckDot, AccountIdentity, AccountLogo } from "./account-health.tsx";
++import { AccountCheckDot, AccountLogo } from "./account-health.tsx";
++import {
++  AccountRowCells,
++  AccountRowHeader,
++  AccountRowMenu,
++  AccountRowName,
++  AccountRowProvider,
++  OutsideAccountRow,
++  accountRowBand,
++  accountRowFromInventory,
++  accountRowGrid,
++  accountRowType,
++  accountRowsContainer,
++} from "./account-row.tsx";
++import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
++import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+ import type { AccountId, App } from "@executor-js/sdk";
+ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
+-import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ 
+ import { Empty, SearchInput } from "./common.tsx";
+ import {
+-  accountFamily,
+   accountGroups,
+   accountTitle,
+   bindingAccess,
+@@ -46,7 +58,10 @@ export function AccountsPage<E>({
+     bindings: readonly AccountSummary[],
+     inventory: Inventory,
+   ) => ReactNode;
++  /** Small labels after the account's name, such as Personal or Shared. */
+   readonly accountMeta?: (account: AccountSummary) => ReactNode;
++  /** The Plan column, such as the plan a usage source reported. */
++  readonly accountPlan?: (account: AccountSummary) => ReactNode;
+   /** A full-width block under the row, such as the account's usage, given the apps using it. */
+   readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+@@ -99,6 +114,7 @@ function AccountsList({
+   accountActions,
+   identityActions,
+   accountMeta,
++  accountPlan,
+   accountDetails,
+   highlight,
+   empty,
+@@ -118,6 +134,7 @@ function AccountsList({
+     inventory: Inventory,
+   ) => ReactNode;
+   readonly accountMeta?: (account: AccountSummary) => ReactNode;
++  readonly accountPlan?: (account: AccountSummary) => ReactNode;
+   readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   readonly highlight?: AccountId | undefined;
+ }) {
+@@ -155,171 +172,139 @@ function AccountsList({
+           Try another label or provider.
+         </Empty>
+       ) : (
+-        <div className="inventory border border-border rounded-[8px] overflow-hidden">
+-          <div className="inventory-header accounts-grid bg-muted text-muted-foreground py-[9px] px-[16px] text-[11px] grid grid-cols-[minmax(200px,_1.5fr)_minmax(130px,_0.8fr)_minmax(170px,_1fr)_auto] gap-6.25 items-center max-[1000px]:grid-cols-[minmax(0,_1.3fr)_minmax(0,_1fr)_auto] max-[1000px]:gap-4 max-[1000px]:[.inventory-header&_>_span:nth-child(2)]:hidden max-[740px]:hidden max-[740px]:grid-cols-[minmax(0,_1fr)_auto] max-[740px]:gap-3">
+-            <span>Account</span>
+-            <span>Added</span>
+-            <span>Apps</span>
+-            <span className="sr-only">Actions</span>
+-          </div>
++        <div
++          className={cn(
++            accountRowsContainer,
++            "inventory overflow-hidden rounded-[8px] border border-border",
++          )}
++        >
++          <AccountRowHeader users="Used by" />
+           {groups.map(({ account, bindings }) => {
+             const apps = bindingApps(data, bindings);
+             const marked = bindings.some((binding) => binding.id === highlight);
+-            const title = accountTitle(account);
+-            const info = account.health?.info;
+             const family = bindingFamily(data, account);
+-            const serviceName =
+-              account.identity?.name ?? accountFamily(data, account)?.name ?? account.providerName;
+             const access = bindingAccess(data, bindings);
++            const row = accountRowFromInventory(data, account, bindings);
++            const appName = (id: string) => {
++              const app = apps.find((item) => item.id === id);
++              return app === undefined ? "an app" : appDisplayName(app, brand);
++            };
+ 
+             return (
+-              <div
+-                className="inventory-row accounts-grid grid grid-cols-[minmax(200px,_1.5fr)_minmax(130px,_0.8fr)_minmax(170px,_1fr)_auto] gap-6.25 items-center py-[12px] px-[16px] border-t border-t-border min-h-16 [a&:hover]:bg-muted max-[1000px]:grid-cols-[minmax(0,_1.3fr)_minmax(0,_1fr)_auto] max-[1000px]:gap-4 max-[1000px]:[.inventory-header&_>_span:nth-child(2)]:hidden max-[740px]:grid-cols-[minmax(0,_1fr)_auto] max-[740px]:gap-3 max-[740px]:py-[12px] data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)] max-[740px]:px-[16px] max-[740px]:[&:first-of-type]:border-t-0 max-[740px]:[.inventory-header_+_&]:border-t-0"
+-                key={account.id}
+-                {...(marked
+-                  ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
+-                  : {})}
+-              >
+-                <div className="app-cell max-[740px]:col-span-2 [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
++              <AccountRowProvider key={account.id}>
++                <div
++                  className={cn(
++                    accountRowGrid(false),
++                    "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
++                  )}
++                  {...(marked
++                    ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
++                    : {})}
++                >
+                   <AccountLogo account={account} />
+-
+-                  <div>
+-                    <strong>{title}</strong>
+-                    {account.description && (
+-                      <p
+-                        className="account-description mt-0.5 truncate text-[12px] text-muted-foreground"
+-                        title={account.description}
+-                      >
+-                        {account.description}
+-                      </p>
+-                    )}
+-                    <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
+-                      {serviceName && (
+-                        <>
+-                          <span>{serviceName}</span>
+-                          <span>·</span>
+-                        </>
+-                      )}
+-                      {account.label.trim() !== "" && account.label !== title && (
+-                        <>
+-                          <span className="wrap-anywhere">{account.label}</span>
+-                          <span aria-hidden>·</span>
+-                        </>
+-                      )}
+-                      <span>
+-                        {[...new Set(bindings.map((binding) => binding.method))].join(", ")}
+-                      </span>
+-                      {info &&
+-                        !(
+-                          info.displayName === undefined &&
+-                          info.username === undefined &&
+-                          info.email === title
+-                        ) && (
+-                          <>
+-                            <span aria-hidden>·</span>
+-                            <AccountIdentity info={info} />
+-                          </>
++                  <AccountRowName
++                    account={account}
++                    title={accountTitle(account)}
++                    secondaryClassName="row-meta"
++                    tags={accountMeta?.(account)}
++                  />
++                  <AccountRowCells
++                    type={accountRowType(row)}
++                    plan={accountPlan?.(account)}
++                    health={
++                      <AccountHealthCell
++                        health={accountRowHealth(row.account, row.bindings)}
++                        appName={appName}
++                        link
++                      />
++                    }
++                    usersLabel="Used by"
++                    users={
++                      <span className="app-references flex min-w-0 flex-wrap gap-1 [&_>_a]:inline-flex [&_>_a]:h-5.5 [&_>_a]:max-w-full [&_>_a]:items-center [&_>_a]:gap-1 [&_>_a]:rounded-[6px] [&_>_a]:border [&_>_a]:border-border [&_>_a]:px-1.5 [&_>_a]:text-[12px] [&_>_a]:text-foreground [&_>_a:hover]:bg-accent [&_>_a_svg]:shrink-0">
++                        {apps.length === 0 ? (
++                          <span className="muted text-muted-foreground">No apps</span>
++                        ) : (
++                          apps.map((app) => (
++                            <AppLink app={app.id} view="accounts" key={app.id}>
++                              {row.bindings
++                                .filter((binding) => binding.app === app.id)
++                                .map((binding) => (
++                                  <AccountCheckDot key={binding.id} health={binding.check} />
++                                ))}
++                              <span className="truncate">{appDisplayName(app, brand)}</span>
++                              <HugeiconsIcon
++                                icon={ArrowUpRight01Icon}
++                                strokeWidth={2}
++                                aria-hidden
++                                size={12}
++                              />
++                            </AppLink>
++                          ))
+                         )}
+-                      {accountMeta?.(account)}
+-                      {accountNeedsSignIn(account) && (
+-                        <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
+-                          Needs sign-in
+-                        </span>
+-                      )}
+-                      {account.signIn?.state === "unavailable" && (
+-                        <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
+-                          Account unavailable
+-                        </span>
+-                      )}
+-                    </div>
+-                    {family !== undefined && (
+-                      <p className="unverified-identity mt-1 text-[11px] leading-4 text-muted-foreground">
+-                        {family.name} identity not verified, so this sign-in is listed on its own.{" "}
+-                        {apps[0] === undefined
+-                          ? "Reconnect it from an app to group it."
+-                          : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
+-                      </p>
++                      </span>
++                    }
++                  />
++                  <AccountRowMenu>
++                    {account.identity !== undefined && identityActions?.(bindings, data)}
++                    {bindings.length === 1 ? (
++                      accountActions?.(account, { binding: false })
++                    ) : (
++                      <OutsideAccountRow>
++                        <Popover>
++                          <PopoverTrigger asChild>
++                            <Button variant="outline" size="sm">
++                              Manage apps
++                            </Button>
++                          </PopoverTrigger>
++                          <PopoverContent align="end" className="w-72 p-2">
++                            {bindings.map((binding) => (
++                              <div
++                                key={binding.id}
++                                className="flex items-center justify-between gap-3 px-2 py-2"
++                              >
++                                <span className="min-w-0 break-words text-[12px]">
++                                  {bindingApps(data, [binding])
++                                    .map((app) => app.name)
++                                    .join(", ") ||
++                                    binding.providerName ||
++                                    "Saved sign-in"}
++                                </span>
++                                {accountActions?.(binding, { binding: true })}
++                              </div>
++                            ))}
++                          </PopoverContent>
++                        </Popover>
++                      </OutsideAccountRow>
+                     )}
+-                  </div>
+-                </div>
+-                <div className="account-date text-[12px] text-muted-foreground wrap-anywhere max-[1000px]:hidden max-[740px]:hidden">
+-                  <LocalTime value={account.createdAt} options={shortMoment} />
+-                </div>
+-                <div className="app-references max-[740px]:col-span-2 flex flex-wrap gap-1.75 text-[12px] [&_>_a]:inline-flex [&_>_a]:items-center [&_>_a]:gap-1.25 [&_>_a]:border [&_>_a]:border-border [&_>_a]:rounded-[5px] [&_>_a]:py-[3px] [&_>_a]:px-[7px] [&_>_a:hover]:bg-accent max-[740px]:[.inventory-row_&]:pl-11.5 max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:wrap-anywhere max-[740px]:[&_>_a_svg]:shrink-0">
+-                  {apps.length === 0 ? (
+-                    <span className="muted text-muted-foreground">No apps</span>
+-                  ) : (
+-                    apps.map((app) => (
+-                      <AppLink app={app.id} view="accounts" key={app.id}>
+-                        {bindings
+-                          .filter((binding) =>
+-                            [...data.links, ...(data.appLinks ?? [])].some(
+-                              (link) => link.app === app.id && link.account === binding.id,
+-                            ),
+-                          )
+-                          .map((binding) => (
+-                            <AccountCheckDot
+-                              key={binding.id}
+-                              health={binding.health?.apps.find((entry) => entry.app === app.id)}
+-                            />
+-                          ))}
+-                        {appDisplayName(app, brand)}
+-
+-                        <HugeiconsIcon
+-                          icon={ArrowUpRight01Icon}
+-                          strokeWidth={2}
+-                          aria-hidden
+-                          size={12}
+-                        />
+-                      </AppLink>
+-                    ))
++                  </AccountRowMenu>
++                  {family !== undefined && (
++                    <p
++                      className={cn(
++                        accountRowBand(false),
++                        "unverified-identity -mt-1 text-[11px] leading-4 text-muted-foreground",
++                      )}
++                    >
++                      {family.name} identity not verified, so this sign-in is listed on its own.{" "}
++                      {apps[0] === undefined
++                        ? "Reconnect it from an app to group it."
++                        : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
++                    </p>
+                   )}
+-                </div>
+-                <div className="flex items-center justify-end gap-2 max-[740px]:col-span-2 max-[740px]:col-start-1 max-[740px]:row-start-2 max-[740px]:justify-start max-[740px]:flex-wrap max-[740px]:pl-11.5">
+-                  {account.identity !== undefined && identityActions?.(bindings, data)}
+-                  {bindings.length === 1 ? (
+-                    accountActions?.(account, { binding: false })
+-                  ) : (
+-                    <Popover>
+-                      <PopoverTrigger asChild>
+-                        <Button variant="outline" size="sm">
+-                          Manage apps
+-                        </Button>
+-                      </PopoverTrigger>
+-                      <PopoverContent align="end" className="w-72 p-2">
+-                        {bindings.map((binding) => (
+-                          <div
+-                            key={binding.id}
+-                            className="flex items-center justify-between gap-3 px-2 py-2"
+-                          >
+-                            <span className="min-w-0 break-words text-[12px]">
+-                              {bindingApps(data, [binding])
+-                                .map((app) => app.name)
+-                                .join(", ") ||
+-                                binding.providerName ||
+-                                "Saved sign-in"}
+-                            </span>
+-                            {accountActions?.(binding, { binding: true })}
+-                          </div>
+-                        ))}
+-                      </PopoverContent>
+-                    </Popover>
++                  <RequestedAccess
++                    apps={access.map(({ app, scopes, capabilities }) => ({
++                      id: app.id,
++                      name: appDisplayName(app, brand),
++                      scopes,
++                      capabilities,
++                    }))}
++                  />
++                  {accountDetails !== undefined && (
++                    <div className={cn(accountRowBand(false), "empty:hidden")}>
++                      {accountDetails(account, apps)}
++                    </div>
+                   )}
+                 </div>
+-                <RequestedAccess
+-                  apps={access.map(({ app, scopes, capabilities }) => ({
+-                    id: app.id,
+-                    name: appDisplayName(app, brand),
+-                    scopes,
+-                    capabilities,
+-                  }))}
+-                />
+-                {accountDetails !== undefined && (
+-                  <div className="col-span-full min-w-0 pl-11.5">
+-                    {accountDetails(account, apps)}
+-                  </div>
+-                )}
+-              </div>
++              </AccountRowProvider>
+             );
+           })}
+         </div>
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 8529724..deed90c 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -6,14 +6,7 @@ import { Exit, Option, type Cause } from "effect";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Add01Icon, ArrowDown01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+ import { RadioGroup } from "radix-ui";
+-import type {
+-  Account,
+-  AccountAppHealth,
+-  AccountScope,
+-  App,
+-  AccountId,
+-  AccountRequirement,
+-} from "@executor-js/sdk";
++import type { Account, AccountScope, App, AccountId, AccountRequirement } from "@executor-js/sdk";
+ import {
+   requirementMethods,
+   type RequirementChoice,
+@@ -23,7 +16,6 @@ import {
+ import {
+   providerDisplayUrl,
+   accountNeedsSignIn,
+-  currentAccountCheck,
+   type AccountDetail,
+   type AccountSummary,
+   type FailureProps,
+@@ -31,6 +23,19 @@ import {
+ } from "../../contracts/dashboard.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+ import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
++import {
++  AccountRowCells,
++  AccountRowMenu,
++  AccountRowMenuItems,
++  AccountRowMenuPresence,
++  AccountRowName,
++  AccountRowProvider,
++  accountRowGrid,
++  accountRowType,
++  accountRowsContainer,
++} from "./account-row.tsx";
++import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { EmptyState } from "./empty-state.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
+@@ -132,6 +137,7 @@ export function LinkedAccountMenu<A, E>({
+   if (children === undefined && unlink === undefined) return null;
+   return (
+     <>
++      <AccountRowMenuPresence />
+       <DropdownMenu>
+         <DropdownMenuTrigger asChild>
+           <Button
+@@ -145,6 +151,7 @@ export function LinkedAccountMenu<A, E>({
+           </Button>
+         </DropdownMenuTrigger>
+         <DropdownMenuContent align="end" className="min-w-44">
++          <AccountRowMenuItems />
+           {children}
+           {children && unlink && <DropdownMenuSeparator />}
+           {unlink && bound && (
+@@ -481,6 +488,8 @@ export interface ScopeAccounts<E> {
+   readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+   /** A block under each account the caller can use, such as its reported usage. */
+   readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
++  /** The Plan column of each account the caller can use, such as the plan its usage reports. */
++  readonly accountPlan?: ((account: AccountSummary) => ReactNode) | undefined;
+ }
+ 
+ /**
+@@ -791,73 +800,59 @@ function RequirementView<E>({
+   );
+ }
+ 
+-const rowClass = "group/account flex min-w-0 flex-col gap-2 px-3.5 py-2.5 transition-colors";
++// The line is a grid; usage under it starts where the name does: choice, gap, logo, gap.
++const rowClass = "group/account min-w-0 px-3.5 py-1.5 transition-colors";
++const lineClass = cn(accountRowGrid(true), "min-h-9 gap-y-1.5");
++const bandClass = "col-start-3 col-end-[-1] min-w-0 empty:hidden";
++const usageClass = "min-w-0 pt-2 pl-16 empty:hidden";
+ const radioClass =
+   "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
+ const radioDot = "size-2 rounded-full bg-primary";
+ 
+-/** One-line account identity; the second line credits whoever contributed the link. */
++/** The row's logo and two-line name; clicking either picks the row's choice. */
+ function AccountRowIdentity({
+   account,
+-  actions,
+   labelFor,
+-  credit,
++  tags,
+ }: {
+   readonly account: AccountSummary;
+-  readonly actions?: ReactNode;
+   readonly labelFor?: string;
+-  readonly credit?: string | undefined;
++  readonly tags?: ReactNode;
+ }) {
+-  const info = account.health?.info;
+-  const name = accountName(account);
+-  const secondary = [info?.email, info?.username]
+-    .filter((value): value is string => value !== undefined && value !== name)
+-    .filter((value, index, values) => values.indexOf(value) === index);
+   const identity = (
+     <>
+-      <AccountLogo account={account} compact />
+-      <span className="min-w-0 truncate font-medium" title={name} data-account-name>
+-        {name}
++      <span className="flex items-center">
++        <AccountLogo account={account} compact />
+       </span>
+-      {secondary.map((value) => (
+-        <span
+-          key={value}
+-          className="min-w-0 truncate text-muted-foreground"
+-          title={value}
+-          data-account-identity
+-        >
+-          {value}
+-        </span>
+-      ))}
++      <AccountRowName account={account} title={accountName(account)} tags={tags} />
+     </>
+   );
++  return labelFor === undefined ? (
++    identity
++  ) : (
++    <label htmlFor={labelFor} className="contents cursor-pointer">
++      {identity}
++    </label>
++  );
++}
++
++/** Who contributed the link, in the row's last column. */
++function AddedBy({ credit }: { readonly credit?: string | undefined }) {
+   return (
+-    <div className="flex min-w-0 flex-1 flex-col">
+-      <div className="flex min-w-0 items-center gap-2">
+-        {labelFor === undefined ? (
+-          <span className="flex min-w-0 flex-1 items-center gap-2">{identity}</span>
+-        ) : (
+-          <label
+-            htmlFor={labelFor}
+-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
+-          >
+-            {identity}
+-          </label>
+-        )}
+-        {actions !== undefined && (
+-          <span data-account-row-menu className="ml-auto flex shrink-0 self-center">
+-            {actions}
+-          </span>
+-        )}
+-      </div>
+-      <div
+-        data-added-by-slot
+-        className="min-h-4 truncate text-[11px] text-muted-foreground"
+-        title={credit}
+-      >
+-        {credit}
+-      </div>
+-    </div>
++    <span data-added-by-slot className="min-w-0 truncate text-[11px]" title={credit}>
++      {credit}
++    </span>
++  );
++}
++
++function ProvisionedTag() {
++  return (
++    <span
++      data-account-provisioned
++      className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
++    >
++      Set up automatically
++    </span>
+   );
+ }
+ 
+@@ -908,12 +903,9 @@ function ReadOnlyChoices<E>({
+   const rows = shown.map((account) => {
+     const provisioned = provisionedMethod(requirement, account);
+     return (
+-      <li key={account.id} className={rowClass}>
+-        <div
+-          className="flex min-w-0 flex-col items-stretch gap-y-1 [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-md"
+-          data-account-row-header
+-        >
+-          <div className="flex min-w-0 items-center gap-2">
++      <AccountRowProvider key={account.id}>
++        <li className={rowClass}>
++          <div className={lineClass} data-account-row-header>
+             {plain ? (
+               <RadioGroup.Item
+                 value={account.id}
+@@ -927,27 +919,25 @@ function ReadOnlyChoices<E>({
+             )}
+             <AccountRowIdentity
+               account={account}
+-              credit={addedBy(data, slot, requirement, account.id)}
+-              actions={
+-                provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)
+-              }
++              tags={provisioned ? <ProvisionedTag /> : undefined}
+             />
++            <AccountRowCells
++              lead
++              type={accountRowType(appAccountRow(app, account))}
++              plan={provisioned ? undefined : data.accountPlan?.(account)}
++              health={<AccountStatus app={app} account={account} />}
++              users={<AddedBy credit={addedBy(data, slot, requirement, account.id)} />}
++            />
++            <AccountRowMenu>
++              {provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)}
++            </AccountRowMenu>
++            <div className={bandClass}>
++              <AccountStatusNotes app={app} account={account} />
++            </div>
+           </div>
+-          <span className="flex min-w-0 flex-wrap items-center gap-2.5">
+-            {provisioned && (
+-              <span
+-                data-account-provisioned
+-                className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+-              >
+-                Set up automatically
+-              </span>
+-            )}
+-            <AccountStatus app={app} account={account} part="header" />
+-          </span>
+-        </div>
+-        <AccountStatus app={app} account={account} part="details" />
+-        {!provisioned && data.accountDetails?.(account)}
+-      </li>
++          {!provisioned && <div className={usageClass}>{data.accountDetails?.(account)}</div>}
++        </li>
++      </AccountRowProvider>
+     );
+   });
+   const list = (
+@@ -955,7 +945,7 @@ function ReadOnlyChoices<E>({
+       {...(requirement.definition.name.trim() === ""
+         ? {}
+         : { "aria-label": `${requirement.definition.name} accounts` })}
+-      className="divide-y divide-border/50 text-[13px]"
++      className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
+     >
+       {rows}
+     </ul>
+@@ -1118,7 +1108,7 @@ function EditableChoices<E>({
+       {...(requirement.definition.name.trim() === ""
+         ? {}
+         : { "aria-label": `${requirement.definition.name} accounts` })}
+-      className="divide-y divide-border/50 text-[13px]"
++      className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
+     >
+       {rows}
+     </ul>
+@@ -1242,22 +1232,22 @@ function ChoiceRow<E>({
+     return exit;
+   };
+   return (
+-    <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
+-      {confirming && (
+-        <RemoveAppBoundAccount
+-          name={replaces ?? name}
+-          app={app.name}
+-          pending={pending}
+-          {...(replaces === undefined ? {} : { replacement: name })}
+-          onKeep={() => setConfirming(false)}
+-          onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
+-        />
+-      )}
+-      <div
+-        className="flex min-w-0 flex-col items-stretch gap-y-1 [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-md"
+-        data-account-row-header
++    <AccountRowProvider>
++      <li
++        aria-busy={pending}
++        className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}
+       >
+-        <div className="flex min-w-0 items-center gap-2">
++        {confirming && (
++          <RemoveAppBoundAccount
++            name={replaces ?? name}
++            app={app.name}
++            pending={pending}
++            {...(replaces === undefined ? {} : { replacement: name })}
++            onKeep={() => setConfirming(false)}
++            onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
++          />
++        )}
++        <div className={lineClass} data-account-row-header>
+           {plain ? (
+             <RadioGroup.Item
+               id={id}
+@@ -1287,49 +1277,52 @@ function ChoiceRow<E>({
+           <AccountRowIdentity
+             account={account}
+             labelFor={id}
+-            credit={linked ? addedBy(data, slot, requirement, account.id) : undefined}
+-            actions={
+-              hostProvisioned || automatic
+-                ? undefined
+-                : data.accountMenu?.(account, slot, requirement, linked)
+-            }
++            tags={hostProvisioned ? <ProvisionedTag /> : undefined}
+           />
+-        </div>
+-        <span className="flex min-w-0 flex-wrap items-center gap-2.5">
+-          {hostProvisioned && (
+-            <span
+-              data-account-provisioned
+-              className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
+-            >
+-              Set up automatically
+-            </span>
+-          )}
+-          {pending && <Spinner className="size-3.5 text-muted-foreground" />}
+-          <AccountStatus
+-            app={app}
+-            account={account}
+-            part="header"
+-            reconnect={
+-              hostProvisioned || automatic
+-                ? undefined
+-                : data.reconnectAction?.(account, slot, requirement)
++          <AccountRowCells
++            lead
++            type={accountRowType(appAccountRow(app, account))}
++            plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
++            health={
++              <AccountStatus
++                app={app}
++                account={account}
++                reconnect={
++                  hostProvisioned || automatic
++                    ? undefined
++                    : data.reconnectAction?.(account, slot, requirement)
++                }
++              />
++            }
++            users={
++              <AddedBy credit={linked ? addedBy(data, slot, requirement, account.id) : undefined} />
+             }
+           />
+-        </span>
+-      </div>
+-      {blockedReason !== undefined && (
+-        <p className="text-xs text-muted-foreground" data-account-method-unavailable>
+-          {blockedReason}
+-        </p>
+-      )}
+-      <AccountStatus app={app} account={account} part="details" />
+-      {!hostProvisioned && !unusable && data.accountDetails?.(account)}
+-      {error && (
+-        <div className="w-full min-w-0 text-xs">
+-          <Failure cause={error} />
++          <AccountRowMenu>
++            {pending && <Spinner className="size-3.5 text-muted-foreground" />}
++            {hostProvisioned || automatic
++              ? undefined
++              : data.accountMenu?.(account, slot, requirement, linked)}
++          </AccountRowMenu>
++          <div className={bandClass}>
++            {blockedReason !== undefined && (
++              <p className="text-xs text-muted-foreground" data-account-method-unavailable>
++                {blockedReason}
++              </p>
++            )}
++            <AccountStatusNotes app={app} account={account} />
++          </div>
+         </div>
+-      )}
+-    </li>
++        {!hostProvisioned && !unusable && (
++          <div className={usageClass}>{data.accountDetails?.(account)}</div>
++        )}
++        {error && (
++          <div className="w-full min-w-0 pt-1 pl-16 text-xs">
++            <Failure cause={error} />
++          </div>
++        )}
++      </li>
++    </AccountRowProvider>
+   );
+ }
+ 
+@@ -1413,49 +1406,54 @@ function RemoveAppBoundAccount({
+   );
+ }
+ 
++/** This app's binding of the account, as the compact row reads it. */
++const appAccountRow = (app: App, account: AccountSummary) => ({
++  account,
++  bindings: [
++    {
++      id: account.id,
++      app: app.id,
++      check: account.health?.apps.find((entry) => entry.app === app.id),
++    },
++  ],
++});
++
+ /**
+- * An account's sign-in state, or this app's check of it. A current rejection offers the same
+- * reconnect as an expired sign-in; other failed checks say nothing about the credentials.
++ * An account's sign-in state, or its check for this app or its own sign-in. A current rejection
++ * offers the same reconnect as an expired sign-in; other failed checks say nothing about the
++ * credentials.
+  */
+ function AccountStatus({
+   app,
+   account,
+-  part,
+   reconnect,
+ }: {
+   readonly app: App;
+   readonly account: AccountSummary;
+-  readonly part: "header" | "details";
+   readonly reconnect?: ReactNode;
+ }) {
+-  if (accountNeedsSignIn(account) && part === "details") return null;
+-  if (accountNeedsSignIn(account))
+-    return (
+-      <span className="flex items-center gap-2 text-xs text-sign-in-warning">
+-        Needs sign-in{reconnect}
+-      </span>
+-    );
+-  if (account.signIn?.state === "unavailable" && part === "details") return null;
+-  if (account.signIn?.state === "unavailable")
+-    return <span className="text-xs text-sign-in-warning">Unavailable</span>;
++  const brand = useProductBrand();
++  const row = appAccountRow(app, account);
+   return (
+-    <>
+-      <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
+-      {part === "header" &&
+-        currentAccountCheck(account, app.id)?.status === "credentials_rejected" &&
+-        reconnect}
+-    </>
++    <AccountHealthCell
++      health={accountRowHealth(row.account, row.bindings)}
++      appName={() => appDisplayName(app, brand)}
++      recover={reconnect}
++      unavailableLabel="Unavailable"
++    />
+   );
+ }
+ 
+-/** This app's check of a linked account; apps without a check show nothing. */
+-function AppCheck({
+-  health,
+-  part,
++/** This app's status badges and the reason its latest check gave, under the row's line. */
++function AccountStatusNotes({
++  app,
++  account,
+ }: {
+-  readonly health: AccountAppHealth | undefined;
+-  readonly part: "header" | "details";
++  readonly app: App;
++  readonly account: AccountSummary;
+ }) {
++  if (accountNeedsSignIn(account) || account.signIn?.state === "unavailable") return null;
++  const health = account.health?.apps.find((entry) => entry.app === app.id);
+   if (health === undefined || (!health.checkable && health.check === null)) return null;
+-  return <AccountCheckResult health={health} part={part} />;
++  return <AccountCheckResult health={health} part="notes" />;
+ }
