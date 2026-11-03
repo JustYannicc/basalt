@@ -1,0 +1,9 @@
+{
+  "identity": "executor-discarded-refresh-revocation",
+  "file": "0109-discarded-refresh-revocation.patch",
+  "content_sha256": "071e0600f4ac5f0589323cd73f4f97cec35e216e570f17c4a850d6ae2e2020cf",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
