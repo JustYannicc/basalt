@@ -13,7 +13,7 @@ env:
 
 jobs:
   client-connection:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -46,13 +46,14 @@ jobs:
   client-desktop:
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - os: windows-latest
             platform: win
           - os: ubuntu-latest
             platform: linux
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform == 'linux' && vars.BASALT_CI_RUNNER_HEAVY || matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +75,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +133,7 @@ jobs:
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
   host-managed-accounts:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -189,7 +190,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -294,7 +295,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -341,7 +342,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -378,10 +379,11 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
+      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
       matrix:
         include:
           - scope: diagnostics
@@ -432,7 +434,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -509,7 +511,7 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -911,7 +913,7 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
