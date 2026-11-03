@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { command } from "./command.mjs";
 import { eligibleJobs, interpolate, readWorkflow, selectedJobs, suitePlan } from "./plan.mjs";
 import { runQueue } from "./queue.mjs";
+import { collect } from "./artifacts.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const workflow = readWorkflow(root);
@@ -75,5 +76,20 @@ test("the original command deadline terminates the owned process group", async (
     });
     assert.equal(red.code, 17);
     assert.equal(red.timedOut, false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("required missing evidence fails even when the suite summary exists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "bundle-evidence-"));
+  try {
+    const output = join(directory, "output");
+    await mkdir(output);
+    await writeFile(join(output, "summary.json"), "{}");
+    const suite = { artifacts: [{ name: "screenshots", path: "screenshots/*.png", "if-no-files-found": "error" }] };
+    await assert.rejects(collect(suite, directory, { temp: directory }, output), /Required artifact is missing/);
+    await mkdir(join(directory, "screenshots"));
+    await writeFile(join(directory, "screenshots/proof.png"), "retained-proof");
+    await collect(suite, directory, { temp: directory }, output);
+    assert.equal(await readFile(join(output, "artifacts/screenshots/proof.png"), "utf8"), "retained-proof");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

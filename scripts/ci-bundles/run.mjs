@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { appendFile, cp, glob, mkdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { cpus, totalmem } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { command } from "./command.mjs";
 import { interpolate, readWorkflow, selectedJobs, suitePlan } from "./plan.mjs";
 import { Resources } from "./resources.mjs";
 import { runQueue } from "./queue.mjs";
+import { collect } from "./artifacts.mjs";
 
 const gib = 1024 ** 3;
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -38,7 +39,8 @@ async function bootstrap() {
   ];
   for (const [cwd, text] of commands) {
     const result = await command("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", text], {
-      cwd, env: baseEnvironment, timeoutMs: 10 * 60_000,
+      cwd, env: baseEnvironment,
+      timeoutMs: Math.max(1, Math.max(...suites.map((suite) => suite.timeoutMs)) - (Date.now() - started)),
       log: join(output, "preparation.log"), monitor, suite: "shared-preparation",
     });
     assert.equal(result.code, 0, `Shared preparation failed: ${text}`);
@@ -46,27 +48,12 @@ async function bootstrap() {
   return Date.now() - started;
 }
 
-async function collect(suite, workspace, context, destination) {
-  for (const artifact of suite.artifacts) {
-    for (const pattern of interpolate(artifact.path, context).split("\n").filter(Boolean)) {
-      for await (const path of glob(pattern, { cwd: workspace })) {
-        const source = resolve(workspace, path);
-        const relativePath = source.startsWith(`${workspace}/`) ? relative(workspace, source)
-          : source.startsWith(`${context.temp}/`) ? join("runner-temp", relative(context.temp, source)) : undefined;
-        assert.ok(relativePath && !relativePath.startsWith(".."), "Artifact escaped its suite workspace");
-        const target = join(destination, "artifacts", relativePath);
-        await mkdir(dirname(target), { recursive: true });
-        await cp(source, target, { recursive: true, force: true });
-      }
-    }
-  }
-}
-
 async function runSuite(suite, preparationMs) {
   const suiteStarted = Date.now();
   const destination = join(output, suite.key);
   const workspace = join(directory, "workspaces", suite.key);
-  const temp = join(directory, "temp", suite.key);
+  // Chromium adds socket paths beneath TMPDIR; keep this private base short.
+  const temp = await mkdtemp("/tmp/bci-");
   const context = { matrix: suite.matrix, env: suite.env, temp, baseSha: process.env.BASALT_CI_BASE_SHA };
   const steps = [];
   const record = { id: suite.id, key: suite.key, bun: suite.bun,
@@ -121,6 +108,7 @@ async function runSuite(suite, preparationMs) {
       `### ${suite.key}: ${record.status}\n\n${record.failure ?? "All original steps passed."}\n\n`);
     await appendFile(process.env.GITHUB_OUTPUT, `${suite.key}=true\n`);
     await rm(workspace, { recursive: true, force: true });
+    await rm(temp, { recursive: true, force: true });
   }
 }
 
