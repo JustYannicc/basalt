@@ -2,13 +2,12 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts b/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/pool-setup-retention.ts
-@@ -0,0 +1,65 @@
-+import { useAtomValue } from "@effect/atom-react";
+@@ -0,0 +1,73 @@
++import { RegistryContext, useAtomValue } from "@effect/atom-react";
 +import { Option } from "effect";
 +import { AsyncResult, Atom } from "effect/reactivity";
-+import { useMemo } from "react";
++import { useContext, useEffect, useMemo } from "react";
 +import { sessionAtom } from "../../contracts/auth.ts";
-+import { useOrganizationRoute } from "../components/organization.tsx";
 +import type { ComputersView } from "./pool-setup.tsx";
 +
 +/*
@@ -62,18 +61,28 @@ new file mode 100644
 + * The URL's slug, not the verified ID it resolves to, so that resolution is not a new organization.
 + * A failed session check keeps the person it last confirmed; a confirmed sign-out has none.
 + */
-+export function useSetupScope(): SetupScope | undefined {
-+  const { slug } = useOrganizationRoute();
++export function useSetupScope(organization: string): SetupScope | undefined {
 +  const session = useAtomValue(sessionAtom);
 +  const person = Option.getOrNull(AsyncResult.value(session))?.user.id;
-+  return useMemo(() => (person ? { organization: slug, person } : undefined), [slug, person]);
++  return useMemo(() => (person ? { organization, person } : undefined), [organization, person]);
++}
++
++/** The organization layout sees context changes even while Connect is closed. */
++export function useSetupRetentionScope(organization: string, person: string | undefined) {
++  const registry = useContext(RegistryContext);
++  useEffect(() => {
++    const scope = person ? { organization, person } : undefined;
++    const retained = registry.get(retainedSetupAtom);
++    if (retained && !sameScope(retained.scope, scope)) registry.set(retainedSetupAtom, undefined);
++  }, [organization, person, registry]);
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
 --- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
-@@ -1,4 +1,12 @@
+@@ -1,4 +1,13 @@
 -import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 +import { RegistryContext } from "@effect/atom-react";
++import { useOrganizationRoute } from "../components/organization.tsx";
 +import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 +import {
 +  isFresh,
@@ -85,7 +94,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 
  /*
   * The deployment's pool setup on the Connect page. Everything here talks to the deployment's own
-@@ -25,7 +33,7 @@
+@@ -25,7 +34,7 @@
    readonly name: string;
    readonly mine: boolean;
  }
@@ -94,7 +103,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
    readonly computers: readonly Computer[];
    readonly pools: readonly PoolChoice[];
    readonly undoPrompt: string;
-@@ -42,10 +50,20 @@
+@@ -42,10 +51,20 @@
    readonly baseUrl: string;
  }
 
@@ -116,7 +125,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 
  /** Intents last five minutes; renew a little early so a click never races the expiry. */
  const intentLife = 4 * 60_000;
-@@ -54,6 +72,8 @@
+@@ -54,6 +73,8 @@
  /** A claimed computer may take a while to send its first request; stop watching after this. */
  const watchAfterClaim = 10 * 60_000;
  const pollEvery = 4000;
@@ -125,7 +134,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 
  async function send<T>(path: string, init?: RequestInit): Promise<T> {
    let response: Response;
-@@ -65,7 +85,7 @@
+@@ -65,7 +86,7 @@
    const body: unknown = await response.json().catch(() => ({}));
    const error =
      typeof body === "object" && body !== null && "error" in body ? String(body.error) : "";
@@ -134,7 +143,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
    return body as T;
  }
 
-@@ -109,14 +129,38 @@
+@@ -109,14 +130,40 @@
    | { readonly kind: "connected"; readonly name: string }
    | { readonly kind: "expired"; readonly computerId: string };
 
@@ -146,7 +155,8 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 + */
  export function usePoolSetup() {
 +  const registry = useContext(RegistryContext);
-+  const scope = useSetupScope();
++  const { slug } = useOrganizationRoute();
++  const scope = useSetupScope(slug);
 +  const { view, pool } = useRetainedSetup(scope);
    const intent = useRef<{ value: Promise<string>; at: number } | undefined>(undefined);
 -  const [view, setView] = useState<ComputersView>();
@@ -159,6 +169,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 +  const cleared = useRef(new Set<string>());
 +  /** The scope this page last loaded for. */
 +  const loaded = useRef(scope);
++  const live = useRef(false);
 +  // Each scope owns its reads. Old completions cannot release or block the next scope.
 +  const reader = useRef({ inFlight: 0, issued: 0, committed: 0 });
 +  /** Restarts idle reconciliation after each read, so a poll or mutation is not followed by one. */
@@ -176,7 +187,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 
    // One request at a time shares the intent; a failure is never cached.
    const signed = useCallback(() => {
-@@ -129,29 +173,109 @@
+@@ -129,29 +176,112 @@
      return value;
    }, []);
 
@@ -189,6 +200,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 -      if (!computer.lapsed || cleared.current.has(computer.id)) continue;
 -      cleared.current.add(computer.id);
 -      void revoke(computer.id, current);
++    if (!live.current || !sameScope(loaded.current, scope)) return undefined;
 +    const started = Date.now();
 +    const own = reader.current;
 +    const ticket = ++own.issued;
@@ -257,6 +269,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 -    // oxlint-disable-next-line react/set-state-in-effect -- loads the list from the setup service once
 -    refresh().catch((error: unknown) => setProblem(failure(error)));
 -  }, [refresh]);
++    live.current = true;
 +    if (!sameScope(loaded.current, scope)) {
 +      // Another organization or person: nothing in flight or shown belongs to them.
 +      loaded.current = scope;
@@ -273,6 +286,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 +    const kept = stored && scope && sameScope(stored.scope, scope) ? stored : undefined;
 +    if (stored && !kept) registry.set(retainedSetupAtom, undefined);
 +    const fence = () => {
++      live.current = false;
 +      reader.current = { inFlight: 0, issued: 0, committed: 0 };
 +      rearm.current = () => {};
 +    };
@@ -305,7 +319,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
 
    // While a link is out, watch for its computer's first request, then stop. A hidden tab waits.
    useEffect(() => {
-@@ -192,6 +316,7 @@
+@@ -192,6 +322,7 @@
      if (minting.current) return;
      minting.current = true;
      setProblem(undefined);
@@ -313,7 +327,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
      const earlier =
        pending?.kind === "waiting" || pending?.kind === "expired" ? pending : undefined;
      setPending({ kind: "minting" });
-@@ -279,9 +404,10 @@
+@@ -279,9 +410,10 @@
    );
 
    // Stable while nothing changed, so a quiet poll re-renders nothing.
@@ -326,6 +340,25 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/host
    );
  }
  export type PoolSetup = ReturnType<typeof usePoolSetup>;
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -45,6 +45,7 @@
+ import { Spinner } from "@executor-js/ui/components/spinner";
+
+ import { AppFrameHost } from "./app-frames.tsx";
++import { useSetupRetentionScope } from "../pages/pool-setup-retention.ts";
+ import { HostedDashboard } from "./dashboard-bindings.tsx";
+ import {
+   OrganizationForm,
+@@ -378,6 +379,7 @@
+     Schema.decodeUnknownOption(OrganizationResume)(location.state.organizationResume),
+   );
+   const userId = Option.getOrUndefined(AsyncResult.value(session))?.user.id;
++  useSetupRetentionScope(slug, userId);
+   const prefetchReference =
+     AsyncResult.isSuccess(access) && AsyncResult.isSuccess(session) && session.value !== null
+       ? reference
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
@@ -364,7 +397,7 @@ diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect
  }
 
  /** Resolves once the element's own transitions end, so a checkpoint shows it at rest. */
-@@ -363,4 +375,233 @@
+@@ -363,4 +375,293 @@
        }),
      ),
    );
@@ -533,6 +566,66 @@ diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect
 +          rows(page).filter({ hasText: "Desk laptop" }).filter({ hasText: "Team pool" }).waitFor(),
 +        );
 +
++        // Finishing a mutation after this page closes must not start another page's read.
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const renamePath = /^\/setup\/v1\/computers\/existing\/name$/;
++            const mutation = yield* holdQuery(renamePath, "continue", { method: "POST" });
++            yield* browser.use("Open the computer menu before leaving", (page) =>
++              page.getByRole("button", { name: "Manage Desk laptop" }).click(),
++            );
++            yield* browser.use("Rename before leaving Connect", (page) =>
++              page.getByRole("menuitem", { name: "Rename", exact: true }).click(),
++            );
++            yield* browser.use("Name the computer before leaving", (page) =>
++              page.getByRole("textbox", { name: "Computer name" }).fill("Leaving laptop"),
++            );
++            yield* browser.use("Start the held rename", (page) =>
++              page.getByRole("button", { name: "Save", exact: true }).click(),
++            );
++            yield* mutation.requested;
++            yield* leaveConnect;
++            const readsWhileClosed = setupReads;
++            const completed = yield* browser.use("Observe the pending mutation response", (page) =>
++              Promise.resolve({
++                response: page.waitForResponse(
++                  (response) =>
++                    renamePath.test(new URL(response.url()).pathname) && response.status() === 200,
++                ),
++              }),
++            );
++            yield* mutation.release;
++            yield* browser.use("The closed page's mutation completes", (page) =>
++              completed.response
++                .then((response) => response.finished())
++                .then(() =>
++                  page.evaluate(
++                    () =>
++                      new Promise<void>((resolve) =>
++                        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                      ),
++                  ),
++                ),
++            );
++            expect(setupReads, "A closed page cannot start a post-mutation read").toBe(
++              readsWhileClosed,
++            );
++          }),
++        );
++        yield* openInApp("Return after the closed page's mutation", connect);
++        yield* chooseClaudeCode;
++        expect(yield* chosenPool("Return after mutation")).toEqual({
++          label: "Team pool",
++          enabled: true,
++        });
++        yield* refreshVisiblePage;
++        yield* browser.use("The current page reconciles the completed mutation", (page) =>
++          rows(page)
++            .filter({ hasText: "Leaving laptop" })
++            .filter({ hasText: "Team pool" })
++            .waitFor(),
++        );
++
 +        // A newer authority refusal must also fence a successful read already on its way back.
 +        yield* Effect.scoped(
 +          Effect.gen(function* () {
@@ -553,7 +646,7 @@ diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect
 +              ),
 +            );
 +            yield* browser.use("Open the computer menu while the earlier read waits", (page) =>
-+              page.getByRole("button", { name: "Manage Desk laptop" }).click(),
++              page.getByRole("button", { name: "Manage Leaving laptop" }).click(),
 +            );
 +            yield* browser.use("Choose Rename before the newer read", (page) =>
 +              page.getByRole("menuitem", { name: "Rename", exact: true }).click(),
@@ -565,7 +658,7 @@ diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect
 +              page.getByRole("button", { name: "Save", exact: true }).click(),
 +            );
 +            yield* browser.use("The refused read clears the computer list", (page) =>
-+              rows(page).filter({ hasText: "Desk laptop" }).waitFor({ state: "detached" }),
++              rows(page).filter({ hasText: "Leaving laptop" }).waitFor({ state: "detached" }),
 +            );
 +            expect((yield* chosenPool("Refused read")).enabled).toBe(false);
 +            const late = yield* browser.use("Observe the earlier successful response", (page) =>
