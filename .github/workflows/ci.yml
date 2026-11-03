@@ -590,6 +590,8 @@ jobs:
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/physical-state-digests.ndjson
+            .upstream/.local/e2e/**/physical-provisioning-completed.json
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
