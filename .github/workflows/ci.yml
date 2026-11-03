@@ -25,7 +25,7 @@ jobs:
           python3 -m unittest discover -s scripts/cpa-tests
           python3 scripts/cpa-pipeline-guard.py --base "$BASE_SHA"
   client-connection:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -65,7 +65,7 @@ jobs:
             platform: win
           - os: ubuntu-latest
             platform: linux
-    runs-on: ${{ matrix.platform == 'linux' && vars.BASALT_CI_RUNNER_HEAVY || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -87,7 +87,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -145,7 +145,8 @@ jobs:
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
   host-managed-accounts:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',host-managed-accounts,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -257,7 +258,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',oauth-account-regressions,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -291,6 +293,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-account-recovery,') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -362,7 +365,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -409,7 +413,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-migrations,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -446,11 +451,12 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
+      max-parallel: 8
       matrix:
         include:
           - scope: diagnostics
@@ -501,7 +507,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',compiler-diagnostics,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -578,7 +585,8 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',contributed-accounts,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -984,7 +992,8 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',account-acquisition,') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1019,3 +1028,60 @@ jobs:
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+
+  boat-bundle:
+    if: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: boat-large
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Retain the pinned E2E Bun
+        run: |
+          mkdir -p "$RUNNER_TEMP/basalt-bun/1.4.2"
+          cp "$(command -v bun)" "$RUNNER_TEMP/basalt-bun/1.4.2/bun"
+      - run: bun install --cwd scripts/architecture --frozen-lockfile
+      - name: Run every selected suite and retain its resource measurements
+        id: bundle
+        env:
+          BASALT_CI_BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          BASALT_CI_BOAT_SHARD: ${{ matrix.shard }}
+          BASALT_CI_BOAT_MAX_PARALLEL: ${{ vars.BASALT_CI_BOAT_MAX_PARALLEL }}
+          BASALT_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/ci-bundles/run.mjs
+      - name: Retain bundle evidence and incremental measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boat-bundle-${{ matrix.shard }}
+          path: ${{ runner.temp }}/basalt-boat/output
+          include-hidden-files: true
+          if-no-files-found: error
+
+  boat-check:
+    if: ${{ always() }}
+    needs: boat-bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every enabled Boat bundle to pass
+        env:
+          BOAT_ENABLED: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+          BOAT_RESULT: ${{ needs.boat-bundle.result }}
+        run: |
+          if [ "$BOAT_ENABLED" = "true" ] && [ "$BOAT_RESULT" != "success" ]; then
+            echo "::error::Boat bundles failed, were cancelled, or could not start. Check Boat account capacity and each bundle log."
+            exit 1
+          fi
