@@ -1,0 +1,55 @@
+diff --git a/apps/docs/blume.config.ts b/apps/docs/blume.config.ts
+--- a/apps/docs/blume.config.ts
++++ b/apps/docs/blume.config.ts
+@@ -95,8 +95,41 @@
+     },
+   },
+ };
++// Keep the same Latin variable faces in source; Cloud startup must not fetch fonts.
++const latinUnicodeRange =
++  "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD";
++const fontSubsets: AstroIntegration = {
++  name: "executor-docs-font-subsets",
++  hooks: {
++    "astro:config:setup": ({ config }) => {
++      // Blume's local variant schema omits Astro's unicodeRange option.
++      for (const font of config.fonts ?? []) {
++        if (font.name !== "Geist" && font.name !== "Geist Mono") continue;
++        for (const variant of font.options?.variants ?? []) {
++          variant.unicodeRange = [latinUnicodeRange];
++          variant.weight = font.name === "Geist" ? "400 700" : "400 600";
++        }
++      }
++    },
++  },
++};
++const geist = {
++  name: "Geist",
++  variants: [
++    { src: "../../../assets/fonts/geist/Geist-latin.woff2" },
++    { src: "../../../assets/fonts/geist/Geist-Italic-latin.woff2" },
++  ],
++};
++const geistMono = {
++  name: "Geist Mono",
++  variants: [
++    { src: "../../../assets/fonts/geist/GeistMono-latin.woff2" },
++    { src: "../../../assets/fonts/geist/GeistMono-Italic-latin.woff2" },
++  ],
++};
++
+ export default defineConfig({
+-  integrations: [errors],
++  integrations: [fontSubsets, errors],
+   title: "Executor docs",
+   description: "Connect your accounts once, then use them from the dashboard or any MCP client.",
+   content: { root: "content" },
+@@ -120,7 +153,7 @@
+     accent: { light: "#111111", dark: "#ededed" },
+     mode: "system",
+     radius: "md",
+-    fonts: { display: "geist", body: "geist", mono: "geist-mono" },
++    fonts: { display: geist, body: geist, mono: geistMono },
+   },
+   // Agent readability is the reason for Blume: llms.txt, llms-full.txt and a
+   // .md variant of every page. Ask AI and the hosted MCP server need server

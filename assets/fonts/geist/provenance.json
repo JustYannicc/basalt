@@ -1,0 +1,53 @@
+{
+  "release": "https://github.com/vercel/geist-font/releases/tag/1.8.0",
+  "archive": "https://github.com/vercel/geist-font/releases/download/1.8.0/geist-font-1.8.0.zip",
+  "archive_sha256": "ee309b6b0762f89c3e8a799f700bee0323315ff047df3a587af978f8180daa28",
+  "tool": "fonttools[woff]==4.61.1",
+  "files": [
+    {
+      "file": "Geist-Italic-latin.woff2",
+      "source": "geist-font-1.8.0/fonts/Geist/webfonts/Geist-Italic[wght].woff2",
+      "source_sha256": "fc30f0513368921e77966387d499be1b3f4eb728da24f1470d5b32c2227c095c",
+      "sha256": "3069720b677a44d95d42f87a95c0515035affe7df59db20fe522606d72794300",
+      "family": "Geist",
+      "style": "italic",
+      "weights": [400, 700],
+      "subset": "latin",
+      "unicodes": "U+0020-007E,U+00A0-00AC,U+00AE-00FF,U+0102,U+0131,U+0152-0153,U+02BC,U+02C6,U+02DA,U+02DC,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+2013-2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+2032-2033,U+2039-203A,U+2044,U+20AC,U+2122,U+2191,U+2193,U+2212"
+    },
+    {
+      "file": "GeistMono-Italic-latin.woff2",
+      "source": "geist-font-1.8.0/fonts/GeistMono/webfonts/GeistMono-Italic[wght].woff2",
+      "source_sha256": "fd1860c6abe33e3b78b3faea45bd02e38e703ee870004b581eba3a1e6cd349f3",
+      "sha256": "404e64c6654a990980bf8cab6aea3f70535d6e5320c55fc1a94e335a4ef8e558",
+      "family": "Geist Mono",
+      "style": "italic",
+      "weights": [400, 600],
+      "subset": "latin",
+      "unicodes": "U+0020-007E,U+00A0-00AC,U+00AE-00FF,U+0102,U+0131,U+0152-0153,U+02BC,U+02C6,U+02DA,U+02DC,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+2013-2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+2032-2033,U+2039-203A,U+2044,U+20AC,U+2122,U+2191,U+2193,U+2212"
+    },
+    {
+      "file": "GeistMono-latin.woff2",
+      "source": "geist-font-1.8.0/fonts/GeistMono/webfonts/GeistMono[wght].woff2",
+      "source_sha256": "f2be56afe817546285c593cedf06110ef6240d5687257ca864315784b9b359ee",
+      "sha256": "9b567c0045d5b8234a9b8bbad9544c26e14a44cd4a4eaeb12e314b9fab387152",
+      "family": "Geist Mono",
+      "style": "normal",
+      "weights": [400, 600],
+      "subset": "latin",
+      "unicodes": "U+0020-007E,U+00A0-00AC,U+00AE-00FF,U+0102,U+0131,U+0152-0153,U+02BC,U+02C6,U+02DA,U+02DC,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+2013-2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+2032-2033,U+2039-203A,U+2044,U+20AC,U+2122,U+2191,U+2193,U+2212"
+    },
+    {
+      "file": "Geist-latin.woff2",
+      "source": "geist-font-1.8.0/fonts/Geist/webfonts/Geist[wght].woff2",
+      "source_sha256": "9ceed04f6edb0334ec20ad3ddd75754516d4da63dde8f01b25a961a5ea71e2f6",
+      "sha256": "20fd032b6926226e117115586d93681eeab6b19a390c67d61791863dc29ef795",
+      "family": "Geist",
+      "style": "normal",
+      "weights": [400, 700],
+      "subset": "latin",
+      "unicodes": "U+0020-007E,U+00A0-00AC,U+00AE-00FF,U+0102,U+0131,U+0152-0153,U+02BC,U+02C6,U+02DA,U+02DC,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+2013-2014,U+2018-201A,U+201C-201E,U+2022,U+2026,U+2032-2033,U+2039-203A,U+2044,U+20AC,U+2122,U+2191,U+2193,U+2212"
+    }
+  ],
+  "css_unicode_range": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD"
+}
