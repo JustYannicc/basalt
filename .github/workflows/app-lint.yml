@@ -20,10 +20,21 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --cwd scripts/app-lint --frozen-lockfile
+      - name: Read the immutable upstream pin
+        id: upstream
+        run: node --input-type=module -e 'import {readFileSync,appendFileSync} from "node:fs"; const {commit}=JSON.parse(readFileSync("upstream.json","utf8")); if(!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Expected an immutable source pin"); appendFileSync(process.env.GITHUB_OUTPUT, "commit="+commit+"\n");'
+      - name: Check out the pinned host source without installing it
+        uses: actions/checkout@v4
+        with:
+          repository: UsefulSoftwareCo/executor
+          ref: ${{ steps.upstream.outputs.commit }}
+          path: .upstream
+          persist-credentials: false
+          # Keep the unpatched manifest out of the worktree; prepare-host reads its Git object.
+          sparse-checkout: AGENTS.md
+          sparse-checkout-cone-mode: false
       - name: Read the pinned host framework manifest
         run: node scripts/app-lint/prepare-host.mjs
-        env:
-          GH_TOKEN: ${{ github.token }}
       - name: Check every current app and connector source
         run: node scripts/app-lint/check.mjs
       - name: Prove rule failures and automatic app discovery
