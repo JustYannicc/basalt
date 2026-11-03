@@ -138,6 +138,17 @@ export async function productionOperation(
     const diagnostic = record(result) ? failureReceipt(result.failure) : undefined;
     throw new OperationFailure({
       ...(diagnostic ?? refusal()),
+      ...(response.status === 409 &&
+      record(result) &&
+      result.error === "operation_busy" &&
+      result.retryable === true
+        ? { reason: "operation_busy" as const, retryable: true as const }
+        : response.status === 409 &&
+            record(result) &&
+            result.error === "organization_removing" &&
+            result.retryable === false
+          ? { reason: "organization_removing" as const, retryable: false as const }
+          : {}),
       httpStatus: response.status,
     });
   }

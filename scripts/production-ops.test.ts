@@ -171,3 +171,60 @@ test("runtime refusals retain only allowlisted diagnostic fields", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("a busy runtime 409 keeps its safe reason and retryability in failure.json", () => {
+  const busy = {
+    error: "operation_busy",
+    retryable: true,
+    failure: {
+      format: "basalt-production-ops-failure-v1",
+      category: "sql",
+      phase: "sql",
+      sqlStateClass: "55",
+      message: poison,
+    },
+  };
+  const response = process.env.BASALT_OPS_BUSY_RESPONSE
+    ? JSON.parse(readFileSync(process.env.BASALT_OPS_BUSY_RESPONSE, "utf8"))
+    : busy;
+  const { directory, result } = run(response);
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Production operation is busy/);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), {
+      format: "basalt-production-ops-failure-v1",
+      category: "sql",
+      phase: "sql",
+      sqlStateClass: "55",
+      reason: "operation_busy",
+      retryable: true,
+      httpStatus: 409,
+    });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("organization removal remains a non-retryable safe refusal in failure.json", () => {
+  const { directory, result } = run({
+    error: "organization_removing",
+    retryable: false,
+    failure: { format: "basalt-production-ops-failure-v1", category: "auth", phase: "sql" },
+  });
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /organization_removing/);
+    assert.deepEqual(JSON.parse(readFileSync(join(directory, "failure.json"), "utf8")), {
+      format: "basalt-production-ops-failure-v1",
+      category: "auth",
+      phase: "sql",
+      reason: "organization_removing",
+      retryable: false,
+      httpStatus: 409,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -57,6 +57,8 @@ export interface FailureReceipt {
   readonly phase: (typeof phases)[number];
   readonly sqlStateClass?: (typeof sqlClasses)[number];
   readonly httpStatus?: number;
+  readonly reason?: "operation_busy" | "organization_removing";
+  readonly retryable?: boolean;
 }
 
 export class OperationFailure extends Error {
@@ -74,12 +76,19 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
   const category = categories.find((entry) => entry === row.category);
   const phase = phases.find((entry) => entry === row.phase);
   if (row.format !== "basalt-production-ops-failure-v1" || !category || !phase) return;
+  const reason =
+    row.reason === "operation_busy" && row.retryable === true
+      ? { reason: "operation_busy" as const, retryable: true }
+      : row.reason === "organization_removing" && row.retryable === false
+        ? { reason: "organization_removing" as const, retryable: false }
+        : {};
   const sqlStateClass = sqlClasses.find((entry) => entry === row.sqlStateClass);
   return {
     format: "basalt-production-ops-failure-v1",
     category,
     phase,
     ...(category === "sql" && sqlStateClass ? { sqlStateClass } : {}),
+    ...reason,
   };
 }
 

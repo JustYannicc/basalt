@@ -1,0 +1,2448 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -1,4 +1,4 @@
+-import type { Effect } from "effect";
++import { Data, type Effect } from "effect";
+ import type { SqlClient } from "effect/sql";
+
+ export type Json =
+@@ -33,6 +33,11 @@
+   readonly revision: string;
+   readonly tables: readonly string[];
+   readonly inspect: (request: Json) => Effect.Effect<MigrationPlan, unknown, SqlClient.SqlClient>;
++  /** SQL-only authority locks run inside the apply transaction before the runner locks scoped rows. */
++  readonly lockAuthority?: (
++    request: Json,
++    plan: MigrationPlan,
++  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
+   readonly apply: (
+     request: Json,
+     plan: MigrationPlan,
+@@ -49,4 +54,8 @@
+   readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
+ }
+
++export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving") {}
++
++export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
++
+ export const productionOpsPath = "/api/internal/production-ops";
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -8,9 +8,11 @@
+ import { cloudHosts } from "../stage.ts";
+ import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
+ import { Operation, runProductionOperation } from "./runner.ts";
++import { OrganizationRemoving, ProductionOperationBusy } from "./contracts.ts";
+ import { cloudProductionPreparations } from "./preparations.ts";
+ import { requestBody } from "./body.ts";
+ import { canonical, sha256 } from "./crypto.ts";
++import { contention } from "./locking.ts";
+ import { atPhase, diagnostic } from "./diagnostics.ts";
+ export { productionOpsPath } from "./contracts.ts";
+
+@@ -91,8 +93,40 @@
+     ).pipe(
+       Effect.provideService(SqlClient.SqlClient, sql),
+       Effect.timeout("25 seconds"),
++      Effect.mapError(contention),
++      Effect.catch((error) => {
++        const refusal =
++          error instanceof ProductionOperationBusy
++            ? {
++                error: "operation_busy" as const,
++                retryable: true as const,
++                failure: {
++                  format: "basalt-production-ops-failure-v1" as const,
++                  category: "sql" as const,
++                  phase: "sql" as const,
++                  sqlStateClass: "55" as const,
++                },
++              }
++            : error instanceof OrganizationRemoving
++              ? {
++                  error: "organization_removing" as const,
++                  retryable: false as const,
++                  failure: {
++                    format: "basalt-production-ops-failure-v1" as const,
++                    category: "auth" as const,
++                    phase: "sql" as const,
++                  },
++                }
++              : undefined;
++        return refusal === undefined ? Effect.fail(error) : Effect.succeed(refusal);
++      }),
+       atPhase("sql"),
+     );
++    if ("error" in result)
++      return yield* HttpServerResponse.json(result, {
++        status: 409,
++        headers: { "cache-control": "no-store" },
++      });
+     return yield* HttpServerResponse.json(result, {
+       headers: { "cache-control": "no-store" },
+     }).pipe(atPhase("decode"));
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts b/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts
+@@ -0,0 +1,14 @@
++import { SqlError } from "effect/sql";
++import { ProductionOperationBusy } from "./contracts.ts";
++
++/** Only PostgreSQL lock contention is retryable; preserve every other error unchanged. */
++export const contention = <E>(error: E): E | ProductionOperationBusy => {
++  if (!SqlError.isSqlError(error)) return error;
++  const driver = error.reason.cause;
++  return typeof driver === "object" &&
++    driver !== null &&
++    "code" in driver &&
++    driver.code === "55P03"
++    ? new ProductionOperationBusy()
++    : error;
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,4 +1,7 @@
++import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+-export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {};
++export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
++  [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-apps.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-apps.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-apps.ts
+@@ -0,0 +1,53 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { record, refuse, type ProviderAppsRequest, type Row } from "./provider-apps-schema.ts";
++import { decodedRows, one, type RecordRow } from "./provider-apps-rows.ts";
++
++/** Capture active source and policy together so every app precondition enters the snapshot hash. */
++export const providerAppReader = (request: ProviderAppsRequest, save: RecordRow) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${request.organization}`;
++    const apps = new Map<string, Row>();
++    const loadApp = (id: string) =>
++      Effect.gen(function* () {
++        const cached = apps.get(id);
++        if (cached !== undefined) return cached;
++        const app = yield* one(
++          yield* decodedRows(sql`select to_jsonb(a) as row from executor_apps a where id = ${id}`),
++          "app",
++        );
++        if (app.owner !== owner || typeof app.active_deployment !== "string")
++          return yield* refuse("app must be active in this organization");
++        save("executor_apps", { id }, app);
++        const deployment = yield* one(
++          yield* decodedRows(
++            sql`select to_jsonb(d) as row from executor_deployments d where id = ${app.active_deployment}`,
++          ),
++          "active deployment",
++        );
++        if (deployment.owner !== owner || deployment.code !== app.code)
++          return yield* refuse("deployment ownership changed");
++        const requirements = record(deployment.requirements);
++        if (requirements === undefined) return yield* refuse("active requirements are unreadable");
++        save("executor_deployments", { id: String(deployment.id) }, deployment);
++        const policy = yield* one(
++          yield* decodedRows(
++            sql`select to_jsonb(p) as row from hosted_app_access p where id = ${id}`,
++          ),
++          "app access",
++        );
++        if (policy.organization_id !== request.organization)
++          return yield* refuse("app policy belongs to another organization");
++        save("hosted_app_access", { id }, policy);
++        const groups = yield* decodedRows(
++          sql`select to_jsonb(g) as row from hosted_app_groups g where app_id = ${id} order by group_id`,
++        );
++        for (const row of groups)
++          save("hosted_app_groups", { app_id: id, group_id: String(row.group_id) }, row);
++        const value: Row = { ...app, requirements, policy };
++        apps.set(id, value);
++        return value;
++      });
++    return loadApp;
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-consumers.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-consumers.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-consumers.ts
+@@ -0,0 +1,40 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { decodedRows, type RecordRow } from "./provider-apps-rows.ts";
++import { refuse, type ProviderAppsRequest } from "./provider-apps-schema.ts";
++
++/** Linking creates source intent even without webhooks. Keep settled empty intent; refuse real consumers. */
++export const requireIdleProviderConsumers = (
++  request: ProviderAppsRequest,
++  account: ProviderAppsRequest["accounts"][number],
++  save: RecordRow,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const sources = yield* decodedRows(
++      sql`select to_jsonb(s) as row from executor_webhook_sources s where account = ${account.account} order by id`,
++    );
++    for (const source of sources) {
++      const link = account.links.find((item) => item.app === source.app);
++      if (
++        source.owner !== `organization:${request.organization}` ||
++        source.actor !== null ||
++        source.status !== "ready" ||
++        source.failure !== null ||
++        source.lease !== null ||
++        link === undefined ||
++        source.reconciled_deployment !== link.version
++      )
++        return yield* refuse(
++          "account has unsettled, leased or mismatched webhook source bookkeeping",
++        );
++      save("executor_webhook_sources", { id: String(source.id) }, source);
++    }
++    const consumers =
++      yield* sql`select 1 from executor_webhooks where source_account = ${account.account}
++    union all select 1 from executor_webhook_accounts where account = ${account.account}
++    union all select 1 from executor_workflow_accounts a join executor_workflow_runs r on r.id = a.run
++      where a.account = ${account.account} and r.status in ('queued','running') limit 1`;
++    if (consumers.length !== 0)
++      return yield* refuse("account has webhook or active workflow consumers");
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts
+@@ -0,0 +1,168 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { type Json, type MigrationPlan, type ProductionMigration } from "../contracts.ts";
++import { contention } from "../locking.ts";
++import { adoptionRevision, planProviderApps, stateHash } from "./provider-apps-plan.ts";
++import { readProviderApps } from "./provider-apps-read.ts";
++import { providerAppsPrerequisites } from "./provider-apps-prerequisites.ts";
++import {
++  decodeRequest,
++  hash,
++  migrationName,
++  migrationRevision,
++  record,
++  refuse,
++  same,
++  type ProviderAppsRequest,
++} from "./provider-apps-schema.ts";
++
++const inspect = (input: Json) =>
++  Effect.gen(function* () {
++    const request = yield* decodeRequest(input);
++    const prerequisites = yield* providerAppsPrerequisites(request);
++    if (!prerequisites.ready)
++      return {
++        changes: [],
++        data: {
++          name: migrationName,
++          revision: migrationRevision,
++          requestSha256: yield* hash(request),
++          prerequisites,
++        },
++      };
++    const plan = yield* planProviderApps(yield* readProviderApps(request));
++    return { ...plan, data: { ...record(plan.data), prerequisites } };
++  });
++
++/** Only the organization advisory lock and member share may wait; every selected row uses NOWAIT before scope checks, so other writers cannot form a row-lock cycle with adoption. */
++const lockAuthority = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${request.organization}`;
++    yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${request.organization}`}, 0))`;
++    yield* sql`select id from organization where id = ${request.organization} for update nowait`;
++    yield* sql`select id from member where "organizationId" = ${request.organization} and "userId" = ${request.actor} for share`;
++    const apps = [
++      ...new Set([
++        request.apps.openai,
++        request.apps.anthropic,
++        ...request.accounts.flatMap((item) => item.links.map((link) => link.app)),
++      ]),
++    ].sort();
++    for (const app of apps) {
++      yield* sql`select id from executor_apps where id = ${app} and owner = ${owner} for update nowait`;
++      yield* sql`select d.id from executor_deployments d join executor_apps a on a.active_deployment = d.id where a.id = ${app} and a.owner = ${owner} and d.owner = ${owner} for update of d nowait`;
++      yield* sql`select p.id from hosted_app_access p join executor_apps a on a.id = p.id where p.id = ${app} and p.organization_id = ${request.organization} and a.owner = ${owner} for update of p nowait`;
++    }
++  });
++
++/** Deletion claims connections before accounts; NOWAIT refuses either contested order without waiting. */
++const lockAccountClaims = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${request.organization}`;
++    for (const item of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
++      yield* sql`select id from executor_accounts where id = ${item.account} and owner = ${owner} for update nowait`;
++      yield* sql`select id from executor_account_connections where owner = ${owner}
++      and (state -> 'account' ->> 'id' = ${item.account} or reconnect_account = ${item.account} or source_account = ${item.account}) order by id for update nowait`;
++    }
++  });
++
++const lockDependents = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${request.organization}`;
++    for (const item of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
++      yield* sql`select p.account_id from hosted_account_access p join executor_accounts a on a.id = p.account_id where p.account_id = ${item.account} and p.organization_id = ${request.organization} and a.owner = ${owner} for update of p nowait`;
++      yield* sql`select r.account from executor_account_acquisitions r join executor_accounts a on a.id = r.account where r.account = ${item.account} and r.owner = ${owner} and a.owner = ${owner} for update of r nowait`;
++      yield* sql`select l.app, l.requirement, l.subject from hosted_app_account_links l
++      join executor_apps app on app.id = l.app join executor_accounts a on a.id = l.account
++      where l.account = ${item.account} and app.owner = ${owner} and a.owner = ${owner}
++      order by l.app, l.requirement, l.subject nulls first for update of l nowait`;
++      yield* sql`select s.id from executor_webhook_sources s join executor_accounts a on a.id = s.account join executor_apps app on app.id = s.app where s.account = ${item.account} and s.owner = ${owner} and a.owner = ${owner} and app.owner = ${owner} order by s.id for update of s nowait`;
++    }
++  });
++
++const verify = (input: Json, plan: MigrationPlan) =>
++  Effect.gen(function* () {
++    const request = yield* decodeRequest(input);
++    const data = record(plan.data);
++    const prerequisites = yield* providerAppsPrerequisites(request);
++    if (!prerequisites.ready || record(data?.prerequisites)?.ready !== true)
++      return { ok: false, checks: { prerequisitesReady: false } };
++    const requestMatches = data?.requestSha256 === (yield* hash(request));
++    const actual = yield* stateHash((yield* readProviderApps(request)).stored);
++    const stateMatches = data?.afterStateSha256 === actual;
++    return { ok: requestMatches && stateMatches, checks: { requestMatches, stateMatches } };
++  });
++
++export const providerAppsOpenAIAnthropic: ProductionMigration = {
++  name: migrationName,
++  revision: migrationRevision,
++  tables: [
++    "executor_accounts",
++    "executor_account_acquisitions",
++    "executor_account_connections",
++    "hosted_app_account_links",
++  ],
++  inspect,
++  lockAuthority: (input, plan) =>
++    Effect.gen(function* () {
++      if (record(record(plan.data)?.prerequisites)?.ready !== true)
++        return yield* refuse("reviewed plan has blocked prerequisites");
++      const request = yield* decodeRequest(input);
++      yield* lockAuthority(request);
++      yield* lockAccountClaims(request);
++      yield* lockDependents(request);
++      if (!(yield* providerAppsPrerequisites(request)).ready)
++        return yield* refuse("provider app or pool prerequisites are missing");
++    }).pipe(Effect.mapError(contention)),
++  apply: (input, plan) =>
++    Effect.gen(function* () {
++      const request = yield* decodeRequest(input);
++      const sql = yield* SqlClient.SqlClient;
++      const owner = `organization:${request.organization}`;
++      const prerequisites = yield* providerAppsPrerequisites(request);
++      if (!prerequisites.ready)
++        return yield* refuse("provider app or pool prerequisites are missing");
++      const snapshot = yield* readProviderApps(request);
++      const planned = yield* planProviderApps(snapshot);
++      const current = { ...planned, data: { ...record(planned.data), prerequisites } };
++      if (!same(current, plan)) return yield* refuse("reviewed plan changed under the write locks");
++      if (current.changes.length === 0) return;
++      for (const { input: item, acquisition } of snapshot.accounts) {
++        if (acquisition !== undefined) continue;
++        const identity = snapshot.identities.find((entry) => entry.lab === item.lab)!;
++        const revision = yield* adoptionRevision(request, item.account);
++        const updated =
++          yield* sql`update executor_accounts set provider = ${identity.identity}, method = ${identity.method}
++        where id = ${item.account} and owner = ${owner} and provider = ${item.provider} and method = ${item.method} and credential_generation = ${item.generation} returning id`;
++        if (updated.length !== 1) return yield* refuse("account changed during apply");
++        yield* sql`insert into executor_account_acquisitions
++        (account,owner,provider,method,driver,driver_revision,generation,revision,removal,mirror_reference,mirror_ready,mirror_operation)
++        select a.id, a.owner, ${identity.identity}, ${identity.method},
++          'basalt-home','oauth-v1',${item.generation},${revision},null,null,true,null
++        from executor_accounts a where a.id = ${item.account} and a.owner = ${owner}`;
++        yield* sql`update executor_account_connections set provider = ${identity.identity}, revision = ${revision},
++        state = ((state::jsonb - 'interactive') || jsonb_build_object(
++          'account', (state::jsonb -> 'account') || jsonb_build_object('provider',${identity.identity}::text,'method',${identity.method}::text),
++          'providerAppAdoption',jsonb_build_object('migration',${migrationName}::text,'revision',${revision}::text,'provenance',state -> 'interactive')))::json
++        where owner = ${`organization:${request.organization}`} and state ->> 'status' = 'completed' and state -> 'account' ->> 'id' = ${item.account}`;
++        for (const link of item.links) {
++          const remapped =
++            yield* sql`update hosted_app_account_links l set requirement = ${item.lab}
++          from executor_apps app, executor_accounts a
++          where l.app = ${link.app} and l.requirement = ${link.requirement} and l.subject is null and l.account = ${item.account}
++            and app.id = l.app and app.owner = ${owner} and a.id = l.account and a.owner = ${owner} returning l.account`;
++          if (remapped.length !== 1) return yield* refuse("reviewed link changed during apply");
++        }
++        yield* sql`insert into hosted_app_account_links (app,requirement,subject,account,linked_by,created_at)
++        select app.id, ${item.lab}, null, a.id, ${request.actor}, ${request.at}::timestamptz
++        from executor_apps app, executor_accounts a
++        where app.id = ${request.apps[item.lab]} and app.owner = ${owner} and a.id = ${item.account} and a.owner = ${owner}`;
++      }
++      const result = yield* verify(input, plan);
++      if (!result.ok) return yield* refuse("post-write preservation checks failed");
++    }),
++  verify,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-plan.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-plan.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-plan.ts
+@@ -0,0 +1,223 @@
++import { Effect } from "effect";
++import type { Change, Json, MigrationPlan } from "../contracts.ts";
++import {
++  canonical,
++  failure,
++  hash,
++  migrationName,
++  migrationRevision,
++  record,
++  refuse,
++  rowHash,
++  same,
++  type Row,
++} from "./provider-apps-schema.ts";
++import type { ProviderAppsSnapshot } from "./provider-apps-read.ts";
++import { storedKey, storedLink, type StoredRow } from "./provider-apps-rows.ts";
++
++export const stateHash = (rows: readonly StoredRow[]) =>
++  Effect.gen(function* () {
++    const parts = yield* Effect.forEach(
++      [...rows].sort((a, b) => storedKey(a).localeCompare(storedKey(b))),
++      (entry) =>
++        Effect.map(rowHash(entry.row), (sha256) => ({
++          table: entry.table,
++          key: entry.key,
++          sha256,
++        })),
++    );
++    return yield* hash(parts);
++  });
++export const adoptionRevision = (request: ProviderAppsSnapshot["request"], account: string) =>
++  Effect.map(
++    hash({ name: migrationName, revision: migrationRevision, request, account }),
++    (value) => `adopt:${value}`,
++  );
++
++/** Private rows exist only in memory. The public plan carries exact keys and hashes. */
++export const planProviderApps = (snapshot: ProviderAppsSnapshot) =>
++  Effect.gen(function* () {
++    const { request } = snapshot;
++    const after = new Map(snapshot.stored.map((entry) => [storedKey(entry), entry]));
++    const mutations: Array<{ before: StoredRow | undefined; after: StoredRow | undefined }> = [];
++    const replace = (entry: StoredRow, row: Row) => {
++      const updated = { ...entry, row };
++      mutations.push({ before: entry, after: updated });
++      after.set(storedKey(updated), updated);
++    };
++    const insert = (entry: StoredRow) => {
++      if (after.has(storedKey(entry)))
++        throw failure("Provider adoption plan contains a duplicate destination");
++      mutations.push({ before: undefined, after: entry });
++      after.set(storedKey(entry), entry);
++    };
++    const find = (table: string, key: Readonly<Record<string, string | null>>) =>
++      after.get(storedKey({ table, key }))!;
++    for (const item of snapshot.accounts) {
++      const { input, account, acquisition } = item;
++      const identity = snapshot.identities.find((entry) => entry.lab === input.lab)!;
++      const revision = yield* adoptionRevision(request, input.account);
++      const native: Row = {
++        account: input.account,
++        owner: account.owner!,
++        provider: identity.identity,
++        method: identity.method,
++        driver: "basalt-home",
++        driver_revision: "oauth-v1",
++        generation: input.generation,
++        revision,
++        removal: null,
++        mirror_reference: null,
++        mirror_ready: true,
++        mirror_operation: null,
++      };
++      const applied = acquisition !== undefined;
++      if (applied) {
++        if (
++          !same(acquisition, native) ||
++          account.provider !== identity.identity ||
++          account.method !== identity.method
++        )
++          return yield* refuse("an existing acquisition is not this exact migration result");
++      } else {
++        if (
++          account.provider !== input.provider ||
++          account.method !== input.method ||
++          typeof account.encrypted_credentials !== "string" ||
++          account.encrypted_credentials.length === 0
++        )
++          return yield* refuse("source account no longer matches its expected provider and method");
++        replace(find("executor_accounts", { id: input.account }), {
++          ...account,
++          provider: identity.identity,
++          method: identity.method,
++        });
++        insert({
++          table: "executor_account_acquisitions",
++          key: { account: input.account },
++          row: native,
++        });
++      }
++      let retained = 0;
++      const references = new Set<string>();
++      for (const connection of item.connections) {
++        const state = record(connection.state);
++        if (state?.status !== "completed" || record(state.account)?.id !== input.account) continue;
++        const binding = record(state.interactive);
++        const archived = record(state.providerAppAdoption);
++        if (applied) {
++          if (
++            binding !== undefined ||
++            archived?.migration !== migrationName ||
++            archived.revision !== revision ||
++            record(archived.provenance)?.method !== input.method ||
++            connection.provider !== identity.identity
++          )
++            return yield* refuse("completed provenance differs from this migration");
++          retained++;
++          continue;
++        }
++        if (
++          binding === undefined ||
++          binding.method !== input.method ||
++          typeof binding.ref !== "string" ||
++          binding.ref.length === 0 ||
++          binding.retirement !== undefined ||
++          !input.links.some(
++            (link) => link.app === binding.app && link.requirement === binding.slot,
++          ) ||
++          connection.provider !== input.provider ||
++          record(state.account)?.provider !== input.provider ||
++          record(state.account)?.method !== input.method ||
++          record(state.account)?.owner !== account.owner
++        )
++          return yield* refuse("legacy acquisition provenance is missing, retired or inconsistent");
++        references.add(binding.ref);
++        retained++;
++        const savedAccount = record(state.account)!;
++        const { interactive: _interactive, ...rest } = state;
++        replace(find("executor_account_connections", { id: String(connection.id) }), {
++          ...connection,
++          provider: identity.identity,
++          revision,
++          state: {
++            ...rest,
++            account: { ...savedAccount, provider: identity.identity, method: identity.method },
++            providerAppAdoption: { migration: migrationName, revision, provenance: binding },
++          },
++        });
++      }
++      if (retained === 0 || (!applied && references.size !== 1))
++        return yield* refuse("no unambiguous completed Home acquisition proves this account");
++      for (const link of input.links) {
++        const old = item.links.filter(
++          (row) =>
++            row.app === link.app &&
++            row.requirement === link.requirement &&
++            row.subject === link.subject,
++        );
++        const existing = item.links.filter(
++          (row) =>
++            row.app === link.app && row.requirement === input.lab && row.subject === link.subject,
++        );
++        if (applied) {
++          if (old.length !== 0 || existing.length !== 1)
++            return yield* refuse("adopted pool link changed");
++          continue;
++        }
++        if (old.length !== 1 || existing.length !== 0 || old[0] === undefined)
++          return yield* refuse("link mapping is missing or its destination is occupied");
++        const before = storedLink(old[0]);
++        const updated = storedLink({ ...old[0], requirement: input.lab });
++        mutations.push({ before, after: undefined }, { before: undefined, after: updated });
++        after.delete(storedKey(before));
++        after.set(storedKey(updated), updated);
++      }
++      const app = request.apps[input.lab];
++      const existing = item.links.filter(
++        (link) => link.app === app && link.requirement === input.lab && link.subject === null,
++      );
++      if (existing.length > 1 || (!applied && existing.length !== 0))
++        return yield* refuse("provider app already has an unexpected legacy link");
++      if (existing.length === 0) {
++        if (applied) return yield* refuse("adopted provider app link was removed");
++        insert(
++          storedLink({
++            app,
++            requirement: input.lab,
++            subject: null,
++            account: input.account,
++            linked_by: request.actor,
++            created_at: request.at,
++          }),
++        );
++      }
++    }
++    const changes: Change[] = yield* Effect.forEach(mutations, ({ before, after: updated }) =>
++      Effect.gen(function* () {
++        const entry = updated ?? before!;
++        return {
++          table: entry.table,
++          key: entry.key,
++          action:
++            before === undefined
++              ? ("insert" as const)
++              : updated === undefined
++                ? ("delete" as const)
++                : ("update" as const),
++          beforeSha256: before === undefined ? null : yield* rowHash(before.row),
++          afterSha256: updated === undefined ? null : yield* rowHash(updated.row),
++        };
++      }),
++    );
++    changes.sort((a, b) => canonical(a).localeCompare(canonical(b)));
++    const data: Json = {
++      name: migrationName,
++      revision: migrationRevision,
++      requestSha256: yield* hash(request),
++      beforeStateSha256: yield* stateHash(snapshot.stored),
++      afterStateSha256: yield* stateHash([...after.values()]),
++      accounts: request.accounts.map(({ account, lab }) => ({ account, lab })),
++    };
++    return { changes, data } satisfies MigrationPlan;
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-prerequisites.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-prerequisites.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-prerequisites.ts
+@@ -0,0 +1,109 @@
++import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { providerAccountDefinitions } from "@executor-js/hosted-server/provider-account-definitions";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { decodedRows, definition } from "./provider-apps-rows.ts";
++import { record, same, type ProviderAppsRequest, type Row } from "./provider-apps-schema.ts";
++
++/** Missing prerequisites remain visible inside the encrypted dry-run artifact without proposing writes. */
++export const providerAppsPrerequisites = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const identities = yield* providerAccountDefinitions.pipe(Effect.provide(BrowserCrypto.layer));
++    const pools = new Map<string, { versions: Set<string>; providers: Set<string> }>();
++    for (const account of request.accounts)
++      for (const link of account.links) {
++        const pool = pools.get(link.app) ?? {
++          versions: new Set<string>(),
++          providers: new Set<string>(),
++        };
++        pool.versions.add(link.version);
++        pool.providers.add(account.provider);
++        pools.set(link.app, pool);
++      }
++    const targets = [
++      ...identities.map((identity) => ({
++        app: request.apps[identity.lab],
++        kind: identity.lab,
++        versions: new Set([request.versions[identity.lab]]),
++        providers: new Set<string>(),
++      })),
++      ...[...pools].map(([app, pool]) => ({ app, kind: "pool", ...pool })),
++    ];
++    const checks: Array<{
++      app: string;
++      kind: string;
++      expectedVersions: string[];
++      activeVersion: string | null;
++      missing: string[];
++    }> = [];
++    for (const target of targets) {
++      const missing: string[] = [];
++      const appRows = yield* decodedRows(
++        sql`select to_jsonb(a) as row from executor_apps a where id = ${target.app} and owner = ${`organization:${request.organization}`}`,
++      );
++      const app = appRows.length === 1 ? appRows[0] : undefined;
++      const active = typeof app?.active_deployment === "string" ? app.active_deployment : null;
++      if (app === undefined) missing.push("app missing or ambiguous");
++      if (active === null) missing.push("no active deployment");
++      if (target.versions.size !== 1 || active === null || !target.versions.has(active))
++        missing.push("active deployment differs from the expected version");
++      let deployment: Row | undefined;
++      if (active !== null) {
++        const rows = yield* decodedRows(
++          sql`select to_jsonb(d) as row from executor_deployments d where id = ${active} and owner = ${`organization:${request.organization}`} and code = ${app?.code ?? null}`,
++        );
++        deployment = rows.length === 1 ? rows[0] : undefined;
++      }
++      if (deployment === undefined) missing.push("active deployment record missing or ambiguous");
++      const policies = yield* decodedRows(
++        sql`select to_jsonb(p) as row from hosted_app_access p where id = ${target.app} and organization_id = ${request.organization}`,
++      );
++      const policy = policies.length === 1 ? policies[0] : undefined;
++      if (policy === undefined) missing.push("organization app policy missing or inconsistent");
++      if (
++        target.kind !== "pool" &&
++        (policy?.audience !== "private" || policy.creator_id !== request.actor)
++      )
++        missing.push("provider app is not private to the selected actor");
++      const slots =
++        deployment === undefined
++          ? undefined
++          : definition({ requirements: deployment.requirements ?? null });
++      for (const identity of identities) {
++        if (target.kind !== "pool" && target.kind !== identity.lab) continue;
++        const slot = record(slots?.[identity.lab]);
++        if (
++          slot?.provider !== identity.identity ||
++          slot.scope !== "app" ||
++          slot.cardinality !== "many" ||
++          (target.kind === "pool" && slot.contributed !== true) ||
++          !same(slot.definition ?? null, identity.definition)
++        )
++          missing.push(
++            `active ${identity.lab} requirement is not the canonical ${target.kind === "pool" ? "contributed " : ""}app-scoped many slot`,
++          );
++      }
++      if (target.kind === "pool") {
++        const legacy = record(slots?.subscriptions);
++        if (
++          target.providers.size !== 1 ||
++          typeof legacy?.provider !== "string" ||
++          !target.providers.has(legacy.provider) ||
++          legacy.scope !== "app" ||
++          legacy.cardinality !== "many"
++        )
++          missing.push(
++            "active legacy subscriptions requirement is missing or differs from the selected provider",
++          );
++      }
++      checks.push({
++        app: target.app,
++        kind: target.kind,
++        expectedVersions: [...target.versions].sort(),
++        activeVersion: active,
++        missing,
++      });
++    }
++    return { ready: checks.every((check) => check.missing.length === 0), checks };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-read.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-read.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-read.ts
+@@ -0,0 +1,284 @@
++import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { providerAccountDefinitions } from "@executor-js/hosted-server/provider-account-definitions";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import {
++  failure,
++  record,
++  refuse,
++  same,
++  type ProviderAppsRequest,
++  type Row,
++} from "./provider-apps-schema.ts";
++import { providerAppReader } from "./provider-apps-apps.ts";
++import { requireIdleProviderConsumers } from "./provider-apps-consumers.ts";
++import {
++  decodedRows,
++  definition,
++  one,
++  storedKey,
++  storedLink,
++  type StoredRow,
++} from "./provider-apps-rows.ts";
++
++const poolReference = "https://github.com/JustYannicc/basalt/tree/main/apps/pool";
++
++/** Read-only snapshots are also used after commit; locks belong to the apply path. */
++export const readProviderApps = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const identities = yield* providerAccountDefinitions.pipe(Effect.provide(BrowserCrypto.layer));
++    const stored = new Map<string, StoredRow>();
++    const save = (table: string, key: Readonly<Record<string, string | null>>, row: Row) => {
++      const entry = { table, key, row };
++      stored.set(storedKey(entry), entry);
++      return row;
++    };
++    const owner = `organization:${request.organization}`;
++    const org = yield* one(
++      yield* decodedRows(
++        sql`select to_jsonb(o) as row from organization o where id = ${request.organization}`,
++      ),
++      "organization",
++    );
++    save("organization", { id: request.organization }, org);
++    const metadata = yield* Schema.decodeUnknownEffect(Schema.Json)(
++      typeof org.metadata === "string"
++        ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(org.metadata).pipe(
++            Effect.mapError(() => failure("Organization metadata is unreadable")),
++          )
++        : (org.metadata ?? {}),
++    );
++    const poolEntries = Object.values(record(record(metadata)?.basaltPools) ?? {}).flatMap(
++      (value) => (record(value) ? [record(value)!] : []),
++    );
++    const actor = yield* one(
++      yield* decodedRows(sql`select to_jsonb(m) as row from member m
++    where m."organizationId" = ${request.organization} and m."userId" = ${request.actor}`),
++      "actor membership",
++    );
++    if (actor.role !== "owner" && actor.role !== "admin")
++      return yield* refuse("actor must be a current organization owner or admin");
++    save("member", { id: String(actor.id) }, actor);
++
++    const loadApp = yield* providerAppReader(request, save);
++    for (const identity of identities) {
++      const app = yield* loadApp(request.apps[identity.lab]);
++      const policy = record(app.policy)!;
++      if (
++        record(app.copied_from)?.name !== `provider-${identity.lab}` ||
++        policy.audience !== "private" ||
++        policy.creator_id !== request.actor
++      )
++        return yield* refuse("provider app must be the actor's private catalog installation");
++      const slot = record(definition(app)?.[identity.lab]);
++      if (
++        slot?.provider !== identity.identity ||
++        slot.scope !== "app" ||
++        slot.cardinality !== "many" ||
++        !same(slot.definition ?? null, identity.definition)
++      )
++        return yield* refuse("provider app has no exact canonical active requirement");
++      const provider = yield* one(
++        yield* decodedRows(
++          sql`select to_jsonb(p) as row from executor_providers p where id = ${identity.identity}`,
++        ),
++        "canonical provider",
++      );
++      if (!same(provider.definition ?? null, identity.shared))
++        return yield* refuse("canonical provider definition changed");
++      save("executor_providers", { id: identity.identity }, provider);
++    }
++
++    const accounts: Array<{
++      input: ProviderAppsRequest["accounts"][number];
++      account: Row;
++      connections: readonly Row[];
++      links: readonly Row[];
++      acquisition: Row | undefined;
++    }> = [];
++    for (const input of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
++      const identity = identities.find((entry) => entry.lab === input.lab)!;
++      const account = yield* one(
++        yield* decodedRows(
++          sql`select to_jsonb(a) as row from executor_accounts a where id = ${input.account}`,
++        ),
++        "account",
++      );
++      if (
++        account.owner !== owner ||
++        account.credential_generation !== input.generation ||
++        account.site !== null ||
++        account.oauth_grant_id !== null ||
++        account.identity_id !== null
++      )
++        return yield* refuse(
++          "account ownership, generation or credential kind is not the reviewed legacy binding",
++        );
++      save("executor_accounts", { id: input.account }, account);
++      const access = yield* one(
++        yield* decodedRows(
++          sql`select to_jsonb(p) as row from hosted_account_access p where account_id = ${input.account}`,
++        ),
++        "account access",
++      );
++      // This first migration never adds a route to someone else's private account.
++      if (
++        access.organization_id !== request.organization ||
++        access.kind !== "personal" ||
++        access.personal_user_id !== request.actor
++      )
++        return yield* refuse("account must remain the actor's personal account");
++      save("hosted_account_access", { account_id: input.account }, access);
++      const groups = yield* decodedRows(
++        sql`select to_jsonb(g) as row from hosted_account_groups g where account_id = ${input.account} order by group_id`,
++      );
++      for (const row of groups)
++        save(
++          "hosted_account_groups",
++          { account_id: input.account, group_id: String(row.group_id) },
++          row,
++        );
++      if (groups.length !== 0)
++        return yield* refuse("personal account has inconsistent group grants");
++      const sourceProvider = yield* one(
++        yield* decodedRows(
++          sql`select to_jsonb(p) as row from executor_providers p where id = ${input.provider}`,
++        ),
++        "source provider",
++      );
++      const source = record(sourceProvider.definition);
++      if (
++        source?.name !== "Subscription" ||
++        record(record(source.auth)?.[input.method])?.type !== "interactive"
++      )
++        return yield* refuse("source is not the reviewed legacy subscription method");
++      save("executor_providers", { id: input.provider }, sourceProvider);
++
++      const connections =
++        yield* decodedRows(sql`select to_jsonb(c) as row from executor_account_connections c
++      where c.owner = ${owner} and (c.state -> 'account' ->> 'id' = ${input.account}
++        or c.reconnect_account = ${input.account} or c.source_account = ${input.account}) order by c.id`);
++      for (const row of connections) {
++        if (
++          record(row.state)?.status === "pending" ||
++          row.oauth_attempt !== null ||
++          (Array.isArray(row.additional_targets) && row.additional_targets.length !== 0)
++        )
++          return yield* refuse("account has a pending or batched connection");
++        save("executor_account_connections", { id: String(row.id) }, row);
++      }
++      const links = yield* decodedRows(
++        sql`select to_jsonb(l) as row from hosted_app_account_links l where account = ${input.account} order by app, requirement, subject nulls first`,
++      );
++      for (const row of links) {
++        const entry = storedLink(row);
++        stored.set(storedKey(entry), entry);
++      }
++      for (const link of input.links) {
++        if (
++          link.requirement !== "subscriptions" ||
++          (link.subject !== null && link.subject !== request.actor)
++        )
++          return yield* refuse("only explicit actor-owned legacy subscription links can move");
++        const app = yield* loadApp(link.app);
++        if (
++          app.active_deployment !== link.version ||
++          record(app.copied_from)?.reference !== poolReference
++        )
++          return yield* refuse(
++            "pool source or active deployment differs from the reviewed preparation",
++          );
++        const entries = poolEntries.filter((entry) => entry.app === link.app);
++        if (
++          entries.length !== 1 ||
++          entries.some((entry) => entry.membership === "executor-links-v1")
++        )
++          return yield* refuse("pool preparation must precede native membership activation");
++        const slot = record(definition(app)?.[input.lab]);
++        const legacy = record(definition(app)?.subscriptions);
++        if (
++          slot?.provider !== identity.identity ||
++          slot.scope !== "app" ||
++          slot.cardinality !== "many" ||
++          slot.contributed !== true ||
++          !same(slot.definition ?? null, identity.definition) ||
++          legacy?.provider !== input.provider ||
++          legacy.scope !== "app" ||
++          legacy.cardinality !== "many"
++        )
++          return yield* refuse(
++            "pool is missing compatible canonical and retained legacy requirements",
++          );
++        if (link.subject !== null)
++          return yield* refuse("user-scoped legacy links require a separate migration");
++        const pending =
++          yield* sql`select id from executor_account_connections where owner = ${owner}
++        and target ->> 'app' = ${link.app} and target ->> 'requirement' = ${link.requirement}
++        and (state ->> 'status' = 'pending' or oauth_attempt is not null) limit 1`;
++        if (pending.length !== 0) return yield* refuse("legacy pool sign-in is still in flight");
++      }
++      for (const connection of connections) {
++        const state = record(connection.state);
++        if (state?.status !== "completed" || record(state.account)?.id !== input.account) continue;
++        const provenance =
++          record(state.interactive) ?? record(record(state.providerAppAdoption)?.provenance);
++        const target = record(connection.target);
++        if (
++          provenance === undefined ||
++          typeof provenance.version !== "string" ||
++          target === undefined ||
++          target?.app !== provenance.app ||
++          target.requirement !== provenance.slot ||
++          !input.links.some(
++            (link) => link.app === provenance.app && link.requirement === provenance.slot,
++          )
++        )
++          return yield* refuse("connection provenance has no matching saved target");
++        const historical = yield* one(
++          yield* decodedRows(
++            sql`select to_jsonb(d) as row from executor_deployments d where id = ${provenance.version}`,
++          ),
++          "acquiring deployment",
++        );
++        const requirement = record(
++          record(record(historical.requirements)?.accounts)?.[String(provenance.slot)],
++        );
++        if (
++          historical.owner !== owner ||
++          requirement?.provider !== input.provider ||
++          record(record(record(requirement.definition)?.auth)?.[input.method])?.type !==
++            "interactive"
++        )
++          return yield* refuse("acquiring deployment does not prove the legacy provider method");
++        save("executor_deployments", { id: String(historical.id) }, historical);
++      }
++      for (const row of links) {
++        const isProvider =
++          row.app === request.apps[input.lab] &&
++          row.requirement === input.lab &&
++          row.subject === null;
++        const mapped =
++          typeof row.app === "string" &&
++          input.links.some(
++            (link) =>
++              link.app === row.app &&
++              (row.requirement === link.requirement || row.requirement === input.lab) &&
++              row.subject === link.subject,
++          );
++        if (!isProvider && !mapped)
++          return yield* refuse("account has an unrelated or unmapped link");
++      }
++      const acquisitionRows = yield* decodedRows(
++        sql`select to_jsonb(r) as row from executor_account_acquisitions r where account = ${input.account}`,
++      );
++      if (acquisitionRows.length > 1) return yield* refuse("ambiguous native acquisition");
++      const acquisition = acquisitionRows[0];
++      if (acquisition !== undefined)
++        save("executor_account_acquisitions", { account: input.account }, acquisition);
++      yield* requireIdleProviderConsumers(request, input, save);
++      accounts.push({ input, account, connections, links, acquisition });
++    }
++    return { request, identities, accounts, stored: [...stored.values()] };
++  });
++export type ProviderAppsSnapshot = Effect.Success<ReturnType<typeof readProviderApps>>;
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-rows.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-rows.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-rows.ts
+@@ -0,0 +1,41 @@
++import { Effect, Schema } from "effect";
++import { canonical, failure, record, refuse, Rows, type Row } from "./provider-apps-schema.ts";
++
++export interface StoredRow {
++  readonly table: string;
++  readonly key: Readonly<Record<string, string | null>>;
++  readonly row: Row;
++}
++export const storedKey = (row: Pick<StoredRow, "table" | "key">) =>
++  canonical({ table: row.table, key: row.key });
++export const storedLink = (row: Row): StoredRow => ({
++  table: "hosted_app_account_links",
++  key: {
++    app: String(row.app),
++    requirement: String(row.requirement),
++    account: String(row.account),
++    subject: row.subject === null ? null : String(row.subject),
++  },
++  row,
++});
++
++export const decodedRows = <E, R>(query: Effect.Effect<readonly unknown[], E, R>) =>
++  query.pipe(
++    Effect.flatMap((rows) =>
++      Schema.decodeUnknownEffect(Rows)(rows).pipe(
++        Effect.mapError(() => failure("Provider adoption data is unreadable")),
++      ),
++    ),
++    Effect.map((rows) => rows.map(({ row }) => row)),
++  );
++export const one = (rows: readonly Row[], label: string) =>
++  rows.length === 1 && rows[0] !== undefined
++    ? Effect.succeed(rows[0])
++    : refuse(`missing or ambiguous ${label}`);
++export const definition = (app: Row) => record(record(app.requirements)?.accounts);
++
++export type RecordRow = (
++  table: string,
++  key: Readonly<Record<string, string | null>>,
++  row: Row,
++) => Row;
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
+@@ -0,0 +1,83 @@
++import { Data, DateTime, Effect, Option, Schema } from "effect";
++import type { Json } from "../contracts.ts";
++import { canonical, sha256 } from "../crypto.ts";
++export { canonical } from "../crypto.ts";
++
++const Link = Schema.Struct({
++  app: Schema.NonEmptyString,
++  version: Schema.NonEmptyString,
++  requirement: Schema.NonEmptyString,
++  subject: Schema.NullOr(Schema.NonEmptyString),
++});
++export const ProviderAppsRequest = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  actor: Schema.NonEmptyString,
++  at: Schema.NonEmptyString,
++  apps: Schema.Struct({ openai: Schema.NonEmptyString, anthropic: Schema.NonEmptyString }),
++  versions: Schema.Struct({ openai: Schema.NonEmptyString, anthropic: Schema.NonEmptyString }),
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Schema.NonEmptyString,
++      lab: Schema.Literals(["openai", "anthropic"]),
++      provider: Schema.NonEmptyString,
++      method: Schema.Literals(["codex", "claude"]),
++      generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++      links: Schema.Array(Link).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
++    }),
++  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
++});
++export type ProviderAppsRequest = typeof ProviderAppsRequest.Type;
++export type Row = { readonly [key: string]: Json };
++export const Rows = Schema.Array(Schema.Struct({ row: Schema.Record(Schema.String, Schema.Json) }));
++export const record = (value: Json | undefined): Row | undefined =>
++  value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Row) : undefined;
++export const same = (left: unknown, right: unknown) => canonical(left) === canonical(right);
++class ProviderAppsRefused extends Data.TaggedError("ProviderAppsRefused")<{
++  readonly message: string;
++}> {}
++export const failure = (message: string) => new ProviderAppsRefused({ message });
++export const refuse = (reason: string) =>
++  Effect.fail(failure(`Provider adoption refused: ${reason}`));
++
++export const hash = (value: unknown) => Effect.sync(() => sha256(canonical(value)));
++
++// PostgreSQL and JavaScript spell the same timestamp differently. Hash its instant consistently.
++const timestamp = (value: Json) => {
++  if (typeof value !== "string") return value;
++  const parsed = DateTime.make(value);
++  return Option.isSome(parsed) ? DateTime.formatIso(parsed.value) : value;
++};
++export const rowHash = (row: Row) =>
++  hash(
++    Object.fromEntries(
++      Object.entries(row).map(([key, value]) => [
++        key,
++        ["created_at", "expires_at"].includes(key) ? timestamp(value) : value,
++      ]),
++    ),
++  );
++export const linkKey = (row: Pick<typeof Link.Type, "app" | "requirement" | "subject">) =>
++  canonical({ app: row.app, requirement: row.requirement, subject: row.subject });
++export const migrationName = "provider-apps-openai-anthropic-v1";
++export const migrationRevision = "1";
++
++export const decodeRequest = (input: Json) =>
++  Effect.gen(function* () {
++    const request = yield* Schema.decodeUnknownEffect(ProviderAppsRequest)(input);
++    const at = DateTime.make(request.at);
++    if (Option.isNone(at) || DateTime.formatIso(at.value) !== request.at)
++      return yield* refuse("at must be an exact ISO timestamp");
++    if (request.apps.openai === request.apps.anthropic)
++      return yield* refuse("provider apps must be distinct");
++    if (
++      new Set(request.accounts.map((account) => account.account)).size !== request.accounts.length
++    )
++      return yield* refuse("duplicate account IDs");
++    for (const account of request.accounts) {
++      if (account.method !== (account.lab === "openai" ? "codex" : "claude"))
++        return yield* refuse("the source method does not identify the selected lab");
++      if (new Set(account.links.map(linkKey)).size !== account.links.length)
++        return yield* refuse("duplicate link mappings");
++    }
++    return request;
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -280,7 +280,7 @@
+           return yield* fail("Database identity changed");
+         const prior =
+           yield* sql`select organization_id, migration, revision, release, backup_sha256 from private_production_ops_receipts
+-      where plan_sha256 = ${hash} for update`;
++      where plan_sha256 = ${hash} for update nowait`;
+         if (prior.length > 0) {
+           const row = prior[0];
+           if (
+@@ -293,6 +293,8 @@
+             return yield* fail("Receipt identity differs");
+           return { repeated: true };
+         }
++        if (module.lockAuthority !== undefined)
++          yield* module.lockAuthority(saved.request, saved.plan);
+         yield* checkPlanScope(saved.plan, organization, "before", true);
+         const current = yield* inspect(module, saved.request);
+         if (canonical(current) !== canonical(saved.plan))
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -1,6 +1,7 @@
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+-import type { Change, MigrationPlan } from "./contracts.ts";
++import { contention } from "./locking.ts";
++import { OrganizationRemoving, type Change, type MigrationPlan } from "./contracts.ts";
+
+ export const OrganizationRequest = Schema.StructWithRest(
+   Schema.Struct({ organization: Schema.NonEmptyString.check(Schema.isMaxLength(256)) }),
+@@ -94,8 +95,11 @@
+ export const requireOrganization = (organization: string) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+-    const rows = yield* sql`select id from organization where id = ${organization}`;
+-    if (rows.length !== 1) return yield* Effect.fail(new Error("Organization unavailable"));
++    const rows = yield* sql`select
++      exists(select 1 from organization where id = ${organization}) as present,
++      exists(select 1 from hosted_organization_removal where organization_id = ${organization}) as removing`;
++    if (rows[0]?.removing === true) return yield* Effect.fail(new OrganizationRemoving());
++    if (rows[0]?.present !== true) return yield* Effect.fail(new Error("Organization unavailable"));
+   });
+
+ /** Lock declared existing rows before apply; inspect the same stable identities after writes and on replay. */
+@@ -125,8 +129,13 @@
+       group.push(change);
+       tables.set(change.table, group);
+     }
+-    for (const [table, changes] of tables) {
++    for (const [table, changes] of [...tables].sort(([a], [b]) => a.localeCompare(b))) {
+       const scope = scopes[table]!;
++      changes.sort((a, b) =>
++        JSON.stringify(scope.keys.map((key) => a.key[key])).localeCompare(
++          JSON.stringify(scope.keys.map((key) => b.key[key])),
++        ),
++      );
+       const rows = yield* sql
+         .unsafe(
+           `select expected.value ->> 'index' as index, actual.scoped
+@@ -134,7 +143,7 @@
+         left join lateral (
+           select coalesce((${scope.predicate}), false) as scoped from "${table}" entry
+           where ${scope.keys.map((key) => `entry."${key}" is not distinct from (expected.value -> 'key' ->> '${key}')`).join(" and ")}
+-          limit 2 ${lock ? "for update of entry" : ""}
++          limit 2 ${lock ? "for update of entry nowait" : ""}
+         ) actual on true`,
+           [
+             organization,
+@@ -142,6 +151,7 @@
+           ],
+         )
+         .pipe(
++          Effect.mapError(contention),
+           Effect.flatMap(
+             Schema.decodeUnknownEffect(
+               Schema.Array(
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -42,6 +42,7 @@
+     "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
+     "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
+     "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
++    "./provider-account-definitions": "./src/implementation/provider-account-definitions.ts",
+     "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
+     "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
+     "./pool-token": "./src/implementation/pool-token.ts"
+diff --git a/apps/hosted/server/src/implementation/provider-account-definitions.ts b/apps/hosted/server/src/implementation/provider-account-definitions.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/provider-account-definitions.ts
+@@ -0,0 +1,16 @@
++import { identifyProvider } from "@executor-js/sdk/core";
++import { providerDeclaration } from "apps/host";
++import { Crypto, Effect } from "effect";
++import { providers } from "./pool-provider-definitions.ts";
++
++/** Operations use the same identity producer as the apps and host driver registry. */
++export const providerAccountDefinitions = Effect.gen(function* () {
++  const crypto = yield* Crypto.Crypto;
++  return yield* Effect.forEach(["openai", "anthropic"] as const, (lab) =>
++    Effect.gen(function* () {
++      const declaration = yield* providerDeclaration(providers[lab]);
++      const identified = yield* identifyProvider(declaration, crypto);
++      return { lab, method: lab === "openai" ? "codex" : "claude", ...identified };
++    }),
++  );
++});
+diff --git a/apps/hosted/testing/cloud-locks-fixture.ts b/apps/hosted/testing/cloud-locks-fixture.ts
+--- a/apps/hosted/testing/cloud-locks-fixture.ts
++++ b/apps/hosted/testing/cloud-locks-fixture.ts
+@@ -32,6 +32,7 @@
+   Schema.Union([
+     Schema.Struct({ hold: Statement }),
+     Schema.Struct({ run: Statement }),
++    Schema.Struct({ probe: Statement }),
+     Schema.Struct({ release: Schema.Literal(true) }),
+     Schema.Struct({ signal: Schema.Struct({ pid: Schema.Int, stop: Schema.Boolean }) }),
+     Schema.Struct({ connections: Schema.Boolean }),
+@@ -157,6 +158,15 @@
+               rows = await run(holder, instruction.hold);
+             } else if ("run" in instruction) {
+               rows = await run(pool, instruction.run);
++            } else if ("probe" in instruction) {
++              try {
++                await run(pool, instruction.probe);
++                rows = [{ code: null }];
++              } catch (error) {
++                if (!(error instanceof Error) || !("code" in error) || error.code !== "55P03")
++                  throw error;
++                rows = [{ code: "55P03" }];
++              }
+             } else if ("connections" in instruction) {
+               await allowConnections(instruction.connections);
+               refusing.now = !instruction.connections;
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -313,6 +313,31 @@
+     targets: ["cloud"],
+     reason:
+       "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
++  },
++  providerAdoption: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionLocks: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionForeign: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionAccountDelete: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionPurge: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
+   },
+   cloudPoolSetupAtomic: {
+     targets: ["cloud"],
+diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
+--- a/e2e/support/cloud-locks.ts
++++ b/e2e/support/cloud-locks.ts
+@@ -62,6 +62,8 @@
+     hold: (statement: Statement) => send({ hold: statement }),
+     /** Run a statement on another connection, outside the held transaction. */
+     run: (statement: Statement) => send({ run: statement }),
++    /** Try a NOWAIT row lock, reporting only the expected contention code. */
++    probe: (statement: Statement) => send({ probe: statement }),
+     /** Commit the held transaction, releasing its locks. */
+     release: Effect.asVoid(send({ release: true })),
+     /**
+diff --git a/e2e/support/provider-adoption-fixture.ts b/e2e/support/provider-adoption-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-fixture.ts
+@@ -0,0 +1,246 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Resource } from "./contracts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { providerAppsCatalog } from "./provider-apps-catalog.ts";
++import { settleWebhookSources, removeAppWhenStopped } from "./webhook-sources.ts";
++
++const Saved = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++const AccountRows = Schema.Array(
++  Schema.Struct({
++    id: Schema.String,
++    provider: Schema.String,
++    method: Schema.String,
++    credential_generation: Schema.Number,
++  }),
++);
++const Deployment = Schema.Array(Schema.Struct({ active_deployment: Schema.String }));
++const Viewer = Schema.Struct({ userId: Schema.String });
++const poolReference = "https://github.com/JustYannicc/basalt/tree/main/apps/pool";
++
++/** Public sign-in creates encrypted references; only predecessor metadata is seeded in disposable SQL. */
++export const providerAdoptionFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    database = yield* cloudLocks;
++  const catalog = yield* providerAppsCatalog;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const actor = (yield* body(Viewer, yield* api.request(actors.owner, "GET", "/api/viewer")))
++    .userId;
++  const apps: string[] = [],
++    accounts: string[] = [];
++  const migration = "provider-apps-openai-anthropic-v1";
++  const original = yield* database.run({
++    sql: "select metadata from organization where id = $1",
++    params: [actors.organization.id],
++  });
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      const removing = yield* database.run({
++        sql: "select organization_id from hosted_organization_removal where organization_id = $1",
++        params: [actors.organization.id],
++      });
++      if (removing.length > 0) {
++        for (const table of ["executor_apps", "executor_accounts"])
++          expect(
++            yield* database.run({
++              sql: `select id from ${table} where owner = $1`,
++              params: [`organization:${actors.organization.id}`],
++            }),
++          ).toEqual([]);
++        return;
++      }
++      yield* database.run({
++        sql: "delete from private_production_ops_receipts where organization_id = $1 and migration = $2",
++        params: [actors.organization.id, migration],
++      });
++      yield* database.run({
++        sql: "update organization set metadata = $2 where id = $1",
++        params: [
++          actors.organization.id,
++          typeof original[0]?.metadata === "string"
++            ? original[0].metadata
++            : JSON.stringify(original[0]?.metadata ?? {}),
++        ],
++      });
++      for (const app of [...apps].reverse())
++        expect(yield* removeAppWhenStopped(actors.owner, `${prefix}/apps/${app}`)).toBe(200);
++      for (const account of accounts) {
++        const present = yield* api
++          .request(actors.owner, "GET", `${prefix}/inventory`)
++          .pipe(
++            Effect.flatMap((response) =>
++              body(Schema.Struct({ accounts: Schema.Array(Resource) }), response),
++            ),
++          );
++        if (present.accounts.some((row) => row.id === account)) {
++          const removed = yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${prefix}/accounts/${account}`,
++          );
++          expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        }
++        const after = yield* api
++          .request(actors.owner, "GET", `${prefix}/inventory`)
++          .pipe(
++            Effect.flatMap((response) =>
++              body(Schema.Struct({ accounts: Schema.Array(Resource) }), response),
++            ),
++          );
++        expect(after.accounts).not.toContainEqual(expect.objectContaining({ id: account }));
++      }
++    }).pipe(Effect.orDie),
++  );
++  const deploy = (name: string, files: readonly { path: string; content: string }[]) =>
++    Effect.gen(function* () {
++      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name,
++        files,
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const app = (yield* body(Resource, response)).id;
++      apps.push(app);
++      return app;
++    });
++  const canonical = catalog.sources
++    .get("openai")!
++    .files.find((file) => file.path === "providers.ts")!;
++  const poolFiles = [
++    appsManifest,
++    canonical,
++    {
++      path: "index.ts",
++      content: `import { defineApp, defineProvider, interactive, object, query, router } from "apps";
++import { providers } from "./providers.ts";
++const legacy = defineProvider({ name: "Subscription", auth: {
++  codex: interactive({ label: "ChatGPT subscription" }),
++  claude: interactive({ label: "Claude subscription" })
++} });
++const requirements = { app: { accounts: {
++  subscriptions: legacy.many(), openai: providers.openai.many().contributed(), anthropic: providers.anthropic.many().contributed()
++} } };
++export default defineApp(requirements, {
++  connect: { subscriptions: {
++    start: async (_ctx, input) => ({ session: "synthetic-" + input.method }),
++    status: async (_ctx, input) => ({ state: "connected", ref: "synthetic-private-" + input.method }),
++    cancel: async () => {}, remove: async () => {}
++  } },
++  tools: router({ accounts: query({ input: object({}) }, async (ctx) => ({
++    openai: ctx.app.accounts.openai.map((a) => ({ id: a.id, method: a.method, fields: Object.keys(a.fields) })),
++    anthropic: ctx.app.accounts.anthropic.map((a) => ({ id: a.id, method: a.method, fields: Object.keys(a.fields) }))
++  })) })
++});`,
++    },
++  ];
++  const pool = yield* deploy("Legacy pool prepared for native accounts", poolFiles);
++  const providerApps = { openai: "", anthropic: "" };
++  for (const lab of ["openai", "anthropic"] as const) {
++    providerApps[lab] = yield* deploy(`Adoption ${lab}`, catalog.sources.get(lab)!.files);
++    yield* database.run({
++      sql: "update executor_apps set copied_from = $2::jsonb where id = $1",
++      params: [
++        providerApps[lab],
++        JSON.stringify({
++          name: `provider-${lab}`,
++          reference: `https://catalog.example.test/provider-${lab}`,
++          commit: null,
++        }),
++      ],
++    });
++  }
++  for (const method of ["codex", "claude"]) {
++    const pending = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/apps/${pool}/accounts/app/subscriptions/connections`,
++      { destination: { kind: "personal" } },
++    );
++    expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++    const connection = (yield* body(Resource, pending)).id;
++    const path = `${prefix}/connections/${connection}/interactive`;
++    const started = yield* api.request(actors.owner, "POST", `${path}/start`, { method });
++    expect(started.status, JSON.stringify(started.body)).toBe(200);
++    const saved = yield* api.request(actors.owner, "GET", `${path}/status`);
++    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++    accounts.push((yield* body(Saved, saved)).account.id);
++  }
++  const second = yield* deploy("Second prepared legacy pool", poolFiles);
++  yield* settleWebhookSources(
++    actors.owner,
++    `${prefix}/apps/${pool}`,
++    (sources) =>
++      sources.length === 2 &&
++      sources.every((source) => source.status === "ready" && source.failure === null),
++  );
++  for (const app of [pool, second]) {
++    yield* database.run({
++      sql: "update executor_apps set copied_from = $2::jsonb where id = $1",
++      params: [
++        app,
++        JSON.stringify({ reference: poolReference, name: "Prepared pool", commit: null }),
++      ],
++    });
++    yield* database.run({
++      sql: "update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) || jsonb_build_object($2::text, jsonb_build_object('app', $3::text)))::text where id = $1",
++      params: [actors.organization.id, app, app],
++    });
++  }
++  const versions = new Map<string, string>();
++  for (const app of [pool, second]) {
++    const rows = yield* database
++      .run({ sql: "select active_deployment from executor_apps where id = $1", params: [app] })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Deployment)));
++    versions.set(app, rows[0]!.active_deployment);
++  }
++  const rows = yield* database
++    .run({
++      sql: "select id,provider,method,credential_generation from executor_accounts where id = any($1::text[]) order by id",
++      params: [`{${accounts.join(",")}}`],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(AccountRows)));
++  const providerVersions = { openai: "", anthropic: "" };
++  for (const lab of ["openai", "anthropic"] as const) {
++    const rows = yield* database
++      .run({
++        sql: "select active_deployment from executor_apps where id = $1",
++        params: [providerApps[lab]],
++      })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Deployment)));
++    providerVersions[lab] = rows[0]!.active_deployment;
++  }
++  const request = {
++    organization: actors.organization.id,
++    actor,
++    at: new Date().toISOString(),
++    apps: providerApps,
++    versions: providerVersions,
++    accounts: rows.map((row) => ({
++      account: row.id,
++      lab: row.method === "codex" ? "openai" : "anthropic",
++      provider: row.provider,
++      method: row.method,
++      generation: row.credential_generation,
++      links: [pool].map((app) => ({
++        app,
++        version: versions.get(app)!,
++        requirement: "subscriptions",
++        subject: null,
++      })),
++    })),
++  };
++  const snapshot = database.run({
++    sql: `select
++    (select jsonb_agg(to_jsonb(a) order by id) from executor_accounts a where id = any($1::text[])) as accounts,
++    (select jsonb_agg(to_jsonb(a) order by account_id) from hosted_account_access a where account_id = any($1::text[])) as access,
++    (select jsonb_agg(to_jsonb(a) order by id) from executor_webhook_sources a where account = any($1::text[])) as sources,
++    (select jsonb_agg(to_jsonb(a) order by app,requirement,account) from hosted_app_account_links a where account = any($1::text[])) as links,
++    (select jsonb_agg(to_jsonb(a) order by id) from executor_account_connections a where state -> 'account' ->> 'id' = any($1::text[])) as connections,
++    (select jsonb_agg(to_jsonb(a) order by account) from executor_account_acquisitions a where account = any($1::text[])) as acquisitions`,
++    params: [`{${accounts.join(",")}}`],
++  });
++  return { api, actors, database, prefix, pool, second, request, snapshot };
++});
+diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adoption-locks.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-locks.ts
+@@ -0,0 +1,275 @@
++import { expect } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { body } from "./api.ts";
++import { Target } from "./platform.ts";
++import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
++import { Evidence } from "./evidence.ts";
++import { productionOpsClient } from "./production-ops-client.ts";
++import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { apply, boundary } from "./provider-adoption-steps.ts";
++import { DryRun, Plan } from "./provider-adoption-refusals.ts";
++
++const Failure = Schema.Struct({
++  error: Schema.Literal("operation_refused"),
++  failure: Schema.Struct({
++    category: Schema.String,
++    sqlStateClass: Schema.optionalKey(Schema.String),
++  }),
++});
++const Probe = Schema.Array(Schema.Struct({ code: Schema.NullOr(Schema.String) }));
++
++export const proveConcurrentUnlink = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: p.request,
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  expect(
++    (yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(dry.artifact))).plan.data.prerequisites
++      .ready,
++  ).toBe(true);
++  const selected = p.request.accounts[0]!;
++  const unlinkStep = yield* boundary("app", p.pool);
++  const unlink = yield* p.api
++    .request(
++      p.actors.owner,
++      "DELETE",
++      `${p.prefix}/apps/${p.pool}/accounts/app/subscriptions/${selected.account}`,
++    )
++    .pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    unlinkStep.entered,
++    Fiber.join(unlink).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(`Unlink completed before its SQL boundary: ${response.status}`),
++      ),
++    ),
++  );
++  const organization = yield* p.database
++    .run({
++      sql: "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired",
++      params: [`executor-access:${p.request.organization}`],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ acquired: Schema.Boolean }))),
++      ),
++    );
++  expect(organization[0]!.acquired).toBe(false);
++  const applyStep = yield* boundary("organization", p.request.organization);
++  const applying = yield* client.request(apply(operation, dry)).pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    applyStep.entered,
++    Fiber.join(applying).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(
++          `Apply completed before its SQL boundary: ${response.status} ${JSON.stringify(response.body)}`,
++        ),
++      ),
++    ),
++  );
++  const links = yield* p.database
++    .probe({
++      sql: "select l.account from hosted_app_account_links l join executor_apps app on app.id = l.app join executor_accounts a on a.id = l.account where app.owner = $1 and a.owner = $1 and l.app = $2 and l.account = $3 for update of l nowait",
++      params: [`organization:${p.request.organization}`, p.pool, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  const accounts = yield* p.database
++    .probe({
++      sql: "select id from executor_accounts where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  yield* evidence.json("adoption-unlink-lock-order.json", {
++    unlinkHoldsOrganization: !organization[0]!.acquired,
++    applyAtOrganizationBoundary: true,
++    linkProbe: links[0]!.code,
++    accountProbe: accounts[0]!.code,
++  });
++  expect(links[0]!.code).toBeNull();
++  expect(accounts[0]!.code).toBeNull();
++  yield* unlinkStep.release;
++  const unlinked = yield* Fiber.join(unlink);
++  expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++  yield* applyStep.release;
++  const refused = yield* Fiber.join(applying);
++  expect(refused.status, JSON.stringify(refused.body)).toBe(409);
++  const failure = yield* body(Failure, refused);
++  expect(failure.failure.sqlStateClass).not.toBe("55");
++  expect(
++    yield* p.database.run({
++      sql: "select account from hosted_app_account_links where app = $1 and account = $2 and requirement = 'subscriptions'",
++      params: [p.pool, selected.account],
++    }),
++  ).toEqual([]);
++  expect(
++    yield* p.database.run({
++      sql: "select account from executor_account_acquisitions where account = $1",
++      params: [selected.account],
++    }),
++  ).toEqual([]);
++});
++
++export const proveConcurrentAccountDelete = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: p.request,
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  expect(
++    (yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(dry.artifact))).plan.data.prerequisites
++      .ready,
++  ).toBe(true);
++  const selected = p.request.accounts[0]!;
++  const deletingStep = yield* boundary("account", selected.account);
++  const deleting = yield* p.api
++    .request(p.actors.owner, "DELETE", `${p.prefix}/accounts/${selected.account}`)
++    .pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    deletingStep.entered,
++    Fiber.join(deleting).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(
++          `Account DELETE completed before its SQL boundary: ${response.status} ${JSON.stringify(response.body)}`,
++        ),
++      ),
++    ),
++  );
++  const account = yield* p.database
++    .probe({
++      sql: "select id from executor_accounts where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  const connection = yield* p.database
++    .probe({
++      sql: "select id from executor_account_connections where owner = $1 and state -> 'account' ->> 'id' = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  expect(account[0]!.code).toBe("55P03");
++  expect(connection[0]!.code).toBe("55P03");
++  const before = yield* p.snapshot;
++  const refused = yield* client.request(apply(operation, dry));
++  yield* evidence.json("adoption-account-delete-busy.json", {
++    actualDeletePausedAfterClaims: true,
++    accountProbe: account[0]!.code,
++    connectionProbe: connection[0]!.code,
++    status: refused.status,
++    refusal: refused.body,
++  });
++  expect(refused.status).toBe(409);
++  expect(refused.body).toEqual({
++    error: "operation_busy",
++    retryable: true,
++    failure: {
++      format: "basalt-production-ops-failure-v1",
++      category: "sql",
++      phase: "sql",
++      sqlStateClass: "55",
++    },
++  });
++  expect(yield* p.snapshot).toEqual(before);
++  expect(
++    yield* p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where organization_id = $1",
++      params: [p.request.organization],
++    }),
++  ).toEqual([]);
++  const link = yield* p.database
++    .probe({
++      sql: "select account from hosted_app_account_links where app = $1 and account = $2 for update nowait",
++      params: [p.pool, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  expect(link[0]!.code).toBeNull();
++  yield* deletingStep.release;
++  const deleted = yield* Fiber.join(deleting);
++  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
++  const inventory = yield* p.api
++    .request(p.actors.owner, "GET", `${p.prefix}/inventory`)
++    .pipe(
++      Effect.flatMap((response) =>
++        body(
++          Schema.Struct({ accounts: Schema.Array(Schema.Struct({ id: Schema.String })) }),
++          response,
++        ),
++      ),
++    );
++  expect(inventory.accounts.some((row) => row.id === selected.account)).toBe(false);
++});
++
++/** Hold foreign rows throughout the blocked GO; it must refuse without waiting on or changing them. */
++export const proveForeignPlanLocks = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const target = yield* Target;
++  if (target.fixtures === undefined) return yield* Effect.die("Managed Cloud required");
++  const outsideId = crypto.randomUUID().replaceAll("-", "");
++  yield* Effect.addFinalizer(() =>
++    fixtureRequest(target.fixtures!, "/remove", { id: outsideId }).pipe(Effect.orDie),
++  );
++  const outside = yield* fixtureRequest(target.fixtures, "/actors", {
++    id: outsideId,
++    label: "Blocked adoption organization",
++  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActors)));
++  const organization = outside.organization;
++  yield* Effect.addFinalizer(() => p.database.release.pipe(Effect.orDie));
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: { ...p.request, organization: organization.id },
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  const plan = yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(dry.artifact));
++  expect(plan.plan.changes).toEqual([]);
++  expect(plan.plan.data.prerequisites.ready).toBe(false);
++  const before = yield* p.snapshot;
++  const heldApps = yield* p.database.hold({
++    sql: "select id from executor_apps where owner = $1 and id in ($2,$3,$4) order by id for update",
++    params: [
++      `organization:${p.request.organization}`,
++      p.pool,
++      p.request.apps.openai,
++      p.request.apps.anthropic,
++    ],
++  });
++  expect(heldApps).toHaveLength(3);
++  const heldAccounts = yield* p.database.hold({
++    sql: "select id from executor_accounts where owner = $1 and id = any(string_to_array($2, ',')) order by id for update",
++    params: [
++      `organization:${p.request.organization}`,
++      p.request.accounts.map((a) => a.account).join(","),
++    ],
++  });
++  expect(heldAccounts).toHaveLength(2);
++  const refused = yield* client.request(apply(operation, dry));
++  expect(refused.status, JSON.stringify(refused.body)).toBe(409);
++  const failure = yield* body(Failure, refused);
++  yield* evidence.json("adoption-blocked-foreign-locks.json", {
++    heldForeignApps: heldApps.length,
++    heldForeignAccounts: heldAccounts.length,
++    failure: failure.failure,
++  });
++  expect(failure.failure).toEqual({ category: "unknown" });
++  expect(yield* p.snapshot).toEqual(before);
++  expect(
++    yield* p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where organization_id = $1",
++      params: [organization.id],
++    }),
++  ).toEqual([]);
++  yield* p.database.release;
++});
+diff --git a/e2e/support/provider-adoption-purge.ts b/e2e/support/provider-adoption-purge.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-purge.ts
+@@ -0,0 +1,93 @@
++import { expect } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { body } from "./api.ts";
++import { Evidence } from "./evidence.ts";
++import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { apply, boundary } from "./provider-adoption-steps.ts";
++import { DryRun } from "./provider-adoption-refusals.ts";
++import { productionOpsClient } from "./production-ops-client.ts";
++
++export const proveConcurrentOrganizationPurge = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: p.request,
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  const applyStep = yield* boundary("organization", p.request.organization);
++  const applying = yield* client.request(apply(operation, dry)).pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    applyStep.entered,
++    Fiber.join(applying).pipe(
++      Effect.flatMap((reply) => Effect.die(`Apply missed its authority boundary: ${reply.status}`)),
++    ),
++  );
++  const purgeStep = yield* boundary("purge", p.request.organization);
++  const purgedStep = yield* boundary("purged", p.request.organization);
++  const removal = yield* p.api.request(p.actors.owner, "DELETE", p.prefix);
++  expect(removal.status, JSON.stringify(removal.body)).toBe(200);
++  yield* purgeStep.entered;
++  let completed = false;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      if (completed) return;
++      yield* applyStep.release;
++      yield* purgeStep.release;
++      yield* purgedStep.entered;
++      yield* purgedStep.release;
++    }).pipe(Effect.orDie),
++  );
++  const probe = yield* p.database
++    .probe({
++      sql: "select id from executor_apps where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, p.request.apps.openai],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(Schema.Struct({ code: Schema.NullOr(Schema.String) })),
++        ),
++      ),
++    );
++  expect(probe[0]!.code).toBe("55P03");
++  const before = yield* p.snapshot;
++  yield* applyStep.release;
++  const refused = yield* Fiber.join(applying);
++  yield* evidence.json("adoption-organization-purge-busy.json", {
++    actualPurgeHoldsAppRows: probe[0]!.code,
++    status: refused.status,
++    refusal: refused.body,
++  });
++  expect(refused.status).toBe(409);
++  expect(refused.body).toMatchObject({ error: "operation_busy", retryable: true });
++  expect(yield* p.snapshot).toEqual(before);
++  expect(
++    yield* p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where organization_id = $1",
++      params: [p.request.organization],
++    }),
++  ).toEqual([]);
++  for (const action of ["inventory", "dry-run"] as const) {
++    const reply = yield* client.request({
++      ...operation,
++      action,
++      selection: action === "inventory" ? "accounts" : operation.selection,
++    });
++    expect(reply.status).toBe(409);
++    expect(reply.body).toMatchObject({ error: "organization_removing", retryable: false });
++  }
++  yield* purgeStep.release;
++  yield* purgedStep.entered;
++  expect(
++    yield* p.database.run({
++      sql: "select id from executor_apps where owner = $1 union all select id from executor_accounts where owner = $1",
++      params: [`organization:${p.request.organization}`],
++    }),
++  ).toEqual([]);
++  yield* purgedStep.release;
++  completed = true;
++});
+diff --git a/e2e/support/provider-adoption-refusals.ts b/e2e/support/provider-adoption-refusals.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-refusals.ts
+@@ -0,0 +1,147 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "./api.ts";
++import { Artifact, productionOpsClient } from "./production-ops-client.ts";
++import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++
++export const DryRun = Schema.Struct({
++  action: Schema.Literal("dry-run"),
++  artifact: Artifact,
++  backupSha256: Schema.String,
++});
++export const Plan = Schema.Struct({
++  plan: Schema.Struct({
++    changes: Schema.Array(
++      Schema.Struct({
++        table: Schema.String,
++        key: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
++      }),
++    ),
++    data: Schema.Struct({
++      prerequisites: Schema.Struct({
++        ready: Schema.Boolean,
++        checks: Schema.Array(
++          Schema.Struct({ app: Schema.String, missing: Schema.Array(Schema.String) }),
++        ),
++      }),
++    }),
++  }),
++});
++
++/** Existing dependencies and incomplete deployments must block account adoption. */
++export const proveAdoptionRefusals = (
++  p: Effect.Success<typeof providerAdoptionFixture>,
++  client: Effect.Success<typeof productionOpsClient>,
++) =>
++  Effect.gen(function* () {
++    const operation = {
++      action: "dry-run",
++      selection: "provider-apps-openai-anthropic-v1",
++      recipient: client.recipient,
++      request: p.request,
++    };
++    const snapshot = () => p.snapshot;
++    const before = yield* snapshot();
++    const held = p.request.accounts[0]!;
++    const dependency = `hook_${crypto.randomUUID()}`;
++    yield* p.database.run({
++      sql: "insert into executor_webhooks (id,app,owner,subscription_key,deployment,name,source_account,callback_url,accounts,status,revision,lease_until,failure,encrypted,created_at,actor,registered_actor,registered_accounts) values ($1,$2,$3,$1,$4,'adoption-proof',$5,'https://callback.example.test/adoption','{}'::jsonb,'ready','synthetic',now(),null,decode('00','hex'),now(),null,null,'{}'::jsonb)",
++      params: [
++        dependency,
++        p.pool,
++        `organization:${p.request.organization}`,
++        held.links[0]!.version,
++        held.account,
++      ],
++    });
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* p.database.run({
++          sql: "delete from executor_webhook_accounts where subscription = $1",
++          params: [dependency],
++        });
++        yield* p.database.run({
++          sql: "delete from executor_webhooks where id = $1",
++          params: [dependency],
++        });
++      }).pipe(Effect.orDie),
++    );
++    yield* p.database.run({
++      sql: "insert into executor_webhook_accounts (id,account,subscription) values ($1,$2,$1)",
++      params: [dependency, held.account],
++    });
++    expect((yield* client.request(operation)).status).toBe(409);
++    expect(yield* snapshot()).toEqual(before);
++    yield* p.database.run({
++      sql: "delete from executor_webhook_accounts where subscription = $1",
++      params: [dependency],
++    });
++    yield* p.database.run({
++      sql: "delete from executor_webhooks where id = $1",
++      params: [dependency],
++    });
++
++    const selectedApp = p.request.apps.openai;
++    const deployment = p.request.accounts[0]!.links[0]!.version;
++    const appState = yield* p.database.run({
++      sql: "select active_deployment from executor_apps where id = $1",
++      params: [selectedApp],
++    });
++    const appDeployment = yield* Schema.decodeUnknownEffect(
++      Schema.Struct({ active_deployment: Schema.String }),
++    )(appState[0]);
++    yield* p.database.run({
++      sql: "update executor_apps set active_deployment = null where id = $1",
++      params: [selectedApp],
++    });
++    const inactive = yield* client.request(operation);
++    expect(inactive.status, JSON.stringify(inactive.body)).toBe(200);
++    const blocked = yield* body(DryRun, inactive);
++    const missing = yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(blocked.artifact));
++    expect(missing.plan.data.prerequisites.ready).toBe(false);
++    expect(
++      missing.plan.data.prerequisites.checks.find((check) => check.app === selectedApp)!.missing,
++    ).toContain("no active deployment");
++    expect(missing.plan.changes).toEqual([]);
++    expect(
++      (yield* client.request({
++        ...operation,
++        action: "apply",
++        artifact: blocked.artifact,
++        planSha256: blocked.artifact.sha256,
++        backupSha256: blocked.backupSha256,
++        go: `GO ${blocked.artifact.sha256}`,
++      })).status,
++    ).toBe(409);
++    yield* p.database.run({
++      sql: "update executor_apps set active_deployment = $2 where id = $1",
++      params: [selectedApp, appDeployment.active_deployment],
++    });
++    const sources = yield* p.database.run({
++      sql: "select requirements from executor_deployments where id = $1",
++      params: [deployment],
++    });
++    const source = yield* Schema.decodeUnknownEffect(Schema.Struct({ requirements: Schema.Json }))(
++      sources[0],
++    );
++    yield* p.database.run({
++      sql: "update executor_deployments set requirements = requirements::jsonb #- '{accounts,openai}' where id = $1",
++      params: [deployment],
++    });
++    const unprepared = yield* client.request(operation);
++    expect(unprepared.status, JSON.stringify(unprepared.body)).toBe(200);
++    const unpreparedPlan = yield* body(DryRun, unprepared);
++    const missingSlot = yield* Schema.decodeUnknownEffect(Plan)(
++      client.decrypt(unpreparedPlan.artifact),
++    );
++    expect(missingSlot.plan.data.prerequisites.ready).toBe(false);
++    expect(
++      missingSlot.plan.data.prerequisites.checks.find((check) => check.app === p.pool)!.missing,
++    ).toContain("active openai requirement is not the canonical contributed app-scoped many slot");
++    expect(missingSlot.plan.changes).toEqual([]);
++    yield* p.database.run({
++      sql: "update executor_deployments set requirements = $2::jsonb where id = $1",
++      params: [deployment, JSON.stringify(source.requirements)],
++    });
++    expect(yield* snapshot()).toEqual(before);
++  });
+diff --git a/e2e/support/provider-adoption-steps.ts b/e2e/support/provider-adoption-steps.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-steps.ts
+@@ -0,0 +1,34 @@
++import { Effect } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import type { DryRun } from "./provider-adoption-refusals.ts";
++
++export const apply = (operation: unknown, dry: typeof DryRun.Type) => ({
++  ...(typeof operation === "object" && operation !== null ? operation : {}),
++  action: "apply",
++  artifact: dry.artifact,
++  planSha256: dry.artifact.sha256,
++  backupSha256: dry.backupSha256,
++  go: `GO ${dry.artifact.sha256}`,
++});
++
++/** SQL boundaries pause actual HTTP transactions; NOWAIT probes establish their held locks. */
++export const boundary = (
++  step: "organization" | "app" | "account" | "purge" | "purged",
++  id: string,
++) =>
++  Effect.gen(function* () {
++    const origin = process.env.BASALT_ADOPTION_STEP_GATE;
++    if (origin === undefined)
++      return yield* Effect.die("Run scripts/production-ops/prove-provider-adoption.ts");
++    const request = (action: string) =>
++      Effect.gen(function* () {
++        const url = new URL(`/${action}`, origin);
++        url.searchParams.set("step", step);
++        url.searchParams.set("id", id);
++        const response = yield* HttpClient.execute(HttpClientRequest.post(url));
++        if (response.status !== 204) return yield* Effect.die("SQL boundary request refused");
++      }).pipe(Effect.provide(FetchHttpClient.layer));
++    yield* request("arm");
++    yield* Effect.addFinalizer(() => request("release").pipe(Effect.orDie));
++    return { entered: request("entered"), release: request("release") };
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2292,6 +2292,62 @@
+       "self-host": scheduled,
+       cloud: na("Cloud runs the same step from its Worker's cron; see the Cloud scenario."),
+       local: na("Local runs the same step at its own startup; see the local scenario."),
++    },
++  },
++  providerAdoption: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title:
++      "Cloud provider adoption preserves existing accounts through signed dry run apply and replay",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  providerAdoptionLocks: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption orders authority before concurrent unlink",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  providerAdoptionForeign: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses foreign locks in a blocked plan",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  providerAdoptionAccountDelete: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses a busy concurrent account delete",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  providerAdoptionPurge: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses a busy organization purge",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
+     },
+   },
+   cloudCronJobsPlaced: {
+diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/provider-adoption.spec.ts
+@@ -0,0 +1,214 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { productionOpsClient } from "../support/production-ops-client.ts";
++import { providerAdoptionFixture } from "../support/provider-adoption-fixture.ts";
++import { DryRun, Plan, proveAdoptionRefusals } from "../support/provider-adoption-refusals.ts";
++import {
++  proveConcurrentUnlink,
++  proveConcurrentAccountDelete,
++  proveForeignPlanLocks,
++} from "../support/provider-adoption-locks.ts";
++import { proveConcurrentOrganizationPurge } from "../support/provider-adoption-purge.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Applied = Schema.Struct({
++  action: Schema.Literal("apply"),
++  repeated: Schema.Boolean,
++  verification: Schema.Struct({ ok: Schema.Boolean }),
++});
++const Snapshot = Schema.Array(
++  Schema.Struct({
++    accounts: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++    access: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++    sources: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++    links: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++    connections: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++    acquisitions: Schema.NullOr(Schema.Array(Schema.Record(Schema.String, Schema.Json))),
++  }),
++);
++
++layer(HostedLive, { excludeTestServices: true })("Existing provider adoption", (it) => {
++  it.effect(scenarios.providerAdoptionLocks.title, (context) =>
++    withHostedCase(context, proveConcurrentUnlink),
++  );
++  it.effect(scenarios.providerAdoptionAccountDelete.title, (context) =>
++    withHostedCase(context, proveConcurrentAccountDelete),
++  );
++  it.effect(scenarios.providerAdoptionForeign.title, (context) =>
++    withHostedCase(context, proveForeignPlanLocks),
++  );
++  it.effect(scenarios.providerAdoptionPurge.title, (context) =>
++    withHostedCase(context, proveConcurrentOrganizationPurge),
++  );
++  it.effect(scenarios.providerAdoption.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* providerAdoptionFixture,
++          client = yield* productionOpsClient;
++        const operation = {
++          action: "dry-run",
++          selection: "provider-apps-openai-anthropic-v1",
++          recipient: client.recipient,
++          request: p.request,
++        };
++        const snapshot = () =>
++          p.snapshot.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)),
++            Effect.map((rows) => rows[0]!),
++          );
++        const before = yield* snapshot();
++        expect(before.sources.length).toBeGreaterThan(0);
++        yield* proveAdoptionRefusals(p, client);
++        expect(yield* snapshot()).toEqual(before);
++        const dry = yield* client.request(operation);
++        expect(dry.status, JSON.stringify(dry.body)).toBe(200);
++        const prepared = yield* body(DryRun, dry);
++        const plan = yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(prepared.artifact));
++        expect(plan.plan.data.prerequisites.ready).toBe(true);
++        const apply = {
++          ...operation,
++          action: "apply",
++          artifact: prepared.artifact,
++          planSha256: prepared.artifact.sha256,
++          backupSha256: prepared.backupSha256,
++          go: `GO ${prepared.artifact.sha256}`,
++        };
++        expect(yield* snapshot()).toEqual(before);
++        expect(
++          plan.plan.changes
++            .filter((c) => c.table === "executor_accounts")
++            .map((c) => c.key.id)
++            .sort(),
++        ).toEqual(p.request.accounts.map((a) => a.account).sort());
++        for (const change of plan.plan.changes.filter(
++          (c) => c.table === "hosted_app_account_links",
++        ))
++          expect(Object.keys(change.key).sort()).toEqual([
++            "account",
++            "app",
++            "requirement",
++            "subject",
++          ]);
++        // A reviewed deployment ID is required, and later account changes invalidate the plan.
++        const stale = yield* client.request({
++          ...operation,
++          request: {
++            ...p.request,
++            accounts: p.request.accounts.map((a) => ({
++              ...a,
++              links: a.links.map((l) => ({ ...l, version: "changed-deployment" })),
++            })),
++          },
++        });
++        expect(stale.status).toBe(200);
++        const stalePlan = yield* body(DryRun, stale);
++        expect(
++          (yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(stalePlan.artifact))).plan.data
++            .prerequisites.ready,
++        ).toBe(false);
++        const account = p.request.accounts[0]!.account;
++        yield* p.database.run({
++          sql: "update executor_accounts set credential_generation = credential_generation + 1 where id = $1",
++          params: [account],
++        });
++        expect((yield* client.request(apply)).status).toBe(409);
++        yield* p.database.run({
++          sql: "update executor_accounts set credential_generation = credential_generation - 1 where id = $1",
++          params: [account],
++        });
++        expect(yield* snapshot()).toEqual(before);
++        const applied = yield* client.request(apply);
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(yield* body(Applied, applied)).toMatchObject({
++          repeated: false,
++          verification: { ok: true },
++        });
++        const after = yield* snapshot();
++        expect(after.access).toEqual(before.access);
++        expect(after.sources).toEqual(before.sources);
++        expect(after.accounts).toHaveLength(2);
++        for (const original of before.accounts) {
++          const adopted = after.accounts.find((a) => a.id === original.id)!;
++          const { provider: _provider, method: _method, ...retained } = original;
++          expect(adopted).toMatchObject(retained);
++          expect(adopted.provider).not.toBe(original.provider);
++          expect(adopted.method).toBe(original.method);
++        }
++        expect(after.acquisitions).toHaveLength(2);
++        for (const original of before.links)
++          expect(after.links).toContainEqual({
++            ...original,
++            requirement:
++              before.accounts.find((a) => a.id === original.account)!.method === "codex"
++                ? "openai"
++                : "anthropic",
++          });
++        for (const selected of p.request.accounts) {
++          const links = yield* p.api.request(
++            p.actors.owner,
++            "GET",
++            `${p.prefix}/apps/${p.request.apps[selected.lab === "openai" ? "openai" : "anthropic"]}/accounts/app`,
++          );
++          expect(links.status, JSON.stringify(links.body)).toBe(200);
++          expect(JSON.stringify(links.body)).toContain(selected.account);
++        }
++        const readback = yield* p.api.request(
++          p.actors.owner,
++          "POST",
++          `${p.prefix}/apps/${p.pool}/tools/call`,
++          { tool: "accounts", kind: "query", input: {} },
++        );
++        expect(readback.status, JSON.stringify(readback.body)).toBe(200);
++        expect(readback.body).toEqual({
++          openai: [
++            {
++              id: p.request.accounts.find((a) => a.lab === "openai")!.account,
++              method: "codex",
++              fields: ["ref"],
++            },
++          ],
++          anthropic: [
++            {
++              id: p.request.accounts.find((a) => a.lab === "anthropic")!.account,
++              method: "claude",
++              fields: ["ref"],
++            },
++          ],
++        });
++        const replay = yield* client.request(apply);
++        expect(replay.status, JSON.stringify(replay.body)).toBe(200);
++        expect(yield* body(Applied, replay)).toMatchObject({
++          repeated: true,
++          verification: { ok: true },
++        });
++        expect(yield* snapshot()).toEqual(after);
++        expect(
++          (yield* client.request({
++            ...apply,
++            request: { ...p.request, organization: "another-organization" },
++          })).status,
++        ).toBe(409);
++        expect(yield* snapshot()).toEqual(after);
++        for (const selected of p.request.accounts) {
++          const reused = yield* p.api.request(
++            p.actors.owner,
++            "PUT",
++            `${p.prefix}/apps/${p.second}/accounts/app/${selected.lab}/${selected.account}`,
++          );
++          expect(reused.status, JSON.stringify(reused.body)).toBe(200);
++        }
++        const secondPool = yield* p.api.request(
++          p.actors.owner,
++          "POST",
++          `${p.prefix}/apps/${p.second}/tools/call`,
++          { tool: "accounts", kind: "query", input: {} },
++        );
++        expect(secondPool.status, JSON.stringify(secondPool.body)).toBe(200);
++        expect(secondPool.body).toEqual(readback.body);
++      }),
++    ),
++  );
++});
