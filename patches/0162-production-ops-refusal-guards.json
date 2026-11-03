@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-production-ops-refusal-guards",
+  "file": "0162-production-ops-refusal-guards.patch",
+  "content_sha256": "80b49f13278cba16dc673df2a12baab43a0965070d17f89ac011f186492d74d1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

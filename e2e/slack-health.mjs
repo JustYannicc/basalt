@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { verifyMiroOAuth } from "./oauth-catalog-health.mjs";
 import { startSlackHealthFixture } from "./slack-upstream.mjs";
+import { localOpenapi } from "./openapi-fixture.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -35,9 +36,11 @@ const record = (name, actual, expected) => {
 };
 let answer = { kind: "success" };
 const calls = [];
+// The OpenAPI definitions the apps under test read from the fixture; see `localOpenapi`.
+const documents = new Map();
 const program = Effect.gen(function* () {
   const fixture = yield* Effect.acquireRelease(
-    Effect.promise(() => startSlackHealthFixture(() => answer, calls)),
+    Effect.promise(() => startSlackHealthFixture(() => answer, calls, documents)),
     (fixture) => Effect.promise(fixture.stop),
   );
   const base = yield* startEnvironment({ target: "self-host", headless: true });
@@ -95,20 +98,29 @@ const program = Effect.gen(function* () {
     );
   const prefix = `/api/organizations/${actors.organization.id}`;
   // Substitute only the upstream origin so the actual catalog package runs against metadata fixtures.
-  const localFiles = (source) =>
-    source.files
-      .filter((f) => f.path !== "package.json")
-      .map((f) => ({
-        ...f,
-        content: f.content
-          .replaceAll("https://slack.com", fixture.origin)
-          .replaceAll(
-            'hosts: ["slack.com"]',
-            `hosts: [${JSON.stringify(new URL(fixture.origin).host)}]`,
-          ),
-      }));
-  const files = [...localFiles(snapshot), appsManifest];
-  const beforeFiles = [...localFiles(before), appsManifest];
+  // Its live definition is served by the fixture too, so the account check can load its tools.
+  const localFiles = (source, name) =>
+    Effect.promise(async () => {
+      const local = await localOpenapi(
+        source.files
+          .filter((f) => f.path !== "package.json")
+          .map((f) => ({
+            ...f,
+            content: f.content
+              .replaceAll("https://slack.com", fixture.origin)
+              .replaceAll(
+                'hosts: ["slack.com"]',
+                `hosts: [${JSON.stringify(new URL(fixture.origin).host)}]`,
+              ),
+          })),
+        fixture.origin,
+        name,
+      );
+      if (local.document !== undefined) documents.set(name, local.document);
+      return local.files;
+    });
+  const files = [...(yield* localFiles(snapshot, "slack")), appsManifest];
+  const beforeFiles = [...(yield* localFiles(before, "slack-before")), appsManifest];
   const app = yield* request("POST", `${prefix}/apps/deploy`, {
     name: "Slack health proof",
     files: beforeFiles,
@@ -240,6 +252,7 @@ const program = Effect.gen(function* () {
     request,
     prefix,
     fixtureOrigin: fixture.origin,
+    documents,
     source: JSON.parse(miroBytes),
   });
   record("Miro OAuth remains healthy", miro.check?.status, "healthy");

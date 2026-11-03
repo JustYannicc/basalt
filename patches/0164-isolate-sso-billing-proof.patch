@@ -1,0 +1,470 @@
+diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
+--- a/e2e/tests/cloud-sso.spec.ts
++++ b/e2e/tests/cloud-sso.spec.ts
+@@ -8,199 +8,9 @@
+ import { Target } from "../support/platform.ts";
+ import { ssoFixture } from "../support/sso.ts";
+ import { scenarios } from "../test-plan.ts";
+-import {
+-  holdQuery,
+-  installBrowserClock,
+-  advanceToReconciliation,
+-} from "../support/query-transition.ts";
+-import { Emulators } from "../support/emulators.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { enableEnterprise, proveSsoBilling } from "../support/sso-billing.ts";
+ import { targetHosts } from "../support/role-hosts.ts";
+-
+-const BillingOverview = Schema.Struct({
+-  enterprise: Schema.Boolean,
+-  plans: Schema.Array(
+-    Schema.Struct({
+-      id: Schema.String,
+-      name: Schema.String,
+-      purchase: Schema.Literals(["checkout", "contact"]),
+-    }),
+-  ),
+-});
+-
+-const enableEnterprise = (team: { readonly id: string; readonly slug: string }, capture = false) =>
+-  Effect.gen(function* () {
+-    const api = yield* Api,
+-      actors = yield* Actors,
+-      browser = yield* Browser,
+-      emulators = yield* Emulators;
+-    const billingPath = `/api/organizations/${team.id}/billing`;
+-    const overview = yield* body(
+-      BillingOverview,
+-      yield* api.request(actors.owner, "GET", billingPath),
+-    );
+-    expect(overview.enterprise).toBe(false);
+-    const enterprise = overview.plans.find((plan) => plan.name === "Enterprise");
+-    if (!enterprise) return yield* Effect.die("Missing Enterprise from the provisioned catalog");
+-    expect(enterprise.purchase).toBe("contact");
+-    expect(
+-      (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, { plan: enterprise.id }))
+-        .status,
+-    ).toBe(400);
+-    if (capture) {
+-      yield* installBrowserClock;
+-      const free = overview.plans.find((plan) => plan.name === "Free");
+-      if (!free) return yield* Effect.die("Missing Free from the provisioned catalog");
+-      const customer = () =>
+-        emulators.billingCustomer({ organizationId: team.id, freePlanId: free.id });
+-      const membersFeature = `${free.id.slice(0, -"-free".length)}-members`;
+-      const members = yield* body(
+-        Schema.Struct({ members: Schema.Array(Schema.Struct({ id: Schema.String })) }),
+-        yield* api.request(
+-          actors.owner,
+-          "GET",
+-          `/api/auth/organization/list-members?organizationId=${team.id}`,
+-        ),
+-      );
+-      const invited = yield* body(
+-        Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
+-        yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
+-      );
+-      for (const selection of [
+-        { name: "Free", status: "active" },
+-        { name: "Team", status: "active" },
+-        { name: "Enterprise", status: "scheduled" },
+-        { name: "Enterprise", status: "expired" },
+-      ] as const) {
+-        const plan = overview.plans.find((plan) => plan.name === selection.name);
+-        if (!plan) return yield* Effect.die("Missing required billing plan");
+-        yield* emulators.billingSubscription({
+-          organizationId: team.id,
+-          planId: plan.id,
+-          status: selection.status,
+-        });
+-        const current = yield* body(
+-          BillingOverview,
+-          yield* api.request(actors.owner, "GET", billingPath),
+-        );
+-        expect(current.enterprise).toBe(false);
+-        if (selection.name === "Free" || selection.name === "Team") {
+-          const before = yield* customer();
+-          expect(before.balances[membersFeature]?.usage).toBe(members.members.length);
+-          expect(
+-            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-              plan: enterprise.id,
+-            })).status,
+-          ).toBe(400);
+-          const synced = yield* customer();
+-          expect(synced.balances[membersFeature]?.usage).toBe(members.members.length);
+-          expect(synced.subscriptions).toEqual(before.subscriptions);
+-          expect(
+-            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-              plan: enterprise.id,
+-            })).status,
+-          ).toBe(400);
+-          expect(yield* customer()).toEqual(synced);
+-          const invitation = yield* api.request(
+-            actors.owner,
+-            "POST",
+-            "/api/auth/organization/invite-member",
+-            { organizationId: team.id, email: invited.user.email, role: "member" },
+-          );
+-          expect(invitation.status).toBe(200);
+-          const { id } = yield* body(Schema.Struct({ id: Schema.String }), invitation);
+-          expect(
+-            (yield* api.request(actors.admin, "POST", "/api/auth/organization/accept-invitation", {
+-              invitationId: id,
+-            })).status,
+-          ).toBe(200);
+-          expect(
+-            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-              plan: enterprise.id,
+-            })).status,
+-          ).toBe(400);
+-          expect((yield* customer()).balances[membersFeature]?.usage).toBe(
+-            members.members.length + 1,
+-          );
+-          expect(
+-            (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
+-              organizationId: team.id,
+-              memberIdOrEmail: invited.user.email,
+-            })).status,
+-          ).toBe(200);
+-          expect(
+-            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-              plan: enterprise.id,
+-            })).status,
+-          ).toBe(400);
+-          expect((yield* customer()).balances[membersFeature]?.usage).toBe(members.members.length);
+-        }
+-        const held = yield* holdQuery(/\/api\/organizations\/[^/]+\/billing$/, "continue");
+-        yield* browser.use(`Open ${selection.name} settings before billing resolves`, (page) =>
+-          page.goto(`/org/${team.slug}/organization`),
+-        );
+-        yield* advanceToReconciliation;
+-        yield* held.requested;
+-        expect(
+-          yield* browser.use("SSO stays hidden while the plan is unknown", (page) =>
+-            page.getByRole("heading", { name: "Single sign-on", exact: true }).count(),
+-          ),
+-        ).toBe(0);
+-        yield* held.release;
+-        yield* browser.use("Wait for the settings page to finish its reads", (page) =>
+-          page.waitForLoadState("networkidle"),
+-        );
+-        expect(
+-          yield* browser.use(`${selection.name} ${selection.status} hides SSO settings`, (page) =>
+-            page.getByRole("heading", { name: "Single sign-on", exact: true }).count(),
+-          ),
+-        ).toBe(0);
+-        if (selection.name === "Free")
+-          yield* browser.checkpoint("Free plan settings hide single sign-on");
+-        if (selection.name === "Team")
+-          yield* browser.checkpoint("Team plan settings hide single sign-on");
+-      }
+-      yield* browser.use("Open billing to inspect Enterprise purchase behavior", (page) =>
+-        page.goto(`/org/${team.slug}/billing`),
+-      );
+-      yield* browser.use("Enterprise uses contact sales", (page) =>
+-        page.getByRole("link", { name: "Contact sales", exact: true }).waitFor(),
+-      );
+-      yield* browser.checkpoint("Enterprise uses custom pricing and contact sales");
+-      yield* emulators.billingSubscription({
+-        organizationId: team.id,
+-        planId: `${free.id}-pay-as-you-go`,
+-        status: "active",
+-      });
+-      const payg = yield* customer();
+-      expect(payg.balances[membersFeature]).toBeUndefined();
+-      const teamPlan = overview.plans.find((plan) => plan.name === "Team");
+-      if (!teamPlan) return yield* Effect.die("Missing Team from the provisioned catalog");
+-      expect(teamPlan.purchase).toBe("checkout");
+-      expect(
+-        (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-          plan: teamPlan.id,
+-        })).status,
+-      ).toBe(503);
+-      expect(yield* customer()).toEqual(payg);
+-      // Checkout synchronizes seats first. PAYG has no seats to synchronize and
+-      // must still reach the plan policy instead of failing with billing unavailable.
+-      expect(
+-        (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
+-          plan: enterprise.id,
+-        })).status,
+-      ).toBe(400);
+-      expect(yield* customer()).toEqual(payg);
+-    }
+-    yield* emulators.billingSubscription({
+-      organizationId: team.id,
+-      planId: enterprise.id,
+-      status: "active",
+-    });
+-    expect(
+-      (yield* body(BillingOverview, yield* api.request(actors.owner, "GET", billingPath)))
+-        .enterprise,
+-    ).toBe(true);
+-  }).pipe(Effect.provide(Emulators.layer));
+ 
+ const Connections = Schema.Struct({
+   providers: Schema.Array(
+@@ -504,6 +314,27 @@
+   });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
++  it.effect(scenarios.cloudSsoBilling.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          browser = yield* Browser;
++        const created = yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
++          name: "Synthetic billing policy team",
++          slug: `billing-${randomUUID().slice(0, 8)}`,
++          keepCurrentActiveOrganization: true,
++        });
++        expect(created.status).toBe(200);
++        const team = yield* body(Team, created);
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(yield* freshOwnerSession);
++        yield* proveSsoBilling(team);
++      }),
++    ),
++  );
++
+   it.effect(scenarios.cloudSsoOidc.title, (context) =>
+     withHostedCase(
+       context,
+@@ -567,7 +398,7 @@
+         const team = yield* body(Team, created);
+         yield* browser.omitNetworkTrace;
+         yield* browser.login(yield* freshOwnerSession);
+-        yield* enableEnterprise(team, true);
++        yield* enableEnterprise(team);
+         yield* browser.use("Open team SSO settings", (page) =>
+           page.goto(`/org/${team.slug}/organization`),
+         );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1537,6 +1537,16 @@
+       "self-host": scheduled,
+       cloud: scheduled,
+       local: na("Local has no organizations; its scenario lifecycle uses independent processes."),
++    },
++  },
++  cloudSsoBilling: {
++    fixtures: "actors",
++    file: "cloud-sso.spec.ts",
++    title: "Cloud billing gates SSO and preserves PAYG checkout and seat synchronization",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Cloud billing and customer SSO"),
++      local: na("Cloud billing and customer SSO"),
+     },
+   },
+   cloudSsoOidc: {
+diff --git a/e2e/support/sso-billing.ts b/e2e/support/sso-billing.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sso-billing.ts
+@@ -0,0 +1,203 @@
++/** Billing policy has its own proof; protocol setup only enables the required entitlement. */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { Emulators } from "./emulators.ts";
++import { holdQuery, installBrowserClock, advanceToReconciliation } from "./query-transition.ts";
++
++const BillingOverview = Schema.Struct({
++  enterprise: Schema.Boolean,
++  plans: Schema.Array(
++    Schema.Struct({
++      id: Schema.String,
++      name: Schema.String,
++      purchase: Schema.Literals(["checkout", "contact"]),
++    }),
++  ),
++});
++
++const configureEnterprise = (
++  team: { readonly id: string; readonly slug: string },
++  proveBilling: boolean,
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      browser = yield* Browser,
++      emulators = yield* Emulators;
++    const billingPath = `/api/organizations/${team.id}/billing`;
++    const overview = yield* body(
++      BillingOverview,
++      yield* api.request(actors.owner, "GET", billingPath),
++    );
++    expect(overview.enterprise).toBe(false);
++    const enterprise = overview.plans.find((plan) => plan.name === "Enterprise");
++    if (!enterprise) return yield* Effect.die("Missing Enterprise from the provisioned catalog");
++    expect(enterprise.purchase).toBe("contact");
++    expect(
++      (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, { plan: enterprise.id }))
++        .status,
++    ).toBe(400);
++    if (proveBilling) {
++      yield* installBrowserClock;
++      const free = overview.plans.find((plan) => plan.name === "Free");
++      if (!free) return yield* Effect.die("Missing Free from the provisioned catalog");
++      const customer = () =>
++        emulators.billingCustomer({ organizationId: team.id, freePlanId: free.id });
++      const membersFeature = `${free.id.slice(0, -"-free".length)}-members`;
++      const members = yield* body(
++        Schema.Struct({ members: Schema.Array(Schema.Struct({ id: Schema.String })) }),
++        yield* api.request(
++          actors.owner,
++          "GET",
++          `/api/auth/organization/list-members?organizationId=${team.id}`,
++        ),
++      );
++      const invited = yield* body(
++        Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
++        yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
++      );
++      for (const selection of [
++        { name: "Free", status: "active" },
++        { name: "Team", status: "active" },
++        { name: "Enterprise", status: "scheduled" },
++        { name: "Enterprise", status: "expired" },
++      ] as const) {
++        const plan = overview.plans.find((plan) => plan.name === selection.name);
++        if (!plan) return yield* Effect.die("Missing required billing plan");
++        yield* emulators.billingSubscription({
++          organizationId: team.id,
++          planId: plan.id,
++          status: selection.status,
++        });
++        const current = yield* body(
++          BillingOverview,
++          yield* api.request(actors.owner, "GET", billingPath),
++        );
++        expect(current.enterprise).toBe(false);
++        if (selection.name === "Free" || selection.name === "Team") {
++          const before = yield* customer();
++          expect(before.balances[membersFeature]?.usage).toBe(members.members.length);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          const synced = yield* customer();
++          expect(synced.balances[membersFeature]?.usage).toBe(members.members.length);
++          expect(synced.subscriptions).toEqual(before.subscriptions);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect(yield* customer()).toEqual(synced);
++          const invitation = yield* api.request(
++            actors.owner,
++            "POST",
++            "/api/auth/organization/invite-member",
++            { organizationId: team.id, email: invited.user.email, role: "member" },
++          );
++          expect(invitation.status).toBe(200);
++          const { id } = yield* body(Schema.Struct({ id: Schema.String }), invitation);
++          expect(
++            (yield* api.request(actors.admin, "POST", "/api/auth/organization/accept-invitation", {
++              invitationId: id,
++            })).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect((yield* customer()).balances[membersFeature]?.usage).toBe(
++            members.members.length + 1,
++          );
++          expect(
++            (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
++              organizationId: team.id,
++              memberIdOrEmail: invited.user.email,
++            })).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect((yield* customer()).balances[membersFeature]?.usage).toBe(members.members.length);
++        }
++        const held = yield* holdQuery(/\/api\/organizations\/[^/]+\/billing$/, "continue");
++        yield* browser.use(`Open ${selection.name} settings before billing resolves`, (page) =>
++          page.goto(`/org/${team.slug}/organization`),
++        );
++        yield* advanceToReconciliation;
++        yield* held.requested;
++        expect(
++          yield* browser.use("SSO stays hidden while the plan is unknown", (page) =>
++            page.getByRole("heading", { name: "Single sign-on", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* held.release;
++        yield* browser.use("Wait for the settings page to finish its reads", (page) =>
++          page.waitForLoadState("networkidle"),
++        );
++        expect(
++          yield* browser.use(`${selection.name} ${selection.status} hides SSO settings`, (page) =>
++            page.getByRole("heading", { name: "Single sign-on", exact: true }).count(),
++          ),
++        ).toBe(0);
++        if (selection.name === "Free")
++          yield* browser.checkpoint("Free plan settings hide single sign-on");
++        if (selection.name === "Team")
++          yield* browser.checkpoint("Team plan settings hide single sign-on");
++      }
++      yield* browser.use("Open billing to inspect Enterprise purchase behavior", (page) =>
++        page.goto(`/org/${team.slug}/billing`),
++      );
++      yield* browser.use("Enterprise uses contact sales", (page) =>
++        page.getByRole("link", { name: "Contact sales", exact: true }).waitFor(),
++      );
++      yield* browser.checkpoint("Enterprise uses custom pricing and contact sales");
++      yield* emulators.billingSubscription({
++        organizationId: team.id,
++        planId: `${free.id}-pay-as-you-go`,
++        status: "active",
++      });
++      const payg = yield* customer();
++      expect(payg.balances[membersFeature]).toBeUndefined();
++      const teamPlan = overview.plans.find((plan) => plan.name === "Team");
++      if (!teamPlan) return yield* Effect.die("Missing Team from the provisioned catalog");
++      expect(teamPlan.purchase).toBe("checkout");
++      expect(
++        (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++          plan: teamPlan.id,
++        })).status,
++      ).toBe(503);
++      expect(yield* customer()).toEqual(payg);
++      // Checkout synchronizes seats first. PAYG has no seats to synchronize and
++      // must still reach the plan policy instead of failing with billing unavailable.
++      expect(
++        (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++          plan: enterprise.id,
++        })).status,
++      ).toBe(400);
++      expect(yield* customer()).toEqual(payg);
++    }
++    yield* emulators.billingSubscription({
++      organizationId: team.id,
++      planId: enterprise.id,
++      status: "active",
++    });
++    expect(
++      (yield* body(BillingOverview, yield* api.request(actors.owner, "GET", billingPath)))
++        .enterprise,
++    ).toBe(true);
++  }).pipe(Effect.provide(Emulators.layer));
++
++export const enableEnterprise = (team: { readonly id: string; readonly slug: string }) =>
++  configureEnterprise(team, false);
++
++export const proveSsoBilling = (team: { readonly id: string; readonly slug: string }) =>
++  configureEnterprise(team, true);
