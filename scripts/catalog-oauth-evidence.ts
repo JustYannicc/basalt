@@ -42,7 +42,7 @@ export async function catalogOAuthEvidence(
 ) {
   const official = await read("https://catalog.executor.sh/index.json");
   const response = await handleCatalog(
-    new Request("https://catalog.example.test/catalog/index.json"),
+    new Request("https://catalog.executor.sh/catalog/index.json"),
     async () => Response.json(official),
   );
   if (!response.ok) throw new Error("The composed catalog is unavailable");
@@ -63,7 +63,7 @@ export async function catalogOAuthEvidence(
       try {
         const source = await handleCatalog(
           new Request(
-            `https://catalog.example.test/catalog/apps/${encodeURIComponent(entry.id)}.json`,
+            `https://catalog.executor.sh/catalog/apps/${encodeURIComponent(entry.id)}.json`,
           ),
         );
         if (!source.ok) {

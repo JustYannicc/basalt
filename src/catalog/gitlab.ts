@@ -13,7 +13,7 @@ export function withGitLabInstances(feed: Feed): Feed {
       return {
         ...entry,
         description:
-          "GitLab projects, merge requests, issues and the REST API from GitLab.com or a self-managed instance.",
+          "Projects, merge requests, issues and pipelines on GitLab.com or your own GitLab server.",
         auth: [
           { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
           { method: "token", kind: "secrets", label: "Personal access token" },

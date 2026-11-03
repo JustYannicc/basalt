@@ -11,10 +11,21 @@ export interface FeedEntry {
   source: string;
   [key: string]: unknown;
 }
-export interface Feed { version: 1; apps: FeedEntry[] }
-export interface FeedSource { package: string; files: unknown[] }
-export interface FeedAddition { entry: FeedEntry; source?: FeedSource }
-export interface Addition extends FeedAddition { source: FeedSource }
+export interface Feed {
+  version: 1;
+  apps: FeedEntry[];
+}
+export interface FeedSource {
+  package: string;
+  files: unknown[];
+}
+export interface FeedAddition {
+  entry: FeedEntry;
+  source?: FeedSource;
+}
+export interface Addition extends FeedAddition {
+  source: FeedSource;
+}
 
 /** Resolve relative icons before the feed moves to our origin. */
 export function mergeFeed(official: Feed, additions: readonly FeedAddition[] = []): Feed {
@@ -27,12 +38,16 @@ export function mergeFeed(official: Feed, additions: readonly FeedAddition[] = [
     apps.set(entry.id, {
       ...listing,
       source: `apps/${encodeURIComponent(entry.id)}.json`,
-      icons: entry.icons.map(icon => ({ ...icon, src: new URL(icon.src, catalog.official).href })),
+      icons: entry.icons.map((icon) => ({
+        ...icon,
+        src: new URL(icon.src, catalog.official).href,
+      })),
     });
   }
   for (const addition of additions) {
     if (apps.has(addition.entry.id)) throw new Error("Addition duplicates an official app");
-    if (addition.source && addition.source.package !== addition.entry.package) throw new Error("Addition package mismatch");
+    if (addition.source && addition.source.package !== addition.entry.package)
+      throw new Error("Addition package mismatch");
     apps.set(addition.entry.id, addition.entry);
   }
   return { version: 1, apps: [...apps.values()] };

@@ -124,3 +124,63 @@ test("provider refusals identify the collection without publishing credentials o
   const operations = readFileSync(join(directory, "calls.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.ok(operations.every((row) => row.method === "GET"));
 });
+
+test("resize submits a described rollout and identifies safe rollout refusal details", async () => {
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  for (const refused of [false, true]) {
+    const directory = mkdtempSync(join(tmpdir(), "scale-rollout-"));
+    const calls = join(directory, "calls.jsonl");
+    const result = spawnSync(process.execPath, ["--import", "./e2e/scale-provider-fixture.mjs", "scripts/scale-test/run.mjs"], {
+      encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_ACTIONS: "true", GITHUB_REF: "refs/heads/main",
+        SCALE_STAGE: "scale-180", SCALE_MODE: "run", SCALE_JOB_STARTED_AT: String(Date.now()),
+        SCALE_FIXTURE_RUN: "true", SCALE_FIXTURE_RESIZE: "true", SCALE_FIXTURE_ROLLOUT_REFUSAL: String(refused),
+        SCALE_FIXTURE_CALLS: calls, SCALE_OUTPUT: join(directory, "results"), CLOUDFLARE_API_TOKEN: "private-token-sentinel" },
+    });
+    assert.notEqual(result.status, 0);
+    const operations = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+    const rollout = operations.find(row => row.method === "POST" && row.path.endsWith("/rollouts"));
+    assert.ok(rollout.body.description);
+    const failure = readFileSync(join(directory, "results", "failure.json"), "utf8");
+    assert.doesNotMatch(failure + result.stderr, /private-(token|provider-response)-sentinel/);
+    if (refused) {
+      const { diagnostic } = JSON.parse(failure);
+      assert.deepEqual(diagnostic, { provider: "cloudflare", operation: "containers/applications/rollouts", method: "POST", status: 400, codes: [1001], fields: ["description"] });
+    } else {
+      assert.match(failure, /Synthetic control request failed/);
+      assert.ok(operations.some(row => row.path === "/_test/pool/stop"));
+    }
+  }
+});
+
+test("generator completed-job details retain raw request records while status stays compact", async (t) => {
+  const reservation = createServer(); reservation.listen(0, "127.0.0.1"); await once(reservation, "listening");
+  const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
+  const child = spawn("python3", ["scripts/scale-test/generator.py"], {
+    env: { PATH: process.env.PATH, SCALE_BIND: "127.0.0.1", SCALE_PORT: String(port), SCALE_DEADLINE: String(Date.now() / 1000 + 30),
+      SCALE_ORIGIN: "https://127.0.0.1:1", SCALE_KEY_SEED: "synthetic", SCALE_ADMIN: "synthetic" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
+  });
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", data => { if (data.toString().includes("READY")) resolve(); });
+    child.once("error", reject); child.once("exit", code => reject(new Error(`Generator exited ${code}`)));
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const headers = { "X-Scale-Admin": "synthetic", "Content-Type": "application/json" };
+  const spec = { id: "probe", users: 1, concurrency: 1, requests: 1, streamSeconds: 1, bodyBytes: 1 };
+  assert.equal((await fetch(`${origin}/start`, { method: "POST", headers, body: JSON.stringify(spec) })).status, 200);
+  const details = await (await fetch(`${origin}/job/probe/details`, { headers })).json();
+  assert.equal(details.state, "done"); assert.equal(details.count, 1);
+  assert.equal(details.records.length, 1);
+  assert.equal(details.records[0].index, 0); assert.equal(details.records[0].user, 0);
+  assert.ok(details.records[0].durationMs >= 0);
+  assert.equal(details.success, 0); assert.ok(details.records[0].error);
+  const status = await (await fetch(`${origin}/job/probe`, { headers })).json();
+  assert.equal(status.state, "done"); assert.equal(status.count, 1);
+  assert.ok(!("records" in status));
+});
