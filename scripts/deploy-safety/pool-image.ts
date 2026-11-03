@@ -1,0 +1,76 @@
+import { SafetyGateError } from "./contracts.ts";
+import type { CloudflareCredentials } from "./cloudflare.ts";
+import { cloudflareResult, encodePathSegment, record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
+
+export function poolImageReceipt(value: unknown, candidate: string) {
+  const receipt = record(value, "Pool image publication receipt");
+  if (!/^[a-f0-9]{40}$/.test(candidate) || receipt.candidate !== candidate ||
+      receipt.platform !== "linux/amd64" || receipt.capability !== "oauth-completion-receipts-v1")
+    throw new SafetyGateError("Pool image receipt does not identify this candidate and runtime capability");
+  const applicationId = stringField(receipt.applicationId, "Pool application id");
+  const accountId = stringField(receipt.accountId, "Pool account id");
+  const workerName = stringField(receipt.workerName, "Pool Worker name");
+  const inputHash = stringField(receipt.inputHash, "Pool input hash");
+  if (!/^[a-f0-9]{16}$/.test(inputHash)) throw new SafetyGateError("Pool image input hash is invalid");
+  const digest = stringField(receipt.digest, "Pool publication digest");
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new SafetyGateError("Pool publication digest is invalid");
+  return { candidate, platform: "linux/amd64", applicationId, accountId, workerName, inputHash, digest };
+}
+
+export async function assertPoolImage(
+  value: unknown,
+  candidate: string,
+  credentials: CloudflareCredentials,
+  fetcher: Fetcher = fetch,
+) {
+  const receipt = poolImageReceipt(value, candidate);
+  if (receipt.accountId !== credentials.accountId) throw new SafetyGateError("Pool image receipt belongs to another account");
+  const base = `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/containers/applications/${encodePathSegment(receipt.applicationId)}`;
+  const get = async (url: string, label: string) => cloudflareResult((await requestJson(fetcher, "Cloudflare", url, {
+    method: "GET", headers: withBearer(credentials.apiToken), signal: AbortSignal.timeout(15_000),
+  })).body, label);
+  const application = record((await get(base, "pool application")).result, "Pool application");
+  if (application.id !== receipt.applicationId || application.account_id !== receipt.accountId)
+    throw new SafetyGateError("Pool application identity differs from its publication receipt");
+  assertDigest(record(application.configuration, "Pool configuration").image, receipt.digest, "application");
+  const settings = record((await get(`https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/workers/scripts/${encodePathSegment(receipt.workerName)}/settings`, "Pool Worker settings")).result, "Pool Worker settings");
+  if (!Array.isArray(settings.bindings)) throw new SafetyGateError("Pool Worker bindings are missing");
+  const hashes = settings.bindings.map((binding) => record(binding, "Pool Worker binding")).filter((binding) => binding.name === "POOL_IMAGE_HASH");
+  if (hashes.length !== 1 || hashes[0]?.type !== "plain_text" || hashes[0].text !== receipt.inputHash)
+    throw new SafetyGateError("Pool Worker input hash differs from this candidate's publication receipt");
+
+  const ids = new Set<string>();
+  const tokens = new Set<string>();
+  let token: string | undefined;
+  for (let page = 0; page < 100; page++) {
+    const query = new URLSearchParams({ state: "active", per_page: "100" });
+    if (token) query.set("page_token", token);
+    const reply = await get(`${base}/instances-v2?${query}`, "pool instances");
+    if (!Array.isArray(reply.result)) throw new SafetyGateError("Pool instance list is missing");
+    for (const value of reply.result) {
+      const instance = record(value, "Pool instance");
+      const id = stringField(instance.id, "Pool instance id");
+      if (ids.has(id) || instance.application_id !== receipt.applicationId)
+        throw new SafetyGateError("Pool instance list contains a duplicate or foreign instance");
+      ids.add(id);
+      if (record(instance.status, "Pool instance status").state !== "running")
+        throw new SafetyGateError("Pool has an active instance that is not running");
+      assertDigest(instance.image, receipt.digest, "instance");
+    }
+    const info = record(reply.resultInfo, "Pool instance pagination");
+    const next = info.next_page_token;
+    if (next === undefined || next === "") {
+      if (ids.size === 0) throw new SafetyGateError("Pool has no running instance to verify");
+      return { ...receipt, instances: [...ids] };
+    }
+    if (typeof next !== "string" || tokens.has(next)) throw new SafetyGateError("Pool instance pagination is inconsistent");
+    tokens.add(next);
+    token = next;
+  }
+  throw new SafetyGateError("Pool instance pagination exceeded its bound");
+}
+
+function assertDigest(image: unknown, expected: string, label: string) {
+  if (typeof image !== "string" || !image.endsWith(`@${expected}`))
+    throw new SafetyGateError(`Pool ${label} image differs from the published candidate digest`);
+}

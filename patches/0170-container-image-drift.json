@@ -1,0 +1,9 @@
+{
+  "identity": "alchemy-container-image-drift",
+  "file": "0170-container-image-drift.patch",
+  "content_sha256": "cc7279abbcf61eb5c1ed4219429fc7f4bf423d5bdcb9c33d171d74598b0bdd47",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

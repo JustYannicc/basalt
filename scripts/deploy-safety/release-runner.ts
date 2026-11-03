@@ -35,6 +35,7 @@ export type ReleaseDependencies = {
   begin(report: ClassificationReport, backup?: RecordedBackup): Promise<number>;
   mark(deploymentId: number, state: "success" | "failure"): Promise<void>;
   deploy(): Promise<CommandResult>;
+  assertImages(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
   rollback(report: ClassificationReport): Promise<void>;
   /** Where the runner notes a deploy retry; stderr by default. */
@@ -50,6 +51,7 @@ export type ManualRollbackDependencies = {
   begin(report: ClassificationReport, expectedDeploymentId: number): Promise<number>;
   mark(deploymentId: number, state: "success" | "failure"): Promise<void>;
   deploy(): Promise<CommandResult>;
+  assertImages(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
   log?(text: string): void;
 };
@@ -61,6 +63,19 @@ export type ReleaseResult = {
 };
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+async function assertDeployedImages(
+  deploymentId: number,
+  dependencies: Pick<ReleaseDependencies, "assertImages" | "mark">,
+): Promise<void> {
+  try {
+    const result = await dependencies.assertImages();
+    if (!result.started || result.exitCode !== 0) throw new Error("Image assertion failed");
+  } catch {
+    await dependencies.mark(deploymentId, "failure");
+    throw new SafetyGateError("Pool publication or running image could not be verified; stopped without automatic rollback");
+  }
+}
 
 export async function executeRelease(
   report: ClassificationReport,
@@ -80,6 +95,7 @@ export async function executeRelease(
   if (deploy.exitCode !== 0)
     return recoverAfterAttempt(report, mode, dependencies, deploymentId, "deployment command failed");
 
+  await assertDeployedImages(deploymentId, dependencies);
   const smoke = await dependencies.smoke();
   if (!smoke.started || smoke.exitCode !== 0)
     return recoverAfterAttempt(report, mode, dependencies, deploymentId, "production smoke check failed");
@@ -117,6 +133,7 @@ export async function executeManualRollback(
     throw new SafetyGateError("Previous production release deployment failed; rollback remains unresolved");
   }
 
+  await assertDeployedImages(deploymentId, dependencies);
   const smoke = await dependencies.smoke();
   if (!smoke.started || smoke.exitCode !== 0) {
     await dependencies.mark(deploymentId, "failure");
@@ -171,6 +188,8 @@ export function assertReleaseMode(
 export function productionReleaseDependencies(sourceRoot = repositoryRoot, candidateCommit?: string): ReleaseDependencies {
   const github = readLedgerEnvironment();
   const planetscale = new PlanetScaleSafety(requirePlanetScaleEnvironment());
+  const receiptPath = join(mkdtempSync(join(tmpdir(), "basalt-pool-publication-")), "receipt.json");
+  const imageEnvironment = { ...process.env, GITHUB_SHA: candidateCommit ?? process.env.GITHUB_SHA, BASALT_POOL_IMAGE_RECEIPT: receiptPath };
   return {
     validateCredentials: () => validateCandidateSource(sourceRoot, candidateCommit),
     assertBackup: async (report) => {
@@ -184,7 +203,11 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
       return beginReleaseDeployment(report, github, fetch, backup, rollForwardTo(report.candidate.gitCommit));
     },
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, github),
-    deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot),
+    deploy: () => {
+      rmSync(receiptPath, { force: true });
+      return runCommand("npm", ["run", "deploy"], sourceRoot, imageEnvironment);
+    },
+    assertImages: () => runCommand("node", ["scripts/deploy-safety/assert-pool-image.ts"], sourceRoot, imageEnvironment),
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
     rollback: (report) => deployPreviousRelease(report, github),
   };
@@ -262,10 +285,8 @@ export function productionManualRollbackDependencies(
     validateCredentials: release.validateCredentials,
     begin: (report, expectedDeploymentId) => beginRollbackDeployment(report, environment, fetch, expectedDeploymentId),
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, environment),
-    deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot, {
-      ...process.env,
-      GITHUB_SHA: rollbackCommit,
-    }),
+    deploy: release.deploy,
+    assertImages: release.assertImages,
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
   };
 }
