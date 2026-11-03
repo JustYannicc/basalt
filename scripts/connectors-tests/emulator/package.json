@@ -1,0 +1,10 @@
+{
+  "name": "basalt-connectors-emulator",
+  "private": true,
+  "dependencies": {
+    "@executor-js/emulate": "0.14.2"
+  },
+  "overrides": {
+    "@clerk/backend": "3.26.5"
+  }
+}

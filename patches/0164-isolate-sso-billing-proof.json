@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-isolate-sso-billing-proof",
+  "file": "0164-isolate-sso-billing-proof.patch",
+  "content_sha256": "e5d0eb04ebf5886514d069ec9d0b01d52ed146ad7dd0467158152b64cc7f024b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

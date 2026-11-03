@@ -51,8 +51,39 @@ node scripts/production-ops/artifact.ts decrypt /private/path/operation.json /pr
 
 A selection exceeding its row or byte bound fails; it never claims to be a
 complete truncated inventory. An absent table or unknown selection also fails.
-Every operation requires an existing organization ID in its signed request.
+Executor database operations require an existing organization ID in their signed request.
 There is no global inventory or discovery fallback.
+
+## Remove reviewed Home imports
+
+`home-agent-import-removal-v1` runs in the pool Worker against Home, separately
+from the Executor database migrations below. Its request names `organization`,
+`pool`, exactly four `remove` entries with `id` and `provider`, and one `retain`
+entry with `id` and `provider`. IDs must be distinct UUIDs. Every membership
+referencing a removed credential must belong to that pool, or the operation
+refuses. It never selects credentials by name or provider alone.
+
+Run `action=backup` first. The encrypted artifact contains exactly those four
+complete Home credential rows and their referencing membership rows. Full rows
+remain JSON text so bigint and decimal values survive recovery. The retained
+credential contributes only an in-database checksum, never its credential data.
+Keep the uploaded artifact and recipient key before proceeding.
+
+Then run `action=migrate`, `mode=dry-run`. This saves another encrypted backup
+and an encrypted plan with the exact IDs, membership IDs and row checksums.
+Apply uses the successful dry-run dispatch and exact GO described below. It
+refuses changed rows, a different database or deployed source, and expired plans.
+Home's supported credential DELETE writes its versioned tombstone and reloads
+the runtime. The operator then removes the reviewed memberships and verifies
+their absence and the retained credential's unchanged checksum. Model serving
+is verified separately through the normal pool endpoint.
+
+The pool persists a started receipt before the first DELETE. A failed or uncertain
+apply is never retried automatically. Use `action=inventory` with the original
+request and `plan_sha256` to inspect its encrypted receipt and current row state.
+A completed replay verifies without repeating DELETEs. An incomplete receipt
+requires a reviewed recovery operation. Restoring the encrypted rows also needs
+its own reviewed operation and GO.
 
 ## Prepare a repair
 
