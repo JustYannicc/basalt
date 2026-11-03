@@ -19,7 +19,7 @@ import { onServedFramework } from "../src/catalog/framework.ts";
 /**
  * The official ElevenLabs catalog package, as Basalt's catalog serves it, serves its tools to an
  * account's discovery while its definition lacks routes two of its patches target. The catalog
- * serves it on the framework Basalt ships; on a framework without carry 0153 that discovery fails
+ * serves it on the framework Basalt ships; on a framework without carry 0166 that discovery fails
  * with "SchemaError: Expected object".
  */
 const root = resolve(import.meta.dirname, "..");
