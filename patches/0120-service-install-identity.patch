@@ -533,18 +533,13 @@ diff --git a/e2e/support/service-install-fixture.ts b/e2e/support/service-instal
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/service-install-fixture.ts
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,58 @@
 +/** Real MCP installs and old rows that predate service-identity claims. */
-+import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "./actors.ts";
 +import { Api, body } from "./api.ts";
 +import { McpClient } from "./mcp-client.ts";
 +import { managementApp } from "./management-app.ts";
-+import { legacyStorage } from "./legacy-storage.ts";
-+import { serverControl } from "./server-control.ts";
-+import { appsManifest } from "./apps-release.ts";
-+import { officialApps } from "./public-catalogs.ts";
 +
 +export const Installed = Schema.Struct({
 +  id: Schema.String,
@@ -597,122 +592,113 @@ new file mode 100644
 +      return outcome.execution.value;
 +    });
 +});
-+
-+/** The stopped-server fixture models old copies and pool metadata, then proves read-only projection. */
-+export const legacyServiceInstalls = (legacyApp: string, created: Set<string>) =>
-+  Effect.scoped(
-+    Effect.gen(function* () {
-+      const api = yield* Api,
-+        actors = yield* Actors;
-+      const prefix = `/api/organizations/${actors.organization.id}`;
-+
-+      const pools: string[] = [];
-+      for (const name of ["Legacy pool A", "Legacy pool B"]) {
-+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+          name,
-+          files: [
-+            {
-+              path: "index.ts",
-+              content:
-+                'import {defineApp,router} from "apps";export default defineApp({},{tools:router({})});',
-+            },
-+            appsManifest,
-+          ],
-+        });
-+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-+        const pool = yield* body(Schema.Struct({ id: Schema.String }), deployed);
-+        pools.push(pool.id);
-+        created.add(pool.id);
-+      }
-+      // Only an older server could leave these installs without the new service claims.
-+      const prior = yield* legacyStorage([
-+        {
-+          sql: "select metadata from organization where id = $1",
-+          params: [actors.organization.id],
-+        },
-+      ]);
-+      const oldMetadata = yield* Schema.decodeUnknownEffect(
-+        Schema.Struct({ metadata: Schema.NullOr(Schema.String) }),
-+      )(prior[0]?.[0]);
-+      yield* Effect.addFinalizer(() =>
-+        Effect.gen(function* () {
-+          yield* legacyStorage([
-+            {
-+              sql: "update organization set metadata = $2 where id = $1",
-+              params: [actors.organization.id, oldMetadata.metadata],
-+            },
-+          ]);
-+          yield* serverControl("start");
-+        }).pipe(Effect.orDie),
-+      );
-+      yield* legacyStorage([
-+        {
-+          sql: "update organization set metadata = jsonb_set((coalesce(metadata::jsonb, '{}'::jsonb) #- array['basaltServiceInstalls', $2]), '{basaltPools}', $3::jsonb)::text where id = $1",
-+          params: [
-+            actors.organization.id,
-+            legacyApp,
-+            JSON.stringify({ oldA: { app: pools[0] }, oldB: { app: pools[1] } }),
-+          ],
-+        },
-+        {
-+          sql: "update executor_apps set copied_from = jsonb_set(copied_from::jsonb, '{name}', to_jsonb($2::text)) where id = $1",
-+          params: [legacyApp, "@executor.sh/synthetic-legacy-tracker"],
-+        },
-+      ]);
-+      yield* serverControl("start");
-+      const legacyResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
-+        entry: officialApps.tracker.id,
-+        name: "Existing legacy catalog copy",
-+      });
-+      expect(legacyResponse.status).toBe(200);
-+      const legacyReused = yield* body(Installed, legacyResponse);
-+      expect(legacyReused).toMatchObject({
-+        id: legacyApp,
-+        reused: true,
-+        service: { id: officialApps.tracker.package, newInstance: false },
-+      });
-+      const legacyInventory = yield* api.request(actors.owner, "GET", `${prefix}/inventory`);
-+      const projection = yield* body(
-+        Schema.Struct({
-+          apps: Schema.Array(
-+            Schema.Struct({
-+              id: Schema.String,
-+              service: Schema.optionalKey(
-+                Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean }),
-+              ),
-+            }),
-+          ),
-+        }),
-+        legacyInventory,
-+      );
-+      for (const pool of pools)
-+        expect(projection.apps.find((app) => app.id === pool)?.service).toEqual({
-+          id: "@signalbox/pool",
-+          newInstance: true,
-+        });
-+      expect(projection.apps.find((app) => app.id === legacyApp)?.service?.id).toBe(
-+        officialApps.tracker.package,
-+      );
-+      const after = yield* legacyStorage([
-+        {
-+          sql: "select metadata from organization where id = $1",
-+          params: [actors.organization.id],
-+        },
-+      ]);
-+      const stored = yield* Schema.decodeUnknownEffect(Schema.Struct({ metadata: Schema.String }))(
-+        after[0]?.[0],
-+      );
-+      expect(JSON.parse(stored.metadata).basaltServiceInstalls[legacyApp]).toBeUndefined();
-+      expect(JSON.parse(stored.metadata).basaltPools).toEqual({
-+        oldA: { app: pools[0] },
-+        oldB: { app: pools[1] },
-+      });
-+    }),
-+  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3234,6 +3234,20 @@
+@@ -2405,11 +2405,102 @@
+       local: na("Local does not host production operations."),
+     },
+   },
++  cloudProductionOpsDiagnostics: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce safe refusal and SQL cause classification",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsCredentials: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce stable plans across credential rotation",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
+   cloudProductionOpsStableKeys: {
+     fixtures: "actors",
+     deferOnboarding: true,
+     file: "production-ops-migrations.spec.ts",
+     title: "Cloud production operations enforce stable identities through apply and replay",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsHostIdentity: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce the reviewed database host",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsDatabaseIdentity: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce the reviewed database name",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsRoleIdentity: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title: "Cloud production operations enforce the reviewed SQL login",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsPhysicalDatabase: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce the reviewed physical database with equivalent fixture rows",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsOptionalServer: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce database identity when the server identifier is unavailable",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsStalePlan: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce a fresh dry run after the reviewed deployment changes",
+     targets: {
+       cloud: managedCloud,
+       "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
+@@ -3234,6 +3325,20 @@
        "self-host": scheduled,
        cloud: na("Uses a runner-owned loopback catalog and subscription sign-in service."),
        local: na("Uses hosted organization account policies."),
@@ -759,7 +745,7 @@ diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-inst
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/service-install-identity.spec.ts
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,298 @@
 +/** Service identity belongs to the install, independently of its transport or display name. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -769,11 +755,10 @@ new file mode 100644
 +import { Inventory } from "../support/contracts.ts";
 +import { officialApps } from "../support/public-catalogs.ts";
 +import { McpClient } from "../support/mcp-client.ts";
-+import {
-+  Installed,
-+  serviceInstallClient,
-+  legacyServiceInstalls,
-+} from "../support/service-install-fixture.ts";
++import { Installed, serviceInstallClient } from "../support/service-install-fixture.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { appsManifest } from "../support/apps-release.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Service install identity", (it) => {
@@ -953,7 +938,108 @@ new file mode 100644
 +        });
 +        expect(sameName[0]?.id).toBe(sameName[1]?.id);
 +        expect(sameName.filter((app) => app.reused === false)).toHaveLength(1);
-+        yield* legacyServiceInstalls(sameName[0]!.id, created);
++        const legacyApp = sameName[0]!.id;
++        const pools: string[] = [];
++        for (const name of ["Legacy pool A", "Legacy pool B"]) {
++          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name,
++            files: [
++              {
++                path: "index.ts",
++                content:
++                  'import {defineApp,router} from "apps";export default defineApp({},{tools:router({})});',
++              },
++              appsManifest,
++            ],
++          });
++          expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++          const pool = yield* body(Schema.Struct({ id: Schema.String }), deployed);
++          pools.push(pool.id);
++          created.add(pool.id);
++        }
++        // Only an older server could leave these installs without the new service claims.
++        const prior = yield* legacyStorage([
++          {
++            sql: "select metadata from organization where id = $1",
++            params: [actors.organization.id],
++          },
++        ]);
++        const oldMetadata = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ metadata: Schema.NullOr(Schema.String) }),
++        )(prior[0]?.[0]);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* legacyStorage([
++              {
++                sql: "update organization set metadata = $2 where id = $1",
++                params: [actors.organization.id, oldMetadata.metadata],
++              },
++            ]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* legacyStorage([
++          {
++            sql: "update organization set metadata = jsonb_set((coalesce(metadata::jsonb, '{}'::jsonb) #- array['basaltServiceInstalls', $2]), '{basaltPools}', $3::jsonb)::text where id = $1",
++            params: [
++              actors.organization.id,
++              legacyApp,
++              JSON.stringify({ oldA: { app: pools[0] }, oldB: { app: pools[1] } }),
++            ],
++          },
++          {
++            sql: "update executor_apps set copied_from = jsonb_set(copied_from::jsonb, '{name}', to_jsonb($2::text)) where id = $1",
++            params: [legacyApp, "@executor.sh/synthetic-legacy-tracker"],
++          },
++        ]);
++        yield* serverControl("start");
++        const legacyResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: officialApps.tracker.id,
++          name: "Existing legacy catalog copy",
++        });
++        expect(legacyResponse.status).toBe(200);
++        const legacyReused = yield* body(Installed, legacyResponse);
++        expect(legacyReused).toMatchObject({
++          id: legacyApp,
++          reused: true,
++          service: { id: officialApps.tracker.package, newInstance: false },
++        });
++        const legacyInventory = yield* api.request(actors.owner, "GET", `${prefix}/inventory`);
++        const projection = yield* body(
++          Schema.Struct({
++            apps: Schema.Array(
++              Schema.Struct({
++                id: Schema.String,
++                service: Schema.optionalKey(
++                  Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean }),
++                ),
++              }),
++            ),
++          }),
++          legacyInventory,
++        );
++        for (const pool of pools)
++          expect(projection.apps.find((app) => app.id === pool)?.service).toEqual({
++            id: "@signalbox/pool",
++            newInstance: true,
++          });
++        expect(projection.apps.find((app) => app.id === legacyApp)?.service?.id).toBe(
++          officialApps.tracker.package,
++        );
++        const after = yield* legacyStorage([
++          {
++            sql: "select metadata from organization where id = $1",
++            params: [actors.organization.id],
++          },
++        ]);
++        const stored = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ metadata: Schema.String }),
++        )(after[0]?.[0]);
++        expect(JSON.parse(stored.metadata).basaltServiceInstalls[legacyApp]).toBeUndefined();
++        expect(JSON.parse(stored.metadata).basaltPools).toEqual({
++          oldA: { app: pools[0] },
++          oldB: { app: pools[1] },
++        });
 +      }).pipe(Effect.provide(McpClient.layer)),
 +    ),
 +  );
