@@ -1,23 +1,25 @@
 diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
 --- a/e2e/support/production-ops-database-fixture.ts
 +++ b/e2e/support/production-ops-database-fixture.ts
-@@ -38,6 +38,15 @@
+@@ -38,6 +38,17 @@
  }) =>
    Effect.gen(function* () {
      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
 +    const fs = yield* FileSystem.FileSystem;
 +    const states: string[] = [];
 +    yield* Effect.addFinalizer(() =>
-+      fs.writeFileString(
-+        `${input.directory}/physical-state-digests.ndjson`,
-+        states.join("\n") + "\n",
-+        { mode: 0o600 },
-+      ),
++      fs
++        .writeFileString(
++          `${input.directory}/physical-state-digests.ndjson`,
++          states.join("\n") + "\n",
++          { mode: 0o600 },
++        )
++        .pipe(Effect.orDie),
 +    );
      const scope = yield* Effect.scope;
      const services = yield* Effect.context<
        ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
-@@ -96,6 +105,26 @@
+@@ -96,6 +107,26 @@
        });
      const target = Effect.scoped(
        Effect.gen(function* () {
@@ -44,7 +46,7 @@ diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/produc
          // pg_dump and the baseline reads must observe the same account and receipt rows.
          // SHARE permits the dump's reads but blocks every writer until both states are captured.
          const commands = yield* Queue.unbounded<string, Cause.Done>();
-@@ -237,10 +266,23 @@
+@@ -237,10 +268,23 @@
          `select json_build_object('name', current_database(), 'oid', d.oid::text,
        'role', (select oid::text from pg_roles where rolname = session_user),
        'identity', (select id::text from production_ops_database_identity),
