@@ -1,10 +1,26 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "61f6bd5c849b9f14dde03b02e50136646525c6a14c33ab3cffc0860f7051df52",
+  "sourceSha256": "cb56247f9191457fbaa01d6b2f2f4d587564b0db2cc54aa11a53a2da6fa5680f",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.1",
-    "aws4fetch": "1.0.20",
-    "fast-xml-parser": "5.11.1"
+    "apps": "0.0.1-beta.104-basalt.3",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  },
+  "transport": {
+    "kind": "mcp",
+    "endpoint": "https://aws-mcp.us-east-1.api.aws/mcp",
+    "oauthMethod": "oauth",
+    "scopeStrings": []
+  },
+  "oneClick": {
+    "status": "cloud-paste-flow-unverified",
+    "reason": "AWS accepts the forced loopback callback. Cloud paste completion still needs isolated and live proof.",
+    "checkedAt": "2026-11-03"
+  },
+  "vendorLogo": {
+    "url": "https://a0.awsstatic.com/libra-css/images/logos/aws_logo_smile_1200x630.png",
+    "mimeType": "image/png",
+    "bytes": 17053,
+    "sha256": "bf572d19f9062f2d23e5eed63309003e877d2de200c61589372a0903536a4a56"
   }
 }

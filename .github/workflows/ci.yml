@@ -705,6 +705,27 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+  aws-connectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Prepare the pinned synthetic runtime
+        working-directory: .upstream
+        run: |
+          bun run e2e:prepare
+          node scripts/build-basalt-framework.ts
+      - name: Exercise AWS sign-in and tools through the real runtime
+        run: node scripts/check-aws.ts
   gitlab-connectors:
     runs-on: ubuntu-latest
     timeout-minutes: 30

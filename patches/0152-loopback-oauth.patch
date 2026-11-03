@@ -1,0 +1,4481 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 28e67e8..a43d790 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -5,7 +5,7 @@ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+ import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+-import { use, useContext, useState } from "react";
++import { use, useContext, useState, type ReactNode } from "react";
+ import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult, AtomRegistry } from "effect/reactivity";
+ import { Effect, Option } from "effect";
+@@ -34,7 +34,8 @@ import {
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+-import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./connect-account.tsx";
++import { HostedAccountForm, OAuthReturnContext } from "./connect-account.tsx";
++import { useOAuthHandoff } from "./loopback-oauth.tsx";
+ import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
+ import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
+ import {
+@@ -558,6 +559,7 @@ function AppConnectionFields({
+   const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
++  const handoff = useOAuthHandoff({ provider: form.provider, onSaved, onPendingChange });
+   const fields = (selection: IdentityConsentSelection) => (
+     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
+       provider={form.provider}
+@@ -576,11 +578,10 @@ function AppConnectionFields({
+           : authorize({ ...selection, ...input })
+       }
+       interactive={interactive}
+-
+       onPendingChange={onPendingChange}
+       onSaved={onSaved}
+       onAuthorized={(value) =>
+-        openAccountOAuth(
++        handoff.open(
+           {
+             organization,
+             organizationSlug,
+@@ -591,13 +592,20 @@ function AppConnectionFields({
+             manualClient: value.manualClient,
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+-          value.authorizationUrl,
++          value,
+         )
+       }
+     />
+   );
+-  if (account !== undefined) return fields({});
+-  return (
++  // The form stays mounted behind a loopback step, so cancelling returns to where it was.
++  const withHandoff = (content: ReactNode) => (
++    <>
++      {handoff.step}
++      <div className={handoff.active ? "hidden" : "contents"}>{content}</div>
++    </>
++  );
++  if (account !== undefined) return withHandoff(fields({}));
++  return withHandoff(
+     <IdentityConsent
+       query={resourceInventoryAtom(organization)}
+       Failure={HostedFailure}
+@@ -616,7 +624,7 @@ function AppConnectionFields({
+           onSaved();
+           return;
+         }
+-        openAccountOAuth(
++        handoff.open(
+           {
+             organization,
+             organizationSlug,
+@@ -626,11 +634,11 @@ function AppConnectionFields({
+             manualClient: false,
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+-          value.authorizationUrl,
++          value,
+         );
+       }}
+     >
+       {fields}
+-    </IdentityConsent>
++    </IdentityConsent>,
+   );
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index e3a9356..a32648d 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -34,9 +34,9 @@ import {
+   connectionOAuthSetupAtom,
+   startOAuthAtom,
+   submitConnectionAtom,
+-  PendingOAuth,
+   type OAuthReturn,
+ } from "../../contracts/apps.ts";
++import { useOAuthHandoff } from "./loopback-oauth.tsx";
+ import {
+   cancelInteractiveConnectionAtom,
+   interactiveConnectionStatusAtom,
+@@ -52,12 +52,6 @@ import { RegisterServiceClient } from "./oauth-clients.tsx";
+  */
+ export const OAuthReturnContext = createContext<OAuthReturn | undefined>(undefined);
+ 
+-/** Retain only the return context; OAuth state and credentials remain owned by the server. */
+-export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizationUrl: string) {
+-  sessionStorage.setItem("executor:hosted:oauth", JSON.stringify(pending));
+-  window.location.assign(authorizationUrl);
+-}
+-
+ /** Resume the existing request in a connection dialog without creating a new attempt. */
+ export function ConnectionFields({
+   connection,
+@@ -92,7 +86,8 @@ export function ConnectionFields({
+     // Runs in the form's step order, after any poll still answering.
+     leave: () => (started.current ? cancel() : Promise.resolve()),
+   };
+-  if (connection.state.status !== "pending")
++  const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
++  if (connection.state.status !== "pending" && !handoff.active)
+     return (
+       <>
+         <p className="text-sm">
+@@ -112,37 +107,43 @@ export function ConnectionFields({
+       </>
+     );
+   return (
+-    <HostedAccountForm
+-      provider={connection.provider}
+-      site={connection.target.site}
+-      app={connection.checkable ? connection.target.app : undefined}
+-      {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+-      redirectUri={connection.redirectUri}
+-      initialMethod={initialMethod}
+-      manualClient={manualClient}
+-      setupQuery={(method) =>
+-        connectionOAuthSetupAtom({ organization, connection: connection.id, method })
+-      }
+-      submit={submit}
+-      start={startOAuth}
+-      interactive={interactive}
+-      onSaved={onSaved}
+-      {...(onPendingChange ? { onPendingChange } : {})}
+-      onAuthorized={(value) =>
+-        openAccountOAuth(
+-          {
+-            organization,
+-            organizationSlug,
+-            connection: connection.id,
+-            app: connection.target.app,
+-            redirectUri: value.redirectUri,
+-            ...(connection.reconnectAccount ? { reconnect: true } : {}),
+-            manualClient: value.manualClient,
+-          },
+-          value.authorizationUrl,
+-        )
+-      }
+-    />
++    <>
++      {handoff.step}
++      {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
++      <div className={handoff.active ? "hidden" : "contents"}>
++        <HostedAccountForm
++          provider={connection.provider}
++          site={connection.target.site}
++          app={connection.checkable ? connection.target.app : undefined}
++          {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
++          redirectUri={connection.redirectUri}
++          initialMethod={initialMethod}
++          manualClient={manualClient}
++          setupQuery={(method) =>
++            connectionOAuthSetupAtom({ organization, connection: connection.id, method })
++          }
++          submit={submit}
++          start={startOAuth}
++          interactive={interactive}
++          onSaved={onSaved}
++          {...(onPendingChange ? { onPendingChange } : {})}
++          onAuthorized={(value) =>
++            handoff.open(
++              {
++                organization,
++                organizationSlug,
++                connection: connection.id,
++                app: connection.target.app,
++                redirectUri: value.redirectUri,
++                ...(connection.reconnectAccount ? { reconnect: true } : {}),
++                manualClient: value.manualClient,
++              },
++              value,
++            )
++          }
++        />
++      </div>
++    </>
+   );
+ }
+ 
+@@ -200,7 +201,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
+   >;
+   readonly onSaved: (account: Account) => void;
+-  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => void;
++  /** "navigating" keeps the action busy while the browser leaves; "done" keeps this page. */
++  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => "navigating" | "done";
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -353,10 +355,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+               }
+               onAuthorized={(value) => {
+                 refresh();
+-                if (value.status !== "completed") {
+-                  onAuthorized(value);
+-                  return "navigating";
+-                }
++                if (value.status !== "completed") return onAuthorized(value);
+                 saved(value.account);
+                 return "done";
+               }}
+diff --git a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+new file mode 100644
+index 0000000..7b25a2f
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+@@ -0,0 +1,209 @@
++import type { HostedError } from "../../contracts/errors.ts";
++import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
++import type { Account, Provider } from "@executor-js/sdk";
++import { useAtomSet } from "@effect/atom-react";
++import { useEffect, useState, type ReactNode } from "react";
++import { Cause, Exit, Redacted } from "effect";
++import { Button } from "@executor-js/ui/components/button";
++import { Input } from "@executor-js/ui/components/input";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { accountToNameAtom } from "../../contracts/accounts.ts";
++import { completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
++
++const pendingKey = "executor:hosted:oauth";
++const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
++
++/**
++ * Some providers only accept an HTTP loopback callback. Nothing listens there: the browser lands
++ * on a page that fails to load, and the person pastes that address back here.
++ */
++export const isLoopbackRedirect = (redirectUri: string) => {
++  try {
++    const url = new URL(redirectUri);
++    return url.protocol === "http:" && loopbackHosts.has(url.hostname);
++  } catch {
++    return false;
++  }
++};
++
++type SignIn = Pick<HostedOAuthSignIn, "authorizationUrl" | "expiresAt">;
++
++/**
++ * Hand an OAuth sign-in to the provider. A normal callback leaves this page and returns through
++ * `/oauth/callback`; a loopback callback opens sign-in in a new tab and keeps this page, which
++ * renders `step` in place of the form until the pasted address completes the connection. OAuth
++ * state and the verifier stay on the server; only the return context is kept here.
++ */
++export function useOAuthHandoff({
++  provider,
++  onSaved,
++  onPendingChange,
++}: {
++  readonly provider: Provider;
++  readonly onSaved: (account: Account) => void;
++  readonly onPendingChange?: ((pending: boolean) => void) | undefined;
++}) {
++  const [loopback, setLoopback] = useState<{
++    readonly pending: typeof PendingOAuth.Type;
++    readonly signIn: SignIn;
++  }>();
++  const open = (pending: typeof PendingOAuth.Type, signIn: SignIn): "navigating" | "done" => {
++    sessionStorage.setItem(pendingKey, JSON.stringify(pending));
++    if (!isLoopbackRedirect(pending.redirectUri)) {
++      window.location.assign(signIn.authorizationUrl);
++      return "navigating";
++    }
++    window.open(signIn.authorizationUrl, "_blank", "noopener,noreferrer");
++    setLoopback({ pending, signIn });
++    return "done";
++  };
++  const step: ReactNode = loopback && (
++    <LoopbackOAuthStep
++      key={loopback.pending.connection}
++      pending={loopback.pending}
++      signIn={loopback.signIn}
++      provider={provider}
++      onPendingChange={onPendingChange}
++      onCancel={() => setLoopback(undefined)}
++      onSaved={(account) => {
++        setLoopback(undefined);
++        onSaved(account);
++      }}
++    />
++  );
++  return { open, step, active: loopback !== undefined };
++}
++
++function LoopbackOAuthStep({
++  pending,
++  signIn,
++  provider,
++  onPendingChange,
++  onCancel,
++  onSaved,
++}: {
++  readonly pending: typeof PendingOAuth.Type;
++  readonly signIn: SignIn;
++  readonly provider: Provider;
++  readonly onPendingChange?: ((pending: boolean) => void) | undefined;
++  readonly onCancel: () => void;
++  readonly onSaved: (account: Account) => void;
++}) {
++  const complete = useAtomSet(
++    completeOAuthAtom({ organization: pending.organization, connection: pending.connection }),
++    { mode: "promiseExit" },
++  );
++  const requestName = useAtomSet(accountToNameAtom);
++  const [value, setValue] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [invalid, setInvalid] = useState(false);
++  const [error, setError] = useState<Cause.Cause<HostedError>>();
++  const [expired, setExpired] = useState(() => signIn.expiresAt.getTime() <= Date.now());
++  useEffect(() => {
++    if (expired) return;
++    const timer = window.setTimeout(
++      () => setExpired(true),
++      Math.max(0, signIn.expiresAt.getTime() - Date.now()),
++    );
++    return () => window.clearTimeout(timer);
++  }, [expired, signIn.expiresAt]);
++
++  // Catch an obviously wrong paste here; the server still validates the whole callback.
++  const matchesCallback = (pasted: string) => {
++    try {
++      const url = new URL(pasted);
++      const expected = new URL(pending.redirectUri);
++      return url.origin === expected.origin && url.pathname === expected.pathname;
++    } catch {
++      return false;
++    }
++  };
++  const submit = () => {
++    const pasted = value.trim();
++    if (busy || pasted === "") return;
++    if (!matchesCallback(pasted)) {
++      setInvalid(true);
++      return;
++    }
++    setInvalid(false);
++    setError(undefined);
++    setBusy(true);
++    onPendingChange?.(true);
++    void complete({ callbackUrl: Redacted.make(pasted), app: pending.app }).then((exit) => {
++      setBusy(false);
++      onPendingChange?.(false);
++      if (Exit.isFailure(exit)) return setError(exit.cause);
++      sessionStorage.removeItem(pendingKey);
++      // Reconnects keep their name; a new account is named once saved, as the redirect path does.
++      if (pending.reconnect !== true)
++        requestName({
++          organization: pending.organization,
++          account: exit.value.id,
++          saved: { account: exit.value, provider },
++        });
++      onSaved(exit.value);
++    });
++  };
++
++  if (expired && !busy)
++    return (
++      <div className="flex flex-col gap-4">
++        <p role="alert" className="text-sm text-muted-foreground">
++          This sign-in expired. Start again to get a new sign-in link.
++        </p>
++        <Button type="button" className="w-full" onClick={onCancel}>
++          Start again
++        </Button>
++      </div>
++    );
++  return (
++    <form
++      className="flex flex-col gap-4"
++      onSubmit={(event) => {
++        event.preventDefault();
++        submit();
++      }}
++    >
++      <p className="text-sm text-muted-foreground">
++        Sign in to {provider.definition.name} in the new tab. It ends on a page that won’t load:
++        copy that page’s full address and paste it here.
++      </p>
++      <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
++        Address of the page you landed on
++        <Input
++          autoComplete="off"
++          spellCheck={false}
++          inputMode="url"
++          placeholder={`${pending.redirectUri}?code=…`}
++          required
++          disabled={busy}
++          aria-invalid={invalid || error !== undefined}
++          value={value}
++          onChange={(event) => {
++            setValue(event.currentTarget.value);
++            setInvalid(false);
++          }}
++        />
++      </label>
++      {invalid && (
++        <p role="alert" className="text-xs leading-relaxed text-muted-foreground">
++          Paste the full address. It starts with {pending.redirectUri}.
++        </p>
++      )}
++      {error !== undefined && <HostedFailure cause={error} layout="compact" />}
++      <Button type="submit" className="w-full" disabled={busy || value.trim() === ""}>
++        {busy ? "Connecting…" : "Connect account"}
++      </Button>
++      <div className="flex items-center justify-between gap-3">
++        <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>
++          Cancel
++        </Button>
++        <Button variant="outline" asChild>
++          <a href={signIn.authorizationUrl} target="_blank" rel="noopener noreferrer">
++            Open sign-in page
++          </a>
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+index e51067d..8dc29dd 100644
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104-basalt.1",
++  "version": "0.0.1-beta.104-basalt.3",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/packages/apps/protocols/29.json b/packages/apps/protocols/29.json
+new file mode 100644
+index 0000000..4ad4e10
+--- /dev/null
++++ b/packages/apps/protocols/29.json
+@@ -0,0 +1,2972 @@
++{
++  "protocol": 29,
++  "previous": 26,
++  "messages": {
++    "invocation": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "command",
++          "type": {
++            "$message": "request"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "accounts",
++          "type": {
++            "$message": "accounts"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "caller",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "approval",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "tool",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "input",
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "replay",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "key",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "fingerprint",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "deadline",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isFinite",
++                  "payload": null
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isGreaterThanOrEqualTo",
++                  "payload": {
++                    "minimum": 0
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "workflowRun",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "requirements": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "models",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
++                          "flags": "u"
++                        }
++                      }
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Objects",
++                  "propertySignatures": [
++                    {
++                      "name": "scope",
++                      "type": {
++                        "_tag": "Union",
++                        "types": [
++                          {
++                            "_tag": "Literal",
++                            "literal": "app"
++                          },
++                          {
++                            "_tag": "Literal",
++                            "literal": "user"
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    },
++                    {
++                      "name": "model",
++                      "type": {
++                        "_tag": "String",
++                        "checks": [
++                          {
++                            "_tag": "Filter",
++                            "representation": {
++                              "id": "effect/schema/isMinLength",
++                              "payload": {
++                                "minLength": 1
++                              }
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": true
++                    },
++                    {
++                      "name": "limits",
++                      "type": {
++                        "_tag": "Objects",
++                        "propertySignatures": [
++                          {
++                            "name": "timeoutMs",
++                            "type": {
++                              "_tag": "Number",
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isInt",
++                                    "payload": null
++                                  }
++                                },
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isGreaterThan",
++                                    "payload": {
++                                      "exclusiveMinimum": 0
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            "isOptional": true
++                          },
++                          {
++                            "name": "maxInputBytes",
++                            "type": {
++                              "_tag": "Number",
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isInt",
++                                    "payload": null
++                                  }
++                                },
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isGreaterThan",
++                                    "payload": {
++                                      "exclusiveMinimum": 0
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            "isOptional": true
++                          },
++                          {
++                            "name": "maxOutputTokens",
++                            "type": {
++                              "_tag": "Number",
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isInt",
++                                    "payload": null
++                                  }
++                                },
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isGreaterThan",
++                                    "payload": {
++                                      "exclusiveMinimum": 0
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            "isOptional": true
++                          }
++                        ]
++                      },
++                      "isOptional": true
++                    }
++                  ]
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "capabilities",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "skills",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": false
++              },
++              {
++                "name": "toolIndex",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": true
++              },
++              {
++                "name": "skillSources",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": true
++              },
++              {
++                "name": "scheduledTools",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": true
++              },
++              {
++                "name": "sharedDefinitions",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": true
++              },
++              {
++                "name": "mcpApps",
++                "type": {
++                  "_tag": "Literal",
++                  "literal": true
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "database",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Objects",
++                  "propertySignatures": [
++                    {
++                      "name": "fields",
++                      "type": {
++                        "_tag": "Objects",
++                        "propertySignatures": [],
++                        "indexSignatures": [
++                          {
++                            "parameter": {
++                              "_tag": "String",
++                              "checks": [
++                                {
++                                  "_tag": "Filter"
++                                }
++                              ]
++                            },
++                            "type": {
++                              "_tag": "Objects",
++                              "propertySignatures": [
++                                {
++                                  "name": "kind",
++                                  "type": {
++                                    "_tag": "Union",
++                                    "types": [
++                                      {
++                                        "_tag": "Literal",
++                                        "literal": "string"
++                                      },
++                                      {
++                                        "_tag": "Literal",
++                                        "literal": "number"
++                                      },
++                                      {
++                                        "_tag": "Literal",
++                                        "literal": "boolean"
++                                      },
++                                      {
++                                        "_tag": "Literal",
++                                        "literal": "id"
++                                      },
++                                      {
++                                        "_tag": "Literal",
++                                        "literal": "userId"
++                                      }
++                                    ]
++                                  },
++                                  "isOptional": false
++                                },
++                                {
++                                  "name": "optional",
++                                  "type": {
++                                    "_tag": "Union",
++                                    "types": [
++                                      {
++                                        "_tag": "Boolean"
++                                      },
++                                      {
++                                        "_tag": "Null"
++                                      }
++                                    ]
++                                  },
++                                  "isOptional": true
++                                },
++                                {
++                                  "name": "default",
++                                  "type": {
++                                    "_tag": "Union",
++                                    "types": [
++                                      {
++                                        "_tag": "Union",
++                                        "types": [
++                                          {
++                                            "_tag": "String"
++                                          },
++                                          {
++                                            "_tag": "Number",
++                                            "checks": [
++                                              {
++                                                "_tag": "Filter",
++                                                "representation": {
++                                                  "id": "effect/schema/isFinite",
++                                                  "payload": null
++                                                }
++                                              }
++                                            ]
++                                          },
++                                          {
++                                            "_tag": "Boolean"
++                                          }
++                                        ]
++                                      },
++                                      {
++                                        "_tag": "Null"
++                                      }
++                                    ]
++                                  },
++                                  "isOptional": true
++                                },
++                                {
++                                  "name": "references",
++                                  "type": {
++                                    "_tag": "Union",
++                                    "types": [
++                                      {
++                                        "_tag": "String",
++                                        "checks": [
++                                          {
++                                            "_tag": "Filter"
++                                          }
++                                        ]
++                                      },
++                                      {
++                                        "_tag": "Null"
++                                      }
++                                    ]
++                                  },
++                                  "isOptional": true
++                                }
++                              ]
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    },
++                    {
++                      "name": "indexes",
++                      "type": {
++                        "_tag": "Arrays",
++                        "rest": [
++                          {
++                            "_tag": "Objects",
++                            "propertySignatures": [
++                              {
++                                "name": "name",
++                                "type": {
++                                  "_tag": "String",
++                                  "checks": [
++                                    {
++                                      "_tag": "Filter"
++                                    }
++                                  ]
++                                },
++                                "isOptional": false
++                              },
++                              {
++                                "name": "fields",
++                                "type": {
++                                  "_tag": "Arrays",
++                                  "elements": [
++                                    {
++                                      "isOptional": false,
++                                      "type": {
++                                        "_tag": "String",
++                                        "checks": [
++                                          {
++                                            "_tag": "Filter"
++                                          }
++                                        ]
++                                      }
++                                    }
++                                  ],
++                                  "rest": [
++                                    {
++                                      "_tag": "String",
++                                      "checks": [
++                                        {
++                                          "_tag": "Filter"
++                                        }
++                                      ]
++                                    }
++                                  ]
++                                },
++                                "isOptional": false
++                              }
++                            ]
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    }
++                  ]
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "accounts",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "app",
++                "type": {
++                  "$shared": "aa7547b6e205a529"
++                },
++                "isOptional": false
++              },
++              {
++                "name": "user",
++                "type": {
++                  "$shared": "aa7547b6e205a529"
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "sql",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "events",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$",
++                          "flags": "u"
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 64
++                        }
++                      }
++                    }
++                  ]
++                },
++                "type": {
++                  "_tag": "Objects",
++                  "propertySignatures": [
++                    {
++                      "name": "description",
++                      "type": {
++                        "_tag": "String",
++                        "checks": [
++                          {
++                            "_tag": "Filter",
++                            "representation": {
++                              "id": "effect/schema/isMinLength",
++                              "payload": {
++                                "minLength": 1
++                              }
++                            }
++                          },
++                          {
++                            "_tag": "Filter",
++                            "representation": {
++                              "id": "effect/schema/isMaxLength",
++                              "payload": {
++                                "maxLength": 1000
++                              }
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    },
++                    {
++                      "name": "filters",
++                      "type": {
++                        "_tag": "Objects",
++                        "propertySignatures": [],
++                        "indexSignatures": [
++                          {
++                            "parameter": {
++                              "_tag": "String"
++                            },
++                            "type": {
++                              "_tag": "Declaration",
++                              "representation": {
++                                "id": "effect/schema/Json",
++                                "payload": null
++                              }
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    },
++                    {
++                      "name": "payload",
++                      "type": {
++                        "_tag": "Objects",
++                        "propertySignatures": [],
++                        "indexSignatures": [
++                          {
++                            "parameter": {
++                              "_tag": "String"
++                            },
++                            "type": {
++                              "_tag": "Declaration",
++                              "representation": {
++                                "id": "effect/schema/Json",
++                                "payload": null
++                              }
++                            }
++                          }
++                        ]
++                      },
++                      "isOptional": false
++                    }
++                  ]
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "icons",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "src",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^(?:data:image\\/(?:svg\\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2}|https:\\/\\/\\S+)$",
++                              "flags": "u"
++                            }
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 32768
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "mimeType",
++                    "type": {
++                      "_tag": "String"
++                    },
++                    "isOptional": true
++                  },
++                  {
++                    "name": "sizes",
++                    "type": {
++                      "_tag": "Arrays",
++                      "rest": [
++                        {
++                          "_tag": "String"
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  },
++                  {
++                    "name": "theme",
++                    "type": {
++                      "_tag": "Union",
++                      "types": [
++                        {
++                          "_tag": "Literal",
++                          "literal": "light"
++                        },
++                        {
++                          "_tag": "Literal",
++                          "literal": "dark"
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  }
++                ]
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 8
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "annotations": {
++                  "message": "An app's icons total at most 32768 characters"
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "accounts": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "app",
++          "type": {
++            "$shared": "cd6e125ba5ff8a58"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "user",
++          "type": {
++            "$shared": "cd6e125ba5ff8a58"
++          },
++          "isOptional": true
++        }
++      ]
++    }
++  },
++  "unchanged": [
++    "request",
++    "response",
++    "catalog",
++    "catalogSummary",
++    "sharedCatalog",
++    "skills",
++    "elicitationRequest",
++    "elicitationReply",
++    "workflowStep",
++    "workflowStepReply",
++    "workflowControl",
++    "modelRequest",
++    "modelReply",
++    "cacheCommand",
++    "cacheReply",
++    "accountCheck",
++    "accountObservation",
++    "migrate"
++  ],
++  "references": {},
++  "shared": {
++    "0635d53f9c748f9d": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "57091cf5445e9078"
++      }
++    },
++    "14bd4853b682e21b": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "oauth2"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "grant",
++          "type": {
++            "_tag": "Literal",
++            "literal": "client_credentials"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "tokenUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "revocationUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopes",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "scopeSeparator",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenRequestFormat",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "form"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "json"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "resource",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "discover",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationServerMetadataUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "response",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    },
++    "1ae2cd72d14b73e6": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "fab62e9a9a43aa6b"
++        },
++        {
++          "$shared": "eaf2a9407a7920e9"
++        },
++        {
++          "$shared": "dc1efdd791db195e"
++        },
++        {
++          "$shared": "e4ecb492305b0157"
++        },
++        {
++          "$shared": "308a91c53c50f2fb"
++        },
++        {
++          "$shared": "14bd4853b682e21b"
++        }
++      ]
++    },
++    "2e246eca8625516d": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "c1d5e7226fffb905"
++        }
++      ]
++    },
++    "308a91c53c50f2fb": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "oauth2"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "grant",
++          "type": {
++            "_tag": "Literal",
++            "literal": "client_credentials"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "discover",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "authorizationServerMetadataUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "revocationUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopes",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopeSeparator",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenRequestFormat",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "form"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "json"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "resource",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "response",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    },
++    "3634cfd2d0b776b7": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "6fe43caea1192cbc"
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "in",
++              "type": {
++                "_tag": "Literal",
++                "literal": "query"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "value",
++              "type": {
++                "_tag": "Arrays",
++                "rest": [
++                  {
++                    "_tag": "Union",
++                    "types": [
++                      {
++                        "_tag": "String"
++                      },
++                      {
++                        "_tag": "Objects",
++                        "propertySignatures": [
++                          {
++                            "name": "field",
++                            "type": {
++                              "_tag": "String",
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isMinLength",
++                                    "payload": {
++                                      "minLength": 1
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            "isOptional": false
++                          }
++                        ]
++                      },
++                      {
++                        "_tag": "Objects",
++                        "propertySignatures": [
++                          {
++                            "name": "base64",
++                            "type": {
++                              "_tag": "Arrays",
++                              "rest": [
++                                {
++                                  "_tag": "Union",
++                                  "types": [
++                                    {
++                                      "_tag": "String"
++                                    },
++                                    {
++                                      "_tag": "Objects",
++                                      "propertySignatures": [
++                                        {
++                                          "name": "field",
++                                          "type": {
++                                            "_tag": "String",
++                                            "checks": [
++                                              {
++                                                "_tag": "Filter",
++                                                "representation": {
++                                                  "id": "effect/schema/isMinLength",
++                                                  "payload": {
++                                                    "minLength": 1
++                                                  }
++                                                }
++                                              }
++                                            ]
++                                          },
++                                          "isOptional": false
++                                        }
++                                      ]
++                                    }
++                                  ]
++                                }
++                              ],
++                              "checks": [
++                                {
++                                  "_tag": "Filter",
++                                  "representation": {
++                                    "id": "effect/schema/isMinLength",
++                                    "payload": {
++                                      "minLength": 1
++                                    }
++                                  }
++                                }
++                              ]
++                            },
++                            "isOptional": false
++                          }
++                        ]
++                      }
++                    ]
++                  }
++                ],
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        }
++      ]
++    },
++    "3cf3d3ca0e19be34": {
++      "name": "auth",
++      "type": {
++        "$shared": "2e246eca8625516d"
++      },
++      "isOptional": false
++    },
++    "4ded759dcdba2403": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "3634cfd2d0b776b7"
++        }
++      ]
++    },
++    "57091cf5445e9078": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "$shared": "5eb8e3342a3bb0f8"
++        },
++        {
++          "name": "cardinality",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "one"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "many"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "contributed",
++          "type": {
++            "_tag": "Boolean"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "health",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "interactiveHealth",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "hostAcquisition",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "5eb8e3342a3bb0f8": {
++      "name": "definition",
++      "type": {
++        "$shared": "f1b239c5c07ce711"
++      },
++      "isOptional": false
++    },
++    "63f316d3508691ee": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "c97ba56ff5c79102"
++        }
++      ]
++    },
++    "6fe43caea1192cbc": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "in",
++          "type": {
++            "_tag": "Literal",
++            "literal": "header"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "name",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^[!#$%&'*+.^_`|~0-9a-z-]+$",
++                    "flags": "u"
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "value",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "String"
++                  },
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "field",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  },
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "base64",
++                        "type": {
++                          "_tag": "Arrays",
++                          "rest": [
++                            {
++                              "_tag": "Union",
++                              "types": [
++                                {
++                                  "_tag": "String"
++                                },
++                                {
++                                  "_tag": "Objects",
++                                  "propertySignatures": [
++                                    {
++                                      "name": "field",
++                                      "type": {
++                                        "_tag": "String",
++                                        "checks": [
++                                          {
++                                            "_tag": "Filter",
++                                            "representation": {
++                                              "id": "effect/schema/isMinLength",
++                                              "payload": {
++                                                "minLength": 1
++                                              }
++                                            }
++                                          }
++                                        ]
++                                      },
++                                      "isOptional": false
++                                    }
++                                  ]
++                                }
++                              ]
++                            }
++                          ],
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  }
++                ]
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "7fa3e0fa96a362fd": {
++      "name": "request",
++      "type": {
++        "$shared": "4ded759dcdba2403"
++      },
++      "isOptional": true
++    },
++    "aa7547b6e205a529": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "0635d53f9c748f9d"
++        }
++      ]
++    },
++    "ab0fbbb930353f56": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "c97ba56ff5c79102"
++        },
++        {
++          "$shared": "63f316d3508691ee"
++        }
++      ]
++    },
++    "c1d5e7226fffb905": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "1ae2cd72d14b73e6"
++      }
++    },
++    "c6af4d8308f56e98": {
++      "name": "provider",
++      "type": {
++        "$shared": "f1b239c5c07ce711"
++      },
++      "isOptional": false
++    },
++    "c97ba56ff5c79102": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "id",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isStartingWith",
++                  "payload": {
++                    "startsWith": "acc_"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 5
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "site",
++          "type": {
++            "_tag": "String"
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "c6af4d8308f56e98"
++        },
++        {
++          "name": "method",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "generation",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isInt",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "cd6e125ba5ff8a58": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "d18b3ac68b255d41"
++        }
++      ]
++    },
++    "d18b3ac68b255d41": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "ab0fbbb930353f56"
++      }
++    },
++    "dc1efdd791db195e": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "oauth2"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "loopbackRedirectUri",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopeSeparator",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenRequestFormat",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "form"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "json"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenResponse",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "path",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[^.]+(\\.[^.]+)*$",
++                          "flags": ""
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "requiredOnExchange",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "grant",
++          "type": {
++            "_tag": "Literal",
++            "literal": "authorization_code"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationParams",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "String"
++                }
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "annotations": {
++                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "none"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "confidentialTokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "resource",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "identity",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "issuer",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "name",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "discover",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "authorizationServerMetadataUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "revocationUrl",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopes",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "response",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    },
++    "e4ecb492305b0157": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "oauth2"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "loopbackRedirectUri",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopeSeparator",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenRequestFormat",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "form"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "json"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenResponse",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "path",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^[^.]+(\\.[^.]+)*$",
++                          "flags": ""
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "requiredOnExchange",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "grant",
++          "type": {
++            "_tag": "Literal",
++            "literal": "authorization_code"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationParams",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "String"
++                }
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "annotations": {
++                  "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "tokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "none"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "confidentialTokenEndpointAuthMethod",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_post"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "client_secret_basic_raw"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "resource",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "identity",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "issuer",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "name",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "tokenUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "revocationUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "scopes",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "issuer",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "discover",
++          "type": {
++            "_tag": "Never"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "authorizationServerMetadataUrl",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "response",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    },
++    "eaf2a9407a7920e9": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "secrets"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "provisioned",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "label",
++          "type": {
++            "_tag": "String"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    },
++    "f1b239c5c07ce711": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "name",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "3cf3d3ca0e19be34"
++        },
++        {
++          "name": "site",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "label",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "origin",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "annotations": {
++                        "message": "Expected an exact HTTP(S) origin, without a trailing slash"
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "defaultOrigin",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              },
++              {
++                "name": "subdomainOf",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "annotations": {
++                  "message": "The site template must be one label below subdomainOf."
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "hosts",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isPattern",
++                      "payload": {
++                        "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
++                        "flags": ""
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "fab62e9a9a43aa6b": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "type",
++          "type": {
++            "_tag": "Literal",
++            "literal": "interactive"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "label",
++          "type": {
++            "_tag": "String"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "7fa3e0fa96a362fd"
++        }
++      ]
++    }
++  }
++}
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index 837329d..cfccbfc 100644
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -3,4 +3,4 @@
+  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
+  * This file has no imports so the package build script can read it directly.
+  */
+-export const frameworkProtocol = 26;
++export const frameworkProtocol = 29;
+diff --git a/packages/apps/src/contracts/protocols/23.ts b/packages/apps/src/contracts/protocols/23.ts
+index 712626f..4f072f5 100644
+--- a/packages/apps/src/contracts/protocols/23.ts
++++ b/packages/apps/src/contracts/protocols/23.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/24.ts b/packages/apps/src/contracts/protocols/24.ts
+index c64efaa..fbd9ee9 100644
+--- a/packages/apps/src/contracts/protocols/24.ts
++++ b/packages/apps/src/contracts/protocols/24.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/25.ts b/packages/apps/src/contracts/protocols/25.ts
+index e41abad..6e59a32 100644
+--- a/packages/apps/src/contracts/protocols/25.ts
++++ b/packages/apps/src/contracts/protocols/25.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/26.ts b/packages/apps/src/contracts/protocols/26.ts
+new file mode 100644
+index 0000000..fdfe247
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/26.ts
+@@ -0,0 +1,690 @@
++import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
++import { AccountObservationResult } from "../account-observation.ts";
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Effect, Schema } from "effect";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++const frameworkProtocol = 26;
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  WorkflowRpcCommand,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  cardinality: Schema.Literals(["one", "many"]),
++  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  models: Schema.optionalKey(DeclaredModels),
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccount = Schema.Struct({
++  id: AccountId,
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  fields: JsonObject,
++});
++/** Parsed host account binding. */
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  AccountObserveCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  modelRequest: "bundle",
++  modelReply: "host",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  accountObservation: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const protocol26 = {
++  version: frameworkProtocol,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    modelRequest: ModelCommand,
++    modelReply: ModelReply,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/oauth-26.ts b/packages/apps/src/contracts/protocols/oauth-26.ts
+new file mode 100644
+index 0000000..3af3d2c
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-26.ts
+@@ -0,0 +1,185 @@
++import { Schema } from "effect";
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
++
++export const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++export type OAuthClientAuth = typeof OAuthClientAuth.Type;
++/** Machine clients always authenticate; public clients cannot use the client-credentials grant. */
++export const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++/** Parameters the host sets on every authorization request; a declaration cannot replace them. */
++export const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++/** A protocol parameter only the host sets on the authorization request. */
++export type ReservedAuthorizationParam = (typeof reservedAuthorizationParams)[number];
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++/**
++ * Extra authorization request parameters, such as `access_type: "offline"`. RFC 6749 §3.1
++ * lets services define their own; the protocol and security parameters stay host-owned.
++ */
++export const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++/**
++ * A declared `authorizationUrl` may carry its own query (RFC 6749 §3.1 keeps it). Each parameter
++ * is declared once, in the URL or in `authorizationParams`, and never names a host-owned one.
++ */
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++/** How the token endpoint reads requests. RFC 6749 uses a form; some services want JSON. */
++export const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
++
++/**
++ * Where a service nests the grant in its token response, as a dot-separated member path. Slack
++ * returns a user token under `authed_user`. When `requiredOnExchange` is true, an authorization
++ * code response must include the nested access token; a complete top-level grant cannot replace it.
++ * Refresh responses keep the usual top-level fallback.
++ */
++export const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++export type OAuthTokenResponse = typeof OAuthTokenResponse.Type;
++
++/** Options for services that differ from RFC 6749 in how they read requests. */
++const tokenRequestOptions = {
++  /** Joins requested scopes; Linear wants `","`. Defaults to RFC 6749's space. */
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  /** Encoding of token requests. Defaults to `"form"`; Atlassian, ClickUp and Notion need `"json"`. */
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++
++const oauthOptions = {
++  ...tokenRequestOptions,
++  /**
++   * Read the grant from this nested member when the top-level response has no access token or no
++   * scope. `requiredOnExchange` makes the nested grant authoritative for authorization-code
++   * exchange while preserving top-level refresh responses. Slack's user tokens use
++   * `{ path: "authed_user" }`.
++   */
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  /**
++   * Service-defined authorization request parameters, such as Google's
++   * `{ access_type: "offline", prompt: "consent" }`. Host-owned protocol parameters
++   * (`state`, `scope`, `redirect_uri`, PKCE and the others in `reservedAuthorizationParams`)
++   * are rejected. A discovered endpoint's own query parameter of the same name is replaced.
++   */
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  /** Preference used only when a person enters a confidential BYO client. */
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  /** Omitted uses discovery; null explicitly suppresses the resource parameter. */
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  /** The host verifies this issuer's discovery and UserInfo before grouping accounts. */
++  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
++};
++
++/**
++ * OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain
++ * host-owned. Declared endpoints may name an RFC 7009 `revocationUrl`; discovery reads the
++ * server's `revocation_endpoint` metadata instead.
++ */
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    /** Its query is kept; it cannot set protocol parameters or repeat `authorizationParams`. */
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
++export type OAuth2Config = typeof OAuth2Config.Type;
+diff --git a/packages/apps/src/contracts/protocols/oauth-before-identities.ts b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
+index 0f5f58d..939ebca 100644
+--- a/packages/apps/src/contracts/protocols/oauth-before-identities.ts
++++ b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
+@@ -1,5 +1,5 @@
+ import { Schema } from "effect";
+-import { OAuth2Config as Current } from "../provider.ts";
++import { OAuth2Config as Current } from "./oauth-26.ts";
+ 
+ const { identity: _discoveryIdentity, ...discovery } = Current.members[0].fields;
+ const { identity: _declaredIdentity, ...declared } = Current.members[1].fields;
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index c329b7d..69fab2b 100644
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -1,3 +1,4 @@
++import { protocol26 } from "./26.ts";
+ /**
+  * Every released host protocol that the framework no longer speaks. Each is frozen: `bun run check`
+  * compares it with its snapshot in `packages/apps/protocols/`. The protocol the framework speaks is
+@@ -59,4 +60,5 @@ export const releasedProtocols = [
+   protocol23,
+   protocol24,
+   protocol25,
++  protocol26,
+ ] as const;
+diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
+index 3b5400d..64779cc 100644
+--- a/packages/apps/src/contracts/provider.ts
++++ b/packages/apps/src/contracts/provider.ts
+@@ -125,6 +125,27 @@ const tokenRequestOptions = {
+ };
+ 
+ const oauthOptions = {
++  /** A provider-required browser callback; the cloud completes the pasted URL. */
++  loopbackRedirectUri: Schema.optionalKey(
++    Schema.String.check(
++      Schema.makeFilter((value) => {
++        try {
++          const url = new URL(value);
++          return (
++            url.protocol === "http:" &&
++            ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++            url.port !== "" &&
++            url.username === "" &&
++            url.password === "" &&
++            url.search === "" &&
++            url.hash === ""
++          );
++        } catch {
++          return false;
++        }
++      }),
++    ),
++  ),
+   ...tokenRequestOptions,
+   /**
+    * Read the grant from this nested member when the top-level response has no access token or no
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index 85e045c..018212e 100644
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -306,6 +306,7 @@ const protocol23: AppProtocol = { ...protocol20, version: 23, nodeEntry: nodeApp
+ const protocol24: AppProtocol = { ...protocol23, version: 24, nodeEntry: nodeAppEntry(24) };
+ const protocol25: AppProtocol = { ...protocol24, version: 25, nodeEntry: nodeAppEntry(25) };
+ const protocol26: AppProtocol = { ...protocol25, version: 26, nodeEntry: nodeAppEntry(26) };
++const protocol29: AppProtocol = { ...protocol26, version: 29, nodeEntry: nodeAppEntry(29) };
+ 
+ /**
+  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+@@ -528,6 +529,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+     protocol24,
+     protocol25,
+     protocol26,
++    protocol29,
+   ].map((protocol) => [protocol.version, protocol]),
+ );
+ 
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 16f11f9..74d8633 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -764,10 +764,26 @@ export const makeOAuth = (
+       if (declared === undefined || declared.type !== "oauth2")
+         return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+       const method = oauthMethodAtSite(declared, definition.site, input.site);
++      const callback =
++        method.grant === "client_credentials"
++          ? undefined
++          : (method.loopbackRedirectUri ?? input.redirectUri);
++      // Loopback callbacks are browser destinations, never cloud fetch destinations.
+       const redirect =
+-        method.grant === "client_credentials" || input.redirectUri === undefined
++        callback === undefined
+           ? undefined
+-          : parseEndpoint(input.redirectUri, options.urlPolicy);
++          : parseEndpoint(
++              callback,
++              method.grant !== "client_credentials" && method.loopbackRedirectUri !== undefined
++                ? defaultUrlPolicy
++                : options.urlPolicy,
++            );
++      if (
++        method.grant !== "client_credentials" &&
++        method.loopbackRedirectUri !== undefined &&
++        method.tokenEndpointAuthMethod !== "none"
++      )
++        return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+       if (
+         method.grant !== "client_credentials" &&
+         (redirect === undefined ||
