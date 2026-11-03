@@ -158,6 +158,94 @@ test("strict OTLP output contains only safe spans and fixed resource labels", as
   }
 });
 
+test("strict OTLP output retains only bounded app query phase attributes", async () => {
+  const { strictPrivacyTraceData } = await load("packages/telemetry/src/isolate.ts");
+  const phases = ["session_access", "caller_accounts", "dispatch"];
+  const keys = phases.map((phase) => `app.ui.query.${phase}.duration_ms`);
+  const orderKey = "app.ui.query.phase_order";
+  const sanitize = (attributes: { key: string; value: Record<string, unknown> }[]) =>
+    strictPrivacyTraceData(
+      {
+        resourceSpans: [
+          {
+            resource: { attributes: [], droppedAttributesCount: 0 },
+            scopeSpans: [
+              {
+                scope: { name: "fixture" },
+                spans: [
+                  {
+                    traceId: "0123456789abcdef0123456789abcdef",
+                    spanId: "0123456789abcdef",
+                    name: "http.server POST",
+                    kind: 2,
+                    startTimeUnixNano: "1000000",
+                    endTimeUnixNano: "9000000",
+                    attributes,
+                    droppedAttributesCount: 0,
+                    events: [],
+                    droppedEventsCount: 0,
+                    links: [],
+                    droppedLinksCount: 0,
+                    status: { code: 0 },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      { service: "fixture", version: "fixture", environment: "test" },
+    );
+  const exported = sanitize([
+    { key: keys[0]!, value: { doubleValue: 2.25 } },
+    { key: keys[1]!, value: { intValue: 3 } },
+    { key: keys[2]!, value: { doubleValue: 0 } },
+    { key: orderKey, value: { stringValue: phases.join(",") } },
+    { key: "app.ui.query.account_id", value: { stringValue: "private-account" } },
+    { key: "app.ui.query.private.duration_ms", value: { doubleValue: 4 } },
+  ]);
+  const json = await Effect.runPromise(
+    OtlpSerialization.OtlpSerialization.pipe(Effect.provide(OtlpSerialization.layerJson)),
+  );
+  const body = json.traces(exported);
+  const serialized =
+    typeof body.text === "string" ? body.text : new TextDecoder().decode(body.body);
+  const span = JSON.parse(serialized).resourceSpans[0].scopeSpans[0].spans[0];
+  assert.deepEqual(span.attributes, [
+    { key: keys[0], value: { doubleValue: 2.25 } },
+    { key: keys[1], value: { doubleValue: 3 } },
+    { key: keys[2], value: { doubleValue: 0 } },
+    { key: orderKey, value: { stringValue: phases.join(",") } },
+  ]);
+  assert.equal(serialized.includes("private-account"), false);
+  assert.equal(span.traceId, "0123456789abcdef0123456789abcdef");
+  assert.equal(span.spanId, "0123456789abcdef");
+  for (const value of [
+    { doubleValue: -1 },
+    { doubleValue: NaN },
+    { doubleValue: Infinity },
+    { stringValue: "private-value" },
+    { intValue: "12" },
+  ]) {
+    const data = sanitize(keys.map((key) => ({ key, value })));
+    assert.deepEqual(data.resourceSpans[0].scopeSpans[0].spans[0].attributes, []);
+  }
+  for (const order of ["session_access", "session_access,caller_accounts"]) {
+    const data = sanitize([{ key: orderKey, value: { stringValue: order } }]);
+    assert.deepEqual(data.resourceSpans[0].scopeSpans[0].spans[0].attributes, [
+      { key: orderKey, value: { stringValue: order } },
+    ]);
+  }
+  for (const order of [
+    "dispatch,caller_accounts",
+    "session_access,private-account",
+    "session_access,session_access",
+  ]) {
+    const data = sanitize([{ key: orderKey, value: { stringValue: order } }]);
+    assert.deepEqual(data.resourceSpans[0].scopeSpans[0].spans[0].attributes, []);
+  }
+});
+
 test("direct Sentry trace mode keeps redacted platform logs and avoids the platform trace destination", async () => {
   const telemetry = await load("apps/hosted/cloud/src/infrastructure/telemetry.ts");
   const { AlchemyContext } = requireCloud("alchemy/AlchemyContext");

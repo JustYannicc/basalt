@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-query-phase-timings",
+  "file": "0117-app-query-phase-timings.patch",
+  "content_sha256": "86a75ef39b05a5a386b7172d958fa7f8609c0bc35b246d496e48354b490e2162",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
