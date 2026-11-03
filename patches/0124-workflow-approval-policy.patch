@@ -1,0 +1,120 @@
+diff --git a/packages/sdk/src/implementation/workflow-approval.ts b/packages/sdk/src/implementation/workflow-approval.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-approval.ts
+@@ -0,0 +1,88 @@
++import { selfEmailEnvelope } from "./workflow-email-envelope.ts";
++
++/** Source-owned declaration. A host must validate it before recording owner confirmation. */
++export interface WorkflowApprovalDeclaration {
++  readonly workflow: string;
++  readonly step: string;
++  readonly connection: string;
++  readonly envelope: "self-email";
++  readonly expiresAt?: number;
++}
++
++/** Exact values captured by the host at owner-approved configuration, never by the app command. */
++export interface WorkflowApprovalBinding {
++  readonly source: string;
++  readonly sourceVersion: string;
++  readonly configurationRevision: string;
++  readonly connectionRevision: number;
++  readonly target: string;
++  readonly targetVersion: string;
++  readonly tool: string;
++  readonly account: string;
++  readonly accountRevision: string;
++  readonly owner: string;
++  readonly recipient: string;
++}
++
++export interface WorkflowApprovalConfirmation {
++  readonly declaration: WorkflowApprovalDeclaration;
++  readonly binding: WorkflowApprovalBinding;
++  readonly approvedBy: string;
++}
++
++export interface WorkflowApprovalEvidence {
++  readonly declaration: WorkflowApprovalDeclaration;
++  readonly binding: WorkflowApprovalBinding;
++  readonly confirmation?: WorkflowApprovalConfirmation;
++  readonly now: number;
++  readonly deliveryEnabled: boolean;
++  readonly accessAllowed: boolean;
++  readonly accountOwner: string;
++  readonly verifiedOwnerRecipient?: string;
++  /** Host registration for the inspected target version's structured compose implementation. */
++  readonly envelope?: "self-email";
++  readonly workflow?: { readonly name: string; readonly step: string; readonly run: string };
++  readonly kind: "query" | "mutation";
++  readonly decodedInput: unknown;
++  readonly appPolicy: "approved" | "denied" | "user-approval" | "failed";
++}
++
++const sameDeclaration = (a: WorkflowApprovalDeclaration, b: WorkflowApprovalDeclaration) =>
++  a.workflow === b.workflow && a.step === b.step && a.connection === b.connection &&
++  a.envelope === b.envelope && a.expiresAt === b.expiresAt;
++
++const bindingKeys = [
++  "source", "sourceVersion", "configurationRevision", "connectionRevision", "target",
++  "targetVersion", "tool", "account", "accountRevision", "owner", "recipient",
++] as const;
++
++/** Evaluate after target decoding and app policy, before receipt reservation or submission.
++ * This pure result is not a trusted approval token. The dispatch host owns granting authority.
++ */
++export const workflowApproval = (evidence: WorkflowApprovalEvidence):
++  "approved" | "denied" | "user-approval" | "failed" => {
++  const { declaration, binding, confirmation, workflow } = evidence;
++  if (!evidence.accessAllowed) return "denied";
++  // A declaration only satisfies an ask. App denial and callback failure remain authoritative.
++  if (evidence.appPolicy !== "user-approval") return evidence.appPolicy;
++  if (!evidence.deliveryEnabled || confirmation === undefined || workflow === undefined)
++    return "user-approval";
++  if (
++    !Number.isFinite(evidence.now) ||
++    (declaration.expiresAt !== undefined &&
++      (!Number.isFinite(declaration.expiresAt) || evidence.now >= declaration.expiresAt)) ||
++    declaration.workflow.length === 0 || declaration.step.length === 0 ||
++    declaration.connection.length === 0 || workflow.run.length === 0 ||
++    workflow.name !== declaration.workflow || workflow.step !== declaration.step ||
++    !sameDeclaration(declaration, confirmation.declaration)
++  ) return "user-approval";
++  if (
++    !Number.isSafeInteger(binding.connectionRevision) || binding.connectionRevision < 1 ||
++    bindingKeys.some((key) => binding[key] !== confirmation.binding[key] || binding[key] === "") ||
++    binding.owner !== evidence.accountOwner || confirmation.approvedBy !== evidence.accountOwner ||
++    evidence.verifiedOwnerRecipient !== binding.recipient || evidence.kind !== "mutation" ||
++    declaration.envelope !== "self-email" || evidence.envelope !== "self-email" ||
++    !selfEmailEnvelope(evidence.decodedInput, binding.account, binding.recipient)
++  ) return "user-approval";
++  return "approved";
++};
+diff --git a/packages/sdk/src/implementation/workflow-email-envelope.ts b/packages/sdk/src/implementation/workflow-email-envelope.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-email-envelope.ts
+@@ -0,0 +1,22 @@
++/** The inspected structured compose operation only. Raw MIME and reply operations never qualify. */
++export const selfEmailEnvelope = (input: unknown, account: string, recipient: string): boolean => {
++  if (input === null || typeof input !== "object" || Array.isArray(input)) return false;
++  const allowed = new Set(["account", "to", "cc", "bcc", "subject", "body", "html", "replyAll"]);
++  if (Object.keys(input).some((key) => !allowed.has(key))) return false;
++  const value = input as Record<string, unknown>;
++  // Only a bare address is eligible. Display names, aliases and header syntax require an ask.
++  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(recipient))
++    return false;
++  if (account.length === 0 || value.account !== account) return false;
++  if (!Array.isArray(value.to) || value.to.length !== 1 || value.to[0] !== recipient) return false;
++  for (const key of ["cc", "bcc"]) {
++    const recipients = value[key];
++    if (recipients !== undefined && (!Array.isArray(recipients) || recipients.length !== 0))
++      return false;
++  }
++  if (typeof value.body !== "string" || (value.html !== undefined && value.html !== false))
++    return false;
++  if (value.replyAll !== undefined && value.replyAll !== false) return false;
++  return value.subject === undefined ||
++    (typeof value.subject === "string" && !/[\r\n]/.test(value.subject));
++};

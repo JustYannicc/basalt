@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    workflowApprovals = part "Workflow approval evaluation" {
+      description "Pure candidate policy compares the current declaration, exact source and target versions, configuration and account revisions with owner confirmation. Structured email qualifies only for the confirmed account owner's verified bare address, without extra recipients or reply expansion. App denial and callback failure remain authoritative. This carry does not attach confirmation or enable protected dispatch; those host integration hooks are still required."
+      metadata { code ".upstream/packages/sdk/src/implementation/workflow-approval.ts|.upstream/packages/sdk/src/implementation/workflow-email-envelope.ts" }
+    }
+  }
+}
