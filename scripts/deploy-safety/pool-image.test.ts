@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPoolImage, poolImageReceipt } from "./pool-image.ts";
+import { assertPoolImage, poolImageReceipt, waitForPoolImage } from "./pool-image.ts";
 
 const candidate = "a".repeat(40);
 const digest = `sha256:${"2".repeat(64)}`;
@@ -51,4 +51,19 @@ test("uncertain pagination cannot silently omit an active instance", async () =>
   await assert.rejects(assertPoolImage(receipt, candidate, credentials, async (input) => String(input).endsWith("settings") ? settings() : String(input).includes("instances-v2")
     ? envelope([instance("one")], { next_page_token: "repeated" })
     : envelope({ id: "pool-app", account_id: "fixture", configuration: { image } })), /duplicate|pagination/);
+});
+
+test("rollout observation waits within the existing readiness budget and never retries a deployment", async () => {
+  let now = 0;
+  let warmCalls = 0;
+  const result = await waitForPoolImage(receipt, candidate, credentials, "https://fixture.invalid", async (input, init) => {
+    assert.equal(init?.method ?? "GET", "GET");
+    const url = String(input);
+    if (url.endsWith("/pool/v1/pool")) { warmCalls++; return new Response(null, { status: 401 }); }
+    if (url.endsWith("settings")) return settings();
+    if (url.includes("instances-v2")) return envelope([instance("one")]);
+    return envelope({ id: "pool-app", account_id: "fixture", configuration: { image: now === 0 ? "old-image" : image } });
+  }, { timeoutMs: 10, intervalMs: 1, now: () => now, sleep: async (ms) => { now += ms; } });
+  assert.equal(warmCalls, 2);
+  assert.equal(result.digest, digest);
 });

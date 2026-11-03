@@ -1,6 +1,9 @@
 import { SafetyGateError } from "./contracts.ts";
 import type { CloudflareCredentials } from "./cloudflare.ts";
 import { cloudflareResult, encodePathSegment, record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
+import { waitForPoolStatus } from "../pool-readiness.ts";
+
+class PoolImagePending extends SafetyGateError {}
 
 export function poolImageReceipt(value: unknown, candidate: string) {
   const receipt = record(value, "Pool image publication receipt");
@@ -37,7 +40,7 @@ export async function assertPoolImage(
   if (!Array.isArray(settings.bindings)) throw new SafetyGateError("Pool Worker bindings are missing");
   const hashes = settings.bindings.map((binding) => record(binding, "Pool Worker binding")).filter((binding) => binding.name === "POOL_IMAGE_HASH");
   if (hashes.length !== 1 || hashes[0]?.type !== "plain_text" || hashes[0].text !== receipt.inputHash)
-    throw new SafetyGateError("Pool Worker input hash differs from this candidate's publication receipt");
+    throw new PoolImagePending("Pool Worker input hash differs from this candidate's publication receipt");
 
   const ids = new Set<string>();
   const tokens = new Set<string>();
@@ -54,13 +57,13 @@ export async function assertPoolImage(
         throw new SafetyGateError("Pool instance list contains a duplicate or foreign instance");
       ids.add(id);
       if (record(instance.status, "Pool instance status").state !== "running")
-        throw new SafetyGateError("Pool has an active instance that is not running");
+        throw new PoolImagePending("Pool has an active instance that is not running");
       assertDigest(instance.image, receipt.digest, "instance");
     }
     const info = record(reply.resultInfo, "Pool instance pagination");
     const next = info.next_page_token;
     if (next === undefined || next === "") {
-      if (ids.size === 0) throw new SafetyGateError("Pool has no running instance to verify");
+      if (ids.size === 0) throw new PoolImagePending("Pool has no running instance to verify");
       return { ...receipt, instances: [...ids] };
     }
     if (typeof next !== "string" || tokens.has(next)) throw new SafetyGateError("Pool instance pagination is inconsistent");
@@ -72,5 +75,34 @@ export async function assertPoolImage(
 
 function assertDigest(image: unknown, expected: string, label: string) {
   if (typeof image !== "string" || !image.endsWith(`@${expected}`))
-    throw new SafetyGateError(`Pool ${label} image differs from the published candidate digest`);
+    throw new PoolImagePending(`Pool ${label} image differs from the published candidate digest`);
+}
+
+export async function waitForPoolImage(
+  value: unknown,
+  candidate: string,
+  credentials: CloudflareCredentials,
+  origin: string,
+  fetcher: Fetcher = fetch,
+  options: Parameters<typeof waitForPoolStatus>[3] = {},
+) {
+  poolImageReceipt(value, candidate);
+  let verified: Awaited<ReturnType<typeof assertPoolImage>> | undefined;
+  await waitForPoolStatus("Pool published candidate image", 200, async (signal) => {
+    const warm = await fetcher(`${origin}/pool/v1/pool`, { redirect: "manual", signal });
+    await warm.body?.cancel();
+    if (warm.status >= 500) return new Response(null, { status: 503 });
+    if (warm.status !== 401) throw new SafetyGateError(`Pool readiness returned unexpected HTTP ${warm.status}`);
+    try {
+      verified = await assertPoolImage(value, candidate, credentials, (input, init) => fetcher(input, {
+        ...init, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
+      }));
+      return new Response(null, { status: 200 });
+    } catch (error) {
+      if (error instanceof PoolImagePending) return new Response(null, { status: 503 });
+      throw error;
+    }
+  }, options);
+  if (!verified) throw new SafetyGateError("Pool image verification returned no evidence");
+  return verified;
 }

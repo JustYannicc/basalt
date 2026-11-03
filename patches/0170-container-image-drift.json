@@ -5,5 +5,7 @@
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release contains the ContainerProvider drift fix; remove only these dependency hunks after source/lib regressions and deployment digest assertions pass."
 }

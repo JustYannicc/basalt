@@ -30,6 +30,8 @@ try {
     MCP_SESSION_KEY_CURRENT: "c".repeat(64), MCP_SESSION_KEY_PREVIOUS: "d".repeat(64),
     APP_DOMAIN_CONTROL_SECRET: "e".repeat(64), APP_DOMAIN_CONTROLLER_TOKEN: "fixture-app-domain-token",
     POOL_APP_SIGNING_KEY: "f".repeat(64),
+    BASALT_POOL_IMAGE_RECEIPT: "fixture-publication-receipt.json",
+    GITHUB_SHA: "a".repeat(40),
     SENTRY_DSN: "https://fixture_public_key@o0.ingest.de.sentry.io/123456",
     SENTRY_OTLP_ENDPOINT: "https://o0.ingest.de.sentry.io/api/123456/integration/otlp/v1/traces",
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",

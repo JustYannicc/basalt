@@ -92,13 +92,17 @@ export async function executeRelease(
     await dependencies.mark(deploymentId, "failure");
     throw new SafetyGateError("Production deployment process did not start; no rollback was attempted");
   }
-  if (deploy.exitCode !== 0)
+  if (deploy.exitCode !== 0) {
+    await assertDeployedImages(deploymentId, dependencies);
     return recoverAfterAttempt(report, mode, dependencies, deploymentId, "deployment command failed");
+  }
 
   await assertDeployedImages(deploymentId, dependencies);
   const smoke = await dependencies.smoke();
-  if (!smoke.started || smoke.exitCode !== 0)
+  if (!smoke.started || smoke.exitCode !== 0) {
+    await assertDeployedImages(deploymentId, dependencies);
     return recoverAfterAttempt(report, mode, dependencies, deploymentId, "production smoke check failed");
+  }
 
   await dependencies.mark(deploymentId, "success");
   return { state: "deployed", deploymentId };

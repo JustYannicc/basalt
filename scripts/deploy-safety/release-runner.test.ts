@@ -90,7 +90,7 @@ test("safe release deploy failure rolls back only after the deploy process start
   try {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     await assert.rejects(executeRelease(report(), "automatic", deps), /previous safe release was redeployed successfully/);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure", "rollback"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure", "rollback"]);
 
     const firstDeploy = dependencies({ deploy: async () => { firstDeploy.calls.push("deploy"); return { started: false, exitCode: null }; } });
     await assert.rejects(executeRelease(report(), "automatic", firstDeploy), /did not start; no rollback was attempted/);
@@ -112,6 +112,7 @@ test("missing publication evidence or image drift stops before smoke and never a
     await assert.rejects(executeRelease(report(), "automatic", deps), /without automatic rollback/);
     assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
     deps.calls.length = 0;
+    deps.deploy = async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; };
     deps.assertImages = async () => { deps.calls.push("image"); throw new Error("Missing receipt"); };
     await assert.rejects(executeRelease(report(), "automatic", deps), /without automatic rollback/);
     assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
@@ -129,7 +130,7 @@ test("initial release failure never redeploys the candidate as a pretend rollbac
   try {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     await assert.rejects(executeRelease(report({ candidate: { gitCommit: sha("1"), pins } }), "automatic", deps), /Initial production deployment command failed/);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -145,7 +146,7 @@ test("manual release failures do not trigger automatic rollback", async () => {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     const value = report({ databaseChanged: true });
     await assert.rejects(executeRelease(value, "manual", deps), /manual rollback path/);
-    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
     assert.deepEqual(deps.begun, [fixtureBackup(value)], "the verified backup reaches the deployment record");
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
@@ -332,12 +333,12 @@ test("the startup retry happens only once and only for that rejection", async ()
     const twice = dependencies({ log: () => {} });
     twice.deploy = deploys(twice, startupCpu);
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", twice), /manual rollback path/);
-    assert.deepEqual(twice.calls, ["validate", "backup", "begin", "deploy", "deploy", "mark:failure"]);
+    assert.deepEqual(twice.calls, ["validate", "backup", "begin", "deploy", "deploy", "image", "mark:failure"]);
 
     const other = dependencies({ log: () => { throw new Error("must not retry"); } });
     other.deploy = deploys(other, { started: true, exitCode: 1 });
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", other), /manual rollback path/);
-    assert.deepEqual(other.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(other.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
 
     const unstarted = dependencies({ log: () => { throw new Error("must not retry"); } });
     unstarted.deploy = deploys(unstarted, { started: false, exitCode: null, scriptStartupCpuLimit: true });
@@ -359,7 +360,7 @@ test("a startup rejection whose deploy left something running is not retried, an
     const deps = dependencies({ log: (text) => { logs.push(text); } });
     deps.deploy = deploys(deps, { ...startupCpu, outputHeld: true }, { started: true, exitCode: 0 });
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", deps), /manual rollback path/);
-    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
     assert.equal(logs.length, 1);
     assert.match(logs[0]!, /still running after it exited, so it was not retried/);
   } finally {

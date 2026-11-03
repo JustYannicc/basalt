@@ -1,5 +1,8 @@
 // Resource mappings are authored here; the deployment overlay is generated.
 model {
+  extend basalt.build {
+    metadata { resources "resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef" }
+  }
   extend basalt.catalog {
     metadata { resources "resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2" }
   }
