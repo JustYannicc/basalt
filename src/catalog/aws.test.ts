@@ -38,7 +38,7 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, "module");
   assert.deepEqual(manifest.dependencies, {
-    apps: "0.0.1-beta.104-basalt.1",
+    apps: "0.0.1-beta.104-basalt.2",
     aws4fetch: "1.0.20",
     "fast-xml-parser": "5.11.1",
   });

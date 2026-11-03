@@ -12,7 +12,7 @@ const capture = Object.freeze({
   directory: "playground/demo-apps/atlassian",
   packageName: "atlassian",
   publicSnapshotSha256: "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
-  servedSdkVersion: "0.0.1-beta.104-basalt.1",
+  servedSdkVersion: "0.0.1-beta.104-basalt.2",
 });
 const publicPaths = ["index.ts", "package.json"];
 const servedPaths = [
