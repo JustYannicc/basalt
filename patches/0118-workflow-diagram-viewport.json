@@ -1,0 +1,9 @@
+{
+  "identity": "executor-workflow-diagram-viewport",
+  "file": "0118-workflow-diagram-viewport.patch",
+  "content_sha256": "3f2e039a8214c9a4f2c58ce7df418f3cc60beadda775502a9cbed9d0d160cd7d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
