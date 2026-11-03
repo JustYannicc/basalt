@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-docs-offline-fonts",
+  "file": "0115-docs-offline-fonts.patch",
+  "content_sha256": "daa163ffe15db336367267a9e643670a2380fee328a0544c22f5684d44518bef",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

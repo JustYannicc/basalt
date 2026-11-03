@@ -721,6 +721,8 @@ jobs:
           npm run architecture:model
           npm run architecture:typecheck
       - run: npm run check
+      - name: Build documentation without Google font requests
+        run: node scripts/docs-fonts/check.ts
       - name: Verify Cloud startup failure diagnostics
         working-directory: .upstream
         run: bunx vitest run --config e2e/alchemy-dev-output.config.ts
