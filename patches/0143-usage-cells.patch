@@ -1,3 +1,120 @@
+diff --git a/apps/hosted/server/src/contracts/account-observations.ts b/apps/hosted/server/src/contracts/account-observations.ts
+index 8185385..fe3f067 100644
+--- a/apps/hosted/server/src/contracts/account-observations.ts
++++ b/apps/hosted/server/src/contracts/account-observations.ts
+@@ -15,6 +15,8 @@ export type ObservationPolicy = typeof ObservationPolicy.Type;
+ 
+ export const HostedAccountObservations = Schema.Struct({
+   ...AccountObservationView.fields,
++  hasUsageReporter: Schema.Boolean,
++  usageReporterLabel: Schema.NullOr(Schema.String),
+   canInspect: Schema.Boolean,
+   canRefresh: Schema.Boolean,
+ });
+diff --git a/apps/hosted/server/src/implementation/account-observations.ts b/apps/hosted/server/src/implementation/account-observations.ts
+index 1c33a1a..de49c7e 100644
+--- a/apps/hosted/server/src/implementation/account-observations.ts
++++ b/apps/hosted/server/src/implementation/account-observations.ts
+@@ -1,13 +1,77 @@
+-import { Effect } from "effect";
++import { Effect, Schema } from "effect";
++import {
++  AccountAcquisitionConfiguration,
++  AccountAcquisitionHost,
++  StorageError,
++  type AccountId,
++  type AccountObservationView,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { AccountGrants } from "./proofs/account-access.ts";
+ import { linkedApps } from "./accounts.ts";
++import { policyDatabase } from "./resource-policy.ts";
+ import { observationAccess, requireObservationAccess } from "./account-observation-policy.ts";
+ 
++/** Reporter discovery reads binding and registration metadata, never the private source. */
++const usageReporter = (
++  executor: Executor,
++  owner: OwnerId,
++  account: AccountId,
++  view: AccountObservationView,
++) =>
++  Effect.gen(function* () {
++    const retained = view.reports[0];
++    if (retained !== undefined)
++      return { hasUsageReporter: true, usageReporterLabel: retained.source.label };
++    const binding = yield* executor[AccountAcquisitionHost].binding({ owner, account });
++    const absent = { hasUsageReporter: false, usageReporterLabel: null };
++    if (
++      binding === undefined ||
++      binding.removal !== null ||
++      binding.account !== account ||
++      binding.owner !== owner
++    )
++      return absent;
++    const { registrations } = yield* AccountAcquisitionConfiguration;
++    const registered = registrations.find(
++      (entry) =>
++        entry.provider === binding.provider &&
++        entry.method === binding.method &&
++        entry.driver.id === binding.driver &&
++        entry.driver.revision === binding.driverRevision &&
++        entry.driver.observeAccount !== undefined,
++    );
++    if (registered === undefined) return absent;
++    const sql = yield* policyDatabase;
++    const rows = yield* sql`select credential_generation as generation from executor_accounts
++      where id = ${account} and owner = ${owner} and provider = ${binding.provider} and method = ${binding.method}`;
++    const current = (yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ generation: Schema.Int })),
++    )(rows))[0];
++    return current?.generation === binding.generation
++      ? { hasUsageReporter: true, usageReporterLabel: registered.driver.id }
++      : absent;
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new StorageError(),
++    }),
++  );
++
+ export const getAccountObservations = Effect.gen(function* () {
+   const { owner, account } = yield* AccountGrants.inspect;
+   const access = yield* observationAccess(account);
+-  if (!access.canInspect) return { account, reports: [], canInspect: false, canRefresh: false };
++  if (!access.canInspect)
++    return {
++      account,
++      reports: [],
++      canInspect: false,
++      canRefresh: false,
++      hasUsageReporter: false,
++      usageReporterLabel: null,
++    };
+   const executor = yield* Effect.flatten(HostedExecutor);
+   const apps = yield* linkedApps(owner, account);
+   const view = yield* executor.accounts.observations({
+@@ -15,8 +79,9 @@ export const getAccountObservations = Effect.gen(function* () {
+     account,
+     apps: apps.map((app) => app.id),
+   });
++  const reporter = yield* usageReporter(executor, owner, account, view);
+   yield* requireObservationAccess(account);
+-  return { ...view, canInspect: true, canRefresh: access.canRefresh };
++  return { ...view, ...reporter, canInspect: true, canRefresh: access.canRefresh };
+ });
+ 
+ export const refreshAccountObservations = Effect.gen(function* () {
+@@ -29,6 +94,7 @@ export const refreshAccountObservations = Effect.gen(function* () {
+     account,
+     apps: apps.map((app) => app.id),
+   });
++  const reporter = yield* usageReporter(executor, owner, account, view);
+   yield* requireObservationAccess(account, true);
+-  return { ...view, canInspect: true, canRefresh: true };
++  return { ...view, ...reporter, canInspect: true, canRefresh: true };
+ });
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
 index a6e47b5..9f0aa4c 100644
 --- a/e2e/support/account-observation-fixture.ts
@@ -50,7 +167,7 @@ index 844b24b..c5033dc 100644
      fixtures: "actors",
      file: "account-observations.spec.ts",
 diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
-index e28b65a..e39b847 100644
+index e28b65a..b080476 100644
 --- a/e2e/tests/account-observation-rows.spec.ts
 +++ b/e2e/tests/account-observation-rows.spec.ts
 @@ -1,4 +1,4 @@
@@ -59,7 +176,7 @@ index e28b65a..e39b847 100644
  import { expect, layer } from "@effect/vitest";
  import { Effect, Schema } from "effect";
  import type { Page } from "playwright";
-@@ -64,40 +64,59 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -64,40 +64,62 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
            block(page).locator(inventoryRow).locator("[data-account-plan]");
  
          yield* browser.login(f.actors.owner);
@@ -79,7 +196,10 @@ index e28b65a..e39b847 100644
 +            ),
          );
 -        expect(yield* f.backend.calls, "showing retained usage collects nothing").toBe(0);
-+        expect(unread, "an account with no reading has no usage area").toEqual([0, 0, 0, 0]);
++        expect(
++          unread,
++          "an unread app-declared reporter is not discovered until it has a retained report",
++        ).toEqual([0, 0, 0, 0]);
 +        expect(yield* f.backend.calls, "showing an account collects nothing").toBe(0);
  
 -        yield* browser.use("Refresh usage from the row", (page) =>
@@ -135,7 +255,7 @@ index e28b65a..e39b847 100644
          yield* evidence.attach(
            "account-observation-row-fresh.png",
            "image/png",
-@@ -132,6 +151,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -132,6 +154,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
              row.locator("[data-attempt-note]").innerText(),
              reading(page).locator("[data-reading-value]").innerText(),
              reading(page).getAttribute("data-stale"),
@@ -143,7 +263,7 @@ index e28b65a..e39b847 100644
              row.locator("[data-usage-source] [data-freshness]").getAttribute("data-freshness"),
              row.locator("[data-usage-source] time").getAttribute("datetime"),
              row.getByRole("link", { name: /^Reconnect/ }).count(),
-@@ -141,13 +161,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -141,13 +164,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
          });
          expect(failed[0]).toContain("Refresh failed");
          expect(failed[0]).toContain("Showing the last successful reading.");
@@ -165,7 +285,7 @@ index e28b65a..e39b847 100644
          yield* evidence.attach(
            "account-observation-row-failed.png",
            "image/png",
-@@ -157,13 +179,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -157,13 +182,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
          // Using a shared account shows its health, never its usage, until the policy allows it.
          yield* browser.login(f.actors.member);
          yield* browser.use("Open Accounts as a member who uses the account", (page) =>
@@ -183,7 +303,30 @@ index e28b65a..e39b847 100644
              plan(page).count(),
              row.getByRole("button", { name: "Refresh", exact: true }).count(),
              row.locator("[data-usage-source]").count(),
-@@ -212,7 +236,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -175,6 +202,22 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           ]);
+         });
+         expect(denied).toEqual([0, 0, 0, 0, 0, 1, 0]);
++        expect(
++          (yield* f.api.request(f.actors.member, "GET", `${f.accountPath}/observations`)).body,
++        ).toMatchObject({ hasUsageReporter: false, usageReporterLabel: null });
++        const restrictedLayout = yield* browser.use(
++          "Keep restricted Details at the right edge",
++          (page) =>
++            block(page)
++              .getByRole("button", { name: "Details", exact: true })
++              .evaluate((button) => ({
++                right: button.getBoundingClientRect().right,
++                footerRight: button.parentElement!.getBoundingClientRect().right,
++              })),
++        );
++        expect(Math.abs(restrictedLayout.right - restrictedLayout.footerRight)).toBeLessThanOrEqual(
++          1,
++        );
+         yield* evidence.attach(
+           "account-observation-row-restricted.png",
+           "image/png",
+@@ -212,7 +255,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
  
          yield* browser.login(f.actors.member);
          yield* browser.use("Open Accounts after the grant", (page) =>
@@ -192,7 +335,7 @@ index e28b65a..e39b847 100644
          );
          expect(
            yield* browser.use("Refresh stays with the account managers", (page) =>
-@@ -225,7 +249,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -225,7 +268,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
                .getByRole("region", { name: "Your accounts", exact: true })
                .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
                .locator('[data-reading="requests"]')
@@ -201,7 +344,7 @@ index e28b65a..e39b847 100644
                .waitFor(),
            ),
          );
-@@ -250,7 +274,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+@@ -250,7 +293,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
              .setViewportSize({ width: 390, height: 900 })
              .then(() => page.emulateMedia({ colorScheme: "dark" }))
              .then(() => page.goto(accounts))
@@ -212,16 +355,18 @@ index e28b65a..e39b847 100644
              ),
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
 new file mode 100644
-index 0000000..1453a80
+index 0000000..d0a0365
 --- /dev/null
 +++ b/e2e/tests/account-usage-cells.spec.ts
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,397 @@
 +/** Usage cells show only the windows an account reports, in color, and nothing for accounts without limits. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect } from "effect";
 +import type { Page } from "playwright";
 +import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
 +import { observationFixture } from "../support/account-observation-fixture.ts";
 +import { scenarios } from "../test-plan.ts";
 +
@@ -264,6 +409,7 @@ index 0000000..1453a80
 +      context,
 +      Effect.gen(function* () {
 +        const browser = yield* Browser;
++        const evidence = yield* Evidence;
 +        const now = yield* Clock.currentTimeMillis;
 +        // Two windows that both exist, plus one the provider calls unlimited.
 +        const studio = yield* observationFixture({
@@ -307,9 +453,11 @@ index 0000000..1453a80
 +        });
 +        yield* stale.backend.answer({
 +          status: 200,
-+          body: subscription(old, [
-+            percentWindow("seven_day", "Weekly", 89, 7 * day, 6 * day, old, now - hour),
-+          ]),
++          body: subscription(
++            old,
++            [percentWindow("seven_day", "Weekly", 89, 7 * day, 6 * day, old, now - hour)],
++            [banked(0, old, 27 * day)],
++          ),
 +        });
 +        // A connector: health, no usage reporter.
 +        const connector = yield* observationFixture({
@@ -333,6 +481,39 @@ index 0000000..1453a80
 +        }
 +        expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
 +
++        // The driver account has no retained report. Its first collection must start in the UI.
++        const driver = yield* acquisitionFixture();
++        const { account: unreadAccount } = yield* driver.create(driver.actors.owner, {
++          kind: "shared",
++          audience: { kind: "everyone" },
++        });
++        const unreadPath = `${driver.prefix}/accounts/${unreadAccount}`;
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "PATCH", unreadPath, {
++            label: "New reporter",
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          hasUsageReporter: true,
++          reports: [],
++          usageReporterLabel: "synthetic-account-driver",
++        });
++        expect(
++          (yield* driver.api.request(driver.actors.member, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          canInspect: false,
++          hasUsageReporter: false,
++          usageReporterLabel: null,
++          reports: [],
++        });
++        expect((yield* connector.read()).body).toMatchObject({
++          hasUsageReporter: false,
++          reports: [],
++        });
 +        const accounts = `/org/${studio.actors.organization.slug}/accounts`;
 +        const block = (page: Page, label: string) =>
 +          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
@@ -344,6 +525,9 @@ index 0000000..1453a80
 +            cell(page, "Spare", "seven_day").waitFor(),
 +            cell(page, "Default", "seven_day").waitFor(),
 +            block(page, "Work mail").locator("[data-account-health]").waitFor(),
++            block(page, "New reporter")
++              .getByText("no reading yet", { exact: true })
++              .waitFor({ timeout: 5000 }),
 +          ]);
 +
 +        yield* browser.login(studio.actors.owner);
@@ -357,7 +541,28 @@ index 0000000..1453a80
 +                .then(() => ready(page))
 +                .then(() => cell(page, "Studio", "seven_day").scrollIntoViewIfNeeded()),
 +            );
-+            yield* browser.checkpoint(`usage cells ${width} ${scheme}`);
++            yield* evidence.attach(
++              `after-usage-cells-${width}-${scheme}.png`,
++              "image/png",
++              yield* browser.use("Capture the account list", (page) => page.screenshot()),
++            );
++            for (const [label, file] of [
++              ["Work mail", "work-mail"],
++              ["New reporter", "new-reporter"],
++            ] as const) {
++              yield* browser.use(`Show the whole ${label} row`, (page) =>
++                block(page, label)
++                  .locator(
++                    "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]",
++                  )
++                  .scrollIntoViewIfNeeded(),
++              );
++              yield* evidence.attach(
++                `after-usage-cells-${width}-${scheme}-${file}.png`,
++                "image/png",
++                yield* browser.use(`Capture ${label}`, (page) => page.screenshot()),
++              );
++            }
 +          }
 +
 +        const read = yield* browser.use("Read every cell", (page) =>
@@ -385,6 +590,14 @@ index 0000000..1453a80
 +                      resetTitle:
 +                        element.querySelector("[data-reset]")?.getAttribute("title") ?? null,
 +                      count: element.querySelector("[data-reset-count]")?.textContent ?? null,
++                      countColor: (() => {
++                        const count = element.querySelector("[data-reset-count]");
++                        return count === null ? null : getComputedStyle(count).color;
++                      })(),
++                      mutedColor: (() => {
++                        const value = element.querySelector("[data-reading-value]");
++                        return value === null ? null : getComputedStyle(value).color;
++                      })(),
 +                      countTitle:
 +                        element.querySelector("[data-reset-count]")?.getAttribute("title") ?? null,
 +                      buttons: element.querySelectorAll("button").length,
@@ -434,6 +647,13 @@ index 0000000..1453a80
 +        expect(staleCells[0]?.age).toBe("last read 3 h ago");
 +        expect(staleCells[0]?.value, "a stale cell keeps its exact amount").toBe("Rem 89%");
 +        expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
++        expect(staleCells[0]?.count).toContain("↻ 1");
++        expect(staleCells[0]?.countColor, "a stale reset count uses the muted tone").toBe(
++          staleCells[0]?.mutedColor,
++        );
++        expect(spareCells[0]?.countColor, "a fresh reset count keeps its foreground tone").not.toBe(
++          spareCells[0]?.mutedColor,
++        );
 +        // Banked resets are a count on the window they refill, never a control.
 +        expect(spareCells[0]?.count).toContain("↻ 2");
 +        expect(spareCells[0]?.countTitle).toMatch(/^2 banked resets · soonest expires /);
@@ -443,6 +663,95 @@ index 0000000..1453a80
 +        expect(connectorCells).toEqual([]);
 +        expect(connectorParts).toEqual([0, 0]);
 +        expect(connectorText).not.toMatch(/usage/i);
++        const aligned = yield* browser.use("Keep connector Details at the right edge", (page) =>
++          block(page, "Work mail")
++            .getByRole("button", { name: "Details", exact: true })
++            .evaluate((button) => ({
++              right: button.getBoundingClientRect().right,
++              footerRight: button.parentElement!.getBoundingClientRect().right,
++            })),
++        );
++        expect(Math.abs(aligned.right - aligned.footerRight)).toBeLessThanOrEqual(1);
++        expect(
++          (yield* driver.backend.calls).filter((call) => call.step === "observe"),
++        ).toHaveLength(0);
++        yield* browser.use("Collect the new reporter's first reading through Refresh", (page) =>
++          block(page, "New reporter")
++            .getByRole("button", { name: "Refresh", exact: true })
++            .click()
++            .then(() => block(page, "New reporter").locator('[data-reading="requests"]').waitFor()),
++        );
++        expect(
++          (yield* driver.backend.calls).filter((call) => call.step === "observe"),
++        ).toHaveLength(1);
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          hasUsageReporter: true,
++          reports: [{ lastAttempt: { outcome: "success" } }],
++        });
++        // Non-cell readings stay in Details, including their only Refresh action.
++        for (const [label, windows, balances] of [
++          [
++            "Credits only",
++            [],
++            [{ id: "credits", label: "Credits", unit: "USD", available: 25, observedAt: iso(now) }],
++          ],
++          [
++            "Unlimited only",
++            [
++              {
++                id: "unlimited",
++                label: "Unlimited",
++                observedAt: iso(now),
++                measure: { unit: "requests", unlimited: true },
++              },
++            ],
++            [],
++          ],
++        ] as const) {
++          const fixture = yield* observationFixture({ name: label, observe: true, health: true });
++          yield* fixture.backend.answer({
++            status: 200,
++            body: subscription(now, windows, balances),
++          });
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.refresh()).status).toBe(200);
++          yield* browser.use(`Read ${label} without an empty usage line`, (page) =>
++            page
++              .goto(accounts)
++              .then(() =>
++                block(page, label).getByRole("button", { name: "Details", exact: true }).waitFor(),
++              ),
++          );
++          expect(
++            yield* browser.use(`Inspect the collapsed ${label} row`, (page) =>
++              Promise.all([
++                block(page, label).locator("[data-reading]").count(),
++                block(page, label).locator("[data-usage]").count(),
++                block(page, label).getByRole("button", { name: "Refresh", exact: true }).count(),
++              ]),
++            ),
++          ).toEqual([0, 0, 0]);
++          yield* browser.use(`Open ${label} Details`, (page) =>
++            block(page, label)
++              .getByRole("button", { name: "Details", exact: true })
++              .click()
++              .then(() =>
++                block(page, label).getByRole("button", { name: "Refresh", exact: true }).waitFor(),
++              ),
++          );
++          expect(
++            yield* browser.use(`Read ${label} details`, (page) =>
++              block(page, label).locator("[data-observation-details]").innerText(),
++            ),
++          ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
++        }
 +      }),
 +    ),
 +  );
@@ -857,21 +1166,33 @@ index 0807713..788a925 100644
    );
  }
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index 4a9738f..f320db6 100644
+index 4a9738f..5ebc00e 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
-@@ -80,6 +80,10 @@ export function AccountObservations<E>({
+@@ -28,6 +28,9 @@ export interface AccountObservationsView {
+   /** False: the caller may use the account but not see its usage; `reports` is then empty. */
+   readonly canInspect: boolean;
+   readonly canRefresh: boolean;
++  /** Hosted discovery includes registered drivers before their first reading. */
++  readonly hasUsageReporter?: boolean;
++  readonly usageReporterLabel?: string | null;
+   readonly reports: readonly AccountObservationRecord[];
+ }
+ 
+@@ -80,6 +83,12 @@ export function AccountObservations<E>({
      if (collecting) reload();
    }, [collecting, now, reload]);
    const label = account.label || "Unnamed account";
 +  // Accounts with no reporter, such as most connectors, and callers who may not see usage get no
 +  // usage area at all; only the account's own health, when given, remains.
-+  const reported = inspected !== undefined && inspected.reports.length > 0;
++  const reported =
++    inspected !== undefined &&
++    (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
 +  if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
    return (
      <div
        role="group"
-@@ -119,7 +123,7 @@ export function AccountObservations<E>({
+@@ -119,11 +128,11 @@ export function AccountObservations<E>({
            format={format}
            Failure={Failure}
          />
@@ -880,7 +1201,63 @@ index 4a9738f..f320db6 100644
            <Button
              variant="ghost"
              size="xs"
-@@ -210,17 +214,9 @@ function UsageFact<E>({
+-            className="justify-self-start text-muted-foreground hover:text-foreground"
++            className="justify-self-start text-muted-foreground hover:text-foreground @[740px]:col-start-[-2] @[740px]:justify-self-end"
+             aria-expanded={open}
+             aria-controls={details}
+             onClick={() => setOpen((value) => !value)}
+@@ -139,14 +148,26 @@ export function AccountObservations<E>({
+         ) : null}
+       </div>
+       {open && (
+-        <ObservationDetails
+-          id={details}
+-          reports={inspected?.reports ?? []}
+-          account={account}
+-          apps={health?.apps}
+-          now={now}
+-          format={format}
+-        />
++        <div id={details} className="grid gap-2.5">
++          <UsageFact
++            result={result}
++            retry={reload}
++            refresh={refresh}
++            plan={plan}
++            now={now}
++            format={format}
++            detailsOnly
++            Failure={Failure}
++          />
++          <ObservationDetails
++            id={`${details}-readings`}
++            reports={inspected?.reports ?? []}
++            account={account}
++            apps={health?.apps}
++            now={now}
++            format={format}
++          />
++        </div>
+       )}
+     </div>
+   );
+@@ -191,6 +212,7 @@ function UsageFact<E>({
+   plan,
+   now,
+   format,
++  detailsOnly = false,
+   Failure,
+ }: {
+   readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
+@@ -199,6 +221,7 @@ function UsageFact<E>({
+   readonly plan: boolean;
+   readonly now: number;
+   readonly format: DisplayFormat;
++  readonly detailsOnly?: boolean;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const [pending, setPending] = useState(false);
+@@ -210,17 +233,17 @@ function UsageFact<E>({
        <div className="min-w-0">
          <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
        </div>
@@ -894,32 +1271,45 @@ index 4a9738f..f320db6 100644
 -      <div className={line} data-usage-restricted>
 -        Usage isn't shared with you. Ask the owner if you need it.
 -      </div>
--    );
 +    ) : null;
-+  // Nothing reported, or usage not shared: the caller can't tell a reporter exists, so say nothing.
-+  if (!view.canInspect || view.reports.length === 0) return null;
++  if (!view.canInspect) return null;
++  // Reports with only balances or unlimited windows keep their refresh beside their details.
++  const reports = view.reports.filter((report) => {
++    const hasCells = report.result?.observation.windows.some(
++      (entry) => entry.measure.unlimited !== true,
+     );
++    return detailsOnly ? report.result !== null && !hasCells : report.result === null || hasCells;
++  });
++  const unread = !detailsOnly && view.reports.length === 0 && view.hasUsageReporter === true;
++  if (reports.length === 0 && !unread) return null;
    const run = async () => {
      if (pending) return;
      setPending(true);
-@@ -244,12 +240,6 @@ function UsageFact<E>({
+@@ -244,13 +267,15 @@ function UsageFact<E>({
    );
    return (
      <div className="flex min-w-0 flex-col gap-0.75" data-usage>
 -      {view.reports.length === 0 && (
--        <div className={line}>
++      {unread && (
+         <div className={line}>
 -          <span>No usage reported for this account.</span>
--          {action}
--        </div>
--      )}
-       {view.reports.map((report, index) => {
++          <span>Usage from {view.usageReporterLabel}</span>
++          <span aria-hidden>·</span>
++          <span>no reading yet</span>
+           {action}
+         </div>
+       )}
+-      {view.reports.map((report, index) => {
++      {reports.map((report, index) => {
          const read = report.result === null ? undefined : readingTimes(report.result)[0];
          const stale = report.freshness !== "fresh";
+         const note = attemptNote(report, now, format);
 diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
 new file mode 100644
-index 0000000..c4b3d02
+index 0000000..73a739e
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,146 @@
 +import type { AccountObservationRecord } from "@executor-js/sdk";
 +import type { DisplayFormat } from "../../contracts/display.ts";
 +import { cn } from "../lib/utils.ts";
@@ -985,7 +1375,10 @@ index 0000000..c4b3d02
 +        {resets !== undefined && (
 +          <>
 +            <span
-+              className="shrink-0 font-semibold text-foreground tabular-nums"
++              className={cn(
++                "shrink-0 font-semibold tabular-nums",
++                stale ? "text-muted-foreground" : "text-foreground",
++              )}
 +              title={resets.title}
 +              data-reset-count={resets.count}
 +            >

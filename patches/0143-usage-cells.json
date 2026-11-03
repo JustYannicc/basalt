@@ -1,7 +1,7 @@
 {
   "identity": "basalt-usage-cells",
   "file": "0143-usage-cells.patch",
-  "content_sha256": "2962bc5b8138653b396b57a409c7f572fbd1450f30dfbdc27867a8b54fb88605",
+  "content_sha256": "c9b1a9eb4c67fe3cdf0499dabe1dc9e3089ac234b5335cf9a0e8cfbe166426fb",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
