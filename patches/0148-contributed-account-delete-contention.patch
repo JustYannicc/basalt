@@ -1,0 +1,857 @@
+diff --git a/apps/hosted/server/src/implementation/account-removal-lock.ts b/apps/hosted/server/src/implementation/account-removal-lock.ts
+new file mode 100644
+index 0000000..383b379
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-removal-lock.ts
+@@ -0,0 +1,40 @@
++/** Acquire the complete app/account lock set before the SDK starts deleting credentials. */
++import { AppId, StorageError, type AccountId } from "@executor-js/sdk/core";
++import { Effect, Schedule, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++
++class RetryRemovalLocks extends Schema.TaggedError<RetryRemovalLocks>()("RetryRemovalLocks", {}) {}
++const Apps = Schema.Array(Schema.Struct({ app: AppId }));
++
++export const lockAccountRemoval = (sql: SqlClient.SqlClient, account: AccountId) => {
++  const linkedApps = sql`select distinct app from hosted_app_account_links
++    where account = ${account} order by app`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Apps)));
++  return sql
++    .withTransaction(
++      Effect.gen(function* () {
++        const apps = yield* linkedApps;
++        for (const { app } of apps)
++          yield* sql`select id from executor_apps where id = ${app} for no key update`;
++        // A reconnect can hold the account before requesting an app. Release this savepoint's
++        // app locks on contention so that writer can finish instead of forming a cycle.
++        yield* sql`select id from executor_accounts where id = ${account} for update nowait`;
++        const held = new Set(apps.map(({ app }) => app));
++        // A new link may have committed while the app locks were acquired. Restart without
++        // the account lock, then take the expanded app set in order. No writes ran yet.
++        if ((yield* linkedApps).some(({ app }) => !held.has(app)))
++          return yield* new RetryRemovalLocks();
++      }),
++    )
++    .pipe(
++      Effect.catchTag("SqlError", (error) =>
++        Effect.fail(
++          error.reason._tag === "LockTimeoutError" ? new RetryRemovalLocks() : new StorageError(),
++        ),
++      ),
++      Effect.retry({
++        while: Schema.is(RetryRemovalLocks),
++        schedule: Schedule.spaced("10 millis"),
++      }),
++      Effect.mapError(() => new StorageError()),
++    );
++};
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index c06e63e..b0b8335 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -227,7 +227,7 @@ export const disconnectAccount = Effect.gen(function* () {
+   const executor = yield* Effect.flatten(HostedExecutor);
+   yield* executor.accounts.get({ owner, account });
+   const sql = yield* policyDatabase;
+-  yield* executor[StorageHost].transaction(checkContributedAccountRemoval(sql, account));
++  yield* executor[StorageHost].transaction(checkContributedAccountRemoval(sql, account, true));
+   const [first, ...rest] = yield* appLinkApps(sql, account, true);
+   const binding = yield* executor[InteractiveHost].binding({ owner, account });
+   if (first !== undefined && binding === undefined)
+diff --git a/apps/hosted/server/src/implementation/contributed-account-policy.ts b/apps/hosted/server/src/implementation/contributed-account-policy.ts
+index 99f65f7..f8fc377 100644
+--- a/apps/hosted/server/src/implementation/contributed-account-policy.ts
++++ b/apps/hosted/server/src/implementation/contributed-account-policy.ts
+@@ -63,7 +63,11 @@ export const requireLinkRemovalAs = (
+ const Contribution = Schema.Struct({ app: AppId, requirement: Schema.String, account: AccountId });
+ 
+ /** Deleting saved credentials must pass the same checks as removing each contributed link. */
+-export const checkContributedAccountRemoval = (sql: SqlClient.SqlClient, account: AccountId) =>
++export const checkContributedAccountRemoval = (
++  sql: SqlClient.SqlClient,
++  account: AccountId,
++  wait = false,
++) =>
+   Effect.gen(function* () {
+     const links = yield* Schema.decodeUnknownEffect(Schema.Array(Contribution))(
+       yield* sql`select l.app, l.requirement, l.account from hosted_app_account_links l
+@@ -75,10 +79,10 @@ export const checkContributedAccountRemoval = (sql: SqlClient.SqlClient, account
+         order by l.app, l.requirement`,
+     );
+     if (links.length === 0) return;
+-    // The SDK already holds the account row. Fail contention rather than deadlocking with a
+-    // link writer holding the app row while waiting for this account.
++    // Only the route's precheck may wait without an account lock. The SDK prepares its full
++    // app/account lock set first; its lifecycle recheck must never introduce a reverse wait.
+     for (const link of links)
+-      yield* sql`select id from executor_apps where id = ${link.app} for no key update nowait`;
++      yield* sql`select id from executor_apps where id = ${link.app} for no key update${wait ? sql`` : sql` nowait`}`;
+     const user = yield* CurrentUserId;
+     for (const link of links) {
+       const permitted = yield* sql`select m.id from member m
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 3e1bb80..f2e8ff0 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -3,6 +3,7 @@ import { GroupDatabase } from "../contracts/groups.ts";
+ import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
+ import { checkConnection } from "./connection-policy.ts";
+ import { isContributed, checkContributedAccountRemoval } from "./contributed-account-policy.ts";
++import { lockAccountRemoval } from "./account-removal-lock.ts";
+ /** Product metadata commits with SDK resources using the same SQL transaction context. */
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+@@ -710,6 +711,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+             ),
+           );
+         }),
++      accountRemovalPreparing: (account) => lockAccountRemoval(sql, account.id),
+       accountRemoving: (account) =>
+         Effect.gen(function* () {
+           const organization = yield* organizationOf(account.owner);
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index fcd83e2..3d91bd0 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -129,7 +129,7 @@ const jobs = {
+     runner: 2,
+ 
+     pattern:
+-      "A Better Auth query|Cloud starts organization removals whose Workflow start stalled|departure diagnostics retain the real eighth failure|an app link that waits for the admin.s membership while a demotion commits",
++      "A Better Auth query|Cloud starts organization removals whose Workflow start stalled|departure diagnostics retain the real eighth failure|an app link that waits for the admin.s membership while a demotion commits|a contributed account delete (?:waits for a busy app|and a public app link|expands its app lock set|and a public reconnect|removes the grant committed)",
+   },
+   // This holds a lock on the accounts table to stop a tool call's batch partway, which would
+   // stall every other scenario that reads accounts.
+diff --git a/e2e/support/account-delete-contention.ts b/e2e/support/account-delete-contention.ts
+new file mode 100644
+index 0000000..19ecf6a
+--- /dev/null
++++ b/e2e/support/account-delete-contention.ts
+@@ -0,0 +1,80 @@
++/** Observe only the scenario's held rows and verify a deleted synthetic account independently. */
++import { expect } from "@effect/vitest";
++import { Effect, Fiber, Schedule, Schema } from "effect";
++import { refused } from "./app-links.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import type { Response } from "./platform.ts";
++
++export const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
++export const Backends = Schema.Array(Schema.Struct({ pid: Schema.Number, query: Schema.String }));
++export class PendingDelete extends Schema.TaggedError<PendingDelete>()("PendingDelete", {}) {}
++
++export const blocked = (
++  locks: Effect.Success<typeof cloudLocks>,
++  blockers: readonly number[],
++  statement: string,
++) =>
++  locks
++    .run({
++      sql: `select pid, query from pg_stat_activity
++      where pg_blocking_pids(pid) && string_to_array($1, ',')::integer[] and query ilike $2`,
++      params: [blockers.join(","), statement],
++    })
++    .pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++      Effect.filterOrFail(
++        (rows) => rows.length === 1,
++        () => new PendingDelete(),
++      ),
++      Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
++      Effect.orDie,
++    );
++
++export const deletedAccount = (
++  locks: Effect.Success<typeof cloudLocks>,
++  account: string,
++  response: Response,
++) =>
++  Effect.gen(function* () {
++    yield* refused(response, 403, "OrganizationForbidden");
++    const rows = yield* locks.run({
++      sql: `select (select count(*) from executor_accounts where id = $1)::text as accounts,
++      (select count(*) from hosted_app_account_links where account = $1)::text as links`,
++      params: [account],
++    });
++    expect(rows).toEqual([{ accounts: "0", links: "0" }]);
++  });
++
++/** Queue the held app behind the route precheck, so the SDK must reacquire it afterward. */
++export const holdSdkApp = <A, E, R>(
++  input: { readonly organization: string; readonly user: string; readonly app: string },
++  remove: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const membership = yield* cloudLocks;
++    const app = yield* cloudLocks;
++    yield* Effect.addFinalizer(() => Effect.ignore(membership.release));
++    yield* Effect.addFinalizer(() => Effect.ignore(app.release));
++    const [member] = yield* membership
++      .hold({
++        sql: `select pg_backend_pid() as pid from member
++      where "organizationId" = $1 and "userId" = $2 for update`,
++        params: [input.organization, input.user],
++      })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++    const request = yield* Effect.forkChild(remove);
++    const [precheck] = yield* blocked(membership, [member!.pid], "%from member%for share%");
++    const holding = yield* Effect.forkChild(
++      app
++        .hold({
++          sql: "select pg_backend_pid() as pid from executor_apps where id = $1 for no key update",
++          params: [input.app],
++        })
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
++    );
++    yield* blocked(membership, [precheck!.pid], "%executor_apps%");
++    yield* membership.release;
++    const [holder] = yield* Fiber.join(holding);
++    const [deleting] = yield* blocked(membership, [holder!.pid], "%executor_apps%");
++    return { request, app, observer: membership, deleting: deleting!, holder: holder! };
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 844b24b..1c678f9 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -190,6 +190,59 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  contributedAccountDeleteOAuthReconnect: {
++    fixtures: "actors",
++    file: "contributed-account-delete-oauth.spec.ts",
++    title:
++      "a contributed account delete removes the grant committed by a concurrent OAuth reconnect",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Requires concurrent transactions in managed Cloud's PostgreSQL."),
++      cloud: managedCloud,
++    },
++  },
++  contributedAccountDeleteExpandedLinks: {
++    fixtures: "actors",
++    file: "contributed-account-delete-lock-set.spec.ts",
++    title: "a contributed account delete expands its app lock set after a public link commits",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Requires concurrent transactions in managed Cloud's PostgreSQL."),
++      cloud: managedCloud,
++    },
++  },
++  contributedAccountDeleteReconnect: {
++    fixtures: "actors",
++    file: "contributed-account-delete-lock-set.spec.ts",
++    title: "a contributed account delete and a public reconnect release reverse locks and complete",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Requires concurrent transactions in managed Cloud's PostgreSQL."),
++      cloud: managedCloud,
++    },
++  },
++  contributedAccountDeleteLinkWriter: {
++    fixtures: "actors",
++    file: "contributed-account-delete-contention.spec.ts",
++    title:
++      "a contributed account delete and a public app link complete without an account-app lock inversion",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Requires concurrent transactions in managed Cloud's PostgreSQL."),
++      cloud: managedCloud,
++    },
++  },
++  contributedAccountDeleteContention: {
++    fixtures: "actors",
++    file: "contributed-account-delete-contention.spec.ts",
++    title:
++      "a contributed account delete waits for a busy app and removes its saved credentials and links",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Requires concurrent transactions in managed Cloud's PostgreSQL."),
++      cloud: managedCloud,
++    },
++  },
+   contributedAppRequirements: {
+     fixtures: "actors",
+     file: "contributed-app-requirements.spec.ts",
+diff --git a/e2e/tests/contributed-account-delete-contention.spec.ts b/e2e/tests/contributed-account-delete-contention.spec.ts
+new file mode 100644
+index 0000000..067ed18
+--- /dev/null
++++ b/e2e/tests/contributed-account-delete-contention.spec.ts
+@@ -0,0 +1,175 @@
++/** Saved-account deletion remains usable while another transaction holds a linked app. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Ref, Schedule, Schema } from "effect";
++import { ok } from "../support/app-links.ts";
++import {
++  Holder,
++  Backends,
++  PendingDelete,
++  blocked,
++  deletedAccount,
++} from "../support/account-delete-contention.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { contributedApp } from "../support/contributed-app.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Waiting = Schema.Array(Schema.Struct({ query: Schema.String }));
++
++layer(RuntimeLive, { excludeTestServices: true })(
++  "Contributed account deletion contention",
++  (it) => {
++    it.effect(scenarios.contributedAccountDeleteContention.title, (context) =>
++      withHostedHttpCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* contributedApp;
++          const { api, actors, prefix } = f;
++          const account = yield* f.connect(actors.member, "app", "shared", "Contended account", {
++            kind: "shared",
++            audience: { kind: "everyone" },
++          });
++          const locks = yield* cloudLocks;
++          yield* Effect.addFinalizer(() => Effect.ignore(locks.release));
++          const [holder] = yield* locks
++            .hold({
++              sql: "select pg_backend_pid() as pid from executor_apps where id = $1 for no key update",
++              params: [f.app.id],
++            })
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++          const finished = yield* Ref.make(false);
++          const request = yield* Effect.forkChild(
++            api
++              .request(actors.member, "DELETE", `${prefix}/accounts/${account}`)
++              .pipe(Effect.ensuring(Ref.set(finished, true))),
++          );
++          // A failing NOWAIT returns immediately. A waiting delete is released as soon as its
++          // actual database statement is blocked, without holding it for an arbitrary delay.
++          const observed = yield* Effect.gen(function* () {
++            if (yield* Ref.get(finished))
++              return { kind: "response" as const, response: yield* Fiber.join(request) };
++            const rows = yield* locks
++              .run({
++                sql: `select query from pg_stat_activity
++                where $1 = any(pg_blocking_pids(pid)) and query ilike '%executor_apps%'`,
++                params: [holder!.pid],
++              })
++              .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Waiting)), Effect.orDie);
++            if (rows.length === 0) return yield* new PendingDelete();
++            return { kind: "waiting" as const, rows };
++          }).pipe(
++            Effect.retry({
++              while: Schema.is(PendingDelete),
++              schedule: Schedule.spaced("100 millis"),
++            }),
++          );
++          yield* locks.release;
++          const response =
++            observed.kind === "response" ? observed.response : yield* Fiber.join(request);
++          yield* (yield* Evidence).json("delete-contention.json", {
++            heldApp: f.app.id,
++            observed,
++            status: response.status,
++          });
++          yield* ok(response);
++          expect(observed.kind).toBe("waiting");
++          expect(yield* f.readLinks()).toEqual([]);
++          yield* deletedAccount(
++            locks,
++            account,
++            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`),
++          );
++        }),
++      ),
++    );
++
++    it.effect(scenarios.contributedAccountDeleteLinkWriter.title, (context) =>
++      withHostedHttpCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* contributedApp;
++          const { api, actors, prefix } = f;
++          const account = yield* f.connect(actors.member, "app", "shared", "Delete beside writer", {
++            kind: "shared",
++            audience: { kind: "everyone" },
++          });
++          const other = yield* f.connect(actors.member, "user", "own", "Writer account", {
++            kind: "shared",
++            audience: { kind: "everyone" },
++          });
++          const policy = yield* cloudLocks;
++          const credentials = yield* cloudLocks;
++          yield* Effect.addFinalizer(() => Effect.ignore(policy.release));
++          yield* Effect.addFinalizer(() => Effect.ignore(credentials.release));
++          const [policyHolder] = yield* policy
++            .hold({
++              sql: "select pg_backend_pid() as pid from hosted_account_access where account_id = $1 for update",
++              params: [account],
++            })
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++          const [credentialHolder] = yield* credentials
++            .hold({
++              sql: "select pg_backend_pid() as pid from executor_accounts where id = $1 for update",
++              params: [other],
++            })
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++          const finished = yield* Ref.make(false);
++          const deletion = yield* Effect.forkChild(
++            api
++              .request(actors.member, "DELETE", `${prefix}/accounts/${account}`)
++              .pipe(Effect.ensuring(Ref.set(finished, true))),
++          );
++          // The route precheck has finished; hold the SDK transaction at its policy lock.
++          const [deleting] = yield* blocked(
++            policy,
++            [policyHolder!.pid],
++            "%hosted_account_access%for update%",
++          );
++          const linking = yield* Effect.forkChild(f.link(actors.member, "shared", other));
++          // The old order lets the link hold the app while its account FK waits. App-first
++          // deletion instead makes the link wait behind the delete. Both interleavings must finish.
++          const [writer] = yield* blocked(credentials, [credentialHolder!.pid, deleting!.pid], "%");
++          yield* policy.release;
++          const progress = yield* Effect.gen(function* () {
++            if (yield* Ref.get(finished)) return { kind: "response" as const };
++            const rows = yield* credentials
++              .run({
++                sql: `select pid, query from pg_stat_activity
++                where $1 = any(pg_blocking_pids(pid)) and query ilike '%executor_apps%'`,
++                params: [writer!.pid],
++              })
++              .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Backends)), Effect.orDie);
++            if (rows.length === 0) return yield* new PendingDelete();
++            return { kind: "waiting" as const, rows };
++          }).pipe(
++            Effect.retry({
++              while: Schema.is(PendingDelete),
++              schedule: Schedule.spaced("100 millis"),
++            }),
++          );
++          yield* credentials.release;
++          const removed = yield* Fiber.join(deletion);
++          const linked = yield* Fiber.join(linking);
++          yield* (yield* Evidence).json("public-link-writer-contention.json", {
++            deleting,
++            writer,
++            progress,
++            deleteStatus: removed.status,
++            linkStatus: linked.status,
++          });
++          yield* ok(removed);
++          yield* ok(linked);
++          expect((yield* f.readLinks()).map((link) => link.account.id)).toEqual([other]);
++          yield* deletedAccount(
++            credentials,
++            account,
++            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`),
++          );
++          yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${other}`));
++        }),
++      ),
++    );
++  },
++);
+diff --git a/e2e/tests/contributed-account-delete-lock-set.spec.ts b/e2e/tests/contributed-account-delete-lock-set.spec.ts
+new file mode 100644
+index 0000000..9140c58
+--- /dev/null
++++ b/e2e/tests/contributed-account-delete-lock-set.spec.ts
+@@ -0,0 +1,166 @@
++/** Rebuild the lock set when concurrent public writers change it or hold an account first. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import {
++  Holder,
++  blocked,
++  deletedAccount,
++  holdSdkApp,
++} from "../support/account-delete-contention.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { body } from "../support/api.ts";
++import { ok } from "../support/app-links.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { contributedApp, contributedSource } from "../support/contributed-app.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Contributed account delete lock set", (it) => {
++  it.effect(scenarios.contributedAccountDeleteExpandedLinks.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* contributedApp;
++        const { api, actors, prefix } = f;
++        const otherPath = yield* f.another(contributedSource);
++        const otherApp = otherPath.split("/").at(-1)!;
++        const account = yield* f.connect(actors.member, "app", "shared", "Expanding links", {
++          kind: "shared",
++          audience: { kind: "everyone" },
++        });
++        const deletion = yield* holdSdkApp(
++          {
++            organization: actors.organization.id,
++            user: f.ids.member,
++            app: f.app.id,
++          },
++          api.request(actors.member, "DELETE", `${prefix}/accounts/${account}`),
++        );
++        // The SDK has read only the original link and is waiting to lock that app.
++        yield* ok(
++          yield* api.request(actors.member, "PUT", `${otherPath}/accounts/app/shared/${account}`),
++        );
++        const added = yield* cloudLocks;
++        yield* Effect.addFinalizer(() => Effect.ignore(added.release));
++        const [holder] = yield* added
++          .hold({
++            sql: "select pg_backend_pid() as pid from executor_apps where id = $1 for no key update",
++            params: [otherApp],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++        yield* deletion.app.release;
++        const [expanded] = yield* blocked(added, [holder!.pid], "%executor_apps%");
++        // The expansion retry must release its account lock before waiting for the new app.
++        const accountLock = yield* added.probe({
++          sql: "select id from executor_accounts where id = $1 for update nowait",
++          params: [account],
++        });
++        expect(accountLock).toEqual([{ code: null }]);
++        yield* added.release;
++        const removed = yield* Fiber.join(deletion.request);
++        yield* ok(removed);
++        expect(yield* f.readLinks()).toEqual([]);
++        const otherLinks = yield* api.request(actors.member, "GET", `${otherPath}/accounts/app`);
++        yield* ok(otherLinks);
++        expect(otherLinks.body).toEqual([]);
++        yield* deletedAccount(
++          added,
++          account,
++          yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`),
++        );
++        yield* (yield* Evidence).json("expanded-delete-locks.json", {
++          expanded,
++          accountLock,
++          deleteStatus: removed.status,
++        });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.contributedAccountDeleteReconnect.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* contributedApp;
++        const { api, actors, prefix } = f;
++        const otherPath = yield* f.another(contributedSource);
++        const otherApp = otherPath.split("/").at(-1)!;
++        const account = yield* f.connect(
++          actors.member,
++          "app",
++          "shared",
++          "Reconnecting beside delete",
++          {
++            kind: "shared",
++            audience: { kind: "everyone" },
++          },
++        );
++        yield* ok(
++          yield* api.request(actors.member, "PUT", `${otherPath}/accounts/app/shared/${account}`),
++        );
++        const [first, second] = [f.app.id, otherApp].sort();
++        const firstPath = first === f.app.id ? f.path : otherPath;
++        const pending = yield* body(
++          Resource,
++          yield* api.request(actors.member, "POST", connectionsPath(firstPath, "app", "shared"), {
++            account,
++          }),
++        );
++        const completing = yield* cloudLocks;
++        yield* Effect.addFinalizer(() => Effect.ignore(completing.release));
++        const [holder] = yield* completing
++          .hold({
++            sql: `select pg_backend_pid() as pid from hosted_connection_access
++          where connection_id = $1 for update`,
++            params: [pending.id],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++        const reconnect = yield* Effect.forkChild(
++          f.submit(actors.member, pending.id, "Reconnected token"),
++        );
++        const [saving] = yield* blocked(
++          completing,
++          [holder!.pid],
++          "%hosted_connection_access%for share%",
++        );
++        const deletion = yield* holdSdkApp(
++          {
++            organization: actors.organization.id,
++            // The reconnect may already hold its actor's membership share lock.
++            user: f.ids.admin,
++            app: second!,
++          },
++          api.request(actors.admin, "DELETE", `${prefix}/accounts/${account}`),
++        );
++        // Reconnect owns the account. Deletion owns the first app and waits on the second.
++        yield* completing.release;
++        const [waitingReconnect] = yield* blocked(
++          completing,
++          [deletion.deleting.pid],
++          "%executor_apps%",
++        );
++        expect(waitingReconnect!.pid).toBe(saving!.pid);
++        yield* deletion.app.release;
++        const reconnected = yield* Fiber.join(reconnect);
++        const removed = yield* Fiber.join(deletion.request);
++        yield* ok(reconnected);
++        yield* ok(removed);
++        yield* deletedAccount(
++          completing,
++          account,
++          yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`),
++        );
++        yield* (yield* Evidence).json("reconnect-delete-locks.json", {
++          saving,
++          waitingReconnect,
++          deleting: deletion.deleting,
++          reconnectStatus: reconnected.status,
++          deleteStatus: removed.status,
++        });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/contributed-account-delete-oauth.spec.ts b/e2e/tests/contributed-account-delete-oauth.spec.ts
+new file mode 100644
+index 0000000..9e62936
+--- /dev/null
++++ b/e2e/tests/contributed-account-delete-oauth.spec.ts
+@@ -0,0 +1,165 @@
++/** A completed reconnect's current grant must be removed, even when deletion read its old binding. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import {
++  Holder,
++  blocked,
++  deletedAccount,
++  holdSdkApp,
++} from "../support/account-delete-contention.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appLinksFixture, ok } from "../support/app-links.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Contributed OAuth account deletion", (it) => {
++  it.effect(scenarios.contributedAccountDeleteOAuthReconnect.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const issuer = yield* accountIdentityIssuer;
++        const config = {
++          authorizationUrl: issuer.origin + "/authorize",
++          tokenUrl: issuer.origin + "/token",
++          revocationUrl: issuer.origin + "/revoke",
++          tokenEndpointAuthMethod: "none",
++          scopes: ["read"],
++          identity: { issuer: issuer.origin, name: "Deletion identity" },
++        };
++        const f = yield* appLinksFixture([
++          {
++            path: "index.ts",
++            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service = defineProvider({ name: "Deletion OAuth", auth: { oauth: oauth2(${JSON.stringify(config)}) } });
++export default defineApp({ app: { accounts: { shared: service.many().contributed() } }, user: { accounts: { own: service.many() } } }, async () => ({ tools: router({}) }));`,
++          },
++        ]);
++        const { api, actors, prefix } = f;
++        const http = yield* HttpClient.HttpClient;
++        const shared = { kind: "shared", audience: { kind: "everyone" } };
++        const consent = (connection: string) =>
++          Effect.gen(function* () {
++            const start = yield* api.request(
++              actors.member,
++              "POST",
++              `${prefix}/connections/${connection}/oauth/start`,
++              {
++                method: "oauth",
++                client: { clientId: "delete-reconnect-client" },
++              },
++            );
++            yield* ok(start);
++            const { authorizationUrl } = yield* body(
++              Schema.Struct({ authorizationUrl: Schema.String }),
++              start,
++            );
++            return yield* Effect.scoped(
++              Effect.gen(function* () {
++                const redirect = yield* HttpClient.withScope(http).get(authorizationUrl);
++                expect(redirect.status).toBe(302);
++                if (redirect.headers.location === undefined)
++                  return yield* Effect.die("Issuer omitted callback");
++                return redirect.headers.location;
++              }),
++            ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++          });
++        const complete = (connection: string, callbackUrl: string) =>
++          api.request(actors.member, "POST", `${prefix}/connections/${connection}/oauth/complete`, {
++            callbackUrl,
++          });
++        const first = yield* body(Resource, yield* f.start(actors.member, "user", "own", shared));
++        const source = yield* body(Resource, yield* complete(first.id, yield* consent(first.id)));
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.member, "DELETE", `${prefix}/accounts/${source.id}`)
++            .pipe(Effect.orDie),
++        );
++        const pending = yield* body(
++          Resource,
++          yield* f.start(actors.member, "app", "shared", shared),
++        );
++        const reused = yield* api.request(
++          actors.member,
++          "POST",
++          `${prefix}/connections/${pending.id}/oauth/reuse`,
++          {
++            method: "oauth",
++            account: source.id,
++          },
++        );
++        yield* ok(reused);
++        const { account } = yield* body(
++          Schema.Struct({ status: Schema.Literal("completed"), account: Resource }),
++          reused,
++        );
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`)
++            .pipe(Effect.orDie),
++        );
++        const reconnect = yield* body(
++          Resource,
++          yield* api.request(actors.member, "POST", connectionsPath(f.path, "app", "shared"), {
++            account: account.id,
++          }),
++        );
++        yield* issuer.configure({ subject: "person-two" });
++        const callback = yield* consent(reconnect.id);
++        const completing = yield* cloudLocks;
++        yield* Effect.addFinalizer(() => Effect.ignore(completing.release));
++        const [holder] = yield* completing
++          .hold({
++            sql: "select pg_backend_pid() as pid from hosted_connection_access where connection_id = $1 for update",
++            params: [reconnect.id],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++        const saving = yield* Effect.forkChild(complete(reconnect.id, callback));
++        const [writer] = yield* blocked(
++          completing,
++          [holder!.pid],
++          "%hosted_connection_access%for share%",
++        );
++        // Reconnect has updated its account but cannot commit. The deletion reads the old grant
++        // binding before it waits on this app, then must read again after obtaining the account.
++        const deletion = yield* holdSdkApp(
++          {
++            organization: actors.organization.id,
++            // Keep this gate independent of the reconnect's membership share lock.
++            user: f.ids.admin,
++            app: f.app.id,
++          },
++          api.request(actors.admin, "DELETE", `${prefix}/accounts/${account.id}`),
++        );
++        yield* completing.release;
++        yield* deletion.app.release;
++        yield* ok(yield* Fiber.join(saving));
++        yield* ok(yield* Fiber.join(deletion.request));
++        yield* deletedAccount(
++          completing,
++          account.id,
++          yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}`),
++        );
++        const grants = yield* completing.run({
++          sql: "select id from executor_oauth_grants where id = $1",
++          params: [account.id],
++        });
++        yield* (yield* Evidence).json("oauth-reconnect-delete.json", {
++          writer,
++          deleting: deletion.deleting,
++          grants,
++        });
++        expect(grants).toEqual([]);
++        yield* issuer.awaitRevocation;
++        expect((yield* issuer.metrics).revocations).toBe(1);
++        yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${source.id}`));
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index f18d3f0..6f6520d 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -270,6 +270,10 @@ export interface ResourceLifecycle {
+   >;
+   /** Called once for a newly saved account, including secrets and OAuth completion. */
+   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
++  /** Database-only host lock preparation, before the SDK locks the account in its removal transaction. */
++  readonly accountRemovalPreparing?: (
++    account: Pick<Account, "id" | "owner">,
++  ) => Effect.Effect<void, StorageError>;
+   /** Called after active-work checks, before deleting credentials in the same transaction. */
+   readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
+   /**
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index 727b9b1..c15b7eb 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -240,22 +240,28 @@ export const makeAccounts = (
+     Effect.gen(function* () {
+       const removed = yield* transaction(db, (tx) =>
+         Effect.gen(function* () {
+-          const row = yield* query(() =>
+-            tx.findFirst("accounts", {
+-              where: (b) =>
+-                b.and(
+-                  b("id", "=", input.account),
+-                  input.owner === undefined ? true : b("owner", "=", input.owner),
+-                ),
+-            }),
+-          );
+-          if (row !== null) {
++          const read = () =>
++            query(() =>
++              tx.findFirst("accounts", {
++                where: (b) =>
++                  b.and(
++                    b("id", "=", input.account),
++                    input.owner === undefined ? true : b("owner", "=", input.owner),
++                  ),
++              }),
++            );
++          const initial = yield* read();
++          if (initial !== null) {
++            yield* lifecycle?.accountRemovalPreparing?.(initial) ?? Effect.void;
+             yield* query(() =>
+               tx.updateMany("accounts", {
+-                where: (b) => b("id", "=", row.id),
+-                set: { createdAt: row.createdAt },
++                where: (b) => b("id", "=", initial.id),
++                set: { createdAt: initial.createdAt },
+               }),
+             );
++            // A reconnect may commit while lock preparation waits. Remove its current grant.
++            const row = yield* read();
++            if (row === null) return undefined;
+             const linked = yield* query(() =>
+               tx.findFirst("webhookAccounts", { where: (b) => b("account", "=", row.id) }),
+             );
