@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-oauth-declared-fields",
+  "file": "0100-oauth-declared-fields.patch",
+  "content_sha256": "cd0c83e3e7926aa76b14f61c0f31d7e0026ad3a4bfec5b17380fd01dd6182762",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

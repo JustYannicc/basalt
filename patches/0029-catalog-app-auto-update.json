@@ -1,0 +1,10 @@
+{
+  "identity": "basalt-catalog-app-auto-update",
+  "file": "0029-catalog-app-auto-update.patch",
+  "content_sha256": "c24ce050a719efcd445090ec6f2866c797d6624a7f923f8da2725b9c6d153280",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true,
+  "upstream_issue": 2417
+}

@@ -1,3 +1,5 @@
+import { assertCarryDeletions } from "./patch-retirement.ts";
+import { parseRegistrySource } from "./patch-layout.ts";
 import { GitHubApi } from "./github.ts";
 import { classifyRefs } from "./classify.ts";
 import { git, pushReleaseBranch } from "./git.ts";
@@ -199,7 +201,7 @@ async function validateBranchSnapshot(
     `scripts/releases/receipts/${source}.json`,
   ]);
   for (const file of files)
-    if (/^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(file.filename)) contentPaths.add(file.filename);
+    if (/^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:patch|json)$/.test(file.filename)) contentPaths.add(file.filename);
   for (const file of files) if (contentPaths.has(file.filename)) {
     const [before, after] = await Promise.all([
       readGitHubFile(api, repository, file.filename, base),
@@ -207,7 +209,7 @@ async function validateBranchSnapshot(
     ]);
     contents[file.filename] = { ...(before === undefined ? {} : { base: before }), ...(after === undefined ? {} : { candidate: after }) };
   }
-  for (const path of ["upstream.json", "containers/pool/releases.json"]) {
+  for (const path of ["upstream.json", "containers/pool/releases.json", "scripts/releases/patches.json"]) {
     if (contents[path]) continue;
     const [before, after] = await Promise.all([
       readGitHubFile(api, repository, path, base),
@@ -380,6 +382,7 @@ function stagePaths(root: string, source: UpdateSource): string[] {
     if (filename.startsWith("patches/") && status !== "D") throw new Error("Carried patches may only be removed by a release update");
     if (status === "R" || status === "C") throw new Error("Release updater does not accept file renames");
   }
+  assertCarryDeletions(statuses, source, parseRegistrySource(git(root, ["show", "HEAD:scripts/releases/patches.json"])).format_version === 4);
   return statuses.map((row) => row.at(-1)!).sort();
 }
 
@@ -395,7 +398,7 @@ function commitCandidate(root: string, releaseKey: string): string {
 function isReleasePath(path: string, source: UpdateSource): boolean {
   return path === "upstream.json" || path === "containers/pool/releases.json" || path === "src/pool/providers.json" ||
     path === "scripts/releases/patches.json" || path === `scripts/releases/receipts/${source}.json` ||
-    path === RELEASE_MERGE_POLICY.generatedArchitecturePath || /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(path);
+    path === RELEASE_MERGE_POLICY.generatedArchitecturePath || /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:patch|json)$/.test(path);
 }
 
 function patchPaths(paths: string[]): string[] { return paths.filter((path) => path.startsWith("patches/") && path.endsWith(".patch")); }

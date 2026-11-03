@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { validateChangedFiles, validateCheckRunReceipt, validatePreviewReceipt, validatePullRequestIdentity, type ChangedFile, type FileContents, type ReleasePins } from "./policy.ts";
 import { sha256PatchContent } from "../releases/patch-registry.ts";
 import type { PatchRemovalReceipt } from "../releases/types.ts";
+import { patchFixtureContent, patchManifest } from "../releases/fixtures.test-helpers.ts";
 
 const basePins: ReleasePins = {
   tools: { repository: "UsefulSoftwareCo/executor", commit: "1".repeat(40) },
@@ -54,11 +55,51 @@ function toolsPinCandidate(): { files: ChangedFile[]; contents: FileContents } {
   return {
     files: [file("upstream.json"), file("scripts/releases/receipts/tools.json", "added", 1, 0)],
     contents: {
+      "scripts/releases/patches.json": { base: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}', candidate: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}' },
       "upstream.json": { base: baseUpstream, candidate: candidateUpstream },
       "containers/pool/releases.json": { base: poolText, candidate: poolText },
       "scripts/releases/receipts/tools.json": { candidate: releaseReceipt("tools", basePins, candidatePins) },
     },
   };
+}
+
+test("format 4 retirement deletes an upstream patch and record with its exact receipt", () => {
+  const candidate = sidecarCandidate();
+  assert.equal(validateChangedFiles(candidate.files, candidate.contents).allowed, true);
+});
+
+test("format 4 refuses unpaired retirement, edited survivors, overlays, header changes and wrong receipts", () => {
+  const mutations: Array<(candidate: ReturnType<typeof sidecarCandidate>) => void> = [
+    ({ files }) => { files.splice(files.findIndex(({ filename }) => filename.endsWith("review.json")), 1); },
+    ({ files }) => { files.splice(files.findIndex(({ filename }) => filename.endsWith("review.patch")), 1); },
+    ({ files }) => { files.push(file("patches/0004-workflow.json")); },
+    ({ files }) => { files.push(file("patches/added.json", "added", 1, 0)); },
+    ({ files }) => { files[2]!.status = "renamed"; },
+    ({ contents }) => { contents["scripts/releases/patches.json"]!.candidate += "\n"; },
+    ({ contents }) => { delete contents["scripts/releases/patches.json"]; },
+    ({ contents }) => { contents["patches/0001-review.json"]!.base = JSON.stringify({ ...patchManifest.patches[0], kind: "overlay", upstream_pull_request: null }); },
+    ({ contents }) => { contents["patches/0001-review.patch"]!.candidate = "still present"; },
+    ({ contents }) => { contents["patches/0001-review.patch"]!.base = "tampered"; },
+    ({ contents }) => { contents["scripts/releases/receipts/tools.json"]!.candidate = releaseReceipt("tools", basePins, candidatePins); },
+    ({ contents }) => { contents["scripts/releases/patches.json"]!.candidate = JSON.stringify(patchManifest); },
+  ];
+  for (const mutate of mutations) {
+    const candidate = sidecarCandidate();
+    mutate(candidate);
+    assert.equal(validateChangedFiles(candidate.files, candidate.contents).allowed, false);
+  }
+});
+
+function sidecarCandidate(): { files: ChangedFile[]; contents: FileContents } {
+  const candidate = toolsPinCandidate();
+  const record = patchManifest.patches[0]!;
+  candidate.files.push(file("patches/0001-review.json", "removed", 0, 10), file("patches/0001-review.patch", "removed", 0, 1));
+  candidate.contents["patches/0001-review.json"] = { base: JSON.stringify(record) };
+  candidate.contents["patches/0001-review.patch"] = { base: patchFixtureContent(record.file) };
+  candidate.contents["scripts/releases/receipts/tools.json"] = { candidate: releaseReceipt("tools", basePins, candidatePins, [
+    { identity: record.identity, content_sha256: record.content_sha256 },
+  ]) };
+  return candidate;
 }
 
 const pr = (changes: Partial<Parameters<typeof validatePullRequestIdentity>[0]> = {}) => ({
@@ -132,6 +173,7 @@ test("accepts generated provider data only alongside a home pin update", () => {
   const nextPins = { ...basePins, home: nextHome };
   const files = [file("containers/pool/releases.json"), file("src/pool/providers.json"), file("scripts/releases/receipts/home.json", "added", 1, 0)];
   const contents: FileContents = {
+    "scripts/releases/patches.json": { base: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}', candidate: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}' },
     "upstream.json": { base: baseUpstream, candidate: baseUpstream },
     "containers/pool/releases.json": { base: poolText, candidate: candidatePoolText },
     "src/pool/providers.json": { base: "[]", candidate: JSON.stringify([{ id: "alpha", name: "Alpha" }]) },
@@ -148,6 +190,7 @@ test("accepts an independent node pin update with its matching receipt", () => {
   const nextPool = JSON.stringify({ format_version: 1, artifacts: { home: basePins.home, node } });
   const files = [file("containers/pool/releases.json"), file("scripts/releases/receipts/node.json", "added", 1, 0)];
   const contents: FileContents = {
+    "scripts/releases/patches.json": { base: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}', candidate: '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}' },
     "upstream.json": { base: baseUpstream, candidate: baseUpstream },
     "containers/pool/releases.json": { base: poolText, candidate: nextPool },
     "scripts/releases/receipts/node.json": { candidate: releaseReceipt("node", basePins, candidatePinsForNode) },

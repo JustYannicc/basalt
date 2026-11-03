@@ -1,3 +1,4 @@
+import { serializePatchLayout } from "./patch-layout.ts";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -92,7 +93,7 @@ export function createBasaltFixture(path: string, toolBase: string, homeCommit: 
       workflow_sensitive: false,
     }],
   };
-  writeFileSync(join(path, "scripts/releases/patches.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  for (const [file, content] of serializePatchLayout(manifest)) writeFileSync(join(path, file), content);
   writeFileSync(join(path, "patches/0001-fixture.patch"), patch);
   writeFileSync(join(path, "src/pool/providers.json"), '[\n  {"id":"claude","name":"Claude"}\n]\n');
   writeFileSync(join(path, "README.md"), "simulation\n");

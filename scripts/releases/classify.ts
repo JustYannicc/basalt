@@ -1,3 +1,4 @@
+import { materializePatchManifest, parseRegistrySource } from "./patch-layout.ts";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -5,10 +6,7 @@ import { GitHubApi } from "./github.ts";
 import { changedPatchFiles, isDatabasePath, localDatabasePaths, localWorkflowPaths, mergeEvidence, nodeDatabasePathState, sourceEvidence, toolsDatabasePathState, toolsWorkflowPathState } from "./paths.ts";
 import { classifyPatchChanges } from "./classify-patches.ts";
 import {
-  assertPatchManifestContentMatchesFiles,
-  assertPatchManifestMatchesFiles,
   assertPoolCarryManifestContent,
-  parsePatchManifest,
 } from "./patch-registry.ts";
 import { githubRepository, sameArtifact } from "./sources.ts";
 import type { ArtifactPin, ClassificationReport, Evidence, PatchManifestV3, ReleasePins, SourceComparison } from "./types.ts";
@@ -182,26 +180,20 @@ function readPinsAt(repositoryRoot: string, commit: string): ReleasePins {
 function readManifestAt(repositoryRoot: string, commit: string): PatchManifestV3 | undefined {
   const source = readOptionalAt(repositoryRoot, commit, "scripts/releases/patches.json");
   if (source === undefined) return undefined;
-  const parsed = parsePatchManifest(source);
+  const parsed = parseRegistrySource(source);
   if (parsed.format_version === 2) return undefined;
-  const manifest = parsed;
   const rows = git(repositoryRoot, ["ls-tree", "-r", "--format=%(objectmode) %(path)", commit, "--", "patches"])
     .trim().split("\n").filter(Boolean).map((line) => {
       const separator = line.indexOf(" ");
       return { mode: line.slice(0, separator), path: line.slice(separator + 1) };
     });
-  for (const { mode, path } of rows) {
-    if (path.endsWith(".patch") && mode !== "100644" && mode !== "100755")
-      throw new Error(`Carried patch is not a regular Git blob: ${path}`);
-  }
-  const files = rows.filter(({ path }) => path.endsWith(".patch"))
-    .map(({ path }) => path.slice("patches/".length));
-  assertPatchManifestMatchesFiles(manifest, files);
-  const contentByFile = Object.fromEntries(manifest.patches.map(({ file }) => [
-    file,
-    gitBuffer(repositoryRoot, ["show", `${commit}:patches/${file}`]),
+  const headerMode = git(repositoryRoot, ["ls-tree", "--format=%(objectmode)", commit, "--", "scripts/releases/patches.json"]).trim();
+  if (headerMode !== "100644" && headerMode !== "100755") throw new Error("Patch header is not a regular Git blob");
+  const files = Object.fromEntries(rows.filter(({ path }) => /\.(patch|json)$/.test(path)).map(({ mode, path }) => [
+    path.slice("patches/".length),
+    { regular: mode === "100644" || mode === "100755", content: gitBuffer(repositoryRoot, ["show", `${commit}:${path}`]) },
   ]));
-  assertPatchManifestContentMatchesFiles(manifest, contentByFile);
+  const manifest = materializePatchManifest(source, files);
   if (manifest.pool_carries)
     assertPoolCarryManifestContent(manifest, gitBuffer(repositoryRoot, ["show", `${commit}:${manifest.pool_carries.manifest}`]));
   return manifest;

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-zoho-oauth",
+  "file": "0021-zoho-oauth.patch",
+  "content_sha256": "2f54ac20814fca30c9f09e8b389423eaff4d8bef625d66146519807f41c7ea79",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

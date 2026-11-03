@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { GitHubApi } from "./github.ts";
 import { activePatchFiles, decidePatchRemovals, readPatchManifest } from "./patches.ts";
 import { patchManifestPath, updatedManifest } from "./patch-registry.ts";
+import { parseRegistrySource, patchRecordPath } from "./patch-layout.ts";
 import { githubRepository, latestReleasedArtifact, latestToolsCandidate, sameArtifact } from "./sources.ts";
 import { buildProviderTable, extractOAuthProviderIds, renderProviderTable, type PoolProvider } from "../pool-providers.ts";
 import { pluginOAuthProviderIds } from "../pool-plugin-providers.ts";
@@ -60,8 +61,12 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
       .sort((left, right) => left.identity.localeCompare(right.identity));
     for (const patch of removed) files.push({ path: `patches/${patch.file}`, content: null });
     if (removed.length) {
-      const updated = updatedManifest(manifest, removedIdentities);
-      files.push({ path: patchManifestPath, content: `${JSON.stringify(updated, null, 2)}\n` });
+      if (parseRegistrySource(readFileSync(join(rootPath, patchManifestPath), "utf8")).format_version === 4) {
+        for (const patch of removed) files.push({ path: patchRecordPath(patch.file), content: null });
+      } else {
+        const updated = updatedManifest(manifest, removedIdentities);
+        files.push({ path: patchManifestPath, content: `${JSON.stringify(updated, null, 2)}\n` });
+      }
     }
   } else {
     const kind = source;

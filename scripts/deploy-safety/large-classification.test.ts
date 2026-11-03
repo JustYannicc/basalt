@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { classifyRefs } from "../releases/classify.ts";
 import { makeReleaseRoot } from "../releases/fixtures.test-helpers.ts";
 import { sha256PatchContent } from "../releases/patch-registry.ts";
-import type { PatchManifestV3 } from "../releases/types.ts";
+import { readPatchManifest } from "../releases/patches.ts";
+import { patchRecordPath } from "../releases/patch-layout.ts";
 
 function git(root: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -19,12 +20,11 @@ function commit(root: string): string {
 }
 
 function replacePatch(root: string, content: string | Buffer): void {
-  const path = join(root, "scripts/releases/patches.json");
-  const manifest: PatchManifestV3 = JSON.parse(readFileSync(path, "utf8"));
+  const manifest = readPatchManifest(root);
   const patch = manifest.patches[0]!;
   patch.content_sha256 = sha256PatchContent(content);
   writeFileSync(join(root, "patches", patch.file), content);
-  writeFileSync(path, JSON.stringify(manifest));
+  writeFileSync(join(root, patchRecordPath(patch.file)), JSON.stringify(patch));
 }
 
 test("release classification reads large patch blobs completely and verifies their digests", async () => {

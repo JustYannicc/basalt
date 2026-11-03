@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-production-ops",
+  "file": "0078-production-ops.patch",
+  "content_sha256": "f45549966a0399c015bc7a6900a15682165c19f9b657f3ec8484d51898d553a1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true
+}

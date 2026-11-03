@@ -1,3 +1,5 @@
+import { assertCarryDeletions } from "./patch-retirement.ts";
+import { parseRegistrySource } from "./patch-layout.ts";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, chmodSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +46,7 @@ export function stageReleaseChanges(root: string, source: "tools" | "home" | "no
       throw new Error("Carried patches may only be removed by a release update");
     if (status === "R" || status === "C") throw new Error("Release updater does not accept file renames");
   }
+  assertCarryDeletions(rows, source, parseRegistrySource(git(root, ["show", "HEAD:scripts/releases/patches.json"])).format_version === 4);
   return rows.map((row) => row.at(-1)!).sort();
 }
 
@@ -90,5 +93,5 @@ function allowedReleasePath(path: string, source: "tools" | "home" | "node"): bo
     path === "scripts/releases/patches.json" ||
     path === `scripts/releases/receipts/${source}.json` ||
     path === "architecture/gen/stack.gen.c4" ||
-    /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(path);
+    /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:patch|json)$/.test(path);
 }

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-hosting",
+  "file": "0005-app-hosting.patch",
+  "content_sha256": "e2ee708e5d412c690dd25cf1854e8145faa0c2d8629229f487be6d0c855cc88d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

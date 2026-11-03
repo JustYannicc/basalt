@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-atomic-pool-setup",
+  "file": "0065-atomic-pool-setup.patch",
+  "content_sha256": "a3c0e5363066abc9970c9357cc8ce8e1e1d7fcc3363e250738a7ef815378c1e4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

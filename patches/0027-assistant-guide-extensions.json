@@ -1,0 +1,9 @@
+{
+  "identity": "executor-assistant-guide-extensions",
+  "file": "0027-assistant-guide-extensions.patch",
+  "content_sha256": "a63bbc923cc77444b0cf102688314492c1b39efeb3a6d0d91945a07f21348a4c",
+  "kind": "upstream",
+  "upstream_pull_request": 2470,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

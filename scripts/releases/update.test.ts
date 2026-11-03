@@ -61,8 +61,8 @@ test("tools v2 release updates are idempotent and remove only proven merged patc
   assert.ok(plan.files.some((file) => file.path === "patches/0001-review.patch" && file.content === null));
   assert.equal(plan.files.some((file) => file.path === "patches/0004-workflow.patch"), false);
   assert.deepEqual(plan.changedPaths.sort(), [
+    "patches/0001-review.json",
     "patches/0001-review.patch",
-    "scripts/releases/patches.json",
     "scripts/releases/receipts/tools.json",
     "upstream.json",
   ]);
@@ -101,12 +101,10 @@ test("an invalid patch does not prevent the tools candidate plan", async (contex
 `;
   writeFileSync(join(root, "patches/0001-review.patch"), patch);
   writeFileSync(join(root, "source.txt"), "the source changed\n");
-  const manifestPath = join(root, "scripts/releases/patches.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-    patches: Array<{ identity: string; content_sha256: string }>;
-  };
-  manifest.patches.find(({ identity }) => identity === "executor-review")!.content_sha256 = sha256PatchContent(patch);
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestPath = join(root, "patches/0001-review.json");
+  const record = JSON.parse(readFileSync(manifestPath, "utf8"));
+  record.content_sha256 = sha256PatchContent(patch);
+  writeFileSync(manifestPath, `${JSON.stringify(record, null, 2)}\n`);
   const failure = spawnApplyCheck(root);
   assert.notEqual(failure, 0);
 
@@ -114,7 +112,7 @@ test("an invalid patch does not prevent the tools candidate plan", async (contex
   assert.equal(plan.candidatePins.tools.commit, sha("e"));
   assert.ok(plan.changedPaths.includes("upstream.json"));
   assert.equal(plan.files.some((file) => file.path === "scripts/releases/patches.json"), false);
-  assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).patches[0].content_sha256, sha256PatchContent(patch));
+  assert.equal(JSON.parse(readFileSync(manifestPath, "utf8")).content_sha256, sha256PatchContent(patch));
 });
 
 test("release receipts are stable and contain the source-specific base and candidate pins", async (context) => {
@@ -152,7 +150,7 @@ test("requires an exact patch-manifest match with every carried patch file", asy
   const root = makeReleaseRoot();
   context.after(() => rmSync(root, { recursive: true, force: true }));
   writeFileSync(join(root, "patches/0011-preview-auth.patch"), "untracked patch\n");
-  assert.throws(() => readPatchManifest(root), /does not match the patches directory/);
+  assert.throws(() => readPatchManifest(root), /Missing or orphan patch record|does not match the patches directory/);
 });
 
 test("stale content hashes report every replacement digest before release API calls", async (context) => {

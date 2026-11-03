@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-assistant-guide-brand",
+  "file": "0057-assistant-guide-brand.patch",
+  "content_sha256": "463a63dac72c0542c147cd296439084434882039c35fe380e86610ad285e213f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

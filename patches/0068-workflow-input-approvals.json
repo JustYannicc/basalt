@@ -1,0 +1,9 @@
+{
+  "identity": "executor-workflow-input-approvals",
+  "file": "0068-workflow-input-approvals.patch",
+  "content_sha256": "aea5d4251f1ad3d228346cfb32d206ff8f75178ec40c962c7b0477bb9491bb89",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

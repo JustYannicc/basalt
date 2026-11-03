@@ -1,0 +1,9 @@
+{
+  "identity": "executor-tool-search-empty",
+  "file": "0013-tool-search-empty.patch",
+  "content_sha256": "00a0affa32115c6b145220aedd19a176d7d56fff8c4616b9982d2fc37590bcdf",
+  "kind": "upstream",
+  "upstream_pull_request": 2345,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

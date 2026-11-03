@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-device-grants",
+  "file": "0059-native-device-grants.patch",
+  "content_sha256": "c898fda2a39e936ca9eae9663180854ab4fb1425d272b7ff5744f5989465834a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

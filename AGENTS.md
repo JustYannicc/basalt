@@ -13,11 +13,13 @@ the deploy-time fixture for dedicated E2E stages. Basalt previews use the
 `0019-preview-auth.patch` password sign-in overlay. Keep generated session files
 private.
 
-`scripts/releases/patches.json` binds each carry's identity, filename and exact
-SHA-256 to its retirement mapping. Update the registry when patch content or its
-filename changes. Retire a carry only through its explicit mapping and required
-proof. A generic upstream subset cannot retire a whole mixed carry; overlays need
-a reviewed manual retirement.
+Each `patches/<stem>.patch` has a same-stem JSON record binding its identity,
+filename, exact SHA-256 and retirement mapping. `scripts/releases/patches.json`
+is the format-4 header; patch filename sort is the sole application order. Add
+only the patch and its record for a new carry. Update that record when its content
+or filename changes, preserving unrelated record bytes. Retire a carry only through
+its explicit mapping and required proof, deleting both files. A generic upstream
+subset cannot retire a whole mixed carry; overlays need a reviewed manual retirement.
 
 Public commits, PRs, issues and comments must exclude preview hosts, private fork
 refs, local paths, thread links and personal data.

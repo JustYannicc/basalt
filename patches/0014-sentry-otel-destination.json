@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-sentry-otel-destination",
+  "file": "0014-sentry-otel-destination.patch",
+  "content_sha256": "b04dab9403e6aad10a5ed654a90b667d64e9dfb20e8c0ce70b3adc86b1dddb63",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
