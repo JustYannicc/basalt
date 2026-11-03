@@ -421,6 +421,8 @@ model {
   basalt.setupHost -[sync]-> basalt.modelGateway "POOL_SERVICE: private /__setup/v1/*; signed action and 30-second expiry"
   basalt.modelGateway -[sync]-> basalt.setupHost "intent validation, computer metadata or consumed one-time credentials"
   basalt.setupInstaller -[sync]-> basalt.brandConfig "read config markers and public endpoint"
+  basalt.setupInstaller -[sync]-> poolOwner "show existing connection names and request replacement choice"
+  poolOwner -[sync]-> basalt.setupInstaller "choose named replacements or keep both"
   basalt.setupInstaller -[sync]-> basalt.router "claim one-time credentials from /setup/claim/*"
   basalt.router -[sync]-> basalt.setupInstaller "installer asset or one-time credential response"
   localClient -[sync]-> basalt.setupInstaller "run installer or undo"
