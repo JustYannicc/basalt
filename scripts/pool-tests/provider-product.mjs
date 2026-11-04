@@ -170,7 +170,17 @@ export async function withProviderProduct(home, work) {
             await reconcile(lab, id);
           };
           yield* Effect.tryPromise(() =>
-            work({ ...h, pool: pool.id, provider, select, reconcile, references, run, control }),
+            work({
+              ...h,
+              pool: pool.id,
+              provider,
+              select,
+              links: (id) => run(h.request("GET", `${h.appPath(id)}/accounts/app`)),
+              reconcile,
+              references,
+              run,
+              control,
+            }),
           );
         }),
       ).pipe(Effect.provide(runtime)),

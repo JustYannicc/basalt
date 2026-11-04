@@ -46,6 +46,8 @@ export async function handleUsageSeries(
     const input = historyObject(payload.input),
       authority = seriesAuthority(payload.authority);
     if (
+      typeof payload.pool !== "string" ||
+      !payload.pool ||
       input.pool !== payload.pool ||
       typeof payload.user !== "string" ||
       !payload.user ||
@@ -59,7 +61,10 @@ export async function handleUsageSeries(
             poolUsageSeries(db, input, authority),
           )
         : input.session !== undefined && access.home !== undefined
-          ? await sessionSuccess(access.home, input, authority)
+          ? await sessionSuccess(access.home, input, authority, {
+              pool: payload.pool,
+              user: payload.user,
+            })
           : await withHistoryDatabase(access.connectionString, (db) =>
               lastSuccessAt(db, input, authority),
             );

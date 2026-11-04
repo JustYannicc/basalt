@@ -30,10 +30,19 @@ function stream(): Response {
   });
 }
 function fixture(
-  options: { owner?: boolean; wrong?: boolean; error?: boolean; late?: boolean } = {},
+  options: {
+    owner?: boolean;
+    wrong?: boolean;
+    error?: boolean;
+    late?: boolean;
+    failLink?: "provider" | "pool";
+  } = {},
 ) {
   const calls: string[] = [];
   let polls = 0;
+  let linkFailed = false;
+  const links = new Map<string, Set<string>>();
+  const imports: { creation: string; id: string }[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     calls.push(url.pathname);
@@ -45,9 +54,27 @@ function fixture(
     if (url.pathname.endsWith("/import-login-file")) {
       assert.equal(new Headers(init?.headers).get("cookie"), "fixture-cookie");
       assert.equal(JSON.parse(String(init?.body)).file.access_token, "private-login-token");
+      imports.push({ creation: JSON.parse(String(init?.body)).creation, id: "acc_imported" });
       return Response.json({ id: "acc_imported" });
     }
-    if (init?.method === "PUT") return Response.json(null);
+    if (init?.method === "PUT") {
+      const app = url.pathname.split("/")[5]!;
+      const account = url.pathname.split("/").at(-1)!;
+      const saved = links.get(app) ?? new Set<string>();
+      saved.add(account);
+      links.set(app, saved);
+      const failing =
+        options.failLink === "provider"
+          ? "app_provider"
+          : options.failLink === "pool"
+            ? "app_pool"
+            : undefined;
+      if (app === failing && !linkFailed) {
+        linkFailed = true;
+        return new Response(null, { status: 503 });
+      }
+      return Response.json(null);
+    }
     if (url.pathname === "/v1/chat/completions") {
       assert.equal(new Headers(init?.headers).get("authorization"), "Bearer private-computer-key");
       assert.ok(new Headers(init?.headers).get("X-Session-ID"));
@@ -72,7 +99,7 @@ function fixture(
     }
     throw new Error("Unexpected fixture request");
   };
-  return { calls, fetch: fetcher, delay: async () => {} };
+  return { calls, imports, links, fetch: fetcher, delay: async () => {} };
 }
 
 test("imports through owner upload and requires exact account usage after a generated stream", async () => {
@@ -81,6 +108,7 @@ test("imports through owner upload and requires exact account usage after a gene
   assert.deepEqual(deps.calls, [
     "/pool/v1/pool",
     "/api/organizations/org_fixture/apps/app_provider/accounts/app/openai/import-login-file",
+    "/api/organizations/org_fixture/apps/app_provider/accounts/app/openai/acc_imported",
     "/api/organizations/org_fixture/apps/app_pool/accounts/app/openai/acc_imported",
     "/v1/chat/completions",
     "/api/organizations/org_fixture/apps/app_pool/pool-usage/last-success",
@@ -166,3 +194,25 @@ test("private file input rejects exposed permissions, symlinks and invalid JSON 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const failLink of [undefined, "provider", "pool"] as const)
+  test(`import reruns retain one account and both explicit links after ${failLink ?? "no"} link failure`, async () => {
+    const deps = fixture({ failLink });
+    if (failLink !== undefined)
+      await assert.rejects(
+        importAccounts(config, deps),
+        (error: unknown) => error instanceof ImportFailure && error.stage === "upload",
+      );
+    assert.deepEqual(await importAccounts(config, deps), { verified: 1 });
+    assert.deepEqual(await importAccounts(config, deps), { verified: 1 });
+    assert.deepEqual(
+      [...deps.links.entries()].map(([app, ids]) => [app, [...ids]]),
+      [
+        ["app_provider", ["acc_imported"]],
+        ["app_pool", ["acc_imported"]],
+      ],
+    );
+    assert.equal(new Set(deps.imports.map((item) => item.creation)).size, 1);
+    assert.equal(deps.imports[0]!.creation, config.accounts[0]!.creation);
+    assert.deepEqual([...new Set(deps.imports.map((item) => item.id))], ["acc_imported"]);
+  });

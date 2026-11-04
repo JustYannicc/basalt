@@ -10,10 +10,11 @@ interface Product {
   origin: string;
   pool: string;
   prefix: string;
-  actors: { organization: { id: string }; owner: { cookies: string } };
+  actors: { organization: { id: string }; owner: { cookies: string; userId: string } };
   references: Map<string, string>;
   provider(lab: string): Promise<{ id: string }>;
   select(lab: string, id: string): Promise<void>;
+  links(id: string): Promise<readonly { requirement: string; account: { id: string } }[]>;
   reconcile(lab: string, id: string): Promise<void>;
   appPath(id: string): string;
   request(method: string, path: string, input?: unknown): Effect.Effect<Reply, unknown>;

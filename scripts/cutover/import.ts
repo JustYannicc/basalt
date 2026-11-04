@@ -169,6 +169,11 @@ export async function importAccounts(
     if (!nonempty(result.id)) throw new ImportFailure("upload", completed);
     const id = result.id;
     await request(
+      `${prefix}/${encodeURIComponent(account.providerApp)}/accounts/app/${lab}/${encodeURIComponent(id)}`,
+      { method: "PUT", headers: hostHeaders },
+      "upload",
+    );
+    await request(
       `${prefix}/${encodeURIComponent(config.poolApp)}/accounts/app/${lab}/${encodeURIComponent(id)}`,
       {
         method: "PUT",

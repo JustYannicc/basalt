@@ -71,7 +71,7 @@ Then run the same command without `--check`. Run local verification through the
 machine's shared heavy-command slot when required by its operating rules.
 HTTPS is required except for loopback fixtures. Redirects are refused.
 
-The tool imports each file on its provider app, then selects its saved account in the pool. Retain each creation UUID and the same file across an uncertain response. It requires generated text and a successful
+The tool imports each file, explicitly links its saved account to the provider app, then separately selects it in the pool. Retain each creation UUID and the same file across an uncertain response. It requires generated text and a successful
 usage record for that exact imported account and generated session. Pool membership or a successful
 request from another account does not count. It uses fresh sessions, with at
 most `attempts` model requests per file, and up to 45 usage polls per request.

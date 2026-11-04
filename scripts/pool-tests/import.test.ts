@@ -5,13 +5,12 @@ import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { PoolControl } from "../../src/pool/attribution.ts";
 import { HomeClient, PoolHome, poolGroupPrefix } from "../../src/pool/control.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
-import { importAccounts, type ImportConfig } from "../cutover/import.ts";
+import { importAccounts, ImportFailure, type ImportConfig } from "../cutover/import.ts";
 import { SyntheticOAuthProvider } from "./import-fixture.ts";
 import { migrateCodexWebSockets } from "../../src/pool/codex-websockets.ts";
 import { MemoryStorage, SharingFixture } from "./sharing-fixture.ts";
 
 const signingKey = "ab".repeat(32);
-const owner = "fixture-import-owner";
 const otherPool = "fixture-neighbor-pool";
 const expires = "2099-01-01T00:00:00.000Z";
 
@@ -73,13 +72,14 @@ test(
       const homeClient = new HomeClient((input, init) => fixture!.fetchHome(input, init));
       await withProviderProduct(homeClient, async (product) => {
         const pool = product.pool;
+        const owner = product.actors.owner.userId;
         const computerHome = new ComputerHome(homeClient);
         await computerHome.group(otherPool);
         const api = await computerHome.mint(owner, pool, "synthetic-import-proof");
         const poolToken = await signPoolToken(signingKey, {
           pool,
           owner,
-          organization: "fixture-org",
+          organization: product.actors.organization.id,
         });
         const control = new PoolControl(new ControllerStorage(), {
           signingKey,
@@ -146,6 +146,8 @@ test(
           ],
         };
 
+        const savedAccounts = new Map<string, string>();
+        let loseProviderLink = true;
         const bridge: typeof fetch = async (input, init) => {
           const request = new Request(input, init);
           const url = new URL(request.url);
@@ -154,15 +156,29 @@ test(
             const response = url.pathname.startsWith("/api/")
               ? await fetch(request)
               : await control.handle(request);
-            if (request.method === "PUT" && response.ok)
+            const appId = url.pathname.split("/")[5];
+            if (url.pathname.endsWith("/import-login-file") && response.ok) {
+              const saved = (await response.clone().json()) as { id: string };
+              const previous = savedAccounts.get(appId!);
+              if (previous !== undefined) assert.equal(saved.id, previous);
+              savedAccounts.set(appId!, saved.id);
+            }
+            if (request.method === "PUT" && appId === pool && response.ok)
               await product.reconcile(
                 url.pathname.split("/").at(-2)!,
                 url.pathname.split("/").at(-1)!,
               );
             bridgeEvents.push(`${request.method} ${url.pathname} ${response.status}`);
-            if (request.method === "PUT" && response.ok) {
-              const accountIndex = importedIds.length;
-              const account = config.accounts[accountIndex];
+            if (request.method === "PUT" && appId !== pool && response.ok && loseProviderLink) {
+              loseProviderLink = false;
+              await response.body?.cancel();
+              return new Response(null, { status: 503 });
+            }
+            if (request.method === "PUT" && appId === pool && response.ok) {
+              const lab = url.pathname.split("/").at(-2);
+              const account = config.accounts.find(
+                (entry) => entry.file.type === (lab === "openai" ? "codex" : "claude"),
+              );
               assert.ok(account);
               const provider = account.file.type;
               assert.ok(
@@ -171,7 +187,7 @@ test(
               );
               const imported = product.references.get(provider);
               assert.ok(typeof imported === "string");
-              importedIds.push(imported);
+              if (!importedIds.includes(imported)) importedIds.push(imported);
               const files = await fixture!.data<{
                 files?: {
                   id?: unknown;
@@ -261,7 +277,33 @@ test(
 
         stage = "importAccounts and real control/node bridge";
         mark(stage);
+        await assert.rejects(
+          importAccounts(config, { fetch: bridge }),
+          (error: unknown) => error instanceof ImportFailure && error.stage === "upload",
+        );
+        const assertLinks = async () => {
+          const poolLinks = await product.links(pool);
+          for (const account of config.accounts) {
+            const lab = account.file.type === "codex" ? "openai" : "anthropic";
+            const id = savedAccounts.get(account.providerApp);
+            assert.ok(id);
+            const providerLinks = await product.links(account.providerApp);
+            for (const links of [providerLinks, poolLinks]) {
+              assert.equal(
+                links.filter((link) => link.requirement === lab && link.account.id === id).length,
+                1,
+              );
+            }
+          }
+        };
         assert.deepEqual(await importAccounts(config, { fetch: bridge }), { verified: 2 });
+        await assertLinks();
+        const firstSaved = [...savedAccounts.entries()];
+        const firstReferences = [...importedIds];
+        assert.deepEqual(await importAccounts(config, { fetch: bridge }), { verified: 2 });
+        await assertLinks();
+        assert.deepEqual([...savedAccounts.entries()], firstSaved);
+        assert.deepEqual(importedIds, firstReferences);
         assert.equal(importedIds.length, 2);
         assert.equal(new Set(importedIds).size, 2);
         for (const id of importedIds) assert.match(id, /^[0-9a-f-]{36}$/i);
@@ -339,11 +381,11 @@ test(
         );
         assert.equal(
           bridgeEvents.filter((event) => event.includes("/import-login-file 200")).length,
-          2,
+          5,
         );
         assert.equal(
           bridgeEvents.filter((event) => event === "POST /v1/chat/completions 200").length,
-          2,
+          4,
         );
         console.log(
           "PASS: provider imports and explicit pool selection reached real pinned Home/node with exact-session account proof",
