@@ -144,7 +144,7 @@ index 282af23..78855a9 100644
  export const OrganizationResume = Schema.Struct({
    organization: OrganizationId,
 diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-index efa60d9..b8b5a0d 100644
+index efa60d9..58686b2 100644
 --- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 +++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 @@ -1,15 +1,17 @@
@@ -201,6 +201,10 @@ index efa60d9..b8b5a0d 100644
 +export const ConnectionRefusedContext = createContext<
 +  ((destination: ProviderAccountDestination) => void) | undefined
 +>(undefined);
++/** Where to connect instead, when the host refused a connection because it belongs elsewhere. */
++export const refusedDestination = (cause: Cause.Cause<HostedError>) =>
++  Option.getOrUndefined(Option.flatMap(Cause.findErrorOption(cause), connectElsewhere))
++    ?.destination;
  /** Hosted failures keep auth and transport details out of display components. */
  export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
    const brand = useProductBrand();
@@ -208,20 +212,16 @@ index efa60d9..b8b5a0d 100644
    const error = Cause.findErrorOption(cause);
 +  // A form opened before this app stopped connecting accounts can never succeed here: its flow
 +  // closes, and wherever the error shows it offers the provider app, never a retry.
-+  const elsewhere = Option.getOrUndefined(Option.flatMap(error, connectElsewhere));
++  const elsewhere = refusedDestination(cause);
 +  useEffect(() => {
-+    if (elsewhere !== undefined) refused?.(elsewhere.destination);
++    if (elsewhere !== undefined) refused?.(elsewhere);
 +  }, [elsewhere, refused]);
 +  if (elsewhere !== undefined)
 +    return (
 +      <CompactFailure title="Connect this account in its provider app">
 +        <div>
 +          This app only picks accounts that are already connected.{" "}
-+          <ProviderDestination
-+            destination={elsewhere.destination}
-+            provider="provider"
-+            verb="Connect"
-+          />
++          <ProviderDestination destination={elsewhere} provider="provider" verb="Connect" />
 +        </div>
 +      </CompactFailure>
 +    );
@@ -992,6 +992,50 @@ index 0000000..8090e5d
 +    </form>
 +  );
 +}
+diff --git a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+index 7b25a2f..b02ac1d 100644
+--- a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
++++ b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+@@ -2,11 +2,15 @@ import type { HostedError } from "../../contracts/errors.ts";
+ import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
+ import type { Account, Provider } from "@executor-js/sdk";
+ import { useAtomSet } from "@effect/atom-react";
+-import { useEffect, useState, type ReactNode } from "react";
++import { useContext, useEffect, useState, type ReactNode } from "react";
+ import { Cause, Exit, Redacted } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import {
++  ConnectionRefusedContext,
++  HostedFailure,
++  refusedDestination,
++} from "../components/dashboard-bindings.tsx";
+ import { accountToNameAtom } from "../../contracts/accounts.ts";
+ import { completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
+ 
+@@ -94,6 +98,7 @@ function LoopbackOAuthStep({
+     { mode: "promiseExit" },
+   );
+   const requestName = useAtomSet(accountToNameAtom);
++  const refused = useContext(ConnectionRefusedContext);
+   const [value, setValue] = useState("");
+   const [busy, setBusy] = useState(false);
+   const [invalid, setInvalid] = useState(false);
+@@ -132,7 +137,12 @@ function LoopbackOAuthStep({
+     void complete({ callbackUrl: Redacted.make(pasted), app: pending.app }).then((exit) => {
+       setBusy(false);
+       onPendingChange?.(false);
+-      if (Exit.isFailure(exit)) return setError(exit.cause);
++      if (Exit.isFailure(exit)) {
++        // Reported straight from the result: an expiry view showing now would hide the failure.
++        const destination = refusedDestination(exit.cause);
++        if (destination !== undefined) refused?.(destination);
++        return setError(exit.cause);
++      }
+       sessionStorage.removeItem(pendingKey);
+       // Reconnects keep their name; a new account is named once saved, as the redirect path does.
+       if (pending.reconnect !== true)
 diff --git a/e2e/support/provider-apps-ui.ts b/e2e/support/provider-apps-ui.ts
 index e2dbddf..7a9158f 100644
 --- a/e2e/support/provider-apps-ui.ts
