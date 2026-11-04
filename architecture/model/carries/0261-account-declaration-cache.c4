@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountRuntime {
+    metadata {
+      constraint "Completed credential-free account declarations are bounded by immutable build ID for the host isolate lifetime. Pending reads and runner capabilities remain request-owned."
+    }
+  }
+}
