@@ -240,6 +240,8 @@ model {
         A runtime Home exit 1 permits two replacement generations per supervisor lifetime,
         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
         Replacement rotates boot identity and requires fresh policy and service health.
+        Recovery management reads reject EOF before the declared body length is consumed,
+        even when the partial body is valid JSON or empty; deadline checks still apply.
         Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
