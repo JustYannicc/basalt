@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-seed-source-transition",
   "file": "0234-pool-seed-source-transition.patch",
-  "content_sha256": "3159c0bebe79ec96379508cd53ad4f657cc66412fb6024be3f5942f5e8c9eb24",
+  "content_sha256": "5071dcc463e020612584d5545af3987bb2ae67d2c238e74812e37fac9086576d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

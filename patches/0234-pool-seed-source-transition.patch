@@ -1,7 +1,7 @@
 diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-native-upgrade.spec.ts
 --- a/e2e/tests/pool-seed-native-upgrade.spec.ts
 +++ b/e2e/tests/pool-seed-native-upgrade.spec.ts
-@@ -32,9 +32,17 @@
+@@ -32,9 +32,19 @@
          const files = yield* fs
            .readFileString(path.join(directory, bundles[0]!))
            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Files))));
@@ -14,15 +14,17 @@ diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-na
 +          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Files))));
 +        const replaced = new Set(retained.map((file) => file.path));
 +        const previous = [
-+          ...files.filter((file) => !replaced.has(file.path)).map((file) =>
-+            file.path === "requirements.ts" ? { ...file, content: legacyRequirements } : file,
-+          ),
++          ...files
++            .filter((file) => !replaced.has(file.path))
++            .map((file) =>
++              file.path === "requirements.ts" ? { ...file, content: legacyRequirements } : file,
++            ),
 +          ...retained,
 +        ];
          const prefix = `/api/organizations/${actors.organization.id}`;
          const apps: string[] = [],
            accounts: string[] = [];
-@@ -66,8 +74,14 @@
+@@ -66,8 +76,14 @@
              apps.push(app.id);
              return app;
            });
@@ -39,7 +41,7 @@ diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-na
          expect(Object.keys(old.requirements.accounts).sort()).toEqual(["pool", "subscriptions"]);
          const viewer = yield* body(
            Schema.Struct({ userId: Schema.String }),
-@@ -107,38 +121,53 @@
+@@ -107,38 +123,58 @@
              },
            ]);
          }
@@ -101,8 +103,13 @@ diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-na
 +        expect(policy.status, JSON.stringify(policy.body)).toBe(200);
 +        expect(policy.body).toMatchObject({
 +          connections: expect.arrayContaining([
-+            { requirement: "subscriptions", canConnect: false, canSelect: false,
-+              importMethods: [], destination: expect.anything() },
++            {
++              requirement: "subscriptions",
++              canConnect: false,
++              canSelect: false,
++              importMethods: [],
++              destination: expect.anything(),
++            },
 +          ]),
 +        });
 +        const refused = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, { files });
@@ -120,7 +127,7 @@ diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-na
          const after = yield* links();
          expect(after.status).toBe(200);
          expect(after.body).toEqual(before.body);
-@@ -157,10 +186,54 @@
+@@ -157,10 +193,54 @@
                }),
              ]),
            });

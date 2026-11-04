@@ -1,8 +1,5 @@
 import { PoolAccountRemovals } from "./account-removals.ts";
-import {
-  type SignInFlow,
-  type SignInStatus,
-} from "../../apps/pool/contract.ts";
+import { type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
 import {
   type ControlAttribution,
   type HomeDependencies,
