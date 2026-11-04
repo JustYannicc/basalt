@@ -1,8 +1,140 @@
+diff --git a/e2e/tests/account-naming.spec.ts b/e2e/tests/account-naming.spec.ts
+index 3c0d9196b8a7304dcce914864b707ad75c7b69b2..3d1200719dda473ac5c808bec4a3ced16317cefc 100644
+--- a/e2e/tests/account-naming.spec.ts
++++ b/e2e/tests/account-naming.spec.ts
+@@ -36,9 +36,10 @@ layer(HostedLive, { excludeTestServices: true })("Account naming", (it) => {
+             {
+               path: "index.ts",
+               content: `
+-import { defineApp, defineProvider, object, router, secrets, string } from "apps";
++import { defineApp, defineProvider, interactive, object, router, secrets, string } from "apps";
+ const service = defineProvider({ name: "Naming fixture", auth: {
+-  key: secrets({ label: "API key", fields: object({ token: string() }) })
++  key: secrets({ label: "API key", fields: object({ token: string() }) }),
++  subscription: interactive({ label: "Fixture subscription", acquisition: "host" })
+ } });
+ export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
+ `,
+@@ -83,6 +84,87 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+             connect.getByRole("textbox", { name: "Account name" }).count(),
+           ),
+         ).toBe(0);
++        // No host registers the subscription, so it is the blocked alternative to the open key.
++        const others = connect.getByRole("button", { name: "Other sign-in methods", exact: true });
++        const refusal = connect.getByText(
++          "Fixture subscription. This host cannot acquire this sign-in method right now.",
++          { exact: true },
++        );
++        const disclosure = () =>
++          Promise.all([others.getAttribute("aria-expanded"), refusal.isVisible()]);
++        expect(
++          yield* browser.use("Other sign-in methods start collapsed", () =>
++            others.waitFor({ state: "visible" }).then(disclosure),
++          ),
++        ).toEqual(["false", false]);
++        yield* browser.checkpoint("Chosen sign-in method with alternatives collapsed");
++        expect(
++          yield* browser.use("Expand the alternatives by keyboard", (page) =>
++            others
++              .focus()
++              .then(() => page.keyboard.press("Enter"))
++              .then(() => refusal.waitFor({ state: "visible" }))
++              .then(disclosure),
++          ),
++        ).toEqual(["true", true]);
++        yield* browser.checkpoint("Other sign-in methods expanded with their reasons");
++        expect(
++          yield* browser.use("Collapse the alternatives by keyboard", (page) =>
++            page.keyboard
++              .press("Space")
++              .then(() => refusal.waitFor({ state: "hidden" }))
++              .then(disclosure),
++          ),
++        ).toEqual(["false", false]);
++        const choice = yield* browser.use("The blocked method can't be chosen", (page) =>
++          connect
++            .getByRole("combobox")
++            .click()
++            .then(() => page.getByRole("option", { name: /^Fixture subscription/ }))
++            .then((option) =>
++              option
++                .waitFor({ state: "visible" })
++                .then(() => option.isDisabled())
++                .then((disabled) =>
++                  page.keyboard
++                    .press("Escape")
++                    .then(() => connect.getByRole("combobox").textContent())
++                    .then((selected) => ({ disabled, selected: selected?.trim() })),
++                ),
++            ),
++        );
++        expect(choice).toEqual({ disabled: true, selected: "API key" });
++        const phone = yield* browser.use(
++          "At phone width the alternatives fit and are tappable",
++          (page) =>
++            page
++              .setViewportSize({ width: 390, height: 844 })
++              .then(() => others.click())
++              .then(() => refusal.waitFor({ state: "visible" }))
++              .then(() =>
++                Promise.all([
++                  others.boundingBox(),
++                  page.evaluate(() => ({
++                    page:
++                      document.documentElement.scrollWidth - document.documentElement.clientWidth,
++                    dialog: [...document.querySelectorAll('[role="dialog"]')].map(
++                      (element) => element.scrollWidth - element.clientWidth,
++                    ),
++                  })),
++                ]),
++              )
++              .then(([box, overflow]) => ({ height: box?.height ?? 0, overflow })),
++        );
++        expect(phone.height).toBeGreaterThanOrEqual(44);
++        expect(phone.overflow.page).toBe(0);
++        expect(phone.overflow.dialog.every((excess) => excess <= 0)).toBe(true);
++        yield* browser.checkpoint("Other sign-in methods expanded at phone width");
++        yield* browser.use("Collapse and return to desktop width", (page) =>
++          others
++            .click()
++            .then(() => refusal.waitFor({ state: "hidden" }))
++            .then(() => page.setViewportSize({ width: 1440, height: 960 })),
++        );
+         yield* browser.use("Enter the synthetic API key", () =>
+           connect.getByLabel("Token", { exact: true }).fill("synthetic-naming-token"),
+         );
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 9a5bd530706a5471d12a19fc7348230551f446ac..513d1f69de4b59048a52092ec5fd4ae8ef67dc1c 100644
+index 9a5bd530706a5471d12a19fc7348230551f446ac..d0791ffd6a19b301e9ec54501dfbd43def569a87 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -187,24 +187,6 @@ export function AccountForm<A, E>({
+@@ -1,9 +1,10 @@
+-import { useState, type ComponentType, type ReactNode } from "react";
++import { useId, useState, type ComponentType, type ReactNode } from "react";
+ import { Exit, Match, Option, Redacted, type Cause } from "effect";
+ import type { Account, CredentialCheck, Provider } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import {
+   AlertCircleIcon,
++  ArrowDown01Icon,
+   CheckmarkCircle02Icon,
+   SquareLock02Icon,
+   ViewIcon,
+@@ -96,6 +97,14 @@ export function AccountForm<A, E>({
+       "",
+   );
+   const blockedReason = method === "" ? undefined : blocked(method);
++  const alternatives = account
++    ? []
++    : methods.flatMap(([name]) => {
++        const reason = name === method ? undefined : blocked(name);
++        return reason === undefined ? [] : [{ name, reason }];
++      });
++  const [alternativesOpen, setAlternativesOpen] = useState(false);
++  const alternativesId = useId();
+   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+   const [submitting, setPending] = useState(false);
+   const pending = submitting || disabled;
+@@ -187,24 +196,6 @@ export function AccountForm<A, E>({
            </Select>
          </label>
        )}
@@ -27,30 +159,47 @@ index 9a5bd530706a5471d12a19fc7348230551f446ac..513d1f69de4b59048a52092ec5fd4ae8
        {blockedReason !== undefined || (method === "" && methods.length > 0) ? (
          <p className="setup-notice py-[12px] px-[14px] border border-border rounded-[7px] text-muted-foreground bg-muted text-[13px] my-[8px] mx-0">
            {blockedReason ?? "No sign-in method can be connected here yet."}
-@@ -273,6 +255,27 @@ export function AccountForm<A, E>({
+@@ -273,6 +264,44 @@ export function AccountForm<A, E>({
            This provider needs a custom credential form.
          </p>
        )}
-+      {!account && methods.some(([name]) => name !== method && blocked(name) !== undefined) && (
-+        <section
-+          aria-label="Other sign-in methods"
-+          className="grid gap-2 border-t border-border pt-4"
-+        >
-+          <h3 className="text-xs font-medium text-foreground">Other sign-in methods</h3>
-+          <ul className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
-+            {methods.flatMap(([name]) => {
-+              const reason = blocked(name);
-+              return name === method || reason === undefined
-+                ? []
-+                : [
-+                    <li key={name}>
-+                      <span className="font-medium text-foreground/80">{labels.get(name)}</span>.{" "}
-+                      {reason}
-+                    </li>,
-+                  ];
-+            })}
-+          </ul>
-+        </section>
++      {/* Collapsed so refusals for methods the user didn't pick never crowd the chosen one. */}
++      {alternatives.length > 0 && (
++        <div className="grid gap-2 border-t border-border pt-3">
++          <Button
++            type="button"
++            variant="ghost"
++            size="xs"
++            className="justify-self-start text-muted-foreground hover:text-foreground max-[740px]:min-h-11"
++            aria-expanded={alternativesOpen}
++            aria-controls={alternativesId}
++            onClick={() => setAlternativesOpen((open) => !open)}
++          >
++            Other sign-in methods
++            <HugeiconsIcon
++              icon={ArrowDown01Icon}
++              strokeWidth={2}
++              aria-hidden
++              className={
++                alternativesOpen ? "rotate-180 transition-transform" : "transition-transform"
++              }
++            />
++          </Button>
++          {alternativesOpen && (
++            <ul
++              id={alternativesId}
++              aria-label="Other sign-in methods"
++              className="grid gap-1 px-2 text-xs leading-relaxed text-muted-foreground"
++            >
++              {alternatives.map(({ name, reason }) => (
++                <li key={name}>
++                  <span className="font-medium text-foreground/80">{labels.get(name)}</span>.{" "}
++                  {reason}
++                </li>
++              ))}
++            </ul>
++          )}
++        </div>
 +      )}
      </form>
    );

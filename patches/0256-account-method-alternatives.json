@@ -1,11 +1,11 @@
 {
   "identity": "account-method-alternatives",
   "file": "0256-account-method-alternatives.patch",
-  "content_sha256": "fe8963ade92e2acad9963fc976813bf776f363309bfec975f9162801ca87d7b0",
+  "content_sha256": "7a032b871628a02f2022d02c2e841affdf9a475581d22d81b0a023c8c799250f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "upstream-account-method-alternatives",
-  "requires": "Blocked alternatives are visibly grouped below the active account form. Selected-method errors remain with that form and are not repeated as alternatives."
+  "requires": "Blocked alternatives sit below the active form in a collapsed Other sign-in methods disclosure that lists each reason when expanded. Selected-method errors stay with that form."
 }
