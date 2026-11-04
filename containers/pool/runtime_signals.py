@@ -36,6 +36,28 @@ class FailureCategory(IntEnum):
     UNRAISABLE = 9
 
 
+def report_child_exit(name: str, exit_code: int, category: FailureCategory) -> None:
+    if (
+        type(name) is not str
+        or name not in ("home", "node", "home_import")
+        or type(exit_code) is not int
+        or not -255 <= exit_code <= 255
+        or type(category) is not FailureCategory
+    ):
+        return
+    try:
+        print(
+            "POOL_CHILD_EXIT " + json.dumps(
+                {"child": name, "exit_code": exit_code, "category": int(category)},
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 def try_monotonic_ns() -> int | None:
     try:
         observed_ns = time.monotonic_ns()
