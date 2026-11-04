@@ -1,0 +1,14 @@
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -435,7 +435,9 @@
+           Schema.Struct({ url: Schema.String }),
+           yield* product.request("POST", "/auth/pair"),
+         );
+-        yield* browser.use("Pair the local browser", (page) => page.goto(paired.url));
++        yield* browser.use("Pair the local browser", (page) =>
++          page.goto(paired.url).then(() => page.getByRole("link", { name: /^Accounts/ }).waitFor()),
++        );
+         yield* browser.use("Open the existing identity", (page) =>
+           page
+             .goto("/accounts")
