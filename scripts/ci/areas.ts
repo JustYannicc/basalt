@@ -46,6 +46,7 @@ export const heavyJobs = [
   "catalog-compat",
   "pool-inventory",
   "dashboard-batch",
+  "aws-connectors",
   "gitlab-connectors",
   "vercel-sign-in",
   "elevenlabs-sign-in",
@@ -110,6 +111,17 @@ export const areas = [
   {
     paths: ["src/catalog/slack.json", "e2e/slack*/**", "e2e/slack*.mjs", ".upstream/**/slack*/**"],
     jobs: ["slack-health"],
+  },
+  {
+    paths: [
+      "src/catalog/aws*",
+      "src/catalog/aws*/**",
+      "src/catalog/{worker,feed,settings,oauth-policy}.ts",
+      "e2e/aws/**",
+      "scripts/check-aws.ts",
+      ".upstream/apps/hosted/web/src/implementation/pages/{app-accounts-client,connect-account,loopback-oauth}.tsx",
+    ],
+    jobs: ["aws-connectors"],
   },
   {
     paths: ["src/catalog/gitlab.json", "scripts/gitlab*/**", ".upstream/**/gitlab*/**"],
