@@ -7,6 +7,7 @@ import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
+import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -52,6 +53,8 @@ export async function handleCatalog(
     return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
   if (relative === "apps/elevenlabs.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(elevenlabsSource), { headers });
+  if (relative === "apps/vercel.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(vercelSource), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) {
     if (!added.source)
@@ -69,7 +72,7 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
       ? JSON.stringify(withServiceIdentities(mergeFeed(
-          withElevenLabsSignIn(withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed)))),
+          withElevenLabsSignIn(withVercelSignIn(withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))))),
           additions,
         )))
       : onServedFramework(await response.text());
