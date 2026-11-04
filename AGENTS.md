@@ -14,17 +14,14 @@ AI subscriptions and tools to the agents people already use.
   select them, and unlinking preserves the account and its other uses.
 - **Push, not pull.** Usage read "last read 5 h" and health checks failed silently
   until someone looked. Freshness and health are the system's job; editable
-  workflows keep routine checks quiet and ask when a person is needed.
+  workflows keep routine checks quiet and ask when a person is needed. Human in
+  the loop holds pending requests; rules belong to their app or workflow.
 - **One click.** "Add app" did nothing visible, and a Claude subscription could not
   be added. Setup must complete the person's task and show the result, with
   advanced choices still available.
 - **Approved mocks are the acceptance spec.** Work called done from code alone
   failed to match what was approved. Verify each affected interaction live on web
   and phone against the mock, including existing data and recovery.
-  When a mock is approved, follow [conformance](e2e/conformance/README.md) to bind
-  its revision and every accepted behavior to required public E2E scenarios.
-
-Human in the loop holds pending requests; rules belong to their app or workflow.
 
 ## A small glossary
 
@@ -75,9 +72,6 @@ enforce boundaries. For behavior, read [pools](docs/pools.md) or
 ## Prove the outcome
 
 Run focused `package.json` checks and applicable [CI gates](.github/workflows/ci.yml).
-Before pushing, run `npm run ci:fast -- --base origin/main` on the committed
-candidate. [Local CI](scripts/ci/README.md) covers preparation and exact commands.
-
 Authenticated tests use upstream's `apps/hosted/testing/cli.ts` and
 `apps/hosted/cloud/scripts/test-accounts.ts`; previews use the password-sign-in
 overlay. Keep test accounts dedicated.
