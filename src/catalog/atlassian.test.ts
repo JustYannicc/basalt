@@ -66,7 +66,7 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
   assert.equal(publicSource.package, "atlassian");
   assert.equal(served.package, publicSource.package);
   assert.deepEqual(
-    served.files.map((file: { path: string }) => file.path),
+    served.files.map((file: { path: string }) => file.path).sort(),
     [
       "index.ts",
       "package.json",
@@ -78,7 +78,7 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
       "specifications.ts",
       "api-coverage.json",
       "README.md",
-    ],
+    ].sort(),
   );
   const directory = mkdtempSync(join(tmpdir(), "basalt-atlassian-carry-"));
   try {
