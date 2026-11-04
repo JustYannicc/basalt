@@ -9,6 +9,7 @@ import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
+import { elevenlabsSource, withElevenLabsSignIn } from "./elevenlabs.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
@@ -75,6 +76,11 @@ export async function handleCatalog(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(miroSource)),
       { headers },
     );
+  if (relative === "apps/elevenlabs.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(elevenlabsSource)),
+      { headers },
+    );
   if (relative === "apps/vercel.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(vercelSource)),
@@ -109,9 +115,11 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     let body: string;
     if (relative === "index.json") {
-      const upstream = withVercelSignIn(
-        withMiroCapabilities(
-          withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+      const upstream = withElevenLabsSignIn(
+        withVercelSignIn(
+          withMiroCapabilities(
+            withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+          ),
         ),
       );
       const feed = {
@@ -126,6 +134,7 @@ export async function handleCatalog(
     } else {
       body = onServedFramework(await response.text());
     }
+
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
     return unavailable();
