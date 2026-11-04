@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 7105f19..6ec70ce 100644
+index 7105f19..1ef12f5 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -5,12 +5,12 @@ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
@@ -25,21 +25,18 @@ index 7105f19..6ec70ce 100644
  import { catalogAtom } from "../../contracts/api.ts";
  
  /**
-@@ -95,6 +96,31 @@ export function AppAccounts({
+@@ -95,6 +96,28 @@ export function AppAccounts({
        : undefined;
      return saved === undefined ? undefined : accountRowFromSaved(saved);
    };
-+  // Traffic reads cover only rows this tab can list: linked accounts and the requirements'
-+  // providers' choices. A tab of connector accounts has no pool link, so it reads nothing.
++  // Traffic reads cover only the accounts linked here, which every view of the tab lists, so a
++  // pool the tab doesn't show never switches the column on. Connector accounts have no pool link.
 +  const directory = useQuery(resourceDirectoryAtom(organization));
 +  const tabRows = useMemo(() => {
 +    if (Option.isNone(savedRows.data)) return undefined;
-+    const providers = new Set(
-+      Object.values(app.requirements.accounts).map((requirement) => requirement.provider),
-+    );
 +    const linked = new Set([...appLinks, ...userLinks].map((link) => link.account.id));
-+    return savedRows.data.value.filter((row) => linked.has(row.id) || providers.has(row.provider));
-+  }, [savedRows.data, app.requirements.accounts, appLinks, userLinks]);
++    return savedRows.data.value.filter((row) => linked.has(row.id));
++  }, [savedRows.data, appLinks, userLinks]);
 +  const traffic = useAccountTraffic(
 +    organization,
 +    tabRows,
@@ -57,7 +54,7 @@ index 7105f19..6ec70ce 100644
    const reported = methodQuery.data;
    const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
    const methods: RequirementMethods | undefined = Option.isSome(reported)
-@@ -209,9 +235,16 @@ export function AppAccounts({
+@@ -209,9 +232,16 @@ export function AppAccounts({
              : { contribute: editing(scope), readOnly }),
            // Only accounts the caller can use; a shared account's own policy decides its usage.
            accountDetails: (account) =>
@@ -75,7 +72,7 @@ index 7105f19..6ec70ce 100644
            accountMenu: (account, slot, requirement, linked) =>
              linked &&
              (usable(account) || removable(links, slot, account)) && (
-@@ -263,7 +296,7 @@ export function AppAccounts({
+@@ -263,7 +293,7 @@ export function AppAccounts({
                </Button>
              ),
          }
@@ -696,10 +693,10 @@ index 91ff216..6c1e68a 100644
          const check = (account: string) =>
 diff --git a/e2e/tests/app-account-traffic.spec.ts b/e2e/tests/app-account-traffic.spec.ts
 new file mode 100644
-index 0000000..f002724
+index 0000000..ac241cd
 --- /dev/null
 +++ b/e2e/tests/app-account-traffic.spec.ts
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,263 @@
 +/** An app's Accounts tab shows what the account's pool counted, beside the app's own check. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -751,13 +748,14 @@ index 0000000..f002724
 +
 +        const {
 +          app,
-+          accounts: [traffic],
++          accounts: [traffic, quiet],
 +        } = yield* trafficPool({
 +          name: "Tab pool",
 +          origin: observed.origin,
-+          labels: ["Tab traffic"],
++          labels: ["Tab traffic", "Tab quiet"],
 +        });
-+        if (traffic === undefined) return yield* Effect.die("The pool saved no account");
++        if (traffic === undefined || quiet === undefined)
++          return yield* Effect.die("The pool saved fewer accounts than asked");
 +        yield* observed.answer({ status: 200, body: weekly() });
 +        expect(
 +          (yield* api.request(
@@ -855,7 +853,7 @@ index 0000000..f002724
 +              ]),
 +            ),
 +        );
-+        // The tab reads only its own pool account, never the organization's whole list.
++        // The tab reads only the accounts linked to it, never the organization's whole list.
 +        const reads = (yield* pool.calls)
 +          .slice(before)
 +          .flatMap((call) =>
@@ -868,7 +866,22 @@ index 0000000..f002724
 +                ],
 +          );
 +        expect(reads.length).toBeGreaterThan(0);
-+        for (const accounts of reads) expect(accounts).toEqual([traffic]);
++        for (const accounts of reads) expect(accounts).toEqual([traffic, quiet].sort());
++        // A linked account the series doesn't name says why its count is missing, never 0.
++        const quietCell = yield* browser.use("Read the quiet account's count", (page) =>
++          tabRow(page, "App accounts", "Tab quiet")
++            .locator("[data-account-requests-cell]")
++            .evaluate((cell) => ({
++              text: cell.textContent,
++              title: cell.querySelector("[data-account-requests-none]")?.getAttribute("title"),
++              count: cell.querySelectorAll("[data-account-requests]").length,
++            })),
++        );
++        expect(quietCell).toEqual({
++          text: "–No request history you can see for this account",
++          title: "No request history you can see for this account",
++          count: 0,
++        });
 +        const [requests, requestsTitle, unit, ticks, share, healthTitle, tokens] = wide;
 +        expect(requests).toBe("41");
 +        expect(requestsTitle).toBe("41 requests in the last 7 days, counted by Tab pool");
@@ -947,6 +960,20 @@ index 0000000..f002724
 +    ),
 +  );
 +});
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+index d508f76..6412cc4 100644
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -270,7 +270,8 @@ export function AccountHealthCell({
+       </span>
+     );
+   const rejected = check.status === "credentials_rejected";
+-  if (busy !== undefined && !rejected)
++  // Traffic stands in only for a healthy check; a current failure keeps its label.
++  if (busy !== undefined && check.status === "healthy")
+     return <TrafficHealth traffic={busy} check={title} now={now} format={format} />;
+   const content = (
+     <>
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
 index 767c9df..14aa2d9 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
@@ -1088,7 +1115,7 @@ index b140659..e362173 100644
                    {access.length > 0 && (
                      <AccountRowDetails>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 5a22555..264428f 100644
+index 5a22555..7d81ecc 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -40,6 +40,13 @@ import {
@@ -1229,7 +1256,7 @@ index 5a22555..264428f 100644
  }) {
    const brand = useProductBrand();
    return (
-@@ -1474,10 +1506,26 @@ function AccountStatus({
+@@ -1474,10 +1506,41 @@ function AccountStatus({
        appName={() => appDisplayName(app, brand)}
        recover={reconnect}
        unavailableLabel="Unavailable"
@@ -1239,13 +1266,28 @@ index 5a22555..264428f 100644
  }
  
 +/**
-+ * The row's Requests 7d cell where the scope has traffic, empty for an account nothing counted.
-+ * These lists have no column header, so the count always reads "41 req".
++ * The row's Requests 7d cell where the scope has traffic. These lists have no column header, so
++ * the count always reads "41 req", and an account nothing counted says so instead of a blank.
 + */
 +const requestsCell = <E,>(data: ScopeAccounts<E>, traffic: AccountRowTraffic | undefined) =>
 +  data.accountTraffic === undefined
 +    ? {}
-+    : { requests: traffic === undefined ? null : <RequestsCell traffic={traffic} /> };
++    : { requests: traffic === undefined ? <NoRequests /> : <RequestsCell traffic={traffic} /> };
++
++const noRequests = "No request history you can see for this account";
++
++function NoRequests() {
++  return (
++    <span
++      className="text-[13px] text-muted-foreground"
++      title={noRequests}
++      data-account-requests-none
++    >
++      <span aria-hidden>–</span>
++      <span className="sr-only">{noRequests}</span>
++    </span>
++  );
++}
 +
 +function RequestsCell({ traffic }: { readonly traffic: AccountRowTraffic }) {
 +  const now = useAtomValue(observationClock);
