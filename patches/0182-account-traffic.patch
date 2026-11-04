@@ -596,13 +596,13 @@ index 4e568dc..9964a96 100644
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
 new file mode 100644
-index 0000000..d3326b0
+index 0000000..0d93255
 --- /dev/null
 +++ b/e2e/tests/account-traffic.spec.ts
-@@ -0,0 +1,599 @@
+@@ -0,0 +1,604 @@
 +/** Account rows show what the account's pool counted, and nothing it can't attribute. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schema } from "effect";
++import { Clock, Effect, Schema } from "effect";
 +import type { Page } from "playwright";
 +import { body } from "../support/api.ts";
 +import { connectionsPath } from "../support/app-accounts.ts";
@@ -689,8 +689,8 @@ index 0000000..d3326b0
 + * rejected one 10 of 10, and the idle one last succeeded 3 days ago. The fifth account's requests
 + * are only other accounts' counts. Without `proven`, the pool can't map any request to an account.
 + */
-+// Last successes are fixed when the answer is made, like real records, so polls don't move them;
-+// only the page's half-minute clock ages them.
++// Last successes are fixed at `anchor`, like real records, so polls don't move them. The browser's
++// Date is fixed at the same instant, so ages read exactly.
 +const answer =
 +  (ids: Ids, proven = true, anchor = Date.now()) =>
 +  (assertion: SeriesAssertion) => {
@@ -944,7 +944,9 @@ index 0000000..d3326b0
 +          Schema.Struct({ userId: Schema.String }),
 +          yield* api.request(actors.owner, "GET", "/api/viewer"),
 +        );
-+        yield* pool.respond(answer(ids));
++        // One instant for the fixture's records and the browser's Date; timers still run.
++        const anchor = yield* Clock.currentTimeMillis;
++        yield* pool.respond(answer(ids, true, anchor));
 +        const pools = (value: object) => ({
 +          sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
 +          params: [JSON.stringify(value), actors.organization.id],
@@ -988,6 +990,9 @@ index 0000000..d3326b0
 +            accountRow(page, "Connector mail").locator('[data-health-state="healthy"]').waitFor(),
 +          ]);
 +        yield* browser.login(actors.owner);
++        yield* browser.use("Fix the page's Date at the fixture's instant", (page) =>
++          page.clock.setFixedTime(anchor),
++        );
 +        for (const width of [1280, 390]) {
 +          yield* browser.use(`Open accounts at ${width}px`, (page) =>
 +            page
@@ -1114,7 +1119,7 @@ index 0000000..d3326b0
 +        expect(share).toBe("92.6%");
 +        expect(shareClass).toContain("amber");
 +        expect(healthTitle).toMatch(
-+          /^41 requests in 7 days · 92\.6% succeeded · last success 1[2-4] min ago, counted by Traffic pool\nHealthy by .+ · checked /,
++          /^41 requests in 7 days · 92\.6% succeeded · last success 12 min ago, counted by Traffic pool\nHealthy by .+ · checked /,
 +        );
 +        // 199 of 200 is at or above 95%, so it is not amber.
 +        expect(steadyShare).toBe("99.5%");
@@ -1150,7 +1155,7 @@ index 0000000..d3326b0
 +            ),
 +        );
 +        expect(details).toMatch(
-+          /^Requests: 41 in 7 days · 92\.6% succeeded · last success 1[2-4] min ago · counted by Traffic pool$/,
++          /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
 +        );
 +
 +        const phone = yield* browser.use("Read the rows at 390px", (page) =>
@@ -1175,7 +1180,7 @@ index 0000000..d3326b0
 +
 +        // Once the pool can't map any request, no row has numbers: the column and the ticks go,
 +        // rather than leaving a column of blank cells. The next 30-second poll reads it.
-+        yield* pool.respond(answer(ids, false));
++        yield* pool.respond(answer(ids, false, anchor));
 +        const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
 +          page
 +            .setViewportSize({ width: 1280, height: 900 })
