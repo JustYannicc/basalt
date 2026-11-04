@@ -89,10 +89,10 @@ export async function handleUsageSeries(
     }
     if (action === "poolUsageSeries" || action === "lastSuccessAt") {
       const authority = seriesAuthority(payload.authority);
-      const result = await withHistoryDatabase(access.connectionString, (db) =>
+      const result = await withHistoryDatabase(access.connectionString, async (db) =>
         action === "poolUsageSeries"
-          ? poolUsageSeries(db, input, authority)
-          : lastSuccessAt(db, input, authority),
+          ? await poolUsageSeries(db, input, authority)
+          : await lastSuccessAt(db, input, authority),
       );
       return json(result);
     }
