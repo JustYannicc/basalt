@@ -73,12 +73,15 @@ test("changed-file checks use exact base/head commits and upstream commands keep
 
 test("GitHub credentials inherit the local environment without entering the printable plan", () => {
   const workflow = document();
-  workflow.jobs.fast.steps.push({
-    name: "catalog sources",
-    run: "node scripts/catalog-sources.ts --check",
-    env: { GITHUB_TOKEN: "${{ github.token }}" },
-  });
-  const plan = fastPlan(workflow, context);
+  const steps = [
+    ...workflow.jobs.fast.steps,
+    {
+      name: "catalog sources",
+      run: "node scripts/catalog-sources.ts --check",
+      env: { GITHUB_TOKEN: "${{ github.token }}" },
+    },
+  ];
+  const plan = fastPlan({ ...workflow, jobs: { fast: { steps } } }, context);
   assert.equal(plan.steps.at(-1)!.command, "node scripts/catalog-sources.ts --check");
   assert.equal(Object.hasOwn(plan.steps.at(-1)!.env, "GITHUB_TOKEN"), false);
   assert.equal(JSON.stringify(plan).includes("github.token"), false);
