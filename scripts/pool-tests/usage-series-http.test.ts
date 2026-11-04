@@ -128,6 +128,14 @@ test("ordinary pool tokens, non-management assertions, expired assertions and cr
   );
 });
 
+test("last-success refuses non-management assertions before opening an unavailable database", async () => {
+  const response = await handleUsageSeries(
+    await request("lastSuccessAt", { authority: { canManage: false, accounts: [] } }),
+    { signingKey, connectionString: undefined },
+  );
+  assert.equal(response.status, 403);
+});
+
 test("personal overview binds its signed person to the authenticated host user and rejects manager authority", async () => {
   const user = "fixture-member";
   const personalInput = {

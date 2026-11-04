@@ -87,78 +87,79 @@ export async function handleUsageSeries(
       )
         return fail(401, "unauthorized", "A caller-bound personal usage assertion is required.");
     }
+    if (action === "poolUsageSeries" || action === "lastSuccessAt") {
+      const authority = seriesAuthority(payload.authority);
+      const result = await withHistoryDatabase(access.connectionString, (db) =>
+        action === "poolUsageSeries"
+          ? poolUsageSeries(db, input, authority)
+          : lastSuccessAt(db, input, authority),
+      );
+      return json(result);
+    }
     const result =
-      action === "poolUsageSeries"
-        ? await withHistoryDatabase(access.connectionString, (db) =>
-            poolUsageSeries(db, input, seriesAuthority(payload.authority)),
-          )
-        : action === "poolOverview"
-          ? await withHistoryDatabase(access.connectionString, async (db) => {
-              const overview = input as unknown as PoolOverviewSignedInput;
-              await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-              try {
-                await db.query("SET LOCAL statement_timeout = '5s'");
-                const priceTargets = await overviewTargets(db, overview);
-                let prices: readonly OverviewApiPrice[] = [];
-                let pricesUnavailableReason = priceTargets.unavailableReason;
-                if (!pricesUnavailableReason && access.currentPrices) {
-                  try {
-                    prices = await access.currentPrices(priceTargets.targets);
-                  } catch {
-                    pricesUnavailableReason = "Current API price data could not be read.";
-                  }
-                } else if (!pricesUnavailableReason)
-                  pricesUnavailableReason = "Current API price data is unavailable.";
-                const result = await poolUsageOverview(
-                  db,
-                  {
-                    ...overview,
-                    prices,
-                    ...(pricesUnavailableReason ? { pricesUnavailableReason } : {}),
-                  },
-                  "caller",
-                );
-                await db.query("COMMIT");
-                return result;
-              } catch (error) {
-                await db.query("ROLLBACK").catch(() => {});
-                throw error;
-              }
-            })
-          : action === "poolPersonalOverview"
-            ? await withHistoryDatabase(access.connectionString, async (db) => {
-                const overview = input as unknown as PoolPersonalOverviewSignedInput;
-                await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      action === "poolOverview"
+        ? await withHistoryDatabase(access.connectionString, async (db) => {
+            const overview = input as unknown as PoolOverviewSignedInput;
+            await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+            try {
+              await db.query("SET LOCAL statement_timeout = '5s'");
+              const priceTargets = await overviewTargets(db, overview);
+              let prices: readonly OverviewApiPrice[] = [];
+              let pricesUnavailableReason = priceTargets.unavailableReason;
+              if (!pricesUnavailableReason && access.currentPrices) {
                 try {
-                  await db.query("SET LOCAL statement_timeout = '5s'");
-                  const priceTargets = await personalOverviewTargets(db, overview);
-                  let prices: readonly OverviewApiPrice[] = [];
-                  let pricesUnavailableReason = priceTargets.unavailableReason;
-                  if (!pricesUnavailableReason && access.currentPrices) {
-                    try {
-                      prices = await access.currentPrices(priceTargets.targets);
-                    } catch {
-                      pricesUnavailableReason = "Current API price data could not be read.";
-                    }
-                  } else if (!pricesUnavailableReason)
-                    pricesUnavailableReason = "Current API price data is unavailable.";
-                  const result = await poolPersonalOverview(
-                    db,
-                    overview,
-                    prices,
-                    pricesUnavailableReason,
-                    "caller",
-                  );
-                  await db.query("COMMIT");
-                  return result;
-                } catch (error) {
-                  await db.query("ROLLBACK").catch(() => {});
-                  throw error;
+                  prices = await access.currentPrices(priceTargets.targets);
+                } catch {
+                  pricesUnavailableReason = "Current API price data could not be read.";
                 }
-              })
-            : await withHistoryDatabase(access.connectionString, (db) =>
-                lastSuccessAt(db, input, seriesAuthority(payload.authority)),
+              } else if (!pricesUnavailableReason)
+                pricesUnavailableReason = "Current API price data is unavailable.";
+              const result = await poolUsageOverview(
+                db,
+                {
+                  ...overview,
+                  prices,
+                  ...(pricesUnavailableReason ? { pricesUnavailableReason } : {}),
+                },
+                "caller",
               );
+              await db.query("COMMIT");
+              return result;
+            } catch (error) {
+              await db.query("ROLLBACK").catch(() => {});
+              throw error;
+            }
+          })
+        : await withHistoryDatabase(access.connectionString, async (db) => {
+            const overview = input as unknown as PoolPersonalOverviewSignedInput;
+            await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+            try {
+              await db.query("SET LOCAL statement_timeout = '5s'");
+              const priceTargets = await personalOverviewTargets(db, overview);
+              let prices: readonly OverviewApiPrice[] = [];
+              let pricesUnavailableReason = priceTargets.unavailableReason;
+              if (!pricesUnavailableReason && access.currentPrices) {
+                try {
+                  prices = await access.currentPrices(priceTargets.targets);
+                } catch {
+                  pricesUnavailableReason = "Current API price data could not be read.";
+                }
+              } else if (!pricesUnavailableReason)
+                pricesUnavailableReason = "Current API price data is unavailable.";
+              const result = await poolPersonalOverview(
+                db,
+                overview,
+                prices,
+                pricesUnavailableReason,
+                "caller",
+              );
+              await db.query("COMMIT");
+              return result;
+            } catch (error) {
+              await db.query("ROLLBACK").catch(() => {});
+              throw error;
+            }
+          });
     return json(result);
   } catch (error) {
     if (error instanceof HistoryInputError || error instanceof SyntaxError)
