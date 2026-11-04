@@ -1,0 +1,944 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -32,6 +32,8 @@
+   readonly name: string;
+   readonly revision: string;
+   readonly tables: readonly string[];
++  /** A registered read-only external check runs fresh before inspection and each first apply. */
++  readonly preflight?: string;
+   readonly inspect: (request: Json) => Effect.Effect<MigrationPlan, unknown, SqlClient.SqlClient>;
+   /** SQL-only authority locks run inside the apply transaction before the runner locks scoped rows. */
+   readonly lockAuthority?: (
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,10 +1,12 @@
+ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
+ import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
++import { releasedRetirementV1 } from "./migrations/released-retirement-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
++  [releasedRetirementV1.name]: releasedRetirementV1,
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
+   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+   [atlassianAccountIdentityV1.name]: atlassianAccountIdentityV1,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-proof.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-proof.ts
+@@ -0,0 +1,59 @@
++import { AccountId, type Credentials } from "@executor-js/sdk/core";
++import { Effect, Redacted, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json } from "../contracts.ts";
++import {
++  RetirementRequest,
++  RetirementSelection,
++  readReleasedRetirement,
++  retirementRefused,
++} from "./released-retirement-records.ts";
++
++export const releasedRetirementProof = (
++  request: Json,
++  runtime: {
++    readonly credentials: Pick<Credentials, "decrypt">;
++    readonly verifyHome: (
++      reference: string,
++      method: "codex" | "claude",
++    ) => Effect.Effect<boolean, unknown>;
++  },
++  requireSnapshot: boolean,
++) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(RetirementSelection)(request);
++    const expected = requireSnapshot
++      ? (yield* Schema.decodeUnknownEffect(RetirementRequest)(request)).snapshotSha256
++      : undefined;
++    const before = yield* readReleasedRetirement(input);
++    if (expected !== undefined && expected !== before.snapshotSha256)
++      return yield* retirementRefused("snapshot_changed");
++    const sql = yield* SqlClient.SqlClient;
++    const encrypted =
++      yield* sql`select encrypted_credentials as credentials from executor_accounts where id = ${input.account}`;
++    const rows = yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ credentials: Schema.Uint8Array })),
++    )(encrypted);
++    if (rows.length !== 1 || rows[0] === undefined)
++      return yield* retirementRefused("credential_reference_changed");
++    const fields = yield* runtime.credentials.decrypt(
++      AccountId.make(input.account),
++      Redacted.make(rows[0].credentials),
++    );
++    const saved = yield* Schema.decodeUnknownEffect(Schema.Struct({ ref: Schema.NonEmptyString }))(
++      Redacted.value(fields),
++    );
++    if (saved.ref !== before.reference)
++      return yield* retirementRefused("credential_reference_changed");
++    if (!(yield* runtime.verifyHome(before.reference, input.method)))
++      return yield* retirementRefused("home_reference_unavailable");
++    const after = yield* readReleasedRetirement(input);
++    if (before.snapshotSha256 !== after.snapshotSha256)
++      return yield* retirementRefused("snapshot_changed");
++    return {
++      code: "released_retirement_verified",
++      snapshotSha256: before.snapshotSha256,
++      homeReferenceSurvives: true,
++      credentialReferenceMatches: true,
++    };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-records.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-records.ts
+@@ -0,0 +1,192 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { ProductionOperationRefused } from "../contracts.ts";
++import { canonical, sha256 } from "../crypto.ts";
++import { record, type Row } from "./provider-apps-schema.ts";
++
++const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++export const RetirementSelection = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  actor: Schema.NonEmptyString,
++  account: Schema.NonEmptyString,
++  connection: Schema.NonEmptyString,
++  provider: Schema.NonEmptyString,
++  method: Schema.Literals(["codex", "claude"]),
++  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  app: Schema.NonEmptyString,
++  version: Schema.NonEmptyString,
++  referenceSha256: Digest,
++});
++export const RetirementRequest = Schema.Struct({
++  ...RetirementSelection.fields,
++  snapshotSha256: Digest,
++});
++export type RetirementSelection = typeof RetirementSelection.Type;
++
++export const retirementRefused = (code: string) =>
++  Effect.fail(new ProductionOperationRefused({ message: `Released retirement refused: ${code}` }));
++export const retirementHash = (value: unknown) => sha256(canonical(value));
++const Rows = Schema.Array(Schema.Struct({ row: Schema.Record(Schema.String, Schema.Json) }));
++const decode = <E, R>(effect: Effect.Effect<readonly unknown[], E, R>) =>
++  effect.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Rows)),
++    Effect.map((rows) => rows.map(({ row }) => row)),
++  );
++const exact = (rows: readonly Row[]) =>
++  rows.length === 1 && rows[0] !== undefined
++    ? Effect.succeed(rows[0])
++    : retirementRefused("missing_or_ambiguous_row");
++
++/** All fingerprints include complete private rows; only their hashes leave encrypted artifacts. */
++export const readReleasedRetirement = (input: RetirementSelection, repaired = false) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${input.organization}`;
++    const account = yield* exact(
++      yield* decode(
++        sql`select to_jsonb(a) as row from executor_accounts a where id = ${input.account}`,
++      ),
++    );
++    const member = yield* exact(
++      yield* decode(
++        sql`select to_jsonb(m) as row from member m where "organizationId" = ${input.organization} and "userId" = ${input.actor}`,
++      ),
++    );
++    const access = yield* exact(
++      yield* decode(
++        sql`select to_jsonb(p) as row from hosted_account_access p where account_id = ${input.account}`,
++      ),
++    );
++    const connections = yield* decode(
++      sql`select to_jsonb(c) as row from executor_account_connections c
++      where id = ${input.connection} or state -> 'account' ->> 'id' = ${input.account}
++        or reconnect_account = ${input.account} or source_account = ${input.account} order by id`,
++    );
++    const connection = yield* exact(connections);
++    const links = yield* decode(
++      sql`select to_jsonb(l) as row from hosted_app_account_links l where account = ${input.account}
++      order by app, requirement, subject nulls first`,
++    );
++    const acquisitions = yield* decode(
++      sql`select to_jsonb(r) as row from executor_account_acquisitions r where account = ${input.account}`,
++    );
++    const groups = yield* decode(
++      sql`select to_jsonb(g) as row from hosted_account_groups g where account_id = ${input.account} order by group_id`,
++    );
++    const app = yield* exact(
++      yield* decode(sql`select to_jsonb(a) as row from executor_apps a where id = ${input.app}`),
++    );
++    const deployment = yield* exact(
++      yield* decode(
++        sql`select to_jsonb(d) as row from executor_deployments d where id = ${input.version}`,
++      ),
++    );
++    const provider = yield* exact(
++      yield* decode(
++        sql`select to_jsonb(p) as row from executor_providers p where id = ${input.provider}`,
++      ),
++    );
++    if (
++      (member.role !== "owner" && member.role !== "admin") ||
++      account.owner !== owner ||
++      account.provider !== input.provider ||
++      account.method !== input.method ||
++      account.credential_generation !== input.generation ||
++      account.oauth_grant_id !== null ||
++      account.site !== null ||
++      account.identity_id !== null ||
++      access.organization_id !== input.organization ||
++      access.kind !== "personal" ||
++      access.personal_user_id !== input.actor ||
++      groups.length !== 0 ||
++      acquisitions.length !== 0
++    )
++      return yield* retirementRefused("account_binding_changed");
++    const state = record(connection.state),
++      binding = record(state?.interactive);
++    const saved = record(state?.account),
++      target = record(connection.target);
++    const requirement = record(record(record(deployment.requirements)?.accounts)?.subscriptions);
++    if (
++      connection.id !== input.connection ||
++      connection.owner !== owner ||
++      connection.provider !== input.provider ||
++      connection.oauth_attempt !== null ||
++      (connection.reconnect_account !== null && connection.reconnect_account !== input.account) ||
++      (connection.source_account !== null && connection.source_account !== input.account) ||
++      !Array.isArray(connection.additional_targets) ||
++      connection.additional_targets.length !== 0 ||
++      state?.status !== "completed" ||
++      state.providerAppAdoption !== undefined ||
++      saved?.id !== input.account ||
++      saved.owner !== owner ||
++      saved.provider !== input.provider ||
++      saved.method !== input.method ||
++      binding?.method !== input.method ||
++      binding.app !== input.app ||
++      binding.slot !== "subscriptions" ||
++      binding.version !== input.version ||
++      typeof binding.ref !== "string" ||
++      binding.ref.length === 0 ||
++      binding.ref.length > 256 ||
++      sha256(binding.ref) !== input.referenceSha256 ||
++      target?.app !== input.app ||
++      target.requirement !== "subscriptions" ||
++      app.owner !== owner ||
++      deployment.owner !== owner ||
++      requirement?.provider !== input.provider ||
++      record(record(record(requirement.definition)?.auth)?.[input.method])?.type !==
++        "interactive" ||
++      links.length !== 1 ||
++      links[0]?.app !== input.app ||
++      links[0]?.requirement !== "subscriptions" ||
++      links[0]?.subject !== null
++    )
++      return yield* retirementRefused("provenance_binding_changed");
++    if (
++      repaired
++        ? binding.retirement !== undefined
++        : canonical(binding.retirement) !== '{"removed":false}'
++    )
++      return yield* retirementRefused("retirement_marker_changed");
++    const rows = {
++      account,
++      connection,
++      links,
++      member,
++      access,
++      groups,
++      acquisitions,
++      app,
++      deployment,
++      provider,
++    };
++    return {
++      rows,
++      connection,
++      state,
++      binding,
++      reference: binding.ref,
++      snapshotSha256: retirementHash(rows),
++    };
++  });
++
++/** NOWAIT prevents lock-order cycles with account deletion and concurrent retirement claims. */
++export const lockReleasedRetirement = (input: RetirementSelection) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${input.organization}`;
++    yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
++    yield* sql`select id from organization where id = ${input.organization} for update nowait`;
++    yield* sql`select id from member where "organizationId" = ${input.organization} and "userId" = ${input.actor} for share nowait`;
++    yield* sql`select id from executor_apps where id = ${input.app} and owner = ${owner} for share nowait`;
++    yield* sql`select id from executor_deployments where id = ${input.version} and owner = ${owner} for share nowait`;
++    yield* sql`select id from executor_providers where id = ${input.provider} for share nowait`;
++    yield* sql`select id from executor_accounts where id = ${input.account} and owner = ${owner} for update nowait`;
++    yield* sql`select id from executor_account_connections where owner = ${owner}
++      and (id = ${input.connection} or state -> 'account' ->> 'id' = ${input.account}
++        or reconnect_account = ${input.account} or source_account = ${input.account}) order by id for update nowait`;
++    yield* sql`select account_id from hosted_account_access where account_id = ${input.account} for share nowait`;
++    yield* sql`select app, requirement, subject from hosted_app_account_links where account = ${input.account}
++      order by app, requirement, subject nulls first for share nowait`;
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-v1.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/released-retirement-v1.ts
+@@ -0,0 +1,89 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json, MigrationPlan, ProductionMigration } from "../contracts.ts";
++import { contention } from "../locking.ts";
++import { record } from "./provider-apps-schema.ts";
++import {
++  RetirementRequest,
++  lockReleasedRetirement,
++  readReleasedRetirement,
++  retirementHash,
++  retirementRefused,
++} from "./released-retirement-records.ts";
++
++const inspect = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(RetirementRequest)(request);
++    const before = yield* readReleasedRetirement(input);
++    if (before.snapshotSha256 !== input.snapshotSha256)
++      return yield* retirementRefused("snapshot_changed");
++    const { retirement: _retirement, ...interactive } = before.binding;
++    const connection = { ...before.connection, state: { ...before.state, interactive } };
++    return {
++      changes: [
++        {
++          table: "executor_account_connections",
++          key: { id: input.connection },
++          action: "update" as const,
++          beforeSha256: retirementHash(before.connection),
++          afterSha256: retirementHash(connection),
++        },
++      ],
++      data: {
++        code: "clear_released_retirement_marker",
++        homeReferenceSurvives: true,
++        beforeSnapshotSha256: before.snapshotSha256,
++        afterSnapshotSha256: retirementHash({ ...before.rows, connection }),
++      },
++    };
++  });
++
++const verify = (request: Json, plan: MigrationPlan) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(RetirementRequest)(request);
++    const after = yield* readReleasedRetirement(input, true);
++    const checks = {
++      markerAbsent: after.binding.retirement === undefined,
++      allOtherFieldsPreserved: after.snapshotSha256 === record(plan.data)?.afterSnapshotSha256,
++    };
++    return { ok: Object.values(checks).every(Boolean), checks };
++  });
++
++export const releasedRetirementV1: ProductionMigration = {
++  name: "released-interactive-retirement-v1",
++  revision: "1",
++  preflight: "released-interactive-retirement-preflight-v1",
++  tables: [
++    "executor_accounts",
++    "executor_account_connections",
++    "hosted_app_account_links",
++    "executor_account_acquisitions",
++    "hosted_account_access",
++    "hosted_account_groups",
++    "executor_apps",
++    "executor_deployments",
++    "executor_providers",
++    "member",
++  ],
++  inspect,
++  lockAuthority: (request) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(RetirementRequest)(request);
++      yield* lockReleasedRetirement(input);
++    }).pipe(Effect.mapError(contention)),
++  apply: (request, plan) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(RetirementRequest)(request);
++      const current = yield* inspect(request);
++      if (retirementHash(current) !== retirementHash(plan))
++        return yield* retirementRefused("reviewed_plan_changed");
++      const before = yield* readReleasedRetirement(input);
++      const sql = yield* SqlClient.SqlClient;
++      const updated = yield* sql`update executor_account_connections c
++      set state = (state::jsonb #- '{interactive,retirement}')::json
++      where id = ${input.connection} and to_jsonb(c) = ${JSON.stringify(before.connection)}::jsonb
++      returning id`;
++      if (updated.length !== 1) return yield* retirementRefused("compare_and_swap_failed");
++    }),
++  verify,
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+index 4fe15bb..ee527be 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -1,8 +1,20 @@
+-import { Effect, Option } from "effect";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpClientRequest } from "effect/http";
+ import { aesGcmCredentials } from "@executor-js/sdk/core";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+ import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudHosts } from "../stage.ts";
++import { signEnvelope } from "@executor-js/hosted-server/pool-token";
++import {
++  accountAcquisitionPath,
++  accountAcquisitionPrefix,
++} from "@executor-js/hosted-server/pool-account-acquisition-contract";
++import { releasedRetirementProof } from "./migrations/released-retirement-proof.ts";
++import {
++  RetirementSelection,
++  retirementRefused,
++} from "./migrations/released-retirement-records.ts";
+ import { cloudEmulators } from "../emulators.ts";
+ import { cloudEgress } from "../egress.ts";
+ import { cloudOAuthWire } from "../oauth-wire.ts";
+@@ -25,12 +37,76 @@ export const cloudProductionPreparations = Effect.gen(function* () {
+   });
+   const wire = yield* cloudOAuthWire;
+   const egress = yield* cloudEgress;
++  const signingKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const hosts = yield* cloudHosts;
++  const retirementPreparation = (
++    name: string,
++    requireSnapshot: boolean,
++  ): ProductionPreparation => ({
++    name,
++    run: (request) =>
++      Effect.gen(function* () {
++        const selection = yield* Schema.decodeUnknownEffect(RetirementSelection)(request);
++        if (Option.isNone(signingKey))
++          return yield* retirementRefused("home_reference_unavailable");
++        const credentials = yield* aesGcmCredentials(yield* key, globalThis.crypto);
++        const secret = Redacted.value(signingKey.value);
++        return yield* releasedRetirementProof(
++          request,
++          {
++            credentials,
++            verifyHome: (reference, method) =>
++              Effect.scoped(
++                Effect.gen(function* () {
++                  const at = yield* Clock.currentTimeMillis;
++                  const envelope = yield* Effect.tryPromise(() =>
++                    signEnvelope(secret, accountAcquisitionPrefix, {
++                      action: "verify-retirement-reference",
++                      owner: `organization:${selection.organization}`,
++                      operation: `released-retirement:${crypto.randomUUID()}`,
++                      provider: method,
++                      reference,
++                      at,
++                      expiresAt: at + 10_000,
++                    }),
++                  );
++                  const response = yield* egress.client.execute(
++                    HttpClientRequest.post(
++                      new URL(accountAcquisitionPath, hosts.browser).href,
++                    ).pipe(HttpClientRequest.bodyJsonUnsafe({ envelope })),
++                  );
++                  if (response.status < 200 || response.status >= 300) return false;
++                  const result = yield* Schema.decodeUnknownEffect(
++                    Schema.Struct({
++                      verified: Schema.Boolean,
++                      code: Schema.Literal("retirement_reference_verified"),
++                    }),
++                  )(yield* response.json);
++                  return result.verified;
++                }),
++              ).pipe(
++                Effect.timeout("10 seconds"),
++                Effect.catch(() => Effect.succeed(false)),
++              ),
++          },
++          requireSnapshot,
++        );
++      }),
++  });
+   const protocol = makeOAuthProtocol({
+     clientName: (yield* productBrandConfig).name,
+     httpClient: egress.client,
+     urlPolicy: egress.policy,
+   });
+   const preparations: Readonly<Record<string, ProductionPreparation>> = {
++    "released-interactive-retirement-proof-v1": retirementPreparation(
++      "released-interactive-retirement-proof-v1",
++      false,
++    ),
++    "released-interactive-retirement-preflight-v1": retirementPreparation(
++      "released-interactive-retirement-preflight-v1",
++      true,
++    ),
+     "atlassian-account-proofs": {
+       name: "atlassian-account-proofs",
+       run: (request) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+@@ -1,5 +1,17 @@
+ /** Only this fixed catalog can name a refusing guard in server logs. Unknown text stays private. */
+ const guards = {
++  released_retirement: {
++    missing_or_ambiguous_row: "Released retirement refused: missing_or_ambiguous_row",
++    account_binding_changed: "Released retirement refused: account_binding_changed",
++    provenance_binding_changed: "Released retirement refused: provenance_binding_changed",
++    retirement_marker_changed: "Released retirement refused: retirement_marker_changed",
++    snapshot_changed: "Released retirement refused: snapshot_changed",
++    credential_reference_changed: "Released retirement refused: credential_reference_changed",
++    home_reference_unavailable: "Released retirement refused: home_reference_unavailable",
++    reviewed_plan_changed: "Released retirement refused: reviewed_plan_changed",
++    compare_and_swap_failed: "Released retirement refused: compare_and_swap_failed",
++  },
++
+   backup: {
+     unknown_backup_table: "Unknown backup table",
+     backup_exceeds_its_row_bound: "Backup exceeds its row bound",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -195,7 +195,19 @@
+     }
+     if (module === undefined || module.name !== operation.selection)
+       return yield* fail("Unknown migration");
++    const preflight = () =>
++      Effect.gen(function* () {
++        if (module.preflight === undefined) return;
++        const check = Object.hasOwn(settings.preparations, module.preflight)
++          ? settings.preparations[module.preflight]
++          : undefined;
++        if (check === undefined || check.name !== module.preflight)
++          return yield* fail("Migration preflight unavailable");
++        // Network reads hold no transaction or row lock. Inspection then rechecks their saved fingerprints.
++        yield* check.run(operation.request);
++      });
+     if (operation.action === "dry-run") {
++      yield* preflight();
+       const result = yield* readOnly(
+         Effect.gen(function* () {
+           const database = yield* databaseIdentity(settings.databaseOrigin);
+@@ -260,6 +272,12 @@
+       return yield* stalePlan();
+     const sql = yield* SqlClient.SqlClient;
+     const hash = operation.planSha256;
++    if (module.preflight !== undefined) {
++      const prior =
++        yield* sql`select plan_sha256 from private_production_ops_receipts where plan_sha256 = ${hash}`;
++      // The write transaction validates receipt identity and verifies replays without repeating the repair.
++      if (prior.length === 0) yield* preflight();
++    }
+     const receipt = yield* sql.withTransaction(
+       Effect.gen(function* () {
+         yield* sql`set transaction isolation level serializable`;
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -46,6 +46,7 @@
+     "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
+     "./provider-account-definitions": "./src/implementation/provider-account-definitions.ts",
+     "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
++    "./pool-account-acquisition-contract": "./src/implementation/pool-account-acquisition-contract.ts",
+     "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
+     "./pool-token": "./src/implementation/pool-token.ts",
+     "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -1,5 +1,5 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
++import { Deferred, Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer, request } from "node:http";
+@@ -10,6 +10,7 @@
+ const Signed = Schema.Struct({
+   action: Schema.String,
+   provider: Schema.optionalKey(Schema.String),
++  reference: Schema.optionalKey(Schema.String),
+   at: Schema.Number,
+   expiresAt: Schema.Number,
+ });
+@@ -30,6 +31,9 @@
+         refused: boolean;
+       }[]
+     >([]);
++    const retirementReference = yield* Ref.make("present");
++    const retirementReadEntered = yield* Deferred.make<void>();
++    const retirementReadReleased = yield* Deferred.make<void>();
+     const backend = (url: string) =>
+       Effect.gen(function* () {
+         const { envelope } = yield* HttpServerRequest.schemaBodyJson(
+@@ -69,6 +73,21 @@
+         );
+         if (refused) return HttpServerResponse.empty({ status: 503 });
+         if (url === access) return HttpServerResponse.jsonUnsafe(null);
++        if (input.action === "verify-retirement-reference") {
++          const mode = yield* Ref.get(retirementReference);
++          if (mode === "hold") {
++            yield* Deferred.succeed(retirementReadEntered, undefined);
++            yield* Deferred.await(retirementReadReleased);
++          }
++          const verified =
++            (mode === "present" || mode === "hold") &&
++            input.provider === "codex" &&
++            input.reference === "synthetic-private-codex";
++          return HttpServerResponse.jsonUnsafe({
++            verified,
++            code: verified ? "retirement_reference_verified" : "retirement_reference_unavailable",
++          });
++        }
+         if (input.action === "start")
+           return HttpServerResponse.jsonUnsafe({ session: "synthetic-cloud-native-session" });
+         if (input.action === "status" || input.action === "submit")
+@@ -80,6 +99,27 @@
+         return HttpServerResponse.jsonUnsafe(null);
+       });
+     const routes = Layer.mergeAll(
++      HttpRouter.add(
++        "POST",
++        "/native-provider-fixture/retirement-reference",
++        Effect.gen(function* () {
++          const input = yield* HttpServerRequest.schemaBodyJson(
++            Schema.Struct({
++              mode: Schema.Literals(["present", "missing", "mismatched", "hold", "release"]),
++            }),
++          );
++          if (input.mode === "release") yield* Deferred.succeed(retirementReadReleased, undefined);
++          else yield* Ref.set(retirementReference, input.mode);
++          return HttpServerResponse.jsonUnsafe({ configured: true });
++        }),
++      ),
++      HttpRouter.add(
++        "GET",
++        "/native-provider-fixture/retirement-reference/wait",
++        Deferred.await(retirementReadEntered).pipe(
++          Effect.as(HttpServerResponse.jsonUnsafe({ observed: true })),
++        ),
++      ),
+       HttpRouter.add("POST", access, backend(access)),
+       HttpRouter.add("POST", acquisition, backend(acquisition)),
+       HttpRouter.add(
+diff --git a/e2e/support/released-retirement-proof.ts b/e2e/support/released-retirement-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/released-retirement-proof.ts
+@@ -0,0 +1,246 @@
++import { expect } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { body } from "./api.ts";
++import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { productionOpsClient, Response } from "./production-ops-client.ts";
++import { Applied, DryRun } from "./production-ops-migration-proof.ts";
++
++const Row = Schema.Record(Schema.String, Schema.Json);
++const Snapshot = Schema.Array(
++  Schema.Struct({
++    accounts: Schema.Array(Row),
++    access: Schema.Array(Row),
++    sources: Schema.Array(Row),
++    links: Schema.Array(Row),
++    connections: Schema.Array(Row),
++    acquisitions: Schema.NullOr(Schema.Array(Row)),
++  }),
++);
++const Proof = Schema.Struct({
++  result: Schema.Struct({
++    code: Schema.Literal("released_retirement_verified"),
++    snapshotSha256: Schema.String,
++    homeReferenceSurvives: Schema.Literal(true),
++    credentialReferenceMatches: Schema.Literal(true),
++  }),
++});
++const Plan = Schema.Struct({
++  plan: Schema.Struct({
++    changes: Schema.Array(
++      Schema.Struct({
++        table: Schema.String,
++        key: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
++        action: Schema.String,
++      }),
++    ),
++  }),
++});
++
++const fixture = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient;
++  const account = p.request.accounts.find((item) => item.method === "codex")!;
++  const rows = yield* p.database
++    .run({
++      sql: `select id, state -> 'interactive' ->> 'version' as version,
++      encode(sha256(convert_to(state -> 'interactive' ->> 'ref', 'UTF8')), 'hex') as "referenceSha256"
++      from executor_account_connections where state -> 'account' ->> 'id' = $1`,
++      params: [account.account],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(
++            Schema.Struct({
++              id: Schema.String,
++              version: Schema.String,
++              referenceSha256: Schema.String,
++            }),
++          ),
++        ),
++      ),
++    );
++  expect(rows).toHaveLength(1);
++  const connection = rows[0]!;
++  const marker = (value: Schema.Json) =>
++    p.database.run({
++      sql: "update executor_account_connections set state = jsonb_set(state::jsonb, '{interactive,retirement}', $2::jsonb)::json where id = $1",
++      params: [connection.id, JSON.stringify(value)],
++    });
++  yield* marker({ removed: false });
++  const selection = {
++    organization: p.request.organization,
++    actor: p.request.actor,
++    account: account.account,
++    connection: connection.id,
++    provider: account.provider,
++    method: account.method,
++    generation: account.generation,
++    app: p.pool,
++    version: connection.version,
++    referenceSha256: connection.referenceSha256,
++  };
++  const prepared = yield* client.request({
++    action: "prepare",
++    selection: "released-interactive-retirement-proof-v1",
++    recipient: client.recipient,
++    request: selection,
++  });
++  expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
++  const encrypted = yield* body(Response, prepared);
++  const proof = yield* Schema.decodeUnknownEffect(Proof)(client.decrypt(encrypted.artifact));
++  const operation = {
++    action: "dry-run",
++    selection: "released-interactive-retirement-v1",
++    recipient: client.recipient,
++    request: { ...selection, snapshotSha256: proof.result.snapshotSha256 },
++  };
++  const snapshot = p.snapshot.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)),
++    Effect.map((rows) => rows[0]!),
++  );
++  const dryRun = Effect.gen(function* () {
++    const response = yield* client.request(operation);
++    expect(response.status, JSON.stringify(response.body)).toBe(200);
++    return yield* body(DryRun, response);
++  });
++  const apply = (dry: typeof DryRun.Type) => ({
++    ...operation,
++    action: "apply",
++    artifact: dry.artifact,
++    planSha256: dry.artifact.sha256,
++    backupSha256: dry.backupSha256,
++    go: `GO ${dry.artifact.sha256}`,
++  });
++  const backend = (mode: string) =>
++    p.api.request(p.actors.owner, "POST", "/native-provider-fixture/retirement-reference", {
++      mode,
++    });
++  yield* Effect.addFinalizer(() => backend("present").pipe(Effect.asVoid, Effect.orDie));
++  return { ...p, client, selection, operation, snapshot, marker, dryRun, apply, backend };
++});
++
++export const releasedRetirementPreservationProof = Effect.gen(function* () {
++  const p = yield* fixture;
++  const before = yield* p.snapshot;
++  expect([401, 409]).toContain(
++    (yield* p.client.request(p.operation, { secret: "cd".repeat(32) })).status,
++  );
++  for (const changed of [
++    { account: "missing-account" },
++    { connection: "missing-connection" },
++    { actor: "missing-actor" },
++    { provider: "missing-provider" },
++    { app: p.second },
++    { version: "missing-version" },
++    { generation: p.selection.generation + 1 },
++    { referenceSha256: "0".repeat(64) },
++  ]) {
++    expect(
++      (yield* p.client.request({
++        ...p.operation,
++        request: { ...p.operation.request, ...changed },
++      })).status,
++    ).toBe(409);
++  }
++  for (const marker of [
++    { removed: true },
++    { removed: false, token: "synthetic-active-lease", expiresAt: Date.now() + 60_000 },
++    { removed: false, token: "synthetic-expired-lease", expiresAt: 1 },
++  ]) {
++    yield* p.marker(marker);
++    expect((yield* p.client.request(p.operation)).status).toBe(409);
++  }
++  yield* p.marker({ removed: false });
++  yield* p.database.run({
++    sql: "update executor_account_connections set state = (state::jsonb #- '{interactive,retirement}')::json where id = $1",
++    params: [p.selection.connection],
++  });
++  expect((yield* p.client.request(p.operation)).status).toBe(409);
++  yield* p.marker({ removed: false });
++  const duplicate = `${p.selection.connection}-ambiguous`;
++  yield* p.database.run({
++    sql: "insert into executor_account_connections select (jsonb_populate_record(null::executor_account_connections, to_jsonb(c) || jsonb_build_object('id', $2::text))).* from executor_account_connections c where id = $1",
++    params: [p.selection.connection, duplicate],
++  });
++  expect((yield* p.client.request(p.operation)).status).toBe(409);
++  yield* p.database.run({
++    sql: "delete from executor_account_connections where id = $1",
++    params: [duplicate],
++  });
++  for (const mode of ["missing", "mismatched"]) {
++    yield* p.backend(mode);
++    expect((yield* p.client.request(p.operation)).status).toBe(409);
++  }
++  yield* p.backend("present");
++  const dry = yield* p.dryRun;
++  const plan = yield* Schema.decodeUnknownEffect(Plan)(p.client.decrypt(dry.artifact));
++  expect(plan.plan.changes).toEqual([
++    {
++      table: "executor_account_connections",
++      key: { id: p.selection.connection },
++      action: "update",
++    },
++  ]);
++  expect(yield* p.snapshot).toEqual(before);
++  const apply = p.apply(dry);
++  expect((yield* p.client.request({ ...apply, go: "GO invalid" })).status).toBe(409);
++  yield* p.backend("missing");
++  expect((yield* p.client.request(apply)).status).toBe(409);
++  expect(yield* p.snapshot).toEqual(before);
++  yield* p.backend("present");
++  const applied = yield* p.client.request(apply);
++  expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++  expect((yield* body(Applied, applied)).verification.ok).toBe(true);
++  const connections = before.connections.map((row) => {
++    if (row.id !== p.selection.connection) return row;
++    const state = Schema.decodeUnknownSync(Row)(row.state);
++    const interactive = Schema.decodeUnknownSync(Row)(state.interactive);
++    const { retirement: _retirement, ...retained } = interactive;
++    return { ...row, state: { ...state, interactive: retained } };
++  });
++  expect(yield* p.snapshot).toEqual({ ...before, connections });
++  // Receipt replay verifies committed state without requiring or repeating an external operation.
++  yield* p.backend("missing");
++  const replay = yield* p.client.request(apply);
++  expect(replay.status, JSON.stringify(replay.body)).toBe(200);
++  expect((yield* body(Applied, replay)).repeated).toBe(true);
++  expect(yield* p.snapshot).toEqual({ ...before, connections });
++});
++
++export const releasedRetirementRaceProof = Effect.gen(function* () {
++  const p = yield* fixture;
++  const before = yield* p.snapshot,
++    dry = yield* p.dryRun;
++  const account = before.accounts.find((row) => row.id === p.selection.account)!;
++  yield* p.backend("hold");
++  const apply = yield* p.client.request(p.apply(dry)).pipe(Effect.forkScoped);
++  const entered = yield* p.api.request(
++    p.actors.owner,
++    "GET",
++    "/native-provider-fixture/retirement-reference/wait",
++  );
++  expect(entered.status).toBe(200);
++  yield* p.database.run({
++    sql: "update executor_accounts set label = $2 where id = $1",
++    params: [p.selection.account, "Changed during Home read"],
++  });
++  yield* p.backend("release");
++  const refused = yield* Fiber.join(apply);
++  expect(refused.status).toBe(409);
++  expect((yield* p.snapshot).connections).toEqual(before.connections);
++  yield* p.database.run({
++    sql: "update executor_accounts set label = $2 where id = $1",
++    params: [p.selection.account, String(account.label)],
++  });
++  yield* p.backend("present");
++  yield* p.database.hold({
++    sql: "select id from executor_account_connections where id = $1 for update",
++    params: [p.selection.connection],
++  });
++  const busy = yield* p.client.request(p.apply(dry));
++  expect(busy.status).toBe(409);
++  expect(busy.body).toMatchObject({ error: "operation_busy", retryable: true });
++  yield* p.database.release;
++  expect(yield* p.snapshot).toEqual(before);
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2473,6 +2473,29 @@
+       "self-host": scheduled,
+       cloud: na("Cloud runs the same step from its Worker's cron; see the Cloud scenario."),
+       local: na("Local runs the same step at its own startup; see the local scenario."),
++    },
++  },
++  releasedRetirementPreservation: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title:
++      "Cloud provider adoption repairs only a released retirement marker with fresh Home proof",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The signed repair uses the Cloud database."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  releasedRetirementRace: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses changed and locked retirement repair inputs",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The signed repair uses the Cloud database."),
++      local: na("Local does not host production operations."),
+     },
+   },
+   providerAdoption: {
+diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
+index 9fae5e314c72783426c03f10af8ce9ff66a1c05f..bd36f6c5f3698aa8f7caaee0174a5cacb476ec41 100644
+--- a/e2e/tests/provider-adoption.spec.ts
++++ b/e2e/tests/provider-adoption.spec.ts
+@@ -7,6 +7,10 @@ import { providerAdoptionFixture } from "../support/provider-adoption-fixture.ts
+ import { DryRun, Plan, proveAdoptionRefusals } from "../support/provider-adoption-refusals.ts";
+ import { proveConcurrentOrganizationPurge } from "../support/provider-adoption-purge.ts";
+ import { scenarios } from "../test-plan.ts";
++import {
++  releasedRetirementPreservationProof,
++  releasedRetirementRaceProof,
++} from "../support/released-retirement-proof.ts";
+ 
+ const Applied = Schema.Struct({
+   action: Schema.Literal("apply"),
+@@ -25,6 +29,12 @@ const Snapshot = Schema.Array(
+ );
+ 
+ layer(HostedLive, { excludeTestServices: true })("Existing provider adoption", (it) => {
++  it.effect(scenarios.releasedRetirementPreservation.title, (context) =>
++    withHostedCase(context, releasedRetirementPreservationProof),
++  );
++  it.effect(scenarios.releasedRetirementRace.title, (context) =>
++    withHostedCase(context, releasedRetirementRaceProof),
++  );
+   it.effect(scenarios.providerAdoptionPurge.title, (context) =>
+     withHostedCase(context, proveConcurrentOrganizationPurge),
+   );
