@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index cf582b6..00b7341 100644
+index cf582b6..6c3bb54 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
 @@ -23,6 +23,7 @@ import {
@@ -10,7 +10,7 @@ index cf582b6..00b7341 100644
    type ApprovalRequestId,
  } from "@executor-js/sdk";
  import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
-@@ -246,6 +247,71 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
+@@ -246,6 +247,59 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
    renameApp(new AppKey(key));
  export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
    removeApp(new AppKey(key));
@@ -26,7 +26,6 @@ index cf582b6..00b7341 100644
 +  readonly organization: OrganizationReference;
 +  readonly app: AppId;
 +  readonly version: VersionId | null;
-+  readonly scope: AccountScope;
 +  readonly requirement: string;
 +}) {
 +  const creation = globalThis.crypto.randomUUID();
@@ -46,12 +45,11 @@ index cf582b6..00b7341 100644
 +        const params = {
 +          organization: key.organization,
 +          app: key.app,
-+          scope: key.scope,
 +          requirement: key.requirement,
 +        };
 +        const account =
 +          get(created) ??
-+          (yield* client.appAccounts.importLoginFile({
++          (yield* client.appAccounts.appImportLoginFile({
 +            params,
 +            payload: {
 +              creation,
@@ -61,17 +59,7 @@ index cf582b6..00b7341 100644
 +            },
 +          }));
 +        get.set(created, account);
-+        const link = {
-+          params: {
-+            organization: key.organization,
-+            app: key.app,
-+            requirement: key.requirement,
-+            account: account.id,
-+          },
-+        };
-+        yield* key.scope === "app"
-+          ? client.appAccounts.appLink(link)
-+          : client.appAccounts.userLink(link);
++        yield* client.appAccounts.appLink({ params: { ...params, account: account.id } });
 +        accountSavedForApp(get, key.organization, account, key.app);
 +        refreshAppDiscovery(get, key);
 +        return account;
@@ -176,10 +164,10 @@ index efa60d9..dcd3d3e 100644
      </DashboardProvider>
    );
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 7105f19..0cbe457 100644
+index 7105f19..b971fe6 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -21,7 +21,19 @@ import {
+@@ -21,9 +21,22 @@ import {
    type LinkEditing,
    type ScopeAccounts,
  } from "@executor-js/ui/dashboard/app-accounts";
@@ -192,15 +180,36 @@ index 7105f19..0cbe457 100644
 +} from "@executor-js/ui/contracts/app-accounts";
 +import {
 +  ProviderDestination,
++  ProviderAccountUsage,
 +  ProviderReturnLink,
 +} from "@executor-js/ui/dashboard/provider-accounts";
 +import { ImportLoginFile } from "./import-login-file.tsx";
 +import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
- import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+-import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import type { AccountSummary, Inventory } from "@executor-js/ui/contracts/dashboard";
  import { Button } from "@executor-js/ui/components/button";
-@@ -107,6 +119,18 @@ export function AppAccounts({
+ import { Input } from "@executor-js/ui/components/input";
+ import {
+@@ -69,6 +82,7 @@ export function AppAccounts({
+   userLinks,
+   canManage,
+   accounts,
++  inventory,
+   redirectUri,
+ }: {
+   readonly app: App;
+@@ -80,6 +94,8 @@ export function AppAccounts({
+   readonly canManage: boolean;
+   /** Every account the caller can use in this organization. */
+   readonly accounts: readonly AccountSummary[];
++  /** The visible inventory, which says where a provider app's accounts are used. */
++  readonly inventory?: Inventory | undefined;
+   readonly redirectUri: string;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -107,6 +123,23 @@ export function AppAccounts({
            reported.value.native.find((entry) => entry.requirement === requirement)?.name,
        }
      : undefined;
@@ -213,18 +222,22 @@ index 7105f19..0cbe457 100644
 +            reported.value.connections.find((entry) => entry.requirement === requirement),
 +        }
 +      : { state: "pending" };
++  // The host marks provider apps; nothing is assumed while its read loads or after it failed.
++  const providerApp =
++    Option.isSome(reported) && !AsyncResult.isFailure(methodQuery.result)
++      ? reported.value.providerApp
++      : null;
 +  const connectsHere = (slot: string) =>
 +    connections.state === "ready" && connections.of(slot)?.canConnect === true;
 +  const brand = useProductBrand();
    const viewer = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)))?.user.id;
    const deployed = app.activeVersion !== null;
    const copiedPackage = app.copiedFrom?.name;
-@@ -139,9 +163,19 @@ export function AppAccounts({
+@@ -139,9 +172,18 @@ export function AppAccounts({
      readonly account?: AccountSummary | undefined;
    }>();
    const [renaming, setRenaming] = useState<AccountSummary["id"]>();
 +  const [importing, setImporting] = useState<{
-+    readonly scope: AccountScope;
 +    readonly slot: string;
 +    readonly requirement: AccountRequirement;
 +    readonly methods: readonly string[];
@@ -240,7 +253,7 @@ index 7105f19..0cbe457 100644
    const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
      catalogEntry?.connectionNotices?.filter(
        (notice) => notice.providerName === requirement.definition.name,
-@@ -150,14 +184,25 @@ export function AppAccounts({
+@@ -150,14 +192,25 @@ export function AppAccounts({
    // account's credentials needs use of the account.
    const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
    // An account the app signed in itself can't take new credentials: connect another, remove this.
@@ -269,7 +282,7 @@ index 7105f19..0cbe457 100644
      const requirement = app.requirements.accounts[slot];
      if (requirement !== undefined)
        setConnection({ scope, slot, requirement, method: account.method, account });
-@@ -174,13 +219,17 @@ export function AppAccounts({
+@@ -174,13 +227,26 @@ export function AppAccounts({
      link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
      unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
      connect: (slot, requirement) => {
@@ -281,14 +294,23 @@ index 7105f19..0cbe457 100644
        if (preferred !== undefined)
          setConnection({ scope, slot, requirement, method: preferred[0] });
      },
-+    importLoginFile: (slot, requirement, importMethods) => {
-+      if (connectionDisabled || !connectsHere(slot)) return;
-+      setImporting({ scope, slot, requirement, methods: importMethods });
-+    },
++    // The host imports login files only into app accounts.
++    ...(scope === "app"
++      ? {
++          importLoginFile: (
++            slot: string,
++            requirement: AccountRequirement,
++            importMethods: readonly string[],
++          ) => {
++            if (connectionDisabled || !connectsHere(slot)) return;
++            setImporting({ slot, requirement, methods: importMethods });
++          },
++        }
++      : {}),
      connecting: connectionDisabled,
      onUnlinked: (account) => void unused.check(account),
    });
-@@ -217,7 +266,7 @@ export function AppAccounts({
+@@ -217,7 +283,7 @@ export function AppAccounts({
              (usable(account) || removable(links, slot, account)) && (
                <LinkedAccountMenu
                  label={account.label || "Unnamed account"}
@@ -297,7 +319,7 @@ index 7105f19..0cbe457 100644
                  unlink={
                    removable(links, slot, account)
                      ? unlinkAccountAtom({
-@@ -236,7 +285,8 @@ export function AppAccounts({
+@@ -236,7 +302,8 @@ export function AppAccounts({
                    </DropdownMenuItem>
                  )}
                  {usable(account) &&
@@ -307,7 +329,7 @@ index 7105f19..0cbe457 100644
                    !hostProvisioned(requirement, account) && (
                      <DropdownMenuItem
                        disabled={connectionDisabled}
-@@ -249,24 +299,46 @@ export function AppAccounts({
+@@ -249,24 +316,46 @@ export function AppAccounts({
                    )}
                </LinkedAccountMenu>
              ),
@@ -367,7 +389,23 @@ index 7105f19..0cbe457 100644
        {!methodsReady && (
          <div className="mb-4">
            {AsyncResult.isFailure(methodQuery.result) ? (
-@@ -312,6 +384,7 @@ export function AppAccounts({
+@@ -308,10 +397,23 @@ export function AppAccounts({
+               ))
+           : [],
+       )}
++      {providerApp !== null &&
++        inventory !== undefined &&
++        providerApp.requirements.flatMap((slot) => {
++          const requirement = app.requirements.accounts[slot];
++          return requirement === undefined
++            ? []
++            : [
++                <div key={slot} className="mb-8">
++                  <ProviderAccountUsage app={app} requirement={requirement} inventory={inventory} />
++                </div>,
++              ];
++        })}
+       <SharedAccounts
          app={app}
          accounts={accounts}
          methods={methods}
@@ -375,7 +413,7 @@ index 7105f19..0cbe457 100644
          Failure={HostedFailure}
          appAccounts={scopeAccounts(
            "app",
-@@ -322,6 +395,25 @@ export function AppAccounts({
+@@ -322,6 +424,24 @@ export function AppAccounts({
          )}
          yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
        />
@@ -389,7 +427,6 @@ index 7105f19..0cbe457 100644
 +        >
 +          <ImportLoginFile
 +            app={app}
-+            scope={importing.scope}
 +            slot={importing.slot}
 +            requirement={importing.requirement}
 +            methods={importing.methods}
@@ -402,19 +439,10 @@ index 7105f19..0cbe457 100644
        <ConnectionModal
          open={connection !== undefined}
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index 84a59f1..c2d787f 100644
+index 84a59f1..becf70d 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -53,6 +53,8 @@ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
- import { AppScreen, NoAppScreen } from "./app-screen.tsx";
- import { useEvictAppFrame } from "../components/app-frames.tsx";
- import { AppDetailLayout, appScreenTab } from "@executor-js/ui/dashboard/app-detail";
-+import { ProviderAccountUsage } from "@executor-js/ui/dashboard/provider-accounts";
-+import { catalogAtom } from "../../contracts/api.ts";
- import {
-   AppOverview,
-   AppOverviewAccounts,
-@@ -144,6 +146,7 @@ const withSummaries = (
+@@ -144,6 +144,7 @@ const withSummaries = (
      requirement: link.requirement,
      linkedBy: link.linkedBy,
      canRemove: link.canRemove,
@@ -422,80 +450,14 @@ index 84a59f1..c2d787f 100644
      account: {
        ...link.account,
        ...summaries.find((summary) => summary.id === link.account.id),
-@@ -203,6 +206,24 @@ export function AppDetailPage({
-   });
-   // Only callers who can use the app get its tab and its prewarmed frame.
-   const screenApp = screenTab === "present" ? screenRecord : undefined;
-+  // A provider app ships no screen; the host draws its App tab: where its accounts are used. The
-+  // catalog it was installed from says which apps are provider apps.
-+  const catalog = useQuery(catalogAtom);
-+  const sourcePackage = screenRecord?.copiedFrom?.name;
-+  const catalogEntries = Option.getOrUndefined(catalog.data);
-+  const providerApp =
-+    screenTab === "absent" &&
-+    screenAccess !== undefined &&
-+    sourcePackage !== undefined &&
-+    catalogEntries?.some(
-+      (entry) => entry.package === sourcePackage && entry.category === "AI providers",
-+    ) === true;
-+  // The tab appears once the catalog answers; the default view never waits for it.
-+  const appTab = providerApp ? "present" : screenTab;
-+  const catalogPending =
-+    sourcePackage !== undefined &&
-+    catalogEntries === undefined &&
-+    !AsyncResult.isFailure(catalog.result);
-   // The layout keeps an opened app's document running across pages; losing the screen closes it.
-   useEvictAppFrame(appId, screenTab === "absent");
-   // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
-@@ -260,7 +281,7 @@ export function AppDetailPage({
-       app={screenRecord}
-       view={selectedView}
-       canInspectSource={canManage}
--      appScreen={screenTab}
-+      appScreen={appTab}
-       sourceDisabledReason={sourceReason}
-       back={
-         <Link
-@@ -305,8 +326,38 @@ export function AppDetailPage({
-       }
-     >
-       <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
--        {screenApp !== undefined ? (
-+        {providerApp ? (
-+          selectedView === "app" && (
-+            <QueryResult
-+              result={allResults({ current: query.result, inventory: inventory.result })}
-+              Failure={HostedFailure}
-+              retry={() => {
-+                query.refresh();
-+                inventory.refresh();
-+              }}
-+              pending={pending}
-+            >
-+              {({ current, inventory }) => (
-+                <div className="w-full max-w-3xl space-y-8 p-5 max-[740px]:p-4">
-+                  {Object.entries(current.requirements.accounts).map(
-+                    ([slot, requirement]) =>
-+                      requirement.scope === "app" && (
-+                        <ProviderAccountUsage
-+                          key={slot}
-+                          app={current}
-+                          requirement={requirement}
-+                          inventory={inventory}
-+                        />
-+                      ),
-+                  )}
-+                </div>
-+              )}
-+            </QueryResult>
-+          )
-+        ) : screenApp !== undefined ? (
-           <AppScreen app={screenApp} active={selectedView === "app"} />
-+        ) : selectedView === "app" && catalogPending ? (
-+          pending
-         ) : selectedView === "app" ? (
-           <QueryResult
-             result={allResults({ access: authority.result, current: query.result })}
+@@ -567,6 +568,7 @@ export function AppDetailPage({
+                   userLinks={linked.user}
+                   canManage={canManage}
+                   accounts={inventory.accounts}
++                  inventory={inventory}
+                   redirectUri={inventory.accountSetup.redirectUri}
+                 />
+               </div>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 index cd2813a..9e58e34 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
@@ -589,15 +551,15 @@ index cd2813a..9e58e34 100644
    return (
 diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 new file mode 100644
-index 0000000..1096185
+index 0000000..8090e5d
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,211 @@
 +import { useEffect, useId, useMemo, useRef, useState } from "react";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { AsyncResult } from "effect/reactivity";
 +import { Exit, Option, Redacted, Schema } from "effect";
-+import { JsonObject, type AccountRequirement, type AccountScope, type App } from "@executor-js/sdk";
++import { JsonObject, type AccountRequirement, type App } from "@executor-js/sdk";
 +import { Button } from "@executor-js/ui/components/button";
 +import { Input } from "@executor-js/ui/components/input";
 +import { Textarea } from "@executor-js/ui/components/textarea";
@@ -641,7 +603,6 @@ index 0000000..1096185
 + */
 +export function ImportLoginFile({
 +  app,
-+  scope,
 +  slot,
 +  requirement,
 +  methods,
@@ -649,7 +610,6 @@ index 0000000..1096185
 +  onDone,
 +}: {
 +  readonly app: App;
-+  readonly scope: AccountScope;
 +  readonly slot: string;
 +  readonly requirement: AccountRequirement;
 +  /** The methods the host can import for this requirement. */
@@ -663,7 +623,6 @@ index 0000000..1096185
 +      organization,
 +      app: app.id,
 +      version: app.activeVersion,
-+      scope,
 +      requirement: slot,
 +    }),
 +  );
@@ -807,21 +766,8 @@ index 0000000..1096185
 +    </form>
 +  );
 +}
-diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
-index 6ab4326..c9ca640 100644
---- a/e2e/support/provider-apps-catalog.ts
-+++ b/e2e/support/provider-apps-catalog.ts
-@@ -105,6 +105,8 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
-                   ? "OpenAI"
-                   : "Anthropic",
-             description: "Reusable model provider accounts for pools.",
-+            // As the product catalog files them; the ordinary consumer is not a provider app.
-+            ...(lab === "openai-tools" ? {} : { category: "AI providers" }),
-             auth: [{ method: lab.startsWith("openai") ? "codex" : "claude", kind: "interactive" }],
-             icons: [],
-             source: `apps/provider-${lab}.json`,
 diff --git a/e2e/support/provider-apps-ui.ts b/e2e/support/provider-apps-ui.ts
-index e2dbddf..3998b20 100644
+index e2dbddf..7a9158f 100644
 --- a/e2e/support/provider-apps-ui.ts
 +++ b/e2e/support/provider-apps-ui.ts
 @@ -23,11 +23,12 @@ export const providerMethodsUi = (app: string) =>
@@ -863,20 +809,19 @@ index e2dbddf..3998b20 100644
      yield* retry.release;
      yield* browser.use("Only the successful host response enables connection", (page) =>
        page
-@@ -82,3 +83,63 @@ export const providerMethodsUi = (app: string) =>
+@@ -82,3 +83,60 @@ export const providerMethodsUi = (app: string) =>
        `/org/${actors.organization.slug}/connect`,
      );
    });
 +
 +/**
-+ * A registered pool selects saved accounts and sends connecting to the provider app, which offers
-+ * the way back to the pool and, on its App tab, shows where its accounts are used. Expects the
-+ * pool to have nothing of this provider linked yet and exactly one provider app installed.
++ * A registered pool selects saved accounts and sends connecting to the provider app, whose Accounts
++ * tab shows where its accounts are used and the way back to the pool. Expects the pool to have
++ * nothing of this provider linked yet and exactly one provider app installed.
 + */
 +export const poolSelectionUi = (input: {
 +  readonly pool: string;
 +  readonly poolName: string;
-+  readonly provider: string;
 +  readonly providerName: string;
 +}) =>
 +  Effect.gen(function* () {
@@ -906,7 +851,12 @@ index e2dbddf..3998b20 100644
 +        .getByRole("button", { name: "Connect new account", exact: true })
 +        .waitFor({ state: "visible" }),
 +    );
-+    yield* browser.checkpoint("Provider app connects and offers the way back");
++    yield* browser.use("The provider app shows where its accounts are used", (page) =>
++      page
++        .getByRole("heading", { name: `Where your ${input.providerName} accounts are used` })
++        .waitFor({ state: "visible" }),
++    );
++    yield* browser.checkpoint("Provider app connects, lists account usage and offers the way back");
 +    yield* browser.use("Return to the pool", (page) =>
 +      page.getByRole("link", { name: `Back to ${input.poolName} to pick accounts` }).click(),
 +    );
@@ -915,15 +865,8 @@ index e2dbddf..3998b20 100644
 +        .getByRole("region", { name: input.providerName, exact: true })
 +        .waitFor({ state: "visible" }),
 +    );
-+    yield* openThroughBrowser("Open the provider app", `${apps}/${input.provider}?view=app`);
-+    yield* browser.use("The provider app's App tab shows where its accounts are used", (page) =>
-+      page
-+        .getByRole("heading", { name: `Where your ${input.providerName} accounts are used` })
-+        .waitFor({ state: "visible" }),
-+    );
-+    yield* browser.checkpoint("Provider app lists where its accounts are used");
 +    yield* openInApp(
-+      "Leave the provider app before the account lifecycle continues",
++      "Leave the pool before the account lifecycle continues",
 +      `/org/${actors.organization.slug}/connect`,
 +    );
 +  });
@@ -952,7 +895,7 @@ index a57b0b7..04117eb 100644
      legacyStorage: true,
 diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
 new file mode 100644
-index 0000000..887a4e8
+index 0000000..ec6ae08
 --- /dev/null
 +++ b/e2e/tests/pool-select-only-ui.spec.ts
 @@ -0,0 +1,177 @@
@@ -1040,7 +983,7 @@ index 0000000..887a4e8
 +          });
 +        const openai = yield* install("OpenAI");
 +
-+        yield* poolSelectionUi({ pool, poolName, provider: openai, providerName: "OpenAI" });
++        yield* poolSelectionUi({ pool, poolName, providerName: "OpenAI" });
 +
 +        // A key saved on the provider app is offered in the pool, and unticking it keeps it saved.
 +        const created = yield* api.request(
