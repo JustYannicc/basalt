@@ -55,17 +55,17 @@ index ad103f2..d974ff8 100644
    const hosts = yield* cloudHosts.pipe(Effect.orDie);
    // The default Executor app calls this deployment's API, an OAuth resource, at its canonical origin.
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 70a467b..a2da62b 100644
+index 70a467b9a16d1250fe294dfb0bdba24888d597e7..e57db75162779292d799ec0f9a89abdcf61c8ad9 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -45,6 +45,7 @@
-     "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
-     "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
-     "./provider-account-definitions": "./src/implementation/provider-account-definitions.ts",
+@@ -7,6 +7,7 @@
+     "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
+     ".": "./src/index.ts",
+     "./api-keys": "./src/contracts/api-keys.ts",
 +    "./provider-login-file": "./src/implementation/provider-login-file.ts",
-     "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
-     "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
-     "./pool-token": "./src/implementation/pool-token.ts",
+     "./auth": "./src/contracts/auth.ts",
+     "./contracts": "./src/contracts/api.ts",
+     "./catalog": "./src/contracts/catalog.ts",
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
 index 75ae612..88e9cef 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
