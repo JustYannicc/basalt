@@ -54,9 +54,12 @@ class OutputPrivacyTests(unittest.TestCase):
         program = "import sys; " + "; ".join(
             f"print({line!r}, file=sys.{stream}, flush=True)" for line in lines
         ) + "; sys.exit(1)"
+        return self.home_exit_command([sys.executable, "-c", program], secret)
+
+    def home_exit_command(self, command: list[str], secret: str = "fixture!"):
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
-            child = supervisor.Child("home", [sys.executable, "-c", program],
+            child = supervisor.Child("home", command,
                 {**os.environ, "MANAGEMENT_PASSWORD": secret}, pathlib.Path.cwd())
             try:
                 child.process.wait(timeout=5)
@@ -311,6 +314,45 @@ class OutputPrivacyTests(unittest.TestCase):
                 self.assertEqual(receipt["output_tail"], [expected])
                 self.assertNotIn("open network connection", json.dumps(snapshot))
                 self.assertNotIn("open network connection", stdout + stderr)
+
+    @unittest.skipUnless(os.environ.get("POOL_HOME_LOG_FIXTURE"), "the image build supplies the real Home formatter")
+    def test_real_home_formatter_records_are_single_physical_lines(self) -> None:
+        header = "[CLIProxyAPIHome] [2026-11-04 12:00:00] [--------] [error] [main.go:500] "
+        injected = "failed to open database: connection refused"
+        fixture = os.environ["POOL_HOME_LOG_FIXTURE"]
+        for separator in ("\n", "\r", "\r\n", "\\n", ""):
+            for count in (1, 12):
+                with self.subTest(separator=repr(separator), count=count):
+                    error = separator.join([
+                        "open /run/fixture",
+                        *([header + injected] * count),
+                        "trailer: no such file or directory",
+                    ])
+                    records = [{"message": "failed to start HTTPS server: " + error}]
+                    snapshot, receipt, stdout, stderr = self.home_exit_command([fixture, json.dumps(records)])
+                    expected = ["error: failed to start HTTPS server: conn_refused"]
+                    self.assertEqual(snapshot, expected)
+                    self.assertEqual(receipt["output_tail"], expected)
+                    self.assertEqual(len(snapshot), 1)
+                    for forbidden in ("failed to open database", "open /run/fixture", "trailer", header):
+                        self.assertNotIn(forbidden, json.dumps(snapshot))
+                        self.assertNotIn(forbidden, json.dumps(receipt))
+                        self.assertNotIn(forbidden, stdout + stderr)
+        records = [{"message": "cluster coordinator error: EOF"}] * 12
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps(records)])
+        expected = ["error: cluster coordinator error: eof"] * 8
+        self.assertEqual(snapshot, expected)
+        self.assertEqual(receipt["output_tail"], expected)
+        record = {"message": "cluster coordinator error: permission denied",
+            "fields": {"error": "\n" + header + injected}}
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps([record])])
+        expected = ["error: cluster coordinator error: conn_refused"]
+        self.assertEqual(snapshot, expected)
+        self.assertEqual(receipt["output_tail"], expected)
+        record["fields"]["request_id"] = "\r\n" + header + injected
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps([record])])
+        self.assertEqual(snapshot, [])
+        self.assertNotIn("output_tail", receipt)
 
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()

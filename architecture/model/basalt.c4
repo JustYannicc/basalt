@@ -235,11 +235,14 @@ model {
         Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
         child name, bounded numeric exit status and failure category before cleanup. Home exits also
         attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,
-        captured before startup-error projection. Before retention, every token is projected onto
-        fixed words from pinned runtime and standard-library error literals, fixed punctuation and
-        placeholders. Unknown fields, paths and encodings cannot add words to that vocabulary.
-        Each record is bounded to 512 bytes without partial tokens. Oversized lines and private-key
-        blocks are omitted. Dynamic details and text suppressed inside the runtime remain unavailable.
+        captured before startup-error projection. The producer formatter escapes embedded CR/LF
+        after interpolating messages and fields and appends one physical line delimiter. Embedded
+        headers remain in the original slot and are never parsed as additional records. Each record
+        matches at most one fixed pinned Home template. Whole dynamic error slots become one of
+        eleven priority-ordered labels; listen addresses become a constant. Unmatched records keep
+        only the level and unrecognized. The coordinator accepts at most about 4 bits per record,
+        8 records. Each record is at most 512 bytes; unformatted and oversized lines are omitted.
+        Dynamic details and text suppressed inside the runtime remain unavailable.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
         `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
@@ -264,7 +267,7 @@ model {
         libraries "socket|http.client"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight formatter error records captured before count projection, matched against fixed pinned Home message templates with whole dynamic error slots replaced by one of eleven priority-ordered labels and listen addresses replaced by a constant; unmatched records retain only level and unrecognized; coordinator accepts a bounded classifier channel of at most about 4 bits per record, 8 records; records are at most 512 bytes; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight formatter error records captured before count projection, producer formatter escapes embedded CR/LF before its single physical line delimiter; embedded headers remain slot text and each record matches at most one fixed pinned Home message template with whole dynamic error slots replaced by one of eleven priority-ordered labels and listen addresses replaced by a constant; unmatched records retain only level and unrecognized; coordinator accepts a bounded classifier channel of at most about 4 bits per record, 8 records; records are at most 512 bytes; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"
