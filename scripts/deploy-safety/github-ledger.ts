@@ -65,7 +65,12 @@ export type DeploymentPayload = {
 export type AttemptWindow = { startedAt: string; endedAt: string };
 
 /** A failed release attempt the ledger set aside because a later release may deploy over it. */
-export type SupersededRelease = { deploymentId: number; gitCommit: string; deploymentStatus: string; payload: DeploymentPayload };
+export type SupersededRelease = {
+  deploymentId: number;
+  gitCommit: string;
+  deploymentStatus: string;
+  payload: DeploymentPayload;
+};
 
 /**
  * Lets a release roll forward over a failed release it contains. `contains` answers whether
@@ -87,8 +92,10 @@ export type DeploymentLedger =
       gitCommit: string;
       pins: PinSummary;
       payload: DeploymentPayload;
-      /** The failed release after this success that the release now running rolls forward over. */
+      /** The oldest failed attempt, whose backup predates all later attempts' writes. */
       superseded?: SupersededRelease;
+      /** All attempts, newest first, when failures span multiple commits. */
+      supersededAttempts?: SupersededRelease[];
     }
   | {
       state: "unresolved";
@@ -120,23 +127,35 @@ export type BackupDeployment = {
 };
 
 /** Invalid historical payloads remain visible so a retirement report cannot assume they reference no backups. */
-export async function readBackupDeploymentHistory(environment: LedgerEnvironment, fetcher: Fetcher = fetch): Promise<BackupDeployment[]> {
+export async function readBackupDeploymentHistory(
+  environment: LedgerEnvironment,
+  fetcher: Fetcher = fetch,
+): Promise<BackupDeployment[]> {
   const deployments = await listDeployments(environment, fetcher);
-  deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
+  deployments.sort(
+    (left, right) =>
+      Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id,
+  );
   const history: BackupDeployment[] = [];
   for (const deployment of deployments) {
     const statuses = await listStatuses(environment, deployment.id, fetcher);
     let payload: DeploymentPayload | undefined;
     try {
       const parsed = parseDeploymentPayload(deployment.payload);
-      if (deployment.environment === "production" && parsed.gitCommit === deployment.sha) payload = parsed;
+      if (deployment.environment === "production" && parsed.gitCommit === deployment.sha)
+        payload = parsed;
     } catch (error) {
       if (!(error instanceof SafetyGateError)) throw error;
     }
     const status = statuses[0]?.state ?? "missing";
     history.push({
-      id: deployment.id, gitCommit: deployment.sha, createdAt: deployment.created_at, status,
-      successful: status === "success" || (status === "inactive" && statuses.some(item => item.state === "success")),
+      id: deployment.id,
+      gitCommit: deployment.sha,
+      createdAt: deployment.created_at,
+      status,
+      successful:
+        status === "success" ||
+        (status === "inactive" && statuses.some((item) => item.state === "success")),
       ...(payload ? { payload } : {}),
     });
   }
@@ -146,21 +165,30 @@ export async function readBackupDeploymentHistory(environment: LedgerEnvironment
 export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
   const token = source.GITHUB_TOKEN;
   const repository = source.GITHUB_REPOSITORY;
-  if (!token?.trim()) throw new SafetyGateError("GITHUB_TOKEN is required for the production deploy ledger");
+  if (!token?.trim())
+    throw new SafetyGateError("GITHUB_TOKEN is required for the production deploy ledger");
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
     throw new SafetyGateError("GITHUB_REPOSITORY must identify the current repository");
   const id = source.GITHUB_RUN_ID?.trim();
   const attempt = source.GITHUB_RUN_ATTEMPT?.trim();
   if (!id && !attempt) return { token, repository };
-  if (!id || !attempt || !/^[1-9][0-9]*$/.test(id) || !/^[1-9][0-9]*$/.test(attempt) ||
-      !Number.isSafeInteger(Number(id)) || !Number.isSafeInteger(Number(attempt)))
-    throw new SafetyGateError("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT must identify this Actions run attempt");
+  if (
+    !id ||
+    !attempt ||
+    !/^[1-9][0-9]*$/.test(id) ||
+    !/^[1-9][0-9]*$/.test(attempt) ||
+    !Number.isSafeInteger(Number(id)) ||
+    !Number.isSafeInteger(Number(attempt))
+  )
+    throw new SafetyGateError(
+      "GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT must identify this Actions run attempt",
+    );
   return { token, repository, run: { repository, id: Number(id), attempt: Number(attempt) } };
 }
 
 /**
- * The production ledger. With `rollForward`, failed attempts of one SHA after the last success
- * are set aside when the release now running contains its commit: the ledger is then ready at the
+ * The production ledger. With `rollForward`, failed attempts on one ancestry chain after the last success
+ * are set aside when the release now running contains their commits: the ledger is then ready at the
  * last success, and that release deploys forward from it, re-applying everything the failed one
  * did. Anything else stays unresolved. Rollback paths read the ledger without it.
  */
@@ -171,10 +199,20 @@ export async function readDeploymentLedger(
   now: () => number = Date.now,
 ): Promise<DeploymentLedger> {
   const deployments = await listDeployments(environment, fetcher);
-  deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
+  deployments.sort(
+    (left, right) =>
+      Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id,
+  );
   const ledger = await readLatestDeployment(deployments, environment, fetcher, now);
   if (!rollForward || ledger.state !== "unresolved" || !ledger.lastSuccessful) return ledger;
-  const result = await supersedeFailedRelease(deployments, ledger.lastSuccessful, environment, fetcher, rollForward, now);
+  const result = await supersedeFailedRelease(
+    deployments,
+    ledger.lastSuccessful,
+    environment,
+    fetcher,
+    rollForward,
+    now,
+  );
   if ("refusal" in result) return { ...ledger, supersedeRefusal: result.refusal };
   return { ...result.ready, superseded: result.superseded };
 }
@@ -189,10 +227,19 @@ async function readLatestDeployment(
   if (deployments.length === 0) return { state: "uninitialized" };
   const latest = deployments[0]!;
   if (latest.environment !== "production")
-    throw new SafetyGateError("Latest GitHub deployment record is outside production; refusing to use it as a baseline");
+    throw new SafetyGateError(
+      "Latest GitHub deployment record is outside production; refusing to use it as a baseline",
+    );
   const commit = gitCommit(latest.sha, "latest deployment SHA");
   const latestPayload = parseDeploymentPayload(latest.payload);
-  const { statuses, why } = await statusesOfLatest(latest, latestPayload, deployments, environment, fetcher, now);
+  const { statuses, why } = await statusesOfLatest(
+    latest,
+    latestPayload,
+    deployments,
+    environment,
+    fetcher,
+    now,
+  );
   const unfinishedBecause = why ? `; it still counts as unfinished because ${why}` : "";
   if (latestPayload.gitCommit !== commit)
     throw new SafetyGateError("Latest production deployment payload does not match its SHA");
@@ -203,66 +250,113 @@ async function readLatestDeployment(
       gitCommit: commit,
       deploymentStatus: "missing",
       reason: `latest deployment has no status${unfinishedBecause}`,
-      lastSuccessful: await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher),
+      lastSuccessful: await findPreviousSuccessfulDeployment(
+        deployments.slice(1),
+        environment,
+        fetcher,
+      ),
       payload: latestPayload,
     };
   const status = statuses[0]!;
   if (status.state !== "success") {
-    const lastSuccessful = await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher);
+    const lastSuccessful = await findPreviousSuccessfulDeployment(
+      deployments.slice(1),
+      environment,
+      fetcher,
+    );
     // Attempts that all ended before production ever succeeded leave no baseline to protect, so a retry
     // starts as an initial release and the initial-database check still runs. Pending or unfinished
     // attempts, and any failure after a success, stay unresolved.
-    const earlier = !lastSuccessful && endedWithoutSuccess(statuses)
-      ? await endedAttemptWindows(deployments.slice(1), environment, fetcher)
-      : undefined;
-    if (earlier) return { state: "uninitialized", attempts: [{ startedAt: latest.created_at, endedAt: status.created_at }, ...earlier] };
+    const earlier =
+      !lastSuccessful && endedWithoutSuccess(statuses)
+        ? await endedAttemptWindows(deployments.slice(1), environment, fetcher)
+        : undefined;
+    if (earlier)
+      return {
+        state: "uninitialized",
+        attempts: [{ startedAt: latest.created_at, endedAt: status.created_at }, ...earlier],
+      };
     return {
       state: "unresolved",
       deploymentId: latest.id,
       gitCommit: commit,
       deploymentStatus: status.state,
       // A status id of 0 is the in-memory failure of a record whose run finished without finishing it.
-      reason: status.id === 0
-        ? "the run that owned the latest production deployment finished without finishing it"
-        : `latest production deployment did not finish successfully${unfinishedBecause}`,
+      reason:
+        status.id === 0
+          ? "the run that owned the latest production deployment finished without finishing it"
+          : `latest production deployment did not finish successfully${unfinishedBecause}`,
       lastSuccessful,
       payload: latestPayload,
     };
   }
 
-  return { state: "ready", deploymentId: latest.id, gitCommit: commit, pins: latestPayload.pins, payload: latestPayload };
+  return {
+    state: "ready",
+    deploymentId: latest.id,
+    gitCommit: commit,
+    pins: latestPayload.pins,
+    payload: latestPayload,
+  };
 }
 
-export function assertReportUsesLatestDeploy(report: ClassificationReport, ledger: DeploymentLedger): void {
+export function assertReportUsesLatestDeploy(
+  report: ClassificationReport,
+  ledger: DeploymentLedger,
+): void {
   if (ledger.state === "uninitialized") return;
   if (ledger.state === "unresolved") {
     if (ledger.lastSuccessful) verifyReportBase(report, ledger.lastSuccessful);
-    throw new SafetyGateError(`Latest production deployment is unresolved (${ledger.deploymentStatus}); reconcile it before another release` +
-      (ledger.supersedeRefusal ? `. It was not superseded: ${ledger.supersedeRefusal}` : ""));
+    throw new SafetyGateError(
+      `Latest production deployment is unresolved (${ledger.deploymentStatus}); reconcile it before another release` +
+        (ledger.supersedeRefusal ? `. It was not superseded: ${ledger.supersedeRefusal}` : ""),
+    );
   }
   verifyReportBase(report, { gitCommit: ledger.gitCommit, pins: ledger.pins });
 }
 
-export function assertManualRollbackCandidate(report: ClassificationReport, ledger: DeploymentLedger): void {
+export function assertManualRollbackCandidate(
+  report: ClassificationReport,
+  ledger: DeploymentLedger,
+): void {
   if (ledger.state === "uninitialized")
     throw new SafetyGateError("Manual rollback requires a recorded production release");
-  if (ledger.state === "unresolved" && ledger.deploymentStatus !== "failure" && ledger.deploymentStatus !== "error")
-    throw new SafetyGateError("Manual rollback requires the latest release attempt to be complete or failed");
+  if (
+    ledger.state === "unresolved" &&
+    ledger.deploymentStatus !== "failure" &&
+    ledger.deploymentStatus !== "error"
+  )
+    throw new SafetyGateError(
+      "Manual rollback requires the latest release attempt to be complete or failed",
+    );
   const payload = ledger.payload;
-  if (!payload || payload.kind !== "release" || ledger.gitCommit !== report.candidate.gitCommit ||
-      payload.candidateGitCommit !== report.candidate.gitCommit || payload.baseGitCommit !== report.base.gitCommit ||
-      payload.reportDigest !== reportDigest(report))
-    throw new SafetyGateError("Manual rollback report does not identify the latest production release");
+  if (
+    !payload ||
+    payload.kind !== "release" ||
+    ledger.gitCommit !== report.candidate.gitCommit ||
+    payload.candidateGitCommit !== report.candidate.gitCommit ||
+    payload.baseGitCommit !== report.base.gitCommit ||
+    payload.reportDigest !== reportDigest(report)
+  )
+    throw new SafetyGateError(
+      "Manual rollback report does not identify the latest production release",
+    );
   if (stableStringify(payload.basePins) !== stableStringify(summarizePins(report.base.pins)))
-    throw new SafetyGateError("Manual rollback report pins do not match the recorded release baseline");
+    throw new SafetyGateError(
+      "Manual rollback report pins do not match the recorded release baseline",
+    );
   if (ledger.state === "ready") {
-    if (payload.gitCommit !== ledger.gitCommit || stableStringify(payload.pins) !== stableStringify(summarizePins(report.candidate.pins)))
+    if (
+      payload.gitCommit !== ledger.gitCommit ||
+      stableStringify(payload.pins) !== stableStringify(summarizePins(report.candidate.pins))
+    )
       throw new SafetyGateError("Manual rollback report pins do not match the deployed release");
     if (payload.baseGitCommit === payload.candidateGitCommit)
       throw new SafetyGateError("Manual rollback has no prior successful production baseline");
     return;
   }
-  if (!ledger.lastSuccessful) throw new SafetyGateError("Manual rollback has no prior successful production baseline");
+  if (!ledger.lastSuccessful)
+    throw new SafetyGateError("Manual rollback has no prior successful production baseline");
   verifyReportBase(report, ledger.lastSuccessful);
 }
 
@@ -273,13 +367,25 @@ export async function beginReleaseDeployment(
   backup?: RecordedBackup,
   rollForward?: RollForward,
 ): Promise<number> {
-  const ledger = keepRollForwardGates(await readDeploymentLedger(environment, fetcher, rollForward), report);
+  const ledger = keepRollForwardGates(
+    await readDeploymentLedger(environment, fetcher, rollForward),
+    report,
+  );
   assertReportUsesLatestDeploy(report, ledger);
-  if (ledger.state === "unresolved") throw new SafetyGateError("Cannot begin while another production deployment is unresolved");
+  if (ledger.state === "unresolved")
+    throw new SafetyGateError("Cannot begin while another production deployment is unresolved");
   if (report.databaseChanged && !backup)
-    throw new SafetyGateError("Database-changing release requires the protected backup before deployment begins");
+    throw new SafetyGateError(
+      "Database-changing release requires the protected backup before deployment begins",
+    );
   if (backup) assertBackupMatchesReport(backup, report);
-  const payload = makePayload(report, report.candidate.gitCommit, report.candidate.pins, "release", backup);
+  const payload = makePayload(
+    report,
+    report.candidate.gitCommit,
+    report.candidate.pins,
+    "release",
+    backup,
+  );
   const superseded = ledger.state === "ready" ? ledger.superseded : undefined;
   if (superseded) {
     payload.rollForwardOf = superseded.gitCommit;
@@ -295,23 +401,37 @@ export async function beginReleaseDeployment(
  * doesn't, such as a revert, rolling forward would skip the backup or the drain check, so the
  * failure stays unresolved.
  */
-export function keepRollForwardGates(ledger: DeploymentLedger, report: ClassificationReport): DeploymentLedger {
+export function keepRollForwardGates(
+  ledger: DeploymentLedger,
+  report: ClassificationReport,
+): DeploymentLedger {
   if (ledger.state !== "ready" || !ledger.superseded) return ledger;
-  const { payload } = ledger.superseded;
+  const superseded = (ledger.supersededAttempts ?? [ledger.superseded]).find(
+    ({ payload }) =>
+      (payload.databaseChanged && !report.databaseChanged) ||
+      (payload.workflowChanged && !report.workflowChanged),
+  );
+  if (!superseded) return ledger;
+  const { payload } = superseded;
   const dropped = [
-    ...payload.databaseChanged && !report.databaseChanged ? ["database"] : [],
-    ...payload.workflowChanged && !report.workflowChanged ? ["Workflow identity"] : [],
+    ...(payload.databaseChanged && !report.databaseChanged ? ["database"] : []),
+    ...(payload.workflowChanged && !report.workflowChanged ? ["Workflow identity"] : []),
   ];
   if (!dropped.length) return ledger;
   return {
     state: "unresolved",
-    deploymentId: ledger.superseded.deploymentId,
-    gitCommit: ledger.superseded.gitCommit,
-    deploymentStatus: ledger.superseded.deploymentStatus,
+    deploymentId: superseded.deploymentId,
+    gitCommit: superseded.gitCommit,
+    deploymentStatus: superseded.deploymentStatus,
     reason: "latest production deployment did not finish successfully",
-    lastSuccessful: { deploymentId: ledger.deploymentId, gitCommit: ledger.gitCommit, pins: ledger.pins },
+    lastSuccessful: {
+      deploymentId: ledger.deploymentId,
+      gitCommit: ledger.gitCommit,
+      pins: ledger.pins,
+    },
     payload,
-    supersedeRefusal: `deployment ${ledger.superseded.deploymentId} changed the ${dropped.join(" and ")}, ` +
+    supersedeRefusal:
+      `deployment ${superseded.deploymentId} changed the ${dropped.join(" and ")}, ` +
       "but this release doesn't, so rolling forward would skip its backup or drain check",
   };
 }
@@ -323,16 +443,24 @@ export async function beginRollbackDeployment(
   expectedDeploymentId?: number,
 ): Promise<number> {
   const ledger = await readDeploymentLedger(environment, fetcher);
-  if (ledger.state === "uninitialized") throw new SafetyGateError("Cannot roll back before a production deployment exists");
+  if (ledger.state === "uninitialized")
+    throw new SafetyGateError("Cannot roll back before a production deployment exists");
   if (expectedDeploymentId !== undefined && ledger.deploymentId !== expectedDeploymentId)
     throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
   assertManualRollbackCandidate(report, ledger);
 
   // The rollback record names the release's own backup; the restore point is read from the release.
   const own = ledger.payload ? ownBackup(ledger.payload) : undefined;
-  if (report.databaseChanged && !own) throw new SafetyGateError("Database rollback is missing its protected backup reference");
+  if (report.databaseChanged && !own)
+    throw new SafetyGateError("Database rollback is missing its protected backup reference");
   const backup = report.databaseChanged ? own : undefined;
-  const rollbackPayload = makePayload(report, report.base.gitCommit, report.base.pins, "rollback", backup);
+  const rollbackPayload = makePayload(
+    report,
+    report.base.gitCommit,
+    report.base.pins,
+    "rollback",
+    backup,
+  );
   rollbackPayload.rollbackOf = report.candidate.gitCommit;
   return createDeployment(environment, rollbackPayload, fetcher);
 }
@@ -351,20 +479,31 @@ export async function finishDeployment(
     headers: headers(environment.token),
   });
   const deployment = record(reply.body, "GitHub deployment");
-  if (deployment.environment !== "production") throw new SafetyGateError("Deployment id does not refer to production");
+  if (deployment.environment !== "production")
+    throw new SafetyGateError("Deployment id does not refer to production");
   const payload = parseDeploymentPayload(deployment.payload);
-  if (deployment.sha !== payload.gitCommit) throw new SafetyGateError("Deployment SHA does not match its metadata");
+  if (deployment.sha !== payload.gitCommit)
+    throw new SafetyGateError("Deployment SHA does not match its metadata");
 
   const statusUrl = `${url}/statuses`;
-  await requestJson(fetcher, "GitHub", statusUrl, {
-    method: "POST",
-    headers: headers(environment.token),
-    body: JSON.stringify({
-      state,
-      description: state === "success" ? "Production deployment verified" : "Production deployment did not complete",
-      ...runLink(environment),
-    }),
-  }, [201]);
+  await requestJson(
+    fetcher,
+    "GitHub",
+    statusUrl,
+    {
+      method: "POST",
+      headers: headers(environment.token),
+      body: JSON.stringify({
+        state,
+        description:
+          state === "success"
+            ? "Production deployment verified"
+            : "Production deployment did not complete",
+        ...runLink(environment),
+      }),
+    },
+    [201],
+  );
 }
 
 export function deploymentPayloadFor(
@@ -381,15 +520,19 @@ export function deploymentPayloadFor(
 export function releaseBackup(ledger: DeploymentLedger): RollbackBackup {
   const payload = ledger.state === "uninitialized" ? undefined : ledger.payload;
   // After a roll-forward, the failed release's backup is the state before any of their writes.
-  if (payload?.rollbackBackup) return { ...payload.rollbackBackup, rolledForwardOver: payload.rollForwardOf! };
+  if (payload?.rollbackBackup)
+    return { ...payload.rollbackBackup, rolledForwardOver: payload.rollForwardOf! };
   const backup = payload ? ownBackup(payload) : undefined;
-  if (!backup) throw new SafetyGateError("Database rollback is missing its protected backup reference");
+  if (!backup)
+    throw new SafetyGateError("Database rollback is missing its protected backup reference");
   return backup;
 }
 
 /** The backup a release took for its own transition. */
 function ownBackup(payload: DeploymentPayload): RecordedBackup | undefined {
-  return payload.backupName && payload.backupMetadata ? { name: payload.backupName, metadata: payload.backupMetadata } : undefined;
+  return payload.backupName && payload.backupMetadata
+    ? { name: payload.backupName, metadata: payload.backupMetadata }
+    : undefined;
 }
 
 async function createDeployment(
@@ -399,32 +542,55 @@ async function createDeployment(
 ): Promise<number> {
   if (environment.run) payload = { ...payload, run: environment.run };
   const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments`;
-  const reply = await requestJson(fetcher, "GitHub", url, {
-    method: "POST",
-    headers: headers(environment.token),
-    body: JSON.stringify({
-      ref: payload.gitCommit,
-      task: "deploy",
-      auto_merge: false,
-      required_contexts: [],
-      environment: "production",
-      production_environment: true,
-      description: payload.kind === "release" ? "Basalt production release" : "Basalt production rollback",
-      payload,
-    }),
-  }, [201]);
+  const reply = await requestJson(
+    fetcher,
+    "GitHub",
+    url,
+    {
+      method: "POST",
+      headers: headers(environment.token),
+      body: JSON.stringify({
+        ref: payload.gitCommit,
+        task: "deploy",
+        auto_merge: false,
+        required_contexts: [],
+        environment: "production",
+        production_environment: true,
+        description:
+          payload.kind === "release" ? "Basalt production release" : "Basalt production rollback",
+        payload,
+      }),
+    },
+    [201],
+  );
   const deployment = record(reply.body, "GitHub deployment");
   const id = deployment.id;
-  if (typeof id !== "number" || !Number.isInteger(id) || id < 1 || deployment.sha !== payload.gitCommit || deployment.environment !== "production")
+  if (
+    typeof id !== "number" ||
+    !Number.isInteger(id) ||
+    id < 1 ||
+    deployment.sha !== payload.gitCommit ||
+    deployment.environment !== "production"
+  )
     throw new SafetyGateError("GitHub did not create the expected production deployment record");
   if (stableStringify(parseDeploymentPayload(deployment.payload)) !== stableStringify(payload))
     throw new SafetyGateError("GitHub production deployment metadata did not round-trip");
 
-  await requestJson(fetcher, "GitHub", `${url}/${id}/statuses`, {
-    method: "POST",
-    headers: headers(environment.token),
-    body: JSON.stringify({ state: "in_progress", description: "Production safety gates passed", ...runLink(environment) }),
-  }, [201]);
+  await requestJson(
+    fetcher,
+    "GitHub",
+    `${url}/${id}/statuses`,
+    {
+      method: "POST",
+      headers: headers(environment.token),
+      body: JSON.stringify({
+        state: "in_progress",
+        description: "Production safety gates passed",
+        ...runLink(environment),
+      }),
+    },
+    [201],
+  );
   writeActionOutput("deployment_id", String(id));
   return id;
 }
@@ -458,7 +624,11 @@ function makePayload(
 
 function parseDeploymentPayload(value: unknown): DeploymentPayload {
   const payload = record(value, "GitHub deployment payload");
-  if (payload.system !== systemName || payload.schemaVersion !== 1 || (payload.kind !== "release" && payload.kind !== "rollback"))
+  if (
+    payload.system !== systemName ||
+    payload.schemaVersion !== 1 ||
+    (payload.kind !== "release" && payload.kind !== "rollback")
+  )
     throw new SafetyGateError("GitHub deployment is missing Basalt release ledger metadata");
   if (typeof payload.databaseChanged !== "boolean" || typeof payload.workflowChanged !== "boolean")
     throw new SafetyGateError("GitHub deployment ledger has invalid classification flags");
@@ -470,20 +640,26 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
     pins: parsePinSummary(payload.pins),
     basePins: parsePinSummary(payload.basePins, "deployment baseline pins"),
     baseGitCommit: gitCommit(payload.baseGitCommit, "deployment payload baseGitCommit"),
-    candidateGitCommit: gitCommit(payload.candidateGitCommit, "deployment payload candidateGitCommit"),
+    candidateGitCommit: gitCommit(
+      payload.candidateGitCommit,
+      "deployment payload candidateGitCommit",
+    ),
     databaseChanged: payload.databaseChanged,
     workflowChanged: payload.workflowChanged,
     reportDigest: hexDigest(payload.reportDigest, "deployment report digest"),
   };
   if (payload.backupName !== undefined) {
-    if (typeof payload.backupName !== "string") throw new SafetyGateError("Deployment backup name is invalid");
+    if (typeof payload.backupName !== "string")
+      throw new SafetyGateError("Deployment backup name is invalid");
     parsed.backupName = payload.backupName;
     parsed.backupMetadata = verifyBackupMetadata(payload.backupName, payload.backupMetadata);
     assertBackupMatchesPayload(parsed.backupMetadata, parsed);
   } else if (payload.backupMetadata !== undefined) {
     throw new SafetyGateError("Deployment backup metadata has no backup name");
   } else if (parsed.databaseChanged && parsed.kind === "release") {
-    throw new SafetyGateError("Database-changing deployment ledger is missing its rollback backup name");
+    throw new SafetyGateError(
+      "Database-changing deployment ledger is missing its rollback backup name",
+    );
   }
   if (payload.rollbackOf !== undefined)
     parsed.rollbackOf = gitCommit(payload.rollbackOf, "deployment rollbackOf");
@@ -492,46 +668,69 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
     parsed.rollForwardOf = gitCommit(payload.rollForwardOf, "deployment rollForwardOf");
   if (payload.rollbackBackup !== undefined) {
     const recorded = record(payload.rollbackBackup, "deployment rollback backup");
-    if (typeof recorded.name !== "string") throw new SafetyGateError("Deployment rollback backup name is invalid");
+    if (typeof recorded.name !== "string")
+      throw new SafetyGateError("Deployment rollback backup name is invalid");
     const metadata = verifyBackupMetadata(recorded.name, recorded.metadata);
-    if (parsed.kind !== "release" || parsed.rollForwardOf === undefined ||
-        metadata.candidate.gitCommit !== parsed.rollForwardOf ||
-        metadata.base.gitCommit !== parsed.baseGitCommit ||
-        stableStringify(metadata.base.pins) !== stableStringify(parsed.basePins))
-      throw new SafetyGateError("Deployment rollback backup is not the rolled-forward release's backup from the same base");
+    if (
+      parsed.kind !== "release" ||
+      parsed.rollForwardOf === undefined ||
+      metadata.candidate.gitCommit !== parsed.rollForwardOf ||
+      metadata.base.gitCommit !== parsed.baseGitCommit ||
+      stableStringify(metadata.base.pins) !== stableStringify(parsed.basePins)
+    )
+      throw new SafetyGateError(
+        "Deployment rollback backup is not the rolled-forward release's backup from the same base",
+      );
     parsed.rollbackBackup = { name: recorded.name, metadata };
   }
   return parsed;
 }
 
 function assertBackupMatchesPayload(metadata: BackupMetadata, payload: DeploymentPayload): void {
-  if (metadata.base.gitCommit !== payload.baseGitCommit ||
-      metadata.candidate.gitCommit !== payload.candidateGitCommit ||
-      stableStringify(metadata.base.pins) !== stableStringify(payload.basePins) ||
-      (payload.kind === "release" && stableStringify(metadata.candidate.pins) !== stableStringify(payload.pins)))
+  if (
+    metadata.base.gitCommit !== payload.baseGitCommit ||
+    metadata.candidate.gitCommit !== payload.candidateGitCommit ||
+    stableStringify(metadata.base.pins) !== stableStringify(payload.basePins) ||
+    (payload.kind === "release" &&
+      stableStringify(metadata.candidate.pins) !== stableStringify(payload.pins))
+  )
     throw new SafetyGateError("Deployment backup metadata does not match its release transition");
 }
 
 function assertBackupMatchesReport(backup: RecordedBackup, report: ClassificationReport): void {
   if (!backupMatchesReport(verifyBackupMetadata(backup.name, backup.metadata), report))
-    throw new SafetyGateError("PlanetScale backup metadata does not match the release classification");
+    throw new SafetyGateError(
+      "PlanetScale backup metadata does not match the release classification",
+    );
 }
 
-async function listDeployments(environment: LedgerEnvironment, fetcher: Fetcher): Promise<Deployment[]> {
+async function listDeployments(
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+): Promise<Deployment[]> {
   const all: Deployment[] = [];
   const seen = new Set<number>();
   for (let page = 1; page <= maximumPages; page++) {
-    const query = new URLSearchParams({ environment: "production", per_page: String(pageSize), page: String(page) });
+    const query = new URLSearchParams({
+      environment: "production",
+      per_page: String(pageSize),
+      page: String(page),
+    });
     const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments?${query}`;
-    const reply = await requestJson(fetcher, "GitHub", url, { method: "GET", headers: headers(environment.token) });
-    if (!Array.isArray(reply.body)) throw new SafetyGateError("GitHub deployment list omitted results");
+    const reply = await requestJson(fetcher, "GitHub", url, {
+      method: "GET",
+      headers: headers(environment.token),
+    });
+    if (!Array.isArray(reply.body))
+      throw new SafetyGateError("GitHub deployment list omitted results");
     for (const item of reply.body) {
       const deployment = record(item, "GitHub deployment list item");
       const id = deployment.id;
       if (typeof id !== "number" || !Number.isInteger(id) || id < 1 || seen.has(id))
         throw new SafetyGateError("GitHub deployment list contains an invalid or duplicate id");
       const createdAt = stringField(deployment.created_at, "GitHub deployment created_at");
-      if (!Number.isFinite(Date.parse(createdAt))) throw new SafetyGateError("GitHub deployment timestamp is invalid");
+      if (!Number.isFinite(Date.parse(createdAt)))
+        throw new SafetyGateError("GitHub deployment timestamp is invalid");
       seen.add(id);
       all.push({
         id,
@@ -557,19 +756,35 @@ async function listStatuses(
   for (let page = 1; page <= maximumPages; page++) {
     const query = new URLSearchParams({ per_page: String(pageSize), page: String(page) });
     const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments/${deploymentId}/statuses?${query}`;
-    const reply = await requestJson(fetcher, "GitHub", url, { method: "GET", headers: headers(environment.token) });
-    if (!Array.isArray(reply.body)) throw new SafetyGateError("GitHub deployment status list omitted results");
+    const reply = await requestJson(fetcher, "GitHub", url, {
+      method: "GET",
+      headers: headers(environment.token),
+    });
+    if (!Array.isArray(reply.body))
+      throw new SafetyGateError("GitHub deployment status list omitted results");
     for (const item of reply.body) {
       const status = record(item, "GitHub deployment status");
       const id = status.id;
       const createdAt = stringField(status.created_at, "GitHub deployment status timestamp");
-      if (typeof id !== "number" || !Number.isInteger(id) || seen.has(id) || !Number.isFinite(Date.parse(createdAt)))
+      if (
+        typeof id !== "number" ||
+        !Number.isInteger(id) ||
+        seen.has(id) ||
+        !Number.isFinite(Date.parse(createdAt))
+      )
         throw new SafetyGateError("GitHub deployment status list is inconsistent");
       seen.add(id);
-      all.push({ id, state: stringField(status.state, "GitHub deployment status state"), created_at: createdAt });
+      all.push({
+        id,
+        state: stringField(status.state, "GitHub deployment status state"),
+        created_at: createdAt,
+      });
     }
     if (reply.body.length < pageSize)
-      return all.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
+      return all.sort(
+        (left, right) =>
+          Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id,
+      );
   }
   throw new SafetyGateError("GitHub deployment status history exceeded the pagination limit");
 }
@@ -578,7 +793,10 @@ async function listStatuses(
 const endedAttempt = new Set(["failure", "error"]);
 
 function endedWithoutSuccess(statuses: Array<{ state: string }>): boolean {
-  return endedAttempt.has(statuses[0]?.state ?? "missing") && !statuses.some(({ state }) => state === "success");
+  return (
+    endedAttempt.has(statuses[0]?.state ?? "missing") &&
+    !statuses.some(({ state }) => state === "success")
+  );
 }
 
 /** Each attempt's window, or undefined when any attempt is unfinished, succeeded or outside production. */
@@ -630,7 +848,7 @@ async function statusesOfLatest(
 ): Promise<LatestStatuses> {
   const statuses = await listStatuses(environment, latest.id, fetcher);
   if (!payload.run || !unfinished.has(statuses[0]?.state ?? "missing")) return { statuses };
-  if (!await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher))
+  if (!(await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher)))
     return { statuses, why: "no successful deployment precedes it" };
   const run = await runCompletedAt(payload.run, environment, fetcher, now);
   if ("why" in run) return { statuses, why: run.why };
@@ -653,27 +871,49 @@ async function runCompletedAt(
   let body: Record<string, unknown>;
   try {
     const url = `${apiOrigin}/repos/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}`;
-    body = record((await requestJson(fetcher, "GitHub", url, { method: "GET", headers: headers(environment.token) })).body, "GitHub Actions run");
+    body = record(
+      (
+        await requestJson(fetcher, "GitHub", url, {
+          method: "GET",
+          headers: headers(environment.token),
+        })
+      ).body,
+      "GitHub Actions run",
+    );
   } catch (error) {
-    const status = error instanceof SafetyGateError ? /HTTP (\d{3})/.exec(error.message)?.[1] : undefined;
+    const status =
+      error instanceof SafetyGateError ? /HTTP (\d{3})/.exec(error.message)?.[1] : undefined;
     return { why: `${name} lookup failed (${status ? `HTTP ${status}` : "no usable response"})` };
   }
-  const repository = body.repository && typeof body.repository === "object" ? (body.repository as Record<string, unknown>).full_name : undefined;
-  if (body.id !== run.id || body.run_attempt !== run.attempt ||
-      typeof repository !== "string" || repository.toLowerCase() !== run.repository.toLowerCase())
+  const repository =
+    body.repository && typeof body.repository === "object"
+      ? (body.repository as Record<string, unknown>).full_name
+      : undefined;
+  if (
+    body.id !== run.id ||
+    body.run_attempt !== run.attempt ||
+    typeof repository !== "string" ||
+    repository.toLowerCase() !== run.repository.toLowerCase()
+  )
     return { why: `${name} lookup answered about another run` };
   if (body.status !== "completed")
-    return { why: `${name} is still ${typeof body.status === "string" && /^[a-z_]{1,32}$/.test(body.status) ? body.status : "unfinished"}` };
-  const completedAt = typeof body.updated_at === "string" ? Date.parse(body.updated_at) : Number.NaN;
-  if (!Number.isFinite(completedAt)) return { why: `${name} completed without a usable completion time` };
+    return {
+      why: `${name} is still ${typeof body.status === "string" && /^[a-z_]{1,32}$/.test(body.status) ? body.status : "unfinished"}`,
+    };
+  const completedAt =
+    typeof body.updated_at === "string" ? Date.parse(body.updated_at) : Number.NaN;
+  if (!Number.isFinite(completedAt))
+    return { why: `${name} completed without a usable completion time` };
   if (now() - completedAt < KILLED_RUN_GRACE_MS)
-    return { why: `${name} completed but is still within the ${KILLED_RUN_GRACE_MS / 60_000}-minute grace period` };
+    return {
+      why: `${name} completed but is still within the ${KILLED_RUN_GRACE_MS / 60_000}-minute grace period`,
+    };
   return { completedAt: body.updated_at as string };
 }
 
 /**
- * Same-SHA retries count as one failed release. Validate every attempt and retain the oldest
- * payload: its backup predates all of that release's writes. Different SHAs still need a decision.
+ * Validate every attempt before checking their ancestry chain. Same-SHA retries keep identical
+ * pins and gates. The oldest payload supplies the backup from before any attempt's writes.
  */
 async function supersedeFailedRelease(
   deployments: Deployment[],
@@ -682,14 +922,17 @@ async function supersedeFailedRelease(
   fetcher: Fetcher,
   rollForward: RollForward,
   now: () => number,
-): Promise<{ ready: Extract<DeploymentLedger, { state: "ready" }>; superseded: SupersededRelease } | { refusal: string }> {
+): Promise<
+  | { ready: Extract<DeploymentLedger, { state: "ready" }>; superseded: SupersededRelease }
+  | { refusal: string }
+> {
   const index = deployments.findIndex(({ id }) => id === lastSuccessful.deploymentId);
   if (index < 0) return { refusal: "the last successful deployment is missing from the ledger" };
   const attempts = deployments.slice(0, index);
   if (attempts.length === 0) return { refusal: "no failed release follows the last success" };
-  const candidate = attempts[0]!.sha;
-  if (attempts.some((attempt) => attempt.sha !== candidate))
-    return { refusal: `${index} deployment records with different SHAs follow the last success; a person decides` };
+  const mixedCommits = attempts.some(({ sha }) => sha !== attempts[0]!.sha);
+  const byCommit = new Map<string, SupersededRelease>();
+  const validated: SupersededRelease[] = [];
   let original: SupersededRelease | undefined;
   for (const failed of attempts) {
     const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
@@ -700,31 +943,74 @@ async function supersedeFailedRelease(
     } catch {
       return refuse("has unreadable ledger metadata");
     }
-    const { statuses, why } = await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
+    const { statuses, why } = mixedCommits
+      ? { statuses: await listStatuses(environment, failed.id, fetcher), why: undefined }
+      : await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
     const status = statuses[0]?.state ?? "missing";
     if (!endedWithoutSuccess(statuses))
-      return refuse(`is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`);
+      return refuse(
+        `is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`,
+      );
     if (payload.kind !== "release") return refuse("is a rollback, not a release");
     if (payload.gitCommit !== failed.sha || payload.candidateGitCommit !== failed.sha)
       return refuse("metadata does not match its SHA");
-    if (payload.baseGitCommit !== lastSuccessful.gitCommit ||
-        stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins))
+    if (
+      payload.baseGitCommit !== lastSuccessful.gitCommit ||
+      stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins)
+    )
       return refuse("was not based on the last successful deployment");
-    if (original && (payload.databaseChanged !== original.payload.databaseChanged ||
-        payload.workflowChanged !== original.payload.workflowChanged ||
-        stableStringify(payload.pins) !== stableStringify(original.payload.pins)))
+    const sameCommit = byCommit.get(failed.sha);
+    if (
+      sameCommit &&
+      (payload.databaseChanged !== sameCommit.payload.databaseChanged ||
+        payload.workflowChanged !== sameCommit.payload.workflowChanged ||
+        stableStringify(payload.pins) !== stableStringify(sameCommit.payload.pins))
+    )
       return refuse("has different pins or safety gates from another attempt of the same SHA");
-    original = { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status, payload };
+    original = {
+      deploymentId: failed.id,
+      gitCommit: failed.sha,
+      deploymentStatus: status,
+      payload,
+    };
+    validated.push(original);
+    if (!sameCommit) byCommit.set(failed.sha, original);
   }
   if (!original) return { refusal: "no failed release follows the last success" };
-  let contained: boolean;
-  try {
-    contained = rollForward.contains(candidate, rollForward.candidateGitCommit);
-  } catch (error) {
-    return { refusal: `deployment ${original.deploymentId} could not be checked against ${rollForward.candidateGitCommit}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}` };
+  if (
+    mixedCommits &&
+    validated.some(({ payload }) => payload.databaseChanged) &&
+    !ownBackup(original.payload)
+  )
+    return {
+      refusal: `deployment ${original.deploymentId} is the oldest failed attempt but has no protected backup from before the chain's database writes`,
+    };
+  const newerCommits = new Set([rollForward.candidateGitCommit]);
+  const checked = new Set<string>();
+  for (const failed of validated) {
+    for (const descendant of newerCommits) {
+      const comparison = `${failed.gitCommit}:${descendant}`;
+      if (
+        checked.has(comparison) ||
+        (failed.gitCommit === descendant && descendant !== rollForward.candidateGitCommit)
+      )
+        continue;
+      let contained: boolean;
+      try {
+        contained = rollForward.contains(failed.gitCommit, descendant);
+      } catch (error) {
+        return {
+          refusal: `deployment ${failed.deploymentId} could not be checked against ${descendant}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}`,
+        };
+      }
+      if (!contained)
+        return {
+          refusal: `deployment ${failed.deploymentId} is not contained in ${descendant}, so the failed attempts and candidate do not form one ancestry chain`,
+        };
+      checked.add(comparison);
+    }
+    newerCommits.add(failed.gitCommit);
   }
-  if (!contained)
-    return { refusal: `deployment ${original.deploymentId} is not contained in ${rollForward.candidateGitCommit}, so that release would not re-apply it` };
   const success = deployments[index]!;
   return {
     ready: {
@@ -733,6 +1019,7 @@ async function supersedeFailedRelease(
       gitCommit: lastSuccessful.gitCommit,
       pins: lastSuccessful.pins,
       payload: parseDeploymentPayload(success.payload),
+      ...(mixedCommits ? { supersededAttempts: validated } : {}),
     },
     superseded: original,
   };
@@ -749,7 +1036,8 @@ async function findPreviousSuccessfulDeployment(
     if (statuses[0]?.state !== "success") continue;
     const payload = parseDeploymentPayload(deployment.payload);
     const sha = gitCommit(deployment.sha, "successful deployment SHA");
-    if (payload.gitCommit !== sha) throw new SafetyGateError("Successful production deployment metadata does not match its SHA");
+    if (payload.gitCommit !== sha)
+      throw new SafetyGateError("Successful production deployment metadata does not match its SHA");
     return { deploymentId: deployment.id, gitCommit: sha, pins: payload.pins };
   }
   return undefined;
@@ -758,10 +1046,17 @@ async function findPreviousSuccessfulDeployment(
 function parseRunIdentity(value: unknown): RunIdentity {
   const run = record(value, "deployment run identity");
   const { repository, id, attempt } = run;
-  if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
-      typeof id !== "number" || !Number.isSafeInteger(id) || id < 1 ||
-      typeof attempt !== "number" || !Number.isSafeInteger(attempt) || attempt < 1 ||
-      Object.keys(run).length !== 3)
+  if (
+    typeof repository !== "string" ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+    typeof id !== "number" ||
+    !Number.isSafeInteger(id) ||
+    id < 1 ||
+    typeof attempt !== "number" ||
+    !Number.isSafeInteger(attempt) ||
+    attempt < 1 ||
+    Object.keys(run).length !== 3
+  )
     throw new SafetyGateError("Deployment run identity is invalid");
   return { repository, id, attempt };
 }
@@ -769,7 +1064,11 @@ function parseRunIdentity(value: unknown): RunIdentity {
 /** A status link to the run attempt, so a person can open the run that owns the record. */
 function runLink(environment: LedgerEnvironment): { log_url?: string } {
   const { run } = environment;
-  return run ? { log_url: `https://github.com/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}` } : {};
+  return run
+    ? {
+        log_url: `https://github.com/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}`,
+      }
+    : {};
 }
 
 function headers(token: string): Record<string, string> {
