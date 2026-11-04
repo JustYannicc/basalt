@@ -1,0 +1,100 @@
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+index 9c24453..52ba9b6 100644
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -457,7 +457,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           yield* browser.use("The account row shows the reported photo", (page) => {
+             const photo = page
+               .locator(".accounts-section li")
+-              .filter({ hasText: "Default" })
++              // Found by its saved label; the title is what the account's check reported.
++              .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
+               .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
+             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+           }),
+@@ -465,7 +466,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         yield* browser.use("The outdated result is checked again on view", (page) =>
+           page
+             .locator(".accounts-section li")
+-            .filter({ hasText: "Default" })
++            .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
+             .locator('[data-check-status="healthy"][data-check-current="true"]')
+             .waitFor(),
+         );
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index 67035af..cb0dce0 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -33,8 +33,7 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
+  * A verified identity always names its row, so the proven sign-in is never hidden behind a saved
+  * label. Callers may show a differing saved label as metadata.
+  */
+-export const accountTitle = (account: AccountSummary) =>
+-  account.identity?.label ?? (account.label || account.health?.info?.email || "Unnamed account");
++export { accountTitle } from "./account-title.ts";
+ 
+ const accountLinks = (inventory: Inventory) => [...inventory.links, ...(inventory.appLinks ?? [])];
+ 
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+new file mode 100644
+index 0000000..8f0f60c
+--- /dev/null
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -0,0 +1,28 @@
++import type { AccountSummary } from "./dashboard.ts";
++
++/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
++const generated = /^Default( \d+)?$/;
++
++/** A label the person gave the account; a generated or blank one is not a name. */
++export const authoredLabel = (label: string) => {
++  const trimmed = label.trim();
++  return trimmed === "" || generated.test(trimmed) ? undefined : label;
++};
++
++/**
++ * What names an account's row on every account list: its verified identity, else the name the
++ * person gave it, else what its own check reported (an email first), else its generated label
++ * ("Default 2" stays distinct), else `fallback`. A reported value never earns the verified mark and
++ * never groups rows; only `account.identity` does.
++ */
++export const accountTitle = (
++  account: Pick<AccountSummary, "identity" | "label" | "health">,
++  fallback = "Unnamed account",
++) =>
++  account.identity?.label ??
++  authoredLabel(account.label) ??
++  (account.health?.info?.email ||
++    account.health?.info?.displayName ||
++    account.health?.info?.username ||
++    account.label.trim() ||
++    fallback);
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 7d81ecc..9b0cb76 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -21,7 +21,7 @@ import {
+   type FailureProps,
+   type Query,
+ } from "../../contracts/dashboard.ts";
+-import { accountMethodKindLabel } from "../../contracts/account-identities.ts";
++import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+ import { AccountCheckResult } from "./account-health.tsx";
+ import {
+@@ -114,13 +114,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+   providerUrl: providerDisplayUrl(requirement.definition),
+ });
+ 
++// The same title as the Accounts list; keyless rows fall back to the provider's name.
+ const accountName = (account: AccountSummary) =>
+-  account.label ||
+-  account.health?.info?.displayName ||
+-  account.health?.info?.username ||
+-  account.health?.info?.email ||
+-  account.providerName ||
+-  "Unnamed account";
++  accountTitle(account, account.providerName || "Unnamed account");
+ 
+ /**
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.

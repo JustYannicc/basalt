@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-title-fallback",
+  "file": "0242-account-title-fallback.patch",
+  "content_sha256": "ef771174cf06c3f5d44210395f50c7fa7b011e53d8660b2324c14018c6cf0620",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
