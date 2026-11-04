@@ -105,10 +105,11 @@ model {
 
   cloudAccountApi = adapter "Cloud account API" {
     #external
-    technology "AWS regional STS and S3 APIs"
-    metadata { hosts "*.amazonaws.com" }
+    technology "AWS managed MCP and OAuth"
+    metadata { hosts "aws-mcp.us-east-1.api.aws|us-east-1.oauth.signin.aws" }
   }
-  basalt.toolsGateway -[sync]-> cloudAccountApi "sign and call with the person's own temporary or IAM credentials"
+  basalt.toolsGateway -[sync]-> cloudAccountApi "authorize in the cloud and call with the person's own cloud-account permissions"
+  basalt.build -[sync]-> cloudAccountApi "verify service contracts with isolated local fixtures"
 
   crmService = adapter "CRM service" {
     #external

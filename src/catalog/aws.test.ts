@@ -22,12 +22,10 @@ test("AWS catalog provenance pins the self-contained published source and depend
     source.files.map((file) => file.path).sort(),
     [
       "README.md",
+      "icon.ts",
       "index.ts",
       "package.json",
-      "src/aws.ts",
-      "src/credentials.ts",
-      "src/regions.ts",
-      "src/xml.ts",
+      "provider.ts",
     ],
   );
 
@@ -39,21 +37,22 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, "module");
   assert.deepEqual(manifest.dependencies, {
-    apps: "0.0.1-beta.104-basalt.2",
-    aws4fetch: "1.0.20",
-    "fast-xml-parser": "5.11.1",
+    apps: "0.0.1-beta.104-basalt.6",
+    "@modelcontextprotocol/sdk": "1.32.1",
   });
   assert.deepEqual(provenance.dependencies, manifest.dependencies);
 });
 
-test("AWS appears in the public catalog with credential fields and bounded read scope", () => {
+test("AWS catalog offers managed OAuth and its vendor icon", () => {
   const feed = mergeFeed({ version: 1, apps: [] }, [aws]);
   const entry = feed.apps.find((app) => app.id === "aws");
 
   assert.ok(entry);
   assert.equal(entry.package, "aws");
-  assert.deepEqual(entry.auth, [{ method: "credentials", kind: "secrets", label: "AWS access keys" }]);
+  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
   assert.equal(entry.connectionNotices, undefined);
+  assert.equal(entry.icons.length, 2);
+  assert.match(entry.icons[0]!.src, /^data:image\/png;base64,/);
 });
 
 test("the AWS source route serves the pinned source and the index includes its catalog entry", async () => {
