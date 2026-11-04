@@ -160,7 +160,7 @@ function homeExportFixture(family: "codex" | "claude", changed?: Record<string, 
         "proxy-url": "",
         models: [],
         ...group,
-        ...(changed ?? {}),
+        ...changed,
       })),
     );
   });

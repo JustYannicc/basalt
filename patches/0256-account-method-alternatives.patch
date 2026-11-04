@@ -1,5 +1,5 @@
 diff --git a/e2e/tests/account-naming.spec.ts b/e2e/tests/account-naming.spec.ts
-index 3c0d9196b8a7304dcce914864b707ad75c7b69b2..3d1200719dda473ac5c808bec4a3ced16317cefc 100644
+index 3c0d919..f786117 100644
 --- a/e2e/tests/account-naming.spec.ts
 +++ b/e2e/tests/account-naming.spec.ts
 @@ -36,9 +36,10 @@ layer(HostedLive, { excludeTestServices: true })("Account naming", (it) => {
@@ -15,16 +15,18 @@ index 3c0d9196b8a7304dcce914864b707ad75c7b69b2..3d1200719dda473ac5c808bec4a3ced1
  } });
  export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
  `,
-@@ -83,6 +84,87 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+@@ -83,6 +84,89 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
              connect.getByRole("textbox", { name: "Account name" }).count(),
            ),
          ).toBe(0);
 +        // No host registers the subscription, so it is the blocked alternative to the open key.
 +        const others = connect.getByRole("button", { name: "Other sign-in methods", exact: true });
-+        const refusal = connect.getByText(
-+          "Fixture subscription. This host cannot acquire this sign-in method right now.",
-+          { exact: true },
-+        );
++        const refusal = connect
++          .getByRole("list", { name: "Other sign-in methods", exact: true })
++          .getByText(
++            "Fixture subscription. This host cannot acquire this sign-in method right now.",
++            { exact: true },
++          );
 +        const disclosure = () =>
 +          Promise.all([others.getAttribute("aria-expanded"), refusal.isVisible()]);
 +        expect(
