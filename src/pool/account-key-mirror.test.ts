@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HomeClient } from "./control.ts";
-import { accountMirrorPath, accountMirrorPrefix, handleAccountKeyMirror } from "./account-key-mirror.ts";
+import { accountMirrorPath, accountMirrorPrefix, accountMirrorMaxBytes, handleAccountKeyMirror } from "./account-key-mirror.ts";
 import { signEnvelope, signPoolToken } from "./token.ts";
 
 const signingKey = "ab".repeat(32);
@@ -75,6 +75,6 @@ test("oversized unsigned mirror bodies deliver at most one overflow byte before 
   const home = new HomeClient(async () => { calls++; return Response.json({}); });
   assert.equal((await handleAccountKeyMirror(incoming, { home, signingKey })).status, 413);
   assert.equal(cancelled, true);
-  assert.equal(delivered, 1_048_577);
+  assert.equal(delivered, accountMirrorMaxBytes + 1);
   assert.equal(calls, 0);
 });

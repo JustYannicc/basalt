@@ -5,7 +5,8 @@ import { openEnvelope } from "./token.ts";
 
 export const accountMirrorPath = "/pool/v1/account-mirrors";
 export const accountMirrorPrefix = "sbam1";
-export const accountMirrorMaxBytes = 1_048_576;
+// Covers 2,000 model IDs of 256 UTF-16 units, duplicated as name/alias and base64 encoded.
+export const accountMirrorMaxBytes = 8_388_608;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** Only a fresh assertion from the trusted host can copy account fields into Home. */

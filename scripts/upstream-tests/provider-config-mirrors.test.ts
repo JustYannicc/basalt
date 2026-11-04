@@ -280,3 +280,22 @@ test("malformed provider responses and service-account JSON never expose their c
   });
   assert.equal(invalid.calls.length, 0);
 });
+
+test("the largest accepted model catalog reaches signed mirror ingress without truncation", async () => {
+  for (const character of ["x", "\u0800"]) {
+    const ids = Array.from(
+      { length: 2000 },
+      (_, index) => `${String(index).padStart(4, "0")}${character.repeat(252)}`,
+    );
+    const f = await fixture("openrouter", "apiKey", { token: "synthetic-saved-token" }, () =>
+      Response.json({ data: ids.map((id) => ({ id })) }),
+    );
+    await f.mirror();
+    const groups = f.configs.get("/v8/management/config/api-keys/openai-compatibility");
+    assert.ok(Array.isArray(groups));
+    assert.deepEqual(
+      groups[0].models,
+      ids.map((id) => ({ name: id, alias: id })),
+    );
+  }
+});
