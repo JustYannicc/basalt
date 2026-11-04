@@ -5,9 +5,15 @@ import { inspectPoolImage } from "./pool-image-metadata.ts";
 import type { Fetcher } from "./http.ts";
 
 export async function capturePoolImage(source: NodeJS.ProcessEnv, fetcher: Fetcher = fetch) {
-  const metadata = await inspectPoolImage(source.POOL_IMAGE_REF ?? "", source.POOL_IMAGE_DIGEST ?? "", {
-    accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken: source.CLOUDFLARE_API_TOKEN ?? "",
-  }, fetcher);
+  const metadata = await inspectPoolImage(
+    source.POOL_IMAGE_REF ?? "",
+    source.POOL_IMAGE_DIGEST ?? "",
+    {
+      accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+      apiToken: source.CLOUDFLARE_API_TOKEN ?? "",
+    },
+    fetcher,
+  );
   const receipt = {
     candidate: source.GITHUB_SHA,
     applicationId: source.POOL_APPLICATION_ID,
@@ -18,14 +24,12 @@ export async function capturePoolImage(source: NodeJS.ProcessEnv, fetcher: Fetch
   };
   poolImageReceipt(receipt, source.GITHUB_SHA ?? "");
   if (!source.BASALT_POOL_IMAGE_RECEIPT) throw new Error("Missing output path");
-  writeFileSync(source.BASALT_POOL_IMAGE_RECEIPT, JSON.stringify(receipt), { mode: 0o600, flag: "wx" });
+  writeFileSync(source.BASALT_POOL_IMAGE_RECEIPT, JSON.stringify(receipt), {
+    mode: 0o600,
+    flag: "wx",
+  });
 }
 
-// A capture failure belongs to the image assertion, which stops without an automatic rollback.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    await capturePoolImage(process.env);
-  } catch {
-    console.error("Pool publication receipt was not captured; the release image assertion will refuse success");
-  }
+  await capturePoolImage(process.env);
 }

@@ -1,0 +1,26 @@
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+index a746084..ad6654b 100644
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -17,6 +17,12 @@ const Assertion = Schema.Struct({
+   }),
+ });
+ 
++// Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++const assertionPaths = {
++  poolUsageSeries: "/pool/v1/usage/series",
++  lastSuccessAt: "/pool/v1/usage/last-success",
++} as const;
++
+ /** The hosted server is real; this loopback peer implements only the external pool protocol. */
+ export const poolUsageSeriesBackend = Effect.gen(function* () {
+   const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
+@@ -46,7 +52,7 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+     if (
+       assertion.expiresAt <= now ||
+       assertion.expiresAt > now + 30_000 ||
+-      !request.url.endsWith(`/${assertion.action}`)
++      !request.url.endsWith(assertionPaths[assertion.action])
+     )
+       return HttpServerResponse.empty({ status: 401 });
+     yield* Ref.update(calls, (values) => [...values, assertion]);
