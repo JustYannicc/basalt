@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hosted-policy-upgrade-fixtures",
+  "file": "0201-hosted-policy-upgrade-fixtures.patch",
+  "content_sha256": "fa6d35e90695beb5848432fe1616ae2a86c2612ef56ec0e3cdecdceddde2c9b4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

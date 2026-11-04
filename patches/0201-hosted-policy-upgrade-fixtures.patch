@@ -1,0 +1,21 @@
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -12,9 +12,17 @@
+     { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+   ] as const;
+ 
++/** Remove policy state and its journal row before replaying an earlier hosted migration. */
++export const beforeHostedToolPolicies = () =>
++  [
++    { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
++  ] as const;
++
+ /** Remove Routes' additive state before replaying an earlier hosted migration. */
+ export const beforeHostedRoutes = () =>
+   [
++    ...beforeHostedToolPolicies(),
+     { sql: "DROP TABLE basalt_hosted_routes_usage, basalt_hosted_routes_accounts" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 15" },
+   ] as const;
