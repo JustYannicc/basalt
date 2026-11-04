@@ -190,3 +190,22 @@ test("a stopped runtime gets a new cold startup budget after serving traffic", a
   assert.equal((await runtime.warm()).boot_id, "boot-2");
   assert.equal(f.clock.now(), 2_000);
 });
+
+test("explicit recovery waits for the active warm and model calls share its one restart", async () => {
+  const f = fixture();
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const status = f.driver.status;
+  f.driver.status = async () => { await barrier; return status(); };
+  const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+  const warming = runtime.warm();
+  const recovery = runtime.restart();
+  assert.equal(runtime.warm(), recovery);
+  release();
+  await warming;
+  assert.equal(runtime.warm(), recovery, "old warm completion cannot clear the active restart");
+  const recovered = await recovery;
+  assert.equal(recovered.boot_id, "boot-2");
+  assert.equal(f.state().starts, 2);
+  assert.equal(f.state().stops, 1);
+});
