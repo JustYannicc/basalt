@@ -724,8 +724,18 @@ jobs:
         run: |
           bun run e2e:prepare
           node scripts/build-basalt-framework.ts
+      - name: Install Chromium for the hosted AWS paste proof
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
       - name: Exercise AWS sign-in and tools through the real runtime
         run: node scripts/check-aws.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aws-hosted-paste-ui
+          path: .generated/aws-proof/run-*/aws-*.png
+          if-no-files-found: warn
+          include-hidden-files: true
   gitlab-connectors:
     runs-on: ubuntu-latest
     timeout-minutes: 30

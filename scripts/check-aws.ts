@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyConnectorsSource } from "./connectors-source.ts";
@@ -32,6 +33,13 @@ assert.ok(manifest.dependencies?.apps, "AWS package must pin its apps framework 
 
 const prepared = verifyConnectorsSource(root);
 console.log(`Pinned runtime verified (${prepared.commit.slice(0, 7)}, ${prepared.patches.length} carried patches).`);
+const { chromium } = createRequire(join(upstream, "package.json"))("playwright") as {
+  chromium: { executablePath(): string };
+};
+const browserExecutable = chromium.executablePath();
+await access(browserExecutable).catch(() => {
+  throw new Error("AWS hosted paste proof needs Playwright Chromium; run bunx playwright install chromium first.");
+});
 
 const evidenceRoot = join(root, ".generated/aws-proof");
 await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
@@ -75,7 +83,9 @@ if (process.argv.includes("--preflight")) {
     LANG: "en_US.UTF-8",
     NO_COLOR: "1",
   };
-  const child = spawn("bun", [join(root, "e2e/aws/runtime.mjs"), root, upstream, directory], {
+  const child = spawn("bun", [
+    join(root, "e2e/aws/runtime.mjs"), root, upstream, directory, browserExecutable,
+  ], {
     cwd: upstream,
     env: environment,
     detached: true,
@@ -119,6 +129,25 @@ if (process.argv.includes("--preflight")) {
     assert.equal(oauth.reconnectPreservedAccount, true);
     assert.equal(oauth.reconnectPreservedLinks, true);
     assert.equal(Array.isArray(report.users) && report.users.length, 2);
+    assert.ok(report.hostedPasteUi && typeof report.hostedPasteUi === "object");
+    const hostedPasteUi = report.hostedPasteUi as Record<string, unknown>;
+    for (const field of [
+      "cancelReturnsToForm",
+      "invalidPasteRejectedWithoutCompletion",
+      "validCallbackPastedThroughHostedForm",
+      "newAccountSaved",
+      "reconnectPreservedAccountId",
+      "reconnectPreservedName",
+    ]) assert.equal(hostedPasteUi[field], true, `Hosted paste UI must prove ${field}`);
+    assert.equal(hostedPasteUi.outsideRequests, 0);
+    assert.deepEqual(hostedPasteUi.screenshots, [
+      "aws-paste-step.png",
+      "aws-paste-cancel-return.png",
+      "aws-paste-invalid-recoverable.png",
+      "aws-paste-completed.png",
+      "aws-reconnect-paste-step.png",
+      "aws-reconnect-preserved-name.png",
+    ]);
     assert.ok(Array.isArray(report.oauthRefreshRotation));
     assert.deepEqual(
       (report.oauthRefreshRotation as Array<{ actor: string }>).map((entry) => entry.actor).sort(),

@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { Effect, Context, Layer } from "effect";
+import { Effect, Context, Layer, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
@@ -13,14 +13,16 @@ import { Actors } from "../../.upstream/e2e/support/actors.ts";
 import { SessionClients } from "../../.upstream/e2e/support/api.ts";
 import { localNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { appsVersion } from "../../.upstream/e2e/support/apps-release.ts";
+import { proveAwsPasteUi } from "./browser.mjs";
 import { startAwsFixture } from "./fixture.mjs";
 import { proveAwsOAuth } from "./oauth.mjs";
 
-const [root, upstream, evidenceDirectory] = process.argv.slice(2);
+const [root, upstream, evidenceDirectory, browserExecutable] = process.argv.slice(2);
 const require = createRequire(join(upstream, "package.json"));
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
 const { ElicitRequestSchema } = require("@modelcontextprotocol/sdk/types.js");
+const { chromium } = require("playwright");
 const EVIDENCE = evidenceDirectory ?? await mkdtemp(join(tmpdir(), "aws-proof-"));
 await mkdir(EVIDENCE, { recursive: true, mode: 0o700 });
 await chmod(EVIDENCE, 0o700);
@@ -307,8 +309,28 @@ const run = Effect.gen(function* () {
       scriptDeclineStayedLocal: true, scriptApproved: true });
   }
 
+  check(typeof browserExecutable === "string" && browserExecutable.length > 0,
+    "The AWS hosted paste proof requires the pinned Chromium executable");
+  const browser = yield* Effect.acquireRelease(
+    Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })),
+    (instance) => Effect.promise(() => instance.close()),
+  );
+  const ownerCookies = Redacted.value(yield* actors.owner.cookies);
+  const hostedPasteUi = yield* Effect.promise(() => proveAwsPasteUi({
+    browser,
+    target,
+    actors,
+    ownerCookies,
+    app,
+    fixture,
+    directory: EVIDENCE,
+    check,
+    equal,
+  }));
+
   const fixtureResult = fixture.observations();
-  equal(fixtureResult.exchanges.length, 4, "Expected new account, second account, member, and reconnect authorizations");
+  equal(fixtureResult.exchanges.length, 6,
+    "Expected owner accounts, member account, API reconnect, and hosted UI connect/reconnect authorizations");
   const refreshRotation = [];
   for (const actor of ["owner-reconnected", "member"]) {
     const grant = fixtureResult.exchanges.find((event) => event.actor === actor);
@@ -336,6 +358,7 @@ const run = Effect.gen(function* () {
     users: outcomes,
     discoveredTools: ["get_caller_identity", "call_aws", "execute_script"],
     approvals,
+    hostedPasteUi,
     oauthRefreshRotation: refreshRotation,
     accountReconnect: "authenticated host connection APIs preserve account ID and existing user links",
     authorizationCompletion: "caller pastes the full provider callback URL through the authenticated host API",

@@ -146,7 +146,7 @@ export async function startAwsFixture() {
         assert.equal(url.searchParams.get("code_challenge_method"), "S256");
         assert.ok(challenge.length > 0, "Authorization did not include a PKCE challenge");
         assert.equal(resource, `${origin}/mcp`, "Authorization targeted a different MCP resource");
-        const actor = url.searchParams.get("fixture_actor");
+        const actor = url.searchParams.get("fixture_actor") ?? "owner";
         assert.ok(
           actor === "owner" || actor === "member" || actor === "owner-reconnected",
           "Fixture authorization needs a synthetic actor",
