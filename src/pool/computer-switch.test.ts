@@ -14,10 +14,11 @@ test("non-owner context is pool-scoped while browser setup lists every personal 
   await f.access({ action: "audience", pools: [pool, { ...own, name: "Personal pool", users: [] },
     { ...pool, pool: "unavailable", owner: "other-owner", users: [] }] });
   const context = await f.context();
-  const value = await context.json() as { computers: Computer[]; pools: PoolChoice[]; shareHref?: string; intent: string };
+  const value = await context.json() as { computers: Computer[]; pools: PoolChoice[]; accountsHref: string; shareHref?: string; intent: string };
   assert.deepEqual(value.computers.map((computer) => computer.id).sort(), [shared.computer.id]);
   assert.deepEqual(value.pools, [{ id: pool.pool, name: pool.name, mine: false }]);
   assert.equal(value.shareHref, undefined);
+  assert.equal(value.accountsHref, `https://setup.example/org/${pool.organization}/apps/${pool.pool}?view=accounts`);
   assert.ok(value.computers.every((computer) => computer.removedAt === null));
   assert.ok(!JSON.stringify(value).includes("fake-tools-"));
   assert.ok(!JSON.stringify(value).includes("keyId"));
@@ -28,7 +29,8 @@ test("non-owner context is pool-scoped while browser setup lists every personal 
   const validation = await f.action("validate", member, value.intent);
   assert.deepEqual(await validation.json(), { pool: pool.pool, owner, organization: pool.organization, name: pool.name });
   const ownerContext = await f.context(owner);
-  const ownerView = await ownerContext.json() as { intent: string; shareHref: string };
+  const ownerView = await ownerContext.json() as { intent: string; accountsHref: string; shareHref: string };
+  assert.equal(ownerView.accountsHref, value.accountsHref);
   assert.equal(ownerView.shareHref, `https://setup.example/org/${pool.organization}/apps/${pool.pool}?view=settings`);
 });
 

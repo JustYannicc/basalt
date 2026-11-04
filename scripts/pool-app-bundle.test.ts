@@ -1,3 +1,4 @@
+import { servedFrameworkVersion } from "../framework-release.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -39,10 +40,14 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",
       ".upstream/packages/ui/src/implementation/styles/fonts/LICENSE.txt": "Open Font License",
       ".upstream/packages/apps/package.json": JSON.stringify({
-        version: "0.0.1-beta.104-basalt.2",
+        version: servedFrameworkVersion,
       }),
     }))
       writeFileSync(join(root, path), content);
+    const frameworkPath = join(upstream, "packages/apps/package.json");
+    writeFileSync(frameworkPath, JSON.stringify({ version: "mismatched-prepared-release" }));
+    assert.throws(() => bundlePoolApp(root, upstream), /differs from served release/);
+    writeFileSync(frameworkPath, JSON.stringify({ version: servedFrameworkVersion }));
     const files = bundlePoolApp(root, upstream);
     assert.deepEqual(
       files.map((file) => file.path),
@@ -72,7 +77,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`,
     );
     assert.deepEqual(JSON.parse(files[2]!.content).dependencies, {
-      apps: "0.0.1-beta.104-basalt.2",
+      apps: servedFrameworkVersion,
       react: "19",
     });
     const output = join(upstream, "apps/hosted/server/src/implementation");

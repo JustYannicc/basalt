@@ -1,3 +1,4 @@
+import { servedFrameworkVersion } from "../framework-release.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -32,7 +33,7 @@ test("connector source verification accepts the native contract and refuses subs
   try {
     for (const [path, content] of Object.entries({
       ".upstream/.gitignore": "**/.generated/\n",
-      ".upstream/packages/apps/package.json": '{"version":"0.0.1-test"}',
+      ".upstream/packages/apps/package.json": JSON.stringify({ version: servedFrameworkVersion }),
       ".upstream/packages/example.ts": "export const carried = false;\n",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-sans.woff2": "sans",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",

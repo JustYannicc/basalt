@@ -4,6 +4,9 @@ import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
 import type { PoolPermissions } from "./authorization.ts";
 import { fail, failureResponse, json, rows, text } from "./json.ts";
 import { LimitHistory } from "./limit-history.ts";
+import { CapacityHistory } from "./capacity/history.ts";
+import { capacityReadings, capacityWindows } from "./capacity/normalize.ts";
+import { quotaObservation } from "./quota-observation.ts";
 import { verifyPoolToken } from "./token.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import { UsageLedger } from "./usage-summary.ts";
@@ -36,12 +39,14 @@ interface Dependencies {
 export class PoolUsage {
   private deps: Dependencies;
   private history: LimitHistory;
+  private capacity: CapacityHistory;
   private ledger: UsageLedger;
   private syncing?: Promise<void>;
   constructor(deps: Dependencies) {
     this.deps = deps;
     const now = () => deps.now?.() ?? new Date();
     this.history = new LimitHistory(deps.storage, now);
+    this.capacity = new CapacityHistory(deps.storage);
     this.ledger = new UsageLedger(deps.storage, deps.client, { now, history: this.history });
   }
 
@@ -83,6 +88,23 @@ export class PoolUsage {
           && times.every((at) => Number.isFinite(at) && at <= now.getTime());
         return { ...account, observedAt: valid ? new Date(Math.min(...times)).toISOString() : null };
       });
+      const capacityAccounts = readings.filter((account) => account.state === "active").map((account) => ({
+        account, quota: quotaObservation(byId.get(account.id) ?? {}),
+      }));
+      const expected = new Map<string, { provider: string; windowSeconds: number; accounts: number }>();
+      for (const { account, quota } of capacityAccounts) {
+        for (const seconds of new Set(capacityWindows(account.provider, quota.windows).map((window) => window.period.seconds!))) {
+          const key = JSON.stringify([account.provider, seconds]);
+          const cohort = expected.get(key) ?? { provider: account.provider, windowSeconds: seconds, accounts: 0 };
+          cohort.accounts++;
+          expected.set(key, cohort);
+        }
+      }
+      try { await this.capacity.observe(pool, {
+        at: now.getTime(), expected: [...expected.values()],
+        readings: capacityAccounts.flatMap(({ account, quota }) => capacityReadings(account.id, account.provider, quota, now.getTime())),
+      }); }
+      catch (error) { console.error("Pool capacity sampling failed", error); }
       try { await this.history.sample(pool, readings, now); }
       catch (error) { console.error("Pool limit sampling failed", error); }
     }

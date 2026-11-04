@@ -1,3 +1,5 @@
+import { servedFrameworkVersion } from "../../framework-release.ts";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -95,7 +97,7 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   assertSource(published, publicPaths, provenance.publicSource.files);
   await verifyPatch(published, snapshot, rawPatch);
   const { handleCatalog } = await import(pathToFileURL(join(root, "src/catalog/worker.ts")).href);
-  const origin = "http://catalog-proof.invalid";
+  const origin = "https://catalog-proof.invalid";
   const fetcher = async () => Response.json({ version: 1, apps: [] });
   const feed = await (
     await handleCatalog(new Request(`${origin}/catalog/index.json`), fetcher)
@@ -117,13 +119,15 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   }
   assert.deepEqual(
     served,
-    template,
-    "Feed differs from captured source except its own asset origin",
+    JSON.parse(onServedFramework(JSON.stringify(template))),
+    "Feed differs from captured source except its own asset origin and served framework",
   );
-  const files = structuredClone(snapshot.files);
+  const capturedManifest = JSON.parse(snapshot.files.find((file) => file.path === "package.json").content);
+  assert.equal(capturedManifest.dependencies.apps, capture.servedSdkVersion);
+  const files = JSON.parse(onServedFramework(JSON.stringify(snapshot))).files;
   const manifest = JSON.parse(files.find((file) => file.path === "package.json").content);
   assert.equal(manifest.name, capture.packageName);
-  assert.equal(manifest.dependencies.apps, capture.servedSdkVersion);
+  assert.equal(manifest.dependencies.apps, servedFrameworkVersion);
   let apiUrls = 0,
     authUrls = 0,
     apiHosts = 0;
