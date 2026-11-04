@@ -264,3 +264,40 @@ test("public app operations, CLI and MCP preserve busy capacity as a recoverable
   assert.equal(mcp.status, 503);
   assert.equal(mcp.recovery.action, busy.recovery.action);
 });
+
+test(
+  "an abandoned queued request cannot keep the free slot while its continuation is parked",
+  { timeout: 5000 },
+  async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const admission = makeBuildAdmission(1, "50 seconds");
+        const occupying = yield* occupy(admission);
+        const parked = yield* Deferred.make<void>();
+        const clock = yield* Clock.Clock;
+        const controller = new AbortController();
+        let staleStarted = false;
+        const stale = yield* admission(
+          Effect.sync(() => {
+            staleStarted = true;
+          }),
+          undefined,
+          controller.signal,
+        ).pipe(
+          Effect.provideService(Clock.Clock, {
+            ...clock,
+            sleep: () => Deferred.succeed(parked, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(parked);
+        controller.abort();
+        yield* Deferred.succeed(occupying.release, undefined);
+        yield* Fiber.join(occupying.fiber);
+        assert.equal(yield* admission(Effect.succeed("live")), "live");
+        assert.equal(staleStarted, false);
+        yield* Fiber.interrupt(stale);
+      }),
+    );
+  },
+);

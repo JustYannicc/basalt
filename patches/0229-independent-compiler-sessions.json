@@ -1,7 +1,7 @@
 {
   "identity": "basalt-independent-compiler-sessions",
   "file": "0229-independent-compiler-sessions.patch",
-  "content_sha256": "1689b544bbc727503db758a5419af7a2e985299e058920494d7fece5113bd74f",
+  "content_sha256": "4984af0924b5f89fa1ebec42bbfb40aff793a9f0fd1ad56a93dabf8a556bd049",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

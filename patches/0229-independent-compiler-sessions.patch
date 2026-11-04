@@ -1,3 +1,317 @@
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+index d4923707e..73ea1e205 100644
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -7,7 +7,7 @@ import {
+   compileWithinDeadline,
+ } from "./implementation/compiler-request.ts";
+ import { CloudCompileResult } from "./contracts/builds.ts";
+-import { withRemoteSpan } from "@executor-js/telemetry";
++import { captureTelemetry, withRemoteSpan } from "@executor-js/telemetry";
+ import { Config, Effect, Option, Predicate, Schema } from "effect";
+ import { compileCloudApp } from "./implementation/app-build.ts";
+ import { makeBuildAdmission } from "./implementation/build-admission.ts";
+@@ -85,56 +85,73 @@ export default AppCompiler.make(
+       ...(registry === undefined ? {} : { registry }),
+       ...(Option.isSome(version) ? { apps: { version: version.value, files } } : {}),
+     };
+-    return AppCompiler.of({
+-      compile: (files, publicPaths, headers) =>
+-        Effect.suspend(() => {
+-          let replied = () => {};
+-          let failed = () => {};
+-          return Schema.decodeUnknownEffect(
+-            Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
+-          )({ files, publicPaths }).pipe(
+-            Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
+-            Effect.flatMap((input) =>
+-              Effect.gen(function* () {
+-                const { phase, fingerprint } = yield* compilerPhases(
+-                  input.files,
+-                  input.publicPaths,
+-                  isolate,
+-                );
+-                replied = () => phase("replied");
+-                failed = () => phase("error");
+-                return yield* admitted(
+-                  compileWithinDeadline(
+-                    fingerprint.pipe(
+-                      Effect.andThen(
+-                        compileCloudApp(
+-                          input.files,
+-                          { ...host, onPhase: phase },
+-                          input.publicPaths,
+-                        ),
+-                      ),
++    const compile = (
++      files: typeof CodeFiles.Type,
++      publicPaths: ReadonlyArray<string>,
++      headers: Readonly<Record<string, string>>,
++      signal?: AbortSignal,
++    ) =>
++      Effect.suspend(() => {
++        let replied = () => {};
++        let failed = () => {};
++        return Schema.decodeUnknownEffect(
++          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
++        )({ files, publicPaths }).pipe(
++          Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
++          Effect.flatMap((input) =>
++            Effect.gen(function* () {
++              const { phase, fingerprint } = yield* compilerPhases(
++                input.files,
++                input.publicPaths,
++                isolate,
++              );
++              replied = () => phase("replied");
++              failed = () => phase("error");
++              return yield* admitted(
++                compileWithinDeadline(
++                  fingerprint.pipe(
++                    Effect.andThen(
++                      compileCloudApp(input.files, { ...host, onPhase: phase }, input.publicPaths),
+                     ),
+                   ),
+-                  phase,
+-                );
+-              }),
+-            ),
+-            Effect.tapCause(() => Effect.sync(() => failed())),
+-            Effect.map((value) => ({ ok: true as const, value })),
+-            Effect.catchTags({
+-              BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
+-              RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
+-              RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
+-              RuntimeAppsDependencyMissing: (error) =>
+-                Effect.succeed({ ok: false as const, error }),
++                ),
++                phase,
++                signal,
++              );
+             }),
+-            Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
+-            Effect.tap(() => Effect.sync(() => replied())),
+-            Effect.orDie,
++          ),
++          Effect.tapCause(() => Effect.sync(() => failed())),
++          Effect.map((value) => ({ ok: true as const, value })),
++          Effect.catchTags({
++            BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeAppsDependencyMissing: (error) => Effect.succeed({ ok: false as const, error }),
++          }),
++          Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
++          Effect.tap(() => Effect.sync(() => replied())),
++          Effect.orDie,
++        );
++      }).pipe(
++        withRemoteSpan(new Request("https://compiler.internal", { headers }), "compiler.compile"),
++      );
++    return AppCompiler.of({
++      compile,
++      request: () =>
++        Effect.gen(function* () {
++          const { CompilerRequest } = yield* Effect.promise(
++            () => import("./implementation/compiler-request-target.ts"),
++          );
++          const { context } = yield* captureTelemetry;
++          return new CompilerRequest(
++            (
++              signal,
++              files: typeof CodeFiles.Type,
++              publicPaths: ReadonlyArray<string>,
++              headers: Readonly<Record<string, string>>,
++            ) => compile(files, publicPaths, headers, signal).pipe(Effect.provideContext(context)),
+           );
+-        }).pipe(
+-          withRemoteSpan(new Request("https://compiler.internal", { headers }), "compiler.compile"),
+-        ),
++        }),
+     });
+   }).pipe(Effect.provide(cloudTelemetry)),
+ );
+diff --git a/apps/hosted/cloud/src/contracts/builds.ts b/apps/hosted/cloud/src/contracts/builds.ts
+index ab342bcf3..af37113e8 100644
+--- a/apps/hosted/cloud/src/contracts/builds.ts
++++ b/apps/hosted/cloud/src/contracts/builds.ts
+@@ -61,8 +61,18 @@ export const CloudCompileResult = Schema.Union([
+   }),
+ ]);
+ 
++/** Native RPC stubs are disposed on completion, interruption or caller disconnection. */
++export interface CloudCompilerRequest extends Disposable {
++  compile(
++    files: CodeFiles,
++    publicPaths: ReadonlyArray<string>,
++    headers: Readonly<Record<string, string>>,
++  ): Promise<typeof CloudCompileResult.Encoded>;
++}
++
+ /** Compiler binding calls fail only with Alchemy transport failures; build failures are results. */
+ export type CloudCompiler = {
++  readonly request: () => Effect.Effect<CloudCompilerRequest, RpcCallError>;
+   readonly compile: (
+     files: CodeFiles,
+     publicPaths: ReadonlyArray<string>,
+diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
+index 26cf2b808..c559ff098 100644
+--- a/apps/hosted/cloud/src/implementation/build-admission.ts
++++ b/apps/hosted/cloud/src/implementation/build-admission.ts
+@@ -1,13 +1,14 @@
+ /**
+  * Bound an isolate's builds in arrival order without sharing request-owned continuations.
+- * Tickets and leases contain only values; each waiter owns its polling timer. Expiry removes
+- * requests whose cleanup never ran, and late cleanup cannot release a successor's lease.
++ * Each waiter owns its timer and cancellation signal. Native request disposal removes its
++ * ticket even when its continuation is gone; late cleanup cannot release a successor's lease.
+  */
+ import { BuildBusy } from "@executor-js/sdk/core";
+ import { Duration, Effect } from "effect";
+ 
+ interface Slot {
+   readonly expires: number;
++  readonly signal?: AbortSignal | undefined;
+ }
+ 
+ const check = { min: 10, max: 200 };
+@@ -21,39 +22,52 @@ export const makeBuildAdmission = (
+   const queueMillis = Duration.toMillis(queueBudget);
+   const held = new Set<Slot>();
+   const waiting = new Set<Slot>();
+-  const acquire = Effect.suspend(() => {
+-    const since = Date.now();
+-    const ticket = { expires: since + queueMillis };
+-    waiting.add(ticket);
+-    return Effect.gen(function* () {
+-      for (;;) {
+-        const now = Date.now();
+-        for (const slot of held) if (slot.expires <= now) held.delete(slot);
+-        for (const queued of waiting) if (queued.expires <= now) waiting.delete(queued);
+-        if (ticket.expires <= now) return yield* new BuildBusy();
+-        if (waiting.values().next().value === ticket && held.size < slots) {
+-          waiting.delete(ticket);
+-          const slot = { expires: now + leaseMillis };
+-          held.add(slot);
+-          return slot;
++  const acquire = (signal?: AbortSignal) =>
++    Effect.suspend(() => {
++      const since = Date.now();
++      const ticket = { expires: since + queueMillis, signal };
++      const abandon = () => waiting.delete(ticket);
++      signal?.addEventListener("abort", abandon, { once: true });
++      waiting.add(ticket);
++      return Effect.gen(function* () {
++        for (;;) {
++          const now = Date.now();
++          for (const slot of held) if (slot.expires <= now) held.delete(slot);
++          for (const queued of waiting)
++            if (queued.signal?.aborted || queued.expires <= now) waiting.delete(queued);
++          if (signal?.aborted) return yield* Effect.interrupt;
++          if (ticket.expires <= now) return yield* new BuildBusy();
++          if (waiting.values().next().value === ticket && held.size < slots) {
++            waiting.delete(ticket);
++            const slot = { expires: now + leaseMillis };
++            held.add(slot);
++            return slot;
++          }
++          yield* Effect.sleep(
++            Math.min(
++              ticket.expires - now,
++              Math.max(check.min, Math.min(check.max, (now - since) / 4)),
++            ),
++          );
+         }
+-        yield* Effect.sleep(
+-          Math.min(
+-            ticket.expires - now,
+-            Math.max(check.min, Math.min(check.max, (now - since) / 4)),
+-          ),
+-        );
+-      }
+-    }).pipe(Effect.ensuring(Effect.sync(() => waiting.delete(ticket))));
+-  });
++      }).pipe(
++        Effect.ensuring(
++          Effect.sync(() => {
++            waiting.delete(ticket);
++            signal?.removeEventListener("abort", abandon);
++          }),
++        ),
++      );
++    });
+   return <A, E, R>(
+     build: Effect.Effect<A, E, R>,
+     phase?: (phase: "admitted" | "released") => void,
++    signal?: AbortSignal,
+   ) =>
+     Effect.scoped(
+       Effect.gen(function* () {
+         yield* Effect.acquireRelease(
+-          acquire.pipe(Effect.withSpan("compiler.admission")),
++          acquire(signal).pipe(Effect.withSpan("compiler.admission")),
+           (slot) =>
+             Effect.sync(() => {
+               held.delete(slot);
+diff --git a/apps/hosted/cloud/src/implementation/compiler-request-target.ts b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
+new file mode 100644
+index 000000000..5596e7102
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
+@@ -0,0 +1,24 @@
++/** Native RPC disposal survives a caller disappearing without running its Effect finalizers. */
++import { RpcTarget } from "cloudflare:workers";
++import { Effect } from "effect";
++
++export class CompilerRequest<Args extends ReadonlyArray<unknown>, Value, Error> extends RpcTarget {
++  readonly #controller = new AbortController();
++  readonly #run: (signal: AbortSignal, ...args: Args) => Effect.Effect<Value, Error>;
++
++  constructor(run: (signal: AbortSignal, ...args: Args) => Effect.Effect<Value, Error>) {
++    super();
++    this.#run = run;
++  }
++
++  compile(...args: Args) {
++    // The native RPC method is a Promise boundary; work runs in this call's I/O context.
++    return Effect.runPromise(this.#run(this.#controller.signal, ...args), {
++      signal: this.#controller.signal,
++    });
++  }
++
++  [Symbol.dispose]() {
++    this.#controller.abort();
++  }
++}
+diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
+index d321a2643..acc74c1d0 100644
+--- a/apps/hosted/cloud/src/infrastructure/runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
+@@ -20,6 +20,7 @@ import {
+ } from "@executor-js/sdk/workerd";
+ import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
+ import { RuntimeContext } from "alchemy";
++import { RpcCallError } from "alchemy/Rpc";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Context, Effect, FiberSet, Option, Schema } from "effect";
+ import { CurrentOrganization, CurrentUserId } from "@executor-js/hosted-server";
+@@ -149,7 +150,15 @@ export const cloudRuntime = Effect.fn(function* (
+           Effect.gen(function* () {
+             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
+             const result = yield* requestCompile(
+-              compiler.compile(files, publicPaths, headers),
++              Effect.acquireUseRelease(
++                compiler.request(),
++                (request) =>
++                  Effect.tryPromise({
++                    try: () => request.compile(files, publicPaths, headers),
++                    catch: (cause) => new RpcCallError({ method: "compile", cause }),
++                  }),
++                (request) => Effect.sync(() => request[Symbol.dispose]()),
++              ),
+             ).pipe(
+               Effect.catchTag("RpcCallError", (error) => {
+                 const cause = error.cause;
 diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
 new file mode 100644
 index 000000000..04d68914c
@@ -275,7 +589,7 @@ index a8c60164a..403c05772 100644
 +    return { app, account: link.account };
    });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b767..9c8bfef53 100644
+index 5ab2d9a28..81fc9603b 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -279,6 +279,7 @@ export const scenarios = plan({
