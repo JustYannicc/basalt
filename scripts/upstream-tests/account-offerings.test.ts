@@ -19,7 +19,7 @@ import {
   identifyProvider,
 } from "../../.upstream/packages/sdk/src/core.ts";
 const { planAccountConsumerMethod } = await load("packages/sdk/src/contracts/account-consumers.ts");
-const { accountOffering, accountKindLabel, accountMethodKindLabel } = await load(
+const { accountOffering, accountKindLabel, accountMethodKindLabel, connectionKindLabel } = await load(
   "packages/ui/src/contracts/account-identities.ts",
 );
 const crypto = Crypto.make({
@@ -160,4 +160,13 @@ test("offering hints do not change the capability planner's availability or requ
   const unknown = plan();
   assert.equal(unknown.status, "unavailable");
   assert.deepEqual(plan("subscription"), unknown);
+});
+
+
+test("public connection labels preserve offering and credential meanings independently", () => {
+  assert.equal(connectionKindLabel("api-key", "subscription"), "API key · Subscription");
+  assert.equal(connectionKindLabel("oauth", "metered_api"), "Metered API");
+  assert.equal(connectionKindLabel(undefined, "prepaid"), "Prepaid");
+  assert.equal(connectionKindLabel("api-key", "unknown"), "API key");
+  assert.equal(connectionKindLabel("oauth", undefined), undefined);
 });
