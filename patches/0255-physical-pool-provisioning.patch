@@ -57,7 +57,18 @@ diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/h
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -745,6 +745,7 @@
+@@ -261,7 +261,9 @@
+       ).pipe(Effect.asVoid, Effect.orDie),
+     );
+     const emulators = `${directory}/emulators.json`;
+-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
++    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), {
++      mode: 0o600,
++    });
+     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+     const analyticsPort = yield* startAnalyticsCollector(directory);
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+@@ -745,6 +747,7 @@
          | "without-server"
          | "target"
          | "inspect-target"
@@ -65,7 +76,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
          | "release",
      ) =>
        Effect.gen(function* () {
-@@ -754,6 +755,10 @@
+@@ -754,6 +757,10 @@
            databaseProxy === undefined
          )
            return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
