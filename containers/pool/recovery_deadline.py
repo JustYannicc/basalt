@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 RECOVERY_SECONDS = 180
+CLEANUP_RESERVE_SECONDS = 3
 
 
 class RecoveryTimeout(Exception):
@@ -34,10 +35,14 @@ class RecoveryDeadline:
     def remaining(self, maximum: float = RECOVERY_SECONDS) -> float:
         if self.stop.is_set():
             raise RecoveryCancelled()
-        remaining = self.until - self.clock()
+        remaining = self.until - self.clock() - CLEANUP_RESERVE_SECONDS
         if remaining <= 0:
             raise RecoveryTimeout("Home recovery deadline exhausted")
         return min(maximum, remaining)
+
+    def cleanup_remaining(self, maximum: float) -> float:
+        # Cleanup still runs after cancellation or operation-budget exhaustion.
+        return max(0.0, min(maximum, self.until - self.clock()))
 
     def wait(self, seconds: float) -> None:
         if self.stop.wait(self.remaining(seconds)):

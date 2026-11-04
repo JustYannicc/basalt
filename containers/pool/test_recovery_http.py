@@ -42,7 +42,7 @@ class RecoveryHTTPTests(unittest.TestCase):
         clock = Clock()
         stop = Stop(clock)
         deadline = RecoveryDeadline(stop, clock)
-        clock.now = 178
+        clock.now = 175
         connection = Mock()
         response = connection.getresponse.return_value
 

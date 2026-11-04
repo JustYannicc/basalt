@@ -61,3 +61,30 @@ class GenerationTests(unittest.TestCase):
         ):
             policy_monitor.PolicyHealthMonitor(ready, "fixture").check_once()
         self.assertTrue(ready.snapshot()[0])
+
+    def test_native_proof_observer_forwards_generation_and_rejects_late_lease(self):
+        from .test_native_policy_observation import run_monitor_until_policy_lease
+
+        ready = Readiness("fixture")
+        monitor = policy_monitor.PolicyHealthMonitor(ready, "fixture")
+        previous = ready.generation()
+        seen = []
+        original_refresh = ready.refresh_policy_lease
+
+        def refresh(instance, generation=None):
+            seen.append(generation)
+            return original_refresh(instance, generation)
+
+        ready.refresh_policy_lease = refresh
+
+        def response(*args):
+            if len(seen) == 0:
+                ready.home_process_restarted()
+                ready.enable_policy_observations()
+            return "healthy", "a" * 32
+
+        with patch.object(policy_monitor, "probe_home_policy", side_effect=response):
+            acquired, states = run_monitor_until_policy_lease(monitor, ready, 2)
+        self.assertTrue(acquired)
+        self.assertEqual(seen, [previous, ready.generation()])
+        self.assertEqual(states, ["unavailable", "healthy"])

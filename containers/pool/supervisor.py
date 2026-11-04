@@ -36,7 +36,7 @@ from .pool_contract import (
 )
 from .readiness import Readiness, start_ready_server
 from .recovery import HomeExited, HomeRecovery
-from .recovery_deadline import RecoveryCancelled, operation_timeout
+from .recovery_deadline import RecoveryCancelled, current_deadline, operation_timeout
 from .runtime_signals import (
     FailureCategory,
     StartupPhase,
@@ -115,7 +115,7 @@ def wait_for_home(
     while not stop.is_set() and time.monotonic() < deadline:
         exit_code = child.process.poll()
         if exit_code is not None:
-            child._reader.join(timeout=0.2)
+            drain_exited_home(child)
             if home_boot_requires_import(exit_code, child.config_empty.is_set()):
                 return "empty"
             report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
@@ -157,19 +157,41 @@ def import_initial_config(
         raise StartupError("Home initial configuration import failed")
 
 
+def drain_exited_home(child: Child) -> None:
+    """Observe every buffered fuse before retiring the generation; fail closed."""
+    child.process.wait(timeout=operation_timeout(1))
+    reader = getattr(child, "_reader", None)
+    if reader is not None:
+        reader.join(timeout=operation_timeout(1))
+        if reader.is_alive():
+            raise StartupError("Home output reader did not finish")
+
+
 def terminate_children(children: list[Child]) -> None:
+    deadline = current_deadline()
+
+    def remaining(maximum: float) -> float:
+        return maximum if deadline is None else deadline.cleanup_remaining(maximum)
+
     for child in children:
         if child.process.poll() is None:
             child.process.terminate()
-    deadline = time.monotonic() + 15
+    grace_until = time.monotonic() + remaining(14 if deadline else 15)
     for child in children:
-        remaining = max(0.0, deadline - time.monotonic())
         try:
-            child.process.wait(timeout=operation_timeout(remaining))
+            child.process.wait(
+                timeout=remaining(
+                    max(0, grace_until - time.monotonic() - (1 if deadline else 0))
+                )
+            )
         except subprocess.TimeoutExpired:
-            if child.process.poll() is None:
-                child.process.kill()
-                child.process.wait(timeout=operation_timeout(1))
+            pass
+    # Kill every remaining owned child before waiting for any one of them.
+    for child in children:
+        if child.process.poll() is None:
+            child.process.kill()
+    for child in children:
+        child.process.wait(timeout=remaining(1) if deadline else 1)
 
 
 def main(stop: threading.Event | None = None) -> int:
@@ -181,6 +203,7 @@ def main(stop: threading.Event | None = None) -> int:
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
+    recovery_cleanup_done = False
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
         database_url = env_required("POOL_DATABASE_URL")
@@ -232,6 +255,9 @@ def main(stop: threading.Event | None = None) -> int:
             if home_state == "stop":
                 raise RecoveryCancelled()
             if home_state == "empty" and recovering:
+                report_child_exit(
+                    home_child.name, home_child.process.returncode, category
+                )
                 raise StartupError("Home config became empty during recovery")
             if home_state == "empty":
                 with startup_phase(
@@ -323,29 +349,50 @@ def main(stop: threading.Event | None = None) -> int:
                 readiness.set_ready(False)
                 for child, exit_code in failed:
                     report_child_exit(child.name, exit_code, category)
-                if (
-                    len(failed) != 1
-                    or failed[0][0].name != "home"
-                    or failed[0][1] != 1
-                    or readiness.policy_fused()
-                ):
+                if len(failed) != 1 or failed[0][0].name != "home" or failed[0][1] != 1:
                     raise StartupError("Pool child exited unexpectedly")
 
                 with recovery.episode(stop, started_at=observed_at) as episode:
-                    readiness.begin_recovery()
-                    while True:
-                        terminate_children(children)
-                        children.clear()
-                        episode.before_launch()
+                    try:
+                        drain_exited_home(failed[0][0])
+                        readiness.begin_recovery()
+                        while True:
+                            terminate_children(children)
+                            children.clear()
+                            episode.before_launch()
+                            try:
+                                node_id = launch_generation(recovering=True)
+                            except HomeExited as error:
+                                if error.exit_code != 1:
+                                    raise
+                                drain_exited_home(children[0])
+                                readiness.begin_recovery()
+                                continue
+                            episode.recovered()
+                            break
+                    except BaseException:
+                        # Retain the absolute episode deadline through terminal cleanup.
+                        readiness.set_ready(False)
+                        stop.set()
                         try:
-                            node_id = launch_generation(recovering=True)
-                        except HomeExited as error:
-                            if error.exit_code != 1:
-                                raise
-                            readiness.begin_recovery()
-                            continue
-                        episode.recovered()
-                        break
+                            terminate_children(children)
+                        finally:
+                            recovery_cleanup_done = True
+                            if policy_monitor_thread is not None:
+                                policy_monitor_thread.join(
+                                    timeout=episode.deadline.cleanup_remaining(1)
+                                )
+                            if ready_server is not None:
+                                # shutdown() can block for a server poll. Stop it on a bounded worker.
+                                shutdown = threading.Thread(
+                                    target=ready_server.shutdown, daemon=True
+                                )
+                                shutdown.start()
+                                shutdown.join(
+                                    timeout=episode.deadline.cleanup_remaining(1)
+                                )
+                                ready_server.server_close()
+                        raise
                 continue
             readiness.set_ready(check_services(management_key, node_id))
         return 0
@@ -358,12 +405,13 @@ def main(stop: threading.Event | None = None) -> int:
         if readiness is not None:
             readiness.set_ready(False)
         stop.set()
-        if policy_monitor_thread is not None:
+        if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
-        if ready_server is not None:
+        if not recovery_cleanup_done and ready_server is not None:
             ready_server.shutdown()
             ready_server.server_close()
-        terminate_children(children)
+        if not recovery_cleanup_done:
+            terminate_children(children)
         (ROOT / "bootstrap.yaml").unlink(missing_ok=True)
         (ROOT / "cluster.yaml").unlink(missing_ok=True)
         for signum, handler in original_signals.items():

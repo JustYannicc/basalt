@@ -6,6 +6,7 @@ import io
 import json
 import pathlib
 import signal
+import subprocess
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -28,6 +29,9 @@ class SupervisorTests(unittest.TestCase):
         empty_recovery=False,
         fuse=False,
         recovery_phase_delays=None,
+        buffered_fuse=False,
+        stuck_reader=False,
+        actual_cleanup=False,
     ):
         clock = Clock()
         stop = Stop(clock)
@@ -37,20 +41,54 @@ class SupervisorTests(unittest.TestCase):
         handlers = {}
         terminations = []
         boot_ids = []
+        terminate_owned = supervisor.terminate_children
 
         def make_child(name, command, env, cwd, *callbacks):
             number = sum(child.name == "home" for child in launched)
             # Each generation serves once, then its selected process exits.
             calls = 0
+            killed = False
 
             def poll():
                 nonlocal calls
                 calls += 1
+                if killed:
+                    return -9
+                if actual_cleanup and number > 0:
+                    return None
                 if name == failed_name and (fail_initial or calls > 1):
                     return code
                 return None
 
-            child = SimpleNamespace(name=name, process=SimpleNamespace(poll=poll))
+            def kill():
+                nonlocal killed
+                killed = True
+
+            def wait(timeout):
+                if actual_cleanup and not killed and (name == "node" or number > 0):
+                    clock.now += timeout
+                    raise subprocess.TimeoutExpired(name, timeout)
+                return -9 if killed else code
+
+            child = SimpleNamespace(
+                name=name,
+                process=SimpleNamespace(
+                    poll=poll,
+                    wait=wait,
+                    returncode=code,
+                    terminate=lambda: None,
+                    kill=kill,
+                ),
+            )
+            if name == "home":
+
+                def drain(timeout):
+                    if buffered_fuse:
+                        callbacks[0]()
+
+                child._reader = SimpleNamespace(
+                    join=drain, is_alive=lambda: stuck_reader
+                )
             launched.append(child)
             if name == "home" and empty_recovery and number > 0:
                 child.empty = True
@@ -89,6 +127,12 @@ class SupervisorTests(unittest.TestCase):
                 handlers[signal.SIGTERM](signal.SIGTERM, None)
 
         stop.on_wait = wait_callback
+
+        def terminate_generation(children):
+            terminations.append([c.name for c in children])
+            if actual_cleanup:
+                terminate_owned(children)
+
         with ExitStack() as stack:
             root = stack.enter_context(tempfile.TemporaryDirectory())
             mocks = {
@@ -105,9 +149,7 @@ class SupervisorTests(unittest.TestCase):
                 "PolicyHealthMonitor": Mock(
                     return_value=SimpleNamespace(run=lambda _: None)
                 ),
-                "terminate_children": lambda children: terminations.append(
-                    [c.name for c in children]
-                ),
+                "terminate_children": terminate_generation,
                 "import_initial_config": Mock(),
             }
             for name, value in mocks.items():
@@ -123,6 +165,7 @@ class SupervisorTests(unittest.TestCase):
             stack.enter_context(redirect_stdout(output))
             stack.enter_context(redirect_stderr(errors))
             result = supervisor.main(stop)
+            ready_instances[0].cleanup_finished_at = clock.now
             imported = mocks["import_initial_config"].call_count
         records = [
             (line.split(" ", 1)[0], json.loads(line.split(" ", 1)[1]))
@@ -205,6 +248,9 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(len(children), 3)
         self.assertEqual(imported, 0)
+        exits = [row for marker, row in records if marker == "POOL_CHILD_EXIT"]
+        self.assertEqual([row["child"] for row in exits], ["home", "home"])
+        self.assertEqual([row["exit_code"] for row in exits], [1, 1])
         self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
 
     def test_episode_deadline_does_not_reset_between_home_config_and_enrollment(self):
@@ -231,3 +277,38 @@ class SupervisorTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_buffered_fuse_is_observed_before_generation_rotation(self):
+        result, children, ready, records, *_, ids, _ = self.run_supervisor(
+            buffered_fuse=True
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual(len(children), 2)
+        self.assertTrue(ready.policy_fused())
+        self.assertEqual(ready.generation(), ids[0])
+        self.assertFalse(
+            any(
+                marker == "POOL_HOME_RECOVERY" and row["state"] == "attempt"
+                for marker, row in records
+            )
+        )
+        self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
+
+    def test_unfinished_old_reader_fails_closed_before_replacement(self):
+        result, children, ready, records, *_ = self.run_supervisor(stuck_reader=True)
+        self.assertEqual(result, 1)
+        self.assertEqual(len(children), 2)
+        self.assertFalse(ready.snapshot()[0])
+        self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
+
+    def test_main_exhaustion_does_not_start_fresh_cleanup_grace(self):
+        result, children, ready, records, _, terminations, *_ = self.run_supervisor(
+            actual_cleanup=True,
+            recovery_phase_delays={"home": 80, "config": 83},
+        )
+        self.assertEqual(result, 1)
+        # One initial teardown and one terminal cleanup, with no third finally teardown.
+        self.assertEqual(len(terminations), 2)
+        self.assertLessEqual(ready.cleanup_finished_at, 182)
+        self.assertEqual(len(children), 3)
+        self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)

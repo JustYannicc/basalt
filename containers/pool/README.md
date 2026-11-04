@@ -113,7 +113,9 @@ The selected Home release declares a CLIProxyAPI module dependency older than th
 After a healthy generation, an unexpected Home exit code 1 permits at most two
 replacement Home/node launches per supervisor lifetime, after 1 second and then
 5 seconds. A recovery episode has one 180-second deadline across teardown,
-backoff, management calls and health checks. A healthy interval never resets the
+backoff, management calls, health checks and terminal cleanup. Operations reserve
+three seconds of that same deadline for forced termination. Home output must drain
+before recovery eligibility is decided; a buffered policy fuse stays terminal. A healthy interval never resets the
 launch budget. Startup failures, node failures, signal exits and policy fuses
 keep their existing terminal behavior. Recovery never imports an empty database.
 

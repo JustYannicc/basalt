@@ -119,7 +119,7 @@ class RecoveryTests(unittest.TestCase):
 
         with redirect_stderr(io.StringIO()), self.assertRaises(RecoveryTimeout):
             recover(HomeRecovery(), stop, Mock(), teardown, launch, clock)
-        self.assertEqual(timeouts, [160, 159, 99, 39])
+        self.assertEqual(timeouts, [157, 156, 96, 36])
         self.assertEqual(stop.waits, [1])
 
     def test_deadline_expiring_in_teardown_prevents_launch(self) -> None:
