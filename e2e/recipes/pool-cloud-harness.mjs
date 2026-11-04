@@ -42,7 +42,16 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
     resetPaths.map(async (path) => [path, await readFile(join(upstream, path))]),
   );
   const signingKey = randomBytes(32).toString("hex");
-  const fixture = await startPoolFixture(signingKey);
+  const catalog = resetOptions
+    ? await Promise.all(
+        ["openai", "anthropic"].map(async (lab) =>
+          JSON.parse(
+            await readFile(join(root, "src/catalog/provider-apps", `${lab}.json`), "utf8"),
+          ),
+        ),
+      )
+    : [];
+  const fixture = await startPoolFixture(signingKey, { catalog });
   const previous = { path: process.env.PATH, setup: process.env.BASALT_E2E_POOL_SETUP };
   const restore = async () => {
     process.env.PATH = previous.path;
@@ -97,7 +106,7 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
     await mkdir(bin, { recursive: true, mode: 0o700 });
     await writeFile(
       join(bin, "node"),
-      `#!/bin/sh\nexport POOL_APP_SIGNING_KEY=${quote(signingKey)}\nexport EXECUTOR_NPM_REGISTRY=${quote(registry.url)}\nexport EXECUTOR_URL_ALLOW_LOOPBACK_HTTP=true\nexec ${quote(process.execPath)} "$@"\n`,
+      `#!/bin/sh\nexport POOL_APP_SIGNING_KEY=${quote(signingKey)}\nexport EXECUTOR_NPM_REGISTRY=${quote(registry.url)}\nexport EXECUTOR_URL_ALLOW_LOOPBACK_HTTP=true\n${resetOptions ? `export EXECUTOR_CATALOG_URL=${quote(`${fixture.origin}/catalog/index.json`)}\n` : ""}exec ${quote(process.execPath)} "$@"\n`,
       { mode: 0o700 },
     );
     process.env.PATH = `${bin}:${previous.path}`;
@@ -118,6 +127,7 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
     );
     const base = yield* startEnvironment({ target: "cloud", headless: true });
     const target = yield* prepareScenario(base.target, "Native pool recipe public path");
+    setup.fixture.product(target.metadata.origin);
     const services = yield* Layer.build(
       SessionClients.layer.pipe(Layer.provideMerge(Layer.succeed(Target, target))),
     );
