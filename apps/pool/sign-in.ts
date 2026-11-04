@@ -102,7 +102,10 @@ export async function withIdentity<S extends { readonly state: string; readonly 
     .then(lookup)
     .then((view) => {
       const account = view.ok ? view.value?.accounts?.find((candidate) => candidate.id === state.ref) : undefined;
-      return account === undefined ? state : { ...state, accountInfo: identityOf(account, sites) };
+      // A label that is only the account's id names nothing and is the host's reference for it.
+      return account === undefined || account.label === account.id
+        ? state
+        : { ...state, accountInfo: identityOf(account, sites) };
     })
     .catch(() => state);
   return await Promise.race([found, late]);
