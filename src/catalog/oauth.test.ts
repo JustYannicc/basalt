@@ -15,7 +15,7 @@ const sha = "a".repeat(64);
 
 test("reviewed carried sources match the packages the catalog serves", async () => {
   const reviews = oauthReviews(reviewData);
-  for (const id of ["atlassian", "gitlab", "miro", "slack"]) {
+  for (const id of ["atlassian", "gitlab", "miro", "slack", "vercel"]) {
     const response = await handleCatalog(
       new Request(`https://catalog.example.test/catalog/apps/${id}.json`),
       async () => {
@@ -279,4 +279,28 @@ test("the public catalog preserves service aliases and exact-method OAuth guidan
   assert.equal(result.description, confluence.description);
   assert.equal(result.source, confluence.source);
   assert.equal(result.connectionNotices, undefined);
+});
+
+test("the public catalog keeps Vercel sign-in beside exact-method connection guidance", async () => {
+  const spotify = { ...entry("spotify"), package: "@executor.sh/spotify", name: "Spotify" };
+  const vercel = {
+    ...entry("vercel"),
+    package: "@executor.sh/vercel",
+    name: "Vercel",
+    auth: [{ method: "apiKey", kind: "secrets", label: "Access token" }],
+  };
+  const response = await handleCatalog(
+    new Request("https://catalog.example.test/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [spotify, vercel] }),
+  );
+  assert.equal(response.status, 200);
+  const feed = (await response.json()) as Feed;
+  const signedIn = feed.apps.find((app) => app.id === "vercel")!;
+  assert.deepEqual(signedIn.auth, [
+    { method: "oauth", kind: "oauth2", label: "Sign in with Vercel" },
+    ...vercel.auth,
+  ]);
+  assert.equal(signedIn.oauthDeferrals, undefined);
+  assert.deepEqual(signedIn.service?.mcp, ["https://mcp.vercel.com/"]);
+  assert.equal(feed.apps.find((app) => app.id === "spotify")?.oauthDeferrals?.[0]?.method, "oauth");
 });

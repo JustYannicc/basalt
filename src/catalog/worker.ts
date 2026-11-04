@@ -3,10 +3,12 @@ import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.t
 import { oauthReviews, withOAuthDeferrals } from "./oauth-policy.ts";
 import oauthReviewData from "./oauth-reviews.json" with { type: "json" };
 import { catalog } from "./settings.ts";
+import { onServedFramework } from "./framework.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
+import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -60,6 +62,10 @@ export async function handleCatalog(
     });
   if (relative === "apps/miro.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
+  if (relative === "apps/vercel.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(vercelSource), {
+      headers,
+    });
   const added = additions.find(
     (item) => relative === `apps/${encodeURIComponent(item.entry.id)}.json`,
   );
@@ -92,8 +98,10 @@ export async function handleCatalog(
             withOAuthDeferrals(
               withServiceIdentities(
                 mergeFeed(
-                  withMiroCapabilities(
-                    withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                  withVercelSignIn(
+                    withMiroCapabilities(
+                      withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                    ),
                   ),
                   additions,
                 ),
@@ -101,7 +109,7 @@ export async function handleCatalog(
               reviewedOAuth,
             ),
           )
-        : await response.text();
+        : onServedFramework(await response.text());
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
     return unavailable();

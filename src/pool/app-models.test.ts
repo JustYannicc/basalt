@@ -88,6 +88,7 @@ test("revoked authority missing attribution readiness and forged assertions neve
   const s = await setup();
   for (const [overrides, status] of [
     [{ organization: "other-org" }, 403], [{ authorizer: "removed-person" }, 403],
+    [{ owner: pool.pool }, 403],
     [{ scope: "user" }, 400], [{ expiresAt: s.f.now() }, 401],
   ] as const) assert.equal((await s.handle(await s.request(s.assertion(overrides)))).status, status);
   assert.equal((await s.handle(await s.request(s.assertion(), undefined, "cd".repeat(32)))).status, 401);

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-usage-cells",
+  "file": "0177-usage-cells.patch",
+  "content_sha256": "118e87ca235eda23bc1aec1ebdbde452ba48a84982b1bf3ee870291be109eacc",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

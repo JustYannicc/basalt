@@ -1,0 +1,271 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index f08b93c867a7283a77155fe7ce2514836e3a0a73..904705f0ea6ecff0b6a30dd2e80e85fe26a9e766 100644
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -111,2 +111,3 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
++    const port = yield* cloudAppUiPort.pipe(Effect.orDie);
+     const placementRegion = yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION").pipe(
+@@ -151,3 +152,3 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
+-      dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
++      dev: { host: "127.0.0.1", port, strictPort: port !== 0 },
+     };
+diff --git a/apps/hosted/cloud/src/contracts/app-ui.ts b/apps/hosted/cloud/src/contracts/app-ui.ts
+index c2a7cfd55bf6e88d3ed2964007294922b7abdf86..a9848c506692aa28bfa18e1fb49d9b40dea81269 100644
+--- a/apps/hosted/cloud/src/contracts/app-ui.ts
++++ b/apps/hosted/cloud/src/contracts/app-ui.ts
+@@ -16,3 +16,3 @@ export const cloudAppUiBase = Config.String("EXECUTOR_APP_UI_BASE_URL").pipe(
+
+-/** A task-local development port; production routing uses the configured app domain. */
++/** Zero lets Alchemy bind a private development listener; production uses the app domain. */
+ export const cloudAppUiPort = Config.Number("CLOUD_DEV_APP_UI_PORT").pipe(
+@@ -20,3 +20,3 @@ export const cloudAppUiPort = Config.Number("CLOUD_DEV_APP_UI_PORT").pipe(
+   Effect.flatMap(
+-    Schema.decodeUnknownEffect(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
++    Schema.decodeUnknownEffect(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 }))),
+   ),
+diff --git a/e2e/cloud-app-listener.config.ts b/e2e/cloud-app-listener.config.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..233466b2e37c3b391b4bd4f2b67b4c21ae368bf8
+--- /dev/null
++++ b/e2e/cloud-app-listener.config.ts
+@@ -0,0 +1,6 @@
++import { defineConfig } from "vitest/config";
++
++/** Real app listeners and HTTP forwarding need no Cloud build or provisioning. */
++export default defineConfig({
++  test: { include: ["e2e/tests/cloud-app-listener.spec.ts"], testTimeout: 30_000 },
++});
+diff --git a/e2e/sdk/environment.ts b/e2e/sdk/environment.ts
+index d7b95c1ab591c223965621a52c446be0f2735e3e..2fc54681cbbfaa648d34ea6aab194e3d3281bedf 100644
+--- a/e2e/sdk/environment.ts
++++ b/e2e/sdk/environment.ts
+@@ -42,3 +42,2 @@ export const startEnvironment = (input: {
+               browserOrigin: "app",
+-              appPort: yield* freePort,
+               databasePort: yield* freePort,
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+index 6337dd897537345e167375a1dd8488cbd44a5c93..effed8dd5ef86b7cbf46a3132e9c039aa3701207 100644
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -296,3 +296,2 @@ export const runSuite = ({
+                           origin: proxyProduction.value,
+-                          appPort: yield* freePort,
+                           databasePort: yield* freePort,
+@@ -313,3 +312,2 @@ export const runSuite = ({
+                         origin,
+-                        appPort: yield* freePort,
+                         databasePort: yield* freePort,
+diff --git a/e2e/support/cloud-app-listener-fixtures.ts b/e2e/support/cloud-app-listener-fixtures.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c68fa1e9768902152069118a70c9e4776c79c575
+--- /dev/null
++++ b/e2e/support/cloud-app-listener-fixtures.ts
+@@ -0,0 +1,33 @@
++import { Effect } from "effect";
++import { createServer } from "node:http";
++import { driver } from "./platform.ts";
++
++/** A real private HTTP destination bound from the runtime's configured app port. */
++export const appHttpBackend = (
++  environment: { readonly CLOUD_DEV_APP_UI_PORT: string },
++  body: string,
++) =>
++  Effect.gen(function* () {
++    const backend = yield* Effect.acquireRelease(
++      Effect.sync(() =>
++        createServer((request, response) => response.end(`${body} ${request.headers.host}`)),
++      ),
++      (server) =>
++        Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
++    );
++    const backendPort = yield* driver(
++      "bind app HTTP fixture",
++      () =>
++        new Promise<number>((resolve, reject) => {
++          backend.once("error", reject);
++          backend.listen(Number(environment.CLOUD_DEV_APP_UI_PORT), "127.0.0.1", () => {
++            backend.off("error", reject);
++            const address = backend.address();
++            if (address === null || typeof address === "string")
++              reject(new Error("No app fixture port"));
++            else resolve(address.port);
++          });
++        }),
++    );
++    return { url: new URL(`http://127.0.0.1:${backendPort}`) };
++  });
+diff --git a/e2e/support/cloud-app-listener.ts b/e2e/support/cloud-app-listener.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..65c86e0312830fd05cb0525fb382ae4d980d0c7c
+--- /dev/null
++++ b/e2e/support/cloud-app-listener.ts
+@@ -0,0 +1,23 @@
++import { Effect } from "effect";
++import { cloudListener } from "./cloud-listener.ts";
++
++/** Keep app origins stable while Alchemy owns and replaces its private listener. */
++export const cloudAppListener = Effect.gen(function* () {
++  const listener = yield* cloudListener;
++  return {
++    ...listener,
++    environment: {
++      CLOUD_DEV_APP_UI_PORT: "0",
++      EXECUTOR_APP_UI_BASE_URL: listener.url.origin,
++    },
++    forward: (line: string) => {
++      // oxlint-disable-next-line no-control-regex -- Alchemy colors its resource announcements.
++      const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
++      const match =
++        /^\s*\[AppPages\] Started in [^\n]* → (http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)\/?(?:\s|$)/u.exec(
++          plain,
++        );
++      return match === null ? Effect.void : listener.set(new URL(match[1]!));
++    },
++  };
++});
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 1117788dae328d997e9cb3fb9aaf84ad714431d4..9ddbf83f26c925272e7775f1cfe7d4a6f449e0d5 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -1,2 +1,3 @@
+ import { cloudListener, cloudApiAddress, type CloudListener } from "./cloud-listener.ts";
++import { cloudAppListener } from "./cloud-app-listener.ts";
+ import {
+@@ -140,3 +141,2 @@ export const startCloudEnvironment = (input: {
+   readonly listener: CloudListener;
+-  readonly appPort: number;
+   readonly databasePort: number;
+@@ -190,2 +190,3 @@ export const startCloudEnvironment = (input: {
+     const apiListener = poolBackend ? yield* cloudListener : input.listener;
++    const appListener = yield* cloudAppListener;
+     if (poolBackend) {
+@@ -334,4 +335,3 @@ export const startCloudEnvironment = (input: {
+         : {}),
+-      CLOUD_DEV_APP_UI_PORT: String(input.appPort),
+-      EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,
++      ...appListener.environment,
+       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+@@ -497,2 +497,3 @@ export const startCloudEnvironment = (input: {
+       suffix = "",
++      apps = appListener,
+     ) =>
+@@ -500,2 +501,3 @@ export const startCloudEnvironment = (input: {
+         yield* listener.unset();
++        yield* apps.unset();
+         const runtimeEnv = { ...env, ...overrides };
+@@ -547,2 +549,3 @@ export const startCloudEnvironment = (input: {
+                 if (address !== undefined) yield* listener.set(address);
++                yield* apps.forward(line);
+                 if (line.includes("[McpServer] Started in "))
+@@ -663,3 +666,3 @@ export const startCloudEnvironment = (input: {
+       yield* prepareBinding(prebootBinding);
+-      const appPort = yield* freePort;
++      const changedApps = yield* cloudAppListener;
+       yield* launch(
+@@ -668,6 +671,6 @@ export const startCloudEnvironment = (input: {
+           ...bindingEnvironment(prebootBinding),
+-          CLOUD_DEV_APP_UI_PORT: String(appPort),
+-          EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appPort}`,
++          ...changedApps.environment,
+         },
+         `-${prebootBinding}`,
++        changedApps,
+       );
+diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b4f617d312e89bde6375cc7aec3d33c8baff1e64
+--- /dev/null
++++ b/e2e/tests/cloud-app-listener.spec.ts
+@@ -0,0 +1,90 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { cloudAppListener } from "../support/cloud-app-listener.ts";
++import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
++import { freePort, holdPort } from "../support/ports.ts";
++
++layer(FetchHttpClient.layer, { excludeTestServices: true })("Cloud app listeners", (it) => {
++  it.effect("serves the held origin despite an occupied earlier allocation", () =>
++    Effect.gen(function* () {
++      const stalePort = yield* freePort;
++      yield* holdPort(stalePort);
++      const apps = yield* cloudAppListener;
++      const worker = yield* appHttpBackend(apps.environment, "app");
++      expect(Number(apps.url.port)).not.toBe(stalePort);
++      expect(Number(worker.url.port)).not.toBe(stalePort);
++      expect(Number(worker.url.port)).not.toBe(Number(apps.url.port));
++      const collision = yield* Effect.exit(Effect.scoped(holdPort(Number(apps.url.port))));
++      expect(collision._tag).toBe("Failure");
++      yield* apps.forward(`[AppPages] Started in 1ms → ${worker.url.origin}`);
++      const http = yield* HttpClient.HttpClient;
++      const response = yield* http.get(apps.environment.EXECUTOR_APP_UI_BASE_URL, {
++        headers: { Host: `example.${apps.url.host}`, Connection: "close" },
++      });
++      expect(response.status).toBe(200);
++      expect(yield* response.text).toBe(`app example.${apps.url.host}`);
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect("ignores other resources and keeps distinct origins through preboot and restart", () =>
++    Effect.gen(function* () {
++      const http = yield* HttpClient.HttpClient;
++      const original = yield* cloudAppListener;
++      const changed = yield* cloudAppListener;
++      const first = yield* appHttpBackend(original.environment, "original");
++      const second = yield* appHttpBackend(changed.environment, "changed");
++      const restarted = yield* appHttpBackend(original.environment, "restarted");
++      expect(original.url.origin).not.toBe(changed.url.origin);
++      yield* original.forward(`\u001b[32m[AppPages] Started in 1ms → ${first.url.origin}\u001b[0m`);
++      yield* changed.forward(`[AppPages] Started in 1ms → ${second.url.origin}`);
++      for (const line of [
++        `[Api] Started in 1ms → ${second.url.origin}`,
++        `[AppPages] creating → ${second.url.origin}`,
++        `[Other] quoted [AppPages] Started in 1ms → ${second.url.origin}`,
++      ])
++        yield* original.forward(line);
++      const read = (origin: string) =>
++        http
++          .get(origin, { headers: { Connection: "close" } })
++          .pipe(Effect.flatMap((response) => response.text));
++      expect(yield* read(original.environment.EXECUTOR_APP_UI_BASE_URL)).toBe(
++        `original ${original.url.host}`,
++      );
++      expect(yield* read(changed.environment.EXECUTOR_APP_UI_BASE_URL)).toBe(
++        `changed ${changed.url.host}`,
++      );
++      yield* original.unset();
++      yield* original.forward(`[AppPages] Started in 1ms → ${restarted.url.origin}/`);
++      expect(yield* read(original.environment.EXECUTOR_APP_UI_BASE_URL)).toBe(
++        `restarted ${original.url.host}`,
++      );
++      expect(yield* read(changed.environment.EXECUTOR_APP_UI_BASE_URL)).toBe(
++        `changed ${changed.url.host}`,
++      );
++      yield* original.unset();
++      yield* original.forward(`[AppPages] Started in 1ms → ${first.url.origin}`);
++      expect(yield* read(original.environment.EXECUTOR_APP_UI_BASE_URL)).toBe(
++        `original ${original.url.host}`,
++      );
++    }).pipe(Effect.scoped),
++  );
++
++  for (const fail of [false, true]) {
++    it.effect(`releases the held origin on scope ${fail ? "failure" : "completion"}`, () =>
++      Effect.gen(function* () {
++        let port = 0;
++        const exit = yield* Effect.exit(
++          Effect.scoped(
++            Effect.gen(function* () {
++              port = Number((yield* cloudAppListener).url.port);
++              if (fail) return yield* Effect.fail("Synthetic later setup failure");
++            }),
++          ),
++        );
++        expect(exit._tag).toBe(fail ? "Failure" : "Success");
++        expect(yield* holdPort(port)).toBe(port);
++      }).pipe(Effect.scoped),
++    );
++  }
++});
