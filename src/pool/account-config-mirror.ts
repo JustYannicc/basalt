@@ -25,7 +25,13 @@ function keys(group: Json): Json[] {
   return group.keys;
 }
 
-function effective(groups: Json[], compatible: boolean): Map<string, string> {
+function effective(groups: Json[], family: string): Map<string, string> {
+  const compatible = family === "openai-compatibility";
+  // Home rebuilds these typed keys with non-omitempty fields before exporting v8 groups.
+  const defaults =
+    family === "codex" || family === "claude"
+      ? { "base-url": "", "proxy-url": "", models: [] }
+      : {};
   const result = new Map<string, string>();
   for (const group of groups) {
     const { keys: _keys, name, ...shared } = group;
@@ -34,7 +40,10 @@ function effective(groups: Json[], compatible: boolean): Map<string, string> {
       const overrides = Object.fromEntries(
         Object.entries(key).filter(([, value]) => value !== null),
       );
-      result.set(key.id, sorted({ ...shared, ...(compatible ? { name } : {}), ...overrides }));
+      result.set(
+        key.id,
+        sorted({ ...defaults, ...shared, ...(compatible ? { name } : {}), ...overrides }),
+      );
     }
   }
   return result;
@@ -73,7 +82,7 @@ export async function mirrorHomeConfig(
       const path = `/config/api-keys/${family}`;
       const compatible = family === "openai-compatibility";
       const before = await read(home, path, signal);
-      const retained = effective(before, compatible);
+      const retained = effective(before, family);
       const next = before.flatMap((group) => {
         const existing = keys(group);
         if (!existing.some((key) => key.id === reference)) return [group];
@@ -96,7 +105,7 @@ export async function mirrorHomeConfig(
           return unavailable();
         next.push({ ...group, keys: [{ id: reference, "api-key": credential.token }] });
       }
-      const expected = effective(next, compatible);
+      const expected = effective(next, family);
       for (const [id, value] of retained) {
         if (id !== reference && expected.get(id) !== value) return unavailable();
       }
@@ -117,7 +126,7 @@ export async function mirrorHomeConfig(
           // A lost write reply is resolved by the authoritative read below.
         }
       }
-      const actual = effective(await read(home, path, signal), compatible);
+      const actual = effective(await read(home, path, signal), family);
       if (
         actual.size !== expected.size ||
         [...expected].some(([id, value]) => actual.get(id) !== value)

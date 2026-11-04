@@ -140,3 +140,60 @@ test("an unrelated empty config group survives mirroring and removal", async () 
   assert.equal((await invoke(home, first, "remove")).status, 200);
   assert.deepEqual(groups, [empty]);
 });
+
+// Home eca75d6 exports typed CodexKey/ClaudeKey fields without omitempty, then groupLegacyKeys
+// moves base-url, proxy-url and models onto each v8 group and regenerates its display name.
+function homeExportFixture(family: "codex" | "claude", changed?: Record<string, unknown>) {
+  let groups: Record<string, unknown>[] = [];
+  let writes = 0;
+  const home = new HomeClient(async (path, init) => {
+    assert.equal(path, `/v8/management/config/api-keys/${family}`);
+    if (init?.method === "PUT") {
+      writes++;
+      groups = JSON.parse(String(init.body));
+      return Response.json({ status: "ok", "config-version": 8 });
+    }
+    return Response.json(
+      groups.map((group, index) => ({
+        name: `${family}-${index + 1}`,
+        "base-url": "",
+        "proxy-url": "",
+        models: [],
+        ...group,
+        ...(changed ?? {}),
+      })),
+    );
+  });
+  const config = {
+    type: "config",
+    family,
+    token: "synthetic-key",
+    group: family === "codex" ? { "base-url": "https://api.openai.com/v1" } : {},
+  };
+  return { home, config, writes: () => writes };
+}
+
+test("Home's defaulted OpenAI and Anthropic readback acknowledges the first mirror and retry without another write", async () => {
+  for (const family of ["codex", "claude"] as const) {
+    const f = homeExportFixture(family);
+    assert.equal((await invoke(f.home, first, "upsert", f.config)).status, 200, family);
+    assert.equal((await invoke(f.home, first, "upsert", f.config)).status, 200, family);
+    assert.equal(f.writes(), 1, family);
+    assert.equal((await invoke(f.home, first, "remove", f.config)).status, 200, family);
+    assert.equal((await invoke(f.home, first, "remove", f.config)).status, 200, family);
+    assert.equal(f.writes(), 2, family);
+  }
+});
+
+test("default normalization still refuses changed IDs, keys, endpoints, proxies and model mappings", async () => {
+  for (const changed of [
+    { keys: [{ id: second, "api-key": "synthetic-key" }] },
+    { keys: [{ id: first, "api-key": "different-synthetic-key" }] },
+    { "base-url": "https://different.example.test/v1" },
+    { "proxy-url": "https://different.example.test" },
+    { models: [{ name: "changed", alias: "changed" }] },
+  ]) {
+    const f = homeExportFixture("codex", changed);
+    assert.equal((await invoke(f.home, first, "upsert", f.config)).status, 503);
+  }
+});
