@@ -178,8 +178,67 @@ index 0000000..3d4a799
 +    [credits, attempt, use, target.organization, target.pool, target.account],
 +  );
 +}
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index f8a317b..dde2a21 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -297,8 +297,19 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         );
+         // Banked resets are a count on the window they refill, never a control.
+         expect(spareCells[0]?.count).toContain("↻ 2");
+-        expect(spareCells[0]?.countTitle).toMatch(/^2 banked resets · soonest expires /);
++        // The count's tooltip is the count only; each credit's expiry is in Details.
++        expect(spareCells[0]?.countTitle).toBe("2 banked resets");
+         expect(spareCells[0]?.buttons).toBe(0);
++        yield* browser.use("Open Spare Details", (page) =>
++          openRowDetails(page, accountRow(page, "Spare"), "Spare").then(() =>
++            block(page, "Spare").locator("[data-observation-details]").waitFor(),
++          ),
++        );
++        const spareExpiry = yield* browser.use(
++          "Read the banked credits' expiry in Details",
++          (page) => block(page, "Spare").locator("[data-observation-details]").innerText(),
++        );
++        expect(spareExpiry.match(/Expires /g)?.length, spareExpiry).toBe(2);
+         expect(studioCells.every((entry) => entry.count === null)).toBe(true);
+         // A connector without a usage reporter has no usage area or text.
+         expect(connectorCells).toEqual([]);
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 0433e94..571acd3 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -207,9 +207,10 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
+ 
+ /**
+  * Unexpired balances counted in resets, which refill a window early. They belong to the window
+- * with the longest period, which is the one a banked reset clears.
++ * with the longest period, which is the one a banked reset clears. The title is the count only:
++ * each credit's expiry lives in Details, where touch screens can reach it too.
+  */
+-export function bankedResets(observation: Observation, now: number, format: DisplayFormat) {
++export function bankedResets(observation: Observation, now: number) {
+   const live = observation.balances.filter(
+     (balance) =>
+       balance.unit === "resets" &&
+@@ -218,15 +219,7 @@ export function bankedResets(observation: Observation, now: number, format: Disp
+   );
+   const count = live.reduce((total, balance) => total + balance.available, 0);
+   if (count === 0) return undefined;
+-  const soonest = live
+-    .flatMap((balance) => (balance.expiresAt === undefined ? [] : [balance.expiresAt]))
+-    .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+-  return {
+-    count,
+-    title: `${count} banked ${count === 1 ? "reset" : "resets"}${
+-      soonest === undefined ? "" : ` · soonest expires ${moment(soonest, now, format)}`
+-    }`,
+-  };
++  return { count, title: `${count} banked ${count === 1 ? "reset" : "resets"}` };
+ }
+ 
+ const unitSeconds: Readonly<Record<string, number>> = {
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-index 0236ffa..b067793 100644
+index 0236ffa..7bad9eb 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 @@ -2,35 +2,42 @@ import type { AccountObservationRecord } from "@executor-js/sdk";
@@ -222,7 +281,8 @@ index 0236ffa..b067793 100644
 -  if (observation === undefined || windows.length === 0) return null;
 +  if (result === null || observation === undefined || windows.length === 0) return null;
    const stale = record.freshness !== "fresh";
-   const resets = bankedResets(observation, now, format);
+-  const resets = bankedResets(observation, now, format);
++  const resets = bankedResets(observation, now);
    const target = resets === undefined ? undefined : resetWindow(windows);
 -  return (
 +  const cells = (control?: ReactNode) => (
