@@ -228,6 +228,15 @@ new file mode 100644
 diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
 --- a/apps/hosted/server/src/contracts/pool-usage-series.ts
 +++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -31,7 +31,7 @@
+   ),
+   accounts: Schema.optionalKey(Schema.Array(AccountId).check(Schema.isMaxLength(500))),
+   sources: Schema.optionalKey(
+-      Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
++    Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
+       Schema.isMaxLength(500),
+     ),
+   ),
 @@ -154,6 +154,7 @@
    next: Schema.NullOr(Schema.String),
  });
