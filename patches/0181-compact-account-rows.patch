@@ -194,6 +194,37 @@ index 392d568..93ec966 100644
      edit: {
        choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
        link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index fbd54a3..46f37ef 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -100,7 +100,7 @@ export const observationBackend = Effect.gen(function* () {
+ /** Hook changes intentionally leave the provider's declaration identical. */
+ export const observationSource = (
+   origin: string,
+-  options: { observe?: boolean; health?: boolean } = {},
++  options: { observe?: boolean; health?: boolean; family?: object } = {},
+ ) => `import { defineApp, defineProvider, secrets, object, string, router, query, ProviderError } from "apps";
+ const read = async (context, path) => {
+   const response = await context.fetch(${JSON.stringify(origin)} + path, {
+@@ -109,7 +109,7 @@ const read = async (context, path) => {
+   if (!response.ok) throw new ProviderError({ reason: response.status === 401 ? "unauthorized" : response.status === 429 ? "rate_limited" : "unavailable", status: response.status });
+   return await response.json();
+ };
+-const service = defineProvider({ name: "Observation service", auth: { key: secrets({label:"API key",fields:object({token:string()})}) },
++const service = defineProvider({ name: "Observation service", ${options.family === undefined ? "" : `family: ${JSON.stringify(options.family)}, `}auth: { key: secrets({label:"API key",fields:object({token:string()})}) },
+ ${options.health ? 'health: context => read(context, "/health"),' : ""}
+ ${options.observe ? 'observeAccount: context => read(context, "/observation"),' : ""}
+ });
+@@ -123,6 +123,8 @@ export const observationFixture = (
+     framework?: string;
+     /** App names are unique per owner, so a case with several fixtures names each one. */
+     name?: string;
++    /** Family metadata for the provider, such as the key method's declared mechanism and offering. */
++    family?: object;
+   } = {
+     observe: true,
+     health: true,
 diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
 new file mode 100644
 index 0000000..9e6303a
@@ -232,7 +263,7 @@ index 0000000..9e6303a
 +    menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
 +  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 05352a4..67095f4 100644
+index 0d7653b..e42403a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -9017,6 +9017,17 @@ export const scenarios = plan({
@@ -243,7 +274,7 @@ index 05352a4..67095f4 100644
 +    fixtures: "actors",
 +    file: "account-compact-rows.spec.ts",
 +    title:
-+      "compact account rows stay about one line tall, wrap on a phone, mark only verified identities, leave Type blank and refresh usage from the row menu",
++      "compact account rows stay about one line tall, wrap on a phone, mark only verified identities, name only declared types and refresh usage from the row menu",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("Uses loopback allowance services."),
@@ -255,10 +286,10 @@ index 05352a4..67095f4 100644
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
 new file mode 100644
-index 0000000..6684d27
+index 0000000..5737d72
 --- /dev/null
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -0,0 +1,442 @@
+@@ -0,0 +1,461 @@
 +/** Account rows are compact two-line rows: aligned columns, health in a word, actions in the menu. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -367,10 +398,16 @@ index 0000000..6684d27
 +        const browser = yield* Browser;
 +        const evidence = yield* Evidence;
 +        // A connector whose check reports an email but no host-verified identity.
++        // Declared as an API key, so its Type names it.
 +        const plain = yield* observationFixture({
 +          name: "Plain fixture",
 +          observe: false,
 +          health: true,
++          family: {
++            id: "compact-plain",
++            name: "Compact plain",
++            methods: { key: { mechanism: "api-key" } },
++          },
 +        });
 +        yield* plain.backend.health({
 +          status: 200,
@@ -390,10 +427,16 @@ index 0000000..6684d27
 +          health: true,
 +        });
 +        // A reporter with a plan label and one limited window.
++        // Declared as a subscription, so its Type names it.
 +        const usage = yield* observationFixture({
 +          name: "Usage fixture",
 +          observe: true,
 +          health: true,
++          family: {
++            id: "compact-usage",
++            name: "Compact usage",
++            methods: { key: { mechanism: "other", offering: "subscription" } },
++          },
 +        });
 +        const reading = allowance();
 +        yield* usage.backend.answer({
@@ -449,15 +492,13 @@ index 0000000..6684d27
 +        const accounts = `/org/${plain.actors.organization.slug}/accounts`;
 +        const ready = (page: Page) =>
 +          Promise.all([
-+            // App checks stay on each app's dot; Health reads only the account's own check.
-+            accountRow(page, "Plain mail")
-+              .locator('[role="img"][data-check-status="healthy"]')
-+              .waitFor(),
++            // Connectors have no check of their own, so Health shows their app checks.
++            accountRow(page, "Plain mail").locator('[data-health-state="healthy"]').waitFor(),
 +            accountRow(page, "Rejected mail")
-+              .locator('[role="img"][data-check-status="credentials_rejected"]')
++              .locator('[data-health-state="credentials_rejected"]')
 +              .waitFor(),
 +            accountRow(page, "Outdated mail")
-+              .locator('[role="img"][data-check-current="false"]')
++              .locator('[data-health-state="not-rechecked"]')
 +              .waitFor(),
 +            accountRow(page, "Usage account").locator('[data-reading="requests"]').waitFor(),
 +            accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
@@ -515,20 +556,26 @@ index 0000000..6684d27
 +                accountRow(page, "Usage account").evaluate(
 +                  (row) => row.getBoundingClientRect().height,
 +                ),
-+                page.locator("[data-account-type]").allTextContents(),
++                Promise.all(
++                  ["Plain mail", "Usage account", "Rejected mail", "Outdated mail"].map((label) =>
++                    accountRow(page, label).locator("[data-account-type]").innerText(),
++                  ),
++                ),
 +                accountRow(page, "Usage account").locator("[data-account-plan]").allInnerTexts(),
 +                accountRow(page, "Plain mail").locator("[data-reading]").count(),
 +                accountRow(page, "Rejected mail").locator("[data-reading]").count(),
 +                accountRow(page, "Plain mail").locator("[data-account-identity]").innerText(),
 +                accountRow(page, "Plain mail").locator("[data-account-verified]").count(),
 +                accountRow(page, "Plain mail").locator("[data-account-name]").innerText(),
-+                page
-+                  .locator(".inventory-row")
-+                  .filter({ hasText: /Plain mail|Rejected mail|Outdated mail/ })
-+                  .locator("[data-account-health-cell]")
-+                  .count(),
++                Promise.all(
++                  ["Plain mail", "Rejected mail", "Outdated mail"].map((label) =>
++                    accountRow(page, label)
++                      .locator("[data-account-health-cell]")
++                      .evaluate((cell) => [cell.textContent ?? "", cell.getAttribute("title")]),
++                  ),
++                ),
 +                accountRow(page, "Rejected mail")
-+                  .getByRole("link", { name: /^Rejected fixture/ })
++                  .getByRole("link", { name: /^Needs re-auth/ })
 +                  .getAttribute("href"),
 +                accountRow(page, "Usage account")
 +                  .getByRole("button", { name: "Refresh", exact: true })
@@ -567,9 +614,8 @@ index 0000000..6684d27
 +        // One usage cell is about 50px, plus the band's gap under the line.
 +        expect(usageHeight - plainHeight).toBeGreaterThanOrEqual(36);
 +        expect(usageHeight - plainHeight).toBeLessThanOrEqual(66);
-+        // No offering selector yet, so Type stays blank instead of guessing from the method.
-+        expect(types.length).toBeGreaterThan(0);
-+        expect(types.every((text) => text.trim() === "")).toBe(true);
++        // Type names only declared kinds; an undeclared key stays blank, never guessed from its method.
++        expect(types).toEqual(["API key", "Subscription", "", ""]);
 +        expect(plans).toEqual(["Max 20x"]);
 +        // Usage cells only on the reporter's row.
 +        expect([plainCells, rejectedCells]).toEqual([0, 0]);
@@ -580,9 +626,13 @@ index 0000000..6684d27
 +        expect(verifiedMarks, "the host-verified identity carries the check mark").toBe(1);
 +        // Requested access opens with the row's Details, never as its own line.
 +        expect(collapsedAccess).toBe(0);
-+        // A connector has no check of its own, so Health stays empty instead of claiming one.
-+        expect(connectorHealth).toBe(0);
-+        // A rejected app check is the red dot on the chip that opens that app's accounts.
++        // The app check's label, credited to its app; a rejection links to that app's accounts.
++        // An outdated check is never shown as current.
++        expect(connectorHealth).toEqual([
++          ["Healthy", expect.stringMatching(/^Healthy by Plain fixture/)],
++          ["Needs re-auth", expect.stringMatching(/^Needs re-auth by Rejected fixture/)],
++          ["Not rechecked", expect.stringMatching(/before the credentials or app changed$/)],
++        ]);
 +        expect(reauth).toContain(rejected.app.id);
 +        expect(inlineRefresh, "Refresh moved into the row menu").toBe(0);
 +        // On the app's own tab, its current rejection is the row's one inline recovery.
@@ -1148,10 +1198,29 @@ index 2fb00ba..5038abb 100644
        </DropdownMenuContent>
      </DropdownMenu>
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 217ba58..7110fc8 100644
+index 217ba58..03414f2 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -282,9 +282,11 @@ export function AccountCheckResult({
+@@ -115,8 +115,8 @@ export function AccountAvatar({
+ 
+ /**
+  * The photo an account's last check reported, on a light tile so dark logos stay visible in
+- * either theme, or its provider's icon. `compact` is the 24-pixel account row, which shows no
+- * generic glyph for a provider without a logo.
++ * either theme, or its provider's icon. `compact` is the 24-pixel account row; a provider without
++ * a logo shows the generic glyph in either size, so every row has a mark.
+  */
+ export function AccountLogo({
+   account,
+@@ -131,7 +131,6 @@ export function AccountLogo({
+       name={account.providerName ?? "Account"}
+       url={account.providerUrl}
+       medium={compact}
+-      showFallback={!compact}
+     />
+   );
+   return url ? (
+@@ -282,9 +281,11 @@ export function AccountCheckResult({
    part = "all",
  }: {
    readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
@@ -1165,7 +1234,7 @@ index 217ba58..7110fc8 100644
    if (health === undefined || (!health.checkable && health.check === null))
      return <span className="text-[12px] text-muted-foreground">No check</span>;
    if (health.check === null && part === "details") return null;
-@@ -333,6 +335,19 @@ export function AccountCheckResult({
+@@ -333,6 +334,19 @@ export function AccountCheckResult({
      );
    if (part === "details")
      return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
@@ -1520,11 +1589,13 @@ index a711e92..7f0bed0 100644
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 new file mode 100644
-index 0000000..1f93325
+index 0000000..9a5ee4e
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
-@@ -0,0 +1,164 @@
-+import type { AccountDriverHealth, AppId } from "@executor-js/sdk";
+@@ -0,0 +1,224 @@
++import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 +import type { ReactNode } from "react";
 +import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboard.ts";
 +import { shortMoment } from "../components/local-time.tsx";
@@ -1532,6 +1603,7 @@ index 0000000..1f93325
 +import { cn } from "../lib/utils.ts";
 +import { describeAccountCheck } from "./account-health.tsx";
 +import type { AccountRowBinding } from "./account-row.tsx";
++import { useDashboard } from "./context.tsx";
 +
 +type Check = NonNullable<AccountDriverHealth["check"]>;
 +
@@ -1542,18 +1614,28 @@ index 0000000..1f93325
 +  | {
 +      readonly kind: "check";
 +      readonly check: Check;
-+      /** The app that reported it; absent for the account's own sign-in check. */
-+      readonly app?: AppId | undefined;
++      /** The apps whose checks say this, first one shown; empty for the account's own check. */
++      readonly apps: readonly AppId[];
 +    }
 +  | { readonly kind: "not-checked" }
 +  /** Nothing can check the account, so the cell stays empty. */
 +  | { readonly kind: "no-check" };
 +
++const severity: readonly AccountCheckStatus[] = [
++  "credentials_rejected",
++  "tools_unavailable",
++  "forbidden",
++  "upstream_unavailable",
++  "check_failed",
++  "healthy",
++];
++
 +/**
-+ * The account's state from its grant and its own sign-in check, `health.driver`. App checks stay
-+ * on their app's binding; only `own`, the one app a page is about, stands in when the account has
-+ * no driver check of its own. Nothing is aggregated, a missing check stays missing, and a saved
-+ * grant never reads as healthy. An outdated result reads as not rechecked.
++ * What the Health column shows, from the grant and the stored checks as delivered. The account's
++ * own check, `health.driver`, wins. Without one the column falls back, for display only, to the
++ * page's own app check when `own` is given, or else to the row's app checks: a current rejection
++ * first, then the worst current result, then an outdated one. No check stays empty; a saved grant
++ * never reads as healthy.
 + */
 +export const accountRowHealth = (
 +  account: AccountSummary,
@@ -1567,8 +1649,19 @@ index 0000000..1f93325
 +    return { kind: "needs-sign-in" };
 +  if (signIns.some((signIn) => signIn.state === "unavailable")) return { kind: "unavailable" };
 +  const driver = account.health?.driver;
-+  if (driver?.check != null) return { kind: "check", check: driver.check };
-+  if (own?.check?.check != null) return { kind: "check", check: own.check.check, app: own.app };
++  if (driver?.check != null) return { kind: "check", check: driver.check, apps: [] };
++  const results = (own === undefined ? bindings : [own]).flatMap((binding) =>
++    binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
++  );
++  for (const current of [true, false])
++    for (const status of severity) {
++      const matching = results.filter(
++        (result) => result.check.current === current && result.check.status === status,
++      );
++      const [first] = matching;
++      if (first !== undefined)
++        return { kind: "check", check: first.check, apps: matching.map((result) => result.app) };
++    }
 +  return driver?.checkable === true || own?.check?.checkable === true
 +    ? { kind: "not-checked" }
 +    : { kind: "no-check" };
@@ -1587,19 +1680,27 @@ index 0000000..1f93325
 +  muted: "text-muted-foreground",
 +};
 +
-+/** The account's health in a few words; a current rejection shows `recover`, the row's one recovery. */
++/**
++ * The account's health in a few words. A current rejection is the row's one inline recovery:
++ * `recover` where the page has one, or with `link` a "Needs re-auth ↗" link to the first rejecting
++ * app's accounts.
++ */
 +export function AccountHealthCell({
 +  health,
 +  appName,
 +  recover,
++  link = false,
 +  unavailableLabel = "Account unavailable",
 +}: {
 +  readonly health: AccountRowHealth;
 +  readonly appName: (app: AppId) => string;
 +  readonly recover?: ReactNode;
++  /** Link an app's rejection to that app's accounts, where the account is reconnected. */
++  readonly link?: boolean;
 +  readonly unavailableLabel?: string;
 +}) {
 +  const format = useDisplayFormat();
++  const { AppLink } = useDashboard();
 +  const cell = "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
 +  const dot = (tone: keyof typeof dots, hollow = false) => (
 +    <span
@@ -1635,12 +1736,12 @@ index 0000000..1f93325
 +        Not checked
 +      </span>
 +    );
-+  const { check, app } = health;
++  const { check, apps } = health;
 +  const { label, tone } = describeAccountCheck(check.status);
-+  const where = app === undefined ? "Sign-in" : appName(app);
++  const where = apps.length === 0 ? "sign-in check" : apps.map(appName).join(", ");
 +  const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
 +  const title = check.current
-+    ? `${label} · ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
++    ? `${label} by ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
 +    : `Last check ${when} by ${where}, before the credentials or app changed`;
 +  const state = check.current ? check.status : "not-rechecked";
 +  // The same attributes as the check badges this cell replaced.
@@ -1674,6 +1775,34 @@ index 0000000..1f93325
 +    </>
 +  );
 +  const rejected = check.status === "credentials_rejected";
++  const [first] = apps;
++  if (rejected && recover === undefined && link && first !== undefined)
++    return (
++      <span
++        className={cell}
++        title={title}
++        data-account-health-cell
++        data-health-state={state}
++        {...marks}
++        suppressHydrationWarning
++      >
++        <AppLink
++          app={first}
++          view="accounts"
++          className="-ml-1 inline-flex items-center gap-1.5 rounded-sm px-1 py-0.5 hover:bg-destructive/10"
++          aria-label={`Needs re-auth. Reconnect in ${appName(first)}`}
++        >
++          {content}
++          <HugeiconsIcon
++            icon={ArrowUpRight01Icon}
++            size={11}
++            strokeWidth={2}
++            aria-hidden
++            className="text-destructive"
++          />
++        </AppLink>
++      </span>
++    );
 +  return (
 +    <span
 +      className={cn(cell, rejected && recover !== undefined && "flex-wrap")}
@@ -1690,10 +1819,10 @@ index 0000000..1f93325
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
 new file mode 100644
-index 0000000..6845279
+index 0000000..13f7582
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,416 @@
 +/**
 + * The compact account row: one aligned line of identity, type, plan, health and who uses the
 + * account, then full-width bands such as usage. The row renders from `AccountRowInput`, which maps
@@ -1790,10 +1919,12 @@ index 0000000..6845279
 +};
 +
 +/**
-+ * The Type column's text. Blank until the host's declared offering and its label helper land;
-+ * never inferred from OAuth or the credential mechanism.
++ * The Type column's text: the declared kinds that `accountKindLabel` or `accountMethodKindLabel`
++ * give the row's sign-ins, once each. Unknown kinds add nothing, so an undeclared account stays
++ * blank; nothing is inferred from OAuth or the method name.
 + */
-+export const accountRowType = (_row: AccountRowInput): string | undefined => undefined;
++export const accountRowType = (kinds: readonly (string | undefined)[]): string | undefined =>
++  [...new Set(kinds.filter((kind) => kind !== undefined))].join(", ") || undefined;
 +
 +/** A usage band's row-level actions, offered from the row's menu. */
 +export interface AccountRowUsage {
@@ -2109,7 +2240,7 @@ index 0000000..6845279
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index bc11018..7726291 100644
+index 3405cfe..4319eb4 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -1,19 +1,36 @@
@@ -2151,9 +2282,9 @@ index bc11018..7726291 100644
  import {
 -  accountFamily,
    accountGroups,
+   accountKindLabel,
    accountTitle,
-   bindingAccess,
-@@ -46,7 +63,15 @@ export function AccountsPage<E>({
+@@ -47,7 +64,15 @@ export function AccountsPage<E>({
      bindings: readonly AccountSummary[],
      inventory: Inventory,
    ) => ReactNode;
@@ -2169,7 +2300,7 @@ index bc11018..7726291 100644
    /** A full-width block under the row, such as the account's usage, given the apps using it. */
    readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
    /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
-@@ -99,6 +124,8 @@ function AccountsList({
+@@ -100,6 +125,8 @@ function AccountsList({
    accountActions,
    identityActions,
    accountMeta,
@@ -2178,7 +2309,7 @@ index bc11018..7726291 100644
    accountDetails,
    highlight,
    empty,
-@@ -118,6 +145,8 @@ function AccountsList({
+@@ -119,6 +146,8 @@ function AccountsList({
      inventory: Inventory,
    ) => ReactNode;
    readonly accountMeta?: (account: AccountSummary) => ReactNode;
@@ -2187,7 +2318,7 @@ index bc11018..7726291 100644
    readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
    readonly highlight?: AccountId | undefined;
  }) {
-@@ -155,171 +184,156 @@ function AccountsList({
+@@ -156,178 +185,160 @@ function AccountsList({
            Try another label or provider.
          </Empty>
        ) : (
@@ -2245,33 +2376,6 @@ index bc11018..7726291 100644
 -                      >
 -                        {account.description}
 -                      </p>
--                    )}
--                    <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
--                      {serviceName && (
--                        <>
--                          <span>{serviceName}</span>
--                          <span>·</span>
--                        </>
--                      )}
--                      {account.label.trim() !== "" && account.label !== title && (
--                        <>
--                          <span className="wrap-anywhere">{account.label}</span>
--                          <span aria-hidden>·</span>
--                        </>
--                      )}
--                      <span>
--                        {[...new Set(bindings.map((binding) => binding.method))].join(", ")}
--                      </span>
--                      {info &&
--                        !(
--                          info.displayName === undefined &&
--                          info.username === undefined &&
--                          info.email === title
--                        ) && (
--                          <>
--                            <span aria-hidden>·</span>
--                            <AccountIdentity info={info} />
--                          </>
 +              <AccountRowProvider key={account.id}>
 +                <div
 +                  className={cn(
@@ -2290,12 +2394,49 @@ index bc11018..7726291 100644
 +                    tags={accountMeta?.(account)}
 +                  />
 +                  <AccountRowCells
-+                    type={accountRowType(row)}
++                    // Each sign-in keeps its own declared kind, so a mixed group lists them all.
++                    type={accountRowType(
++                      bindings.map((binding) => accountKindLabel(data, binding)),
+                     )}
+-                    <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
+-                      {serviceName && (
+-                        <>
+-                          <span>{serviceName}</span>
+-                          <span>·</span>
+-                        </>
+-                      )}
+-                      {account.label.trim() !== "" && account.label !== title && (
+-                        <>
+-                          <span className="wrap-anywhere">{account.label}</span>
+-                          <span aria-hidden>·</span>
+-                        </>
+-                      )}
+-                      <span>
+-                        {/* Each sign-in keeps its own declared kind, so a mixed group lists them all. */}
+-                        {[
+-                          ...new Set(
+-                            bindings.map(
+-                              (binding) => accountKindLabel(data, binding) ?? binding.method,
+-                            ),
+-                          ),
+-                        ].join(", ")}
+-                      </span>
+-                      {info &&
+-                        !(
+-                          info.displayName === undefined &&
+-                          info.username === undefined &&
+-                          info.email === title
+-                        ) && (
+-                          <>
+-                            <span aria-hidden>·</span>
+-                            <AccountIdentity info={info} />
+-                          </>
 +                    plan={accountPlan?.(account)}
 +                    health={
 +                      <AccountHealthCell
 +                        health={accountRowHealth(row.account, row.bindings)}
 +                        appName={appName}
++                        link
 +                      />
 +                    }
 +                    usersLabel="Used by"
@@ -2497,7 +2638,7 @@ index bc11018..7726291 100644
            })}
          </div>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 8529724..dd97f26 100644
+index 3d4ccc1..3fe49fc 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -6,14 +6,7 @@ import { Exit, Option, type Cause } from "effect";
@@ -2516,7 +2657,7 @@ index 8529724..dd97f26 100644
  import {
    requirementMethods,
    type RequirementChoice,
-@@ -23,14 +16,30 @@ import {
+@@ -23,7 +16,6 @@ import {
  import {
    providerDisplayUrl,
    accountNeedsSignIn,
@@ -2524,8 +2665,9 @@ index 8529724..dd97f26 100644
    type AccountDetail,
    type AccountSummary,
    type FailureProps,
-   type Query,
+@@ -31,7 +23,24 @@ import {
  } from "../../contracts/dashboard.ts";
+ import { accountMethodKindLabel } from "../../contracts/account-identities.ts";
  import { AppProviderIcon, ProviderIcon } from "./common.tsx";
 -import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
 +import { AccountCheckResult } from "./account-health.tsx";
@@ -2549,7 +2691,7 @@ index 8529724..dd97f26 100644
  import { EmptyState } from "./empty-state.tsx";
  import { Button } from "../components/button.tsx";
  import { Checkbox } from "../components/checkbox.tsx";
-@@ -132,6 +141,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -133,6 +142,7 @@ export function LinkedAccountMenu<A, E>({
    if (children === undefined && unlink === undefined) return null;
    return (
      <>
@@ -2557,7 +2699,7 @@ index 8529724..dd97f26 100644
        <DropdownMenu>
          <DropdownMenuTrigger asChild>
            <Button
-@@ -145,6 +155,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -146,6 +156,7 @@ export function LinkedAccountMenu<A, E>({
            </Button>
          </DropdownMenuTrigger>
          <DropdownMenuContent align="end" className="min-w-44">
@@ -2565,7 +2707,7 @@ index 8529724..dd97f26 100644
            {children}
            {children && unlink && <DropdownMenuSeparator />}
            {unlink && bound && (
-@@ -481,6 +492,10 @@ export interface ScopeAccounts<E> {
+@@ -482,6 +493,10 @@ export interface ScopeAccounts<E> {
    readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
    /** A block under each account the caller can use, such as its reported usage. */
    readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
@@ -2576,7 +2718,7 @@ index 8529724..dd97f26 100644
  }
  
  /**
-@@ -772,7 +787,11 @@ function RequirementView<E>({
+@@ -773,7 +788,11 @@ function RequirementView<E>({
              {...props}
              // A requirement the caller cannot change offers no account actions, as a read-only
              // scope never did, even beside a contributed one.
@@ -2589,7 +2731,7 @@ index 8529724..dd97f26 100644
              slot={slot}
              requirement={requirement}
              linked={linked}
-@@ -791,73 +810,57 @@ function RequirementView<E>({
+@@ -792,78 +811,57 @@ function RequirementView<E>({
    );
  }
  
@@ -2603,21 +2745,24 @@ index 8529724..dd97f26 100644
    "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
  const radioDot = "size-2 rounded-full bg-primary";
  
--/** One-line account identity; the second line credits whoever contributed the link. */
+-/** One-line account identity; the second line names the declared kind and credits whoever contributed the link. */
 +/** The row's logo and two-line name; clicking either picks the row's choice. */
  function AccountRowIdentity({
    account,
 -  actions,
    labelFor,
 -  credit,
+-  kind,
 +  tags,
  }: {
    readonly account: AccountSummary;
 -  readonly actions?: ReactNode;
    readonly labelFor?: string;
 -  readonly credit?: string | undefined;
+-  readonly kind?: string | undefined;
 +  readonly tags?: ReactNode;
  }) {
+-  const metadata = [kind, credit].filter((value) => value !== undefined).join(" · ") || undefined;
 -  const info = account.health?.info;
 -  const name = accountName(account);
 -  const secondary = [info?.email, info?.username]
@@ -2676,8 +2821,10 @@ index 8529724..dd97f26 100644
 -      <div
 -        data-added-by-slot
 -        className="min-h-4 truncate text-[11px] text-muted-foreground"
--        title={credit}
+-        title={metadata}
 -      >
+-        {kind !== undefined && <span data-account-kind>{kind}</span>}
+-        {kind !== undefined && credit !== undefined && " · "}
 -        {credit}
 -      </div>
 -    </div>
@@ -2698,7 +2845,7 @@ index 8529724..dd97f26 100644
    );
  }
  
-@@ -908,12 +911,9 @@ function ReadOnlyChoices<E>({
+@@ -914,12 +912,9 @@ function ReadOnlyChoices<E>({
    const rows = shown.map((account) => {
      const provisioned = provisionedMethod(requirement, account);
      return (
@@ -2714,18 +2861,21 @@ index 8529724..dd97f26 100644
              {plain ? (
                <RadioGroup.Item
                  value={account.id}
-@@ -927,27 +927,32 @@ function ReadOnlyChoices<E>({
+@@ -933,28 +928,34 @@ function ReadOnlyChoices<E>({
              )}
              <AccountRowIdentity
                account={account}
 -              credit={addedBy(data, slot, requirement, account.id)}
+-              kind={accountMethodKindLabel(requirement.definition, account.method)}
 -              actions={
 -                provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)
 +              tags={provisioned ? <ProvisionedTag /> : undefined}
 +            />
 +            <AccountRowCells
 +              lead
-+              type={accountRowType(appAccountRow(app, account, data.accountRow))}
++              type={accountRowType([
++                accountMethodKindLabel(requirement.definition, account.method),
++              ])}
 +              plan={provisioned ? undefined : data.accountPlan?.(account)}
 +              health={
 +                <AccountStatus app={app} row={appAccountRow(app, account, data.accountRow)} />
@@ -2765,7 +2915,7 @@ index 8529724..dd97f26 100644
      );
    });
    const list = (
-@@ -955,7 +960,7 @@ function ReadOnlyChoices<E>({
+@@ -962,7 +963,7 @@ function ReadOnlyChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -2774,7 +2924,7 @@ index 8529724..dd97f26 100644
      >
        {rows}
      </ul>
-@@ -1118,7 +1123,7 @@ function EditableChoices<E>({
+@@ -1125,7 +1126,7 @@ function EditableChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -2783,7 +2933,7 @@ index 8529724..dd97f26 100644
      >
        {rows}
      </ul>
-@@ -1226,6 +1231,7 @@ function ChoiceRow<E>({
+@@ -1233,6 +1234,7 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -2791,7 +2941,7 @@ index 8529724..dd97f26 100644
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
    // Another person's contribution stays linked unless the host says the caller may remove it.
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
-@@ -1242,22 +1248,22 @@ function ChoiceRow<E>({
+@@ -1249,22 +1251,22 @@ function ChoiceRow<E>({
      return exit;
    };
    return (
@@ -2829,11 +2979,12 @@ index 8529724..dd97f26 100644
            {plain ? (
              <RadioGroup.Item
                id={id}
-@@ -1287,49 +1293,57 @@ function ChoiceRow<E>({
+@@ -1294,50 +1296,57 @@ function ChoiceRow<E>({
            <AccountRowIdentity
              account={account}
              labelFor={id}
 -            credit={linked ? addedBy(data, slot, requirement, account.id) : undefined}
+-            kind={accountMethodKindLabel(requirement.definition, account.method)}
 -            actions={
 -              hostProvisioned || automatic
 -                ? undefined
@@ -2862,7 +3013,7 @@ index 8529724..dd97f26 100644
 -                : data.reconnectAction?.(account, slot, requirement)
 +          <AccountRowCells
 +            lead
-+            type={accountRowType(row)}
++            type={accountRowType([accountMethodKindLabel(requirement.definition, account.method)])}
 +            plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
 +            health={
 +              <AccountStatus
@@ -2926,7 +3077,7 @@ index 8529724..dd97f26 100644
    );
  }
  
-@@ -1413,49 +1427,64 @@ function RemoveAppBoundAccount({
+@@ -1421,49 +1430,64 @@ function RemoveAppBoundAccount({
    );
  }
  
