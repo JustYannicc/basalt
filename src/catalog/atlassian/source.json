@@ -7,7 +7,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"atlassian\",\n  \"private\": true,\n  \"description\": \"Read accessible Atlassian sites, search and read Confluence pages, and search and read Jira issues.\",\n  \"type\": \"module\",\n  \"exports\": {\n    \".\": \"./index.ts\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.2\"\n  },\n  \"executor\": {\n    \"title\": \"Atlassian\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"atlassian\",\n  \"private\": true,\n  \"description\": \"Read accessible Atlassian sites, search and read Confluence pages, and search and read Jira issues.\",\n  \"type\": \"module\",\n  \"exports\": {\n    \".\": \"./index.ts\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.8\"\n  },\n  \"executor\": {\n    \"title\": \"Atlassian\"\n  }\n}\n"
     },
     {
       "path": "provider.ts",

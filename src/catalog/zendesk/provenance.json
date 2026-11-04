@@ -3,7 +3,7 @@
   "package": "zendesk",
   "sourceSdk": "apps@0.0.1-beta.104-basalt.1",
   "origin": "Derived from the provided Zendesk source snapshot and official Zendesk Support API OpenAPI document",
-  "snapshotSha256": "1038ff4f96f506b661e7e4346aaccf0e9d07f9e12e9953663922faacd7224431",
+  "snapshotSha256": "6b10c1a49b5ca83acfdec09d4b2e3eb40569f8671241f0bf978670dfda3ce922",
   "originalFileSha256": {
     "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
     "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
@@ -16,10 +16,10 @@
     "icon.ts": "903979f3230451a2cd1a5a854a85253e15f6b527f8041b458507043084fad886",
     "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
     "openapi.ts": "ce31570fa69381d1f5faea8fd2d0a015bbf9171256b14a2772c0ee0aaa2661cc",
-    "package.json": "697c88cb2d9f1138237839a6bcce8fda4e4b623e10fe733e30a1d1fcb6a8f1a6"
+    "package.json": "5ed7e8191fcdc616828ed92ec4cdc1e34ac2b823b413a34d67f81d7d5f9c558b"
   },
   "authoringDocs": "https://executor.sh/docs/author-an-app",
-  "frameworkRelease": "0.0.1-beta.104-basalt.2",
+  "frameworkRelease": "0.0.1-beta.104-basalt.8",
   "frameworkSource": "prepared host packages/apps/package.json",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2374",
   "siteConfiguration": {

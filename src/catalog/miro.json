@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/miro\",\n  \"description\": \"Miro boards, items, sticky notes, shapes, connectors, tags, members, teams and organization APIs.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Miro\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.2\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/miro\",\n  \"description\": \"Miro boards, items, sticky notes, shapes, connectors, tags, members, teams and organization APIs.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Miro\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.8\"\n  }\n}\n"
     }
   ]
 }
