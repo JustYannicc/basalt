@@ -1,0 +1,151 @@
+[
+  {
+    "provider": "prv_2b75c3056562dbf5eeb5d1a37f9d5de7fb28a0dd83a6c76ffe7ea2e2d4a8605c",
+    "method": "apiKey",
+    "definition": {
+      "auth": {
+        "apiKey": {
+          "fields": {
+            "$defs": {},
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": true,
+            "properties": {
+              "token": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "token"
+            ],
+            "type": "object"
+          },
+          "label": "Access token",
+          "type": "secrets"
+        }
+      },
+      "name": "Vercel"
+    }
+  },
+  {
+    "provider": "prv_18bb54217e216de5533e5baa846e78ee147913029f183f7b219880fe230b0856",
+    "method": "codex",
+    "definition": {
+      "auth": {
+        "antigravity": {
+          "label": "Antigravity",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "claude": {
+          "label": "Claude",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "codex": {
+          "label": "ChatGPT",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "devin": {
+          "label": "Devin",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "kimi": {
+          "label": "Kimi",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "loginFile": {
+          "label": "Login file",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "meta": {
+          "label": "Meta",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        },
+        "xai": {
+          "label": "Grok",
+          "plain": [
+            "ref"
+          ],
+          "type": "interactive"
+        }
+      },
+      "name": "Subscription"
+    }
+  },
+  {
+    "provider": "prv_ba76d7b3d90a3fd6b0862b14a1d119537dbe5a69b573e6592ba7777366eaa911",
+    "method": "apiKey",
+    "definition": {
+      "auth": {
+        "apiKey": {
+          "fields": {
+            "$defs": {},
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": true,
+            "properties": {
+              "token": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "token"
+            ],
+            "type": "object"
+          },
+          "label": "TypeSafe API key",
+          "type": "secrets"
+        }
+      },
+      "name": "Jev"
+    }
+  },
+  {
+    "provider": "prv_6d677ada2e24ae9d7c21495d1a90ccf93e37bc185766a1ae0aaeb5792969df07",
+    "method": "apiKey",
+    "definition": {
+      "auth": {
+        "apiKey": {
+          "fields": {
+            "$defs": {},
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": true,
+            "properties": {
+              "token": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "token"
+            ],
+            "type": "object"
+          },
+          "label": "API key",
+          "type": "secrets"
+        }
+      },
+      "name": "ElevenLabs"
+    }
+  }
+]

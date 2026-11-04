@@ -1,0 +1,180 @@
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index 67035af..ee70b40 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -1,3 +1,4 @@
++import { legacyAccountKind } from "./account-kind-compatibility.ts";
+ import { declaredAccountOffering } from "@executor-js/sdk";
+ /** Group only verified identities already visible in the product's authorized inventory. */
+ import type {
+@@ -70,21 +71,26 @@ export const accountFamily = (
+   accountDefinitions(inventory, account).find((definition) => definition.family !== undefined)
+     ?.family;
+ 
+-/** How the account's method acquires credentials, from its declaration; never a readiness claim. */
+-export const accountMechanism = (
+-  inventory: Inventory,
+-  account: AccountSummary,
++/** Explicit declarations win, including ambiguity; compatibility is display-only. */
++const methodMechanism = (
++  definitions: readonly ProviderDefinition[],
++  method: string,
++  provider?: string,
+ ): AccountCredentialMechanism | undefined => {
+-  const definitions = accountDefinitions(inventory, account);
+-  const declared = definitions
+-    .map((definition) => definition.family?.methods?.[account.method]?.mechanism)
+-    .find((mechanism) => mechanism !== undefined);
+-  if (declared !== undefined) return declared;
++  const declared = new Set(
++    definitions.flatMap((definition) => {
++      const value = definition.family?.methods?.[method]?.mechanism;
++      return value === undefined ? [] : [value];
++    }),
++  );
++  if (declared.size > 0) return declared.size === 1 ? [...declared][0] : undefined;
++  const legacy = legacyAccountKind(provider, method);
++  if (legacy !== undefined) return legacy.mechanism;
+   const auth = definitions
+-    .map((definition) =>
+-      Object.hasOwn(definition.auth, account.method) ? definition.auth[account.method] : undefined,
++    .flatMap((definition) =>
++      Object.hasOwn(definition.auth, method) ? [definition.auth[method]] : [],
+     )
+-    .find((method) => method !== undefined);
++    .find((value) => value !== undefined);
+   return auth === undefined
+     ? undefined
+     : auth.type === "oauth2"
+@@ -94,12 +100,31 @@ export const accountMechanism = (
+         : "other";
+ };
+ 
+-/** A method's explicit offering hint. Missing or conflicting declarations stay unknown. */
+-export const accountOffering = (inventory: Inventory, account: AccountSummary): AccountOffering =>
+-  declaredAccountOffering(
+-    accountDefinitions(inventory, account).map((definition) => definition.family),
+-    account.method,
+-  ) ?? "unknown";
++const methodOffering = (
++  definitions: readonly ProviderDefinition[],
++  method: string,
++  provider?: string,
++): AccountOffering => {
++  const families = definitions.map((definition) => definition.family);
++  if (families.some((family) => family?.methods?.[method]?.offering !== undefined))
++    return declaredAccountOffering(families, method) ?? "unknown";
++  const mechanisms = new Set(
++    families.flatMap((family) => {
++      const mechanism = family?.methods?.[method]?.mechanism;
++      return mechanism === undefined ? [] : [mechanism];
++    }),
++  );
++  if (mechanisms.size > 1) return "unknown";
++  return legacyAccountKind(provider, method)?.offering ?? "unknown";
++};
++
++/** Credential mechanism never establishes readiness or granted permissions. */
++export const accountMechanism = (inventory: Inventory, account: AccountSummary) =>
++  methodMechanism(accountDefinitions(inventory, account), account.method, account.provider);
++
++/** Funding needs an explicit declaration or a verified legacy display hint. */
++export const accountOffering = (inventory: Inventory, account: AccountSummary) =>
++  methodOffering(accountDefinitions(inventory, account), account.method, account.provider);
+ 
+ export const connectionKindLabel = (
+   mechanism: AccountCredentialMechanism | undefined,
+@@ -114,17 +139,21 @@ export const connectionKindLabel = (
+           ? "Prepaid"
+           : undefined;
+   return (
+-    [mechanism === "api-key" ? "API key" : undefined, label]
++    [mechanism === "api-key" ? "API key" : mechanism === "oauth" ? "OAuth" : undefined, label]
+       .filter((value) => value !== undefined)
+       .join(" · ") || undefined
+   );
+ };
+ 
+ /** A single consumer's declaration, for its account selection and detail rows. */
+-export const accountMethodKindLabel = (definition: ProviderDefinition, method: string) =>
++export const accountMethodKindLabel = (
++  definition: ProviderDefinition,
++  method: string,
++  provider?: string,
++) =>
+   connectionKindLabel(
+-    definition.family?.methods?.[method]?.mechanism,
+-    declaredAccountOffering([definition.family], method),
++    methodMechanism([definition], method, provider),
++    methodOffering([definition], method, provider),
+   );
+ 
+ /** Connection labels describe declarations, never health, permission or current plan. */
+diff --git a/packages/ui/src/contracts/account-kind-compatibility.ts b/packages/ui/src/contracts/account-kind-compatibility.ts
+new file mode 100644
+index 0000000..ced38bf
+--- /dev/null
++++ b/packages/ui/src/contracts/account-kind-compatibility.ts
+@@ -0,0 +1,34 @@
++import type { AccountCredentialMechanism, AccountOffering } from "@executor-js/sdk";
++
++interface DisplayKind {
++  readonly mechanism: AccountCredentialMechanism;
++  readonly offering?: AccountOffering;
++}
++
++// Verified legacy declarations, keyed by immutable provider identity and exact method.
++// Display only: never merge these hints into provider definitions, identities or access policy.
++const legacyKinds: Readonly<Record<string, Readonly<Record<string, DisplayKind>>>> = {
++  // Subscription: the retained pool provider's ChatGPT sign-in.
++  prv_18bb54217e216de5533e5baa846e78ee147913029f183f7b219880fe230b0856: {
++    codex: { mechanism: "interactive", offering: "subscription" },
++  },
++  // Vercel: Access token.
++  prv_2b75c3056562dbf5eeb5d1a37f9d5de7fb28a0dd83a6c76ffe7ea2e2d4a8605c: {
++    apiKey: { mechanism: "api-key" },
++  },
++  // Jev: TypeSafe API key.
++  prv_ba76d7b3d90a3fd6b0862b14a1d119537dbe5a69b573e6592ba7777366eaa911: {
++    apiKey: { mechanism: "api-key" },
++  },
++  // ElevenLabs: API key.
++  prv_6d677ada2e24ae9d7c21495d1a90ccf93e37bc185766a1ae0aaeb5792969df07: {
++    apiKey: { mechanism: "api-key" },
++  },
++};
++
++/** Compatibility for declarations that predate kind hints; no name or method-name guessing. */
++export const legacyAccountKind = (provider: string | undefined, method: string) => {
++  if (provider === undefined || !Object.hasOwn(legacyKinds, provider)) return undefined;
++  const methods = legacyKinds[provider]!;
++  return Object.hasOwn(methods, method) ? methods[method] : undefined;
++};
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 5a22555..a90a18d 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -933,7 +933,11 @@ function ReadOnlyChoices<E>({
+             <AccountRowCells
+               lead
+               type={accountRowType([
+-                accountMethodKindLabel(requirement.definition, account.method),
++                accountMethodKindLabel(
++                  requirement.definition,
++                  account.method,
++                  requirement.provider,
++                ),
+               ])}
+               plan={provisioned ? undefined : data.accountPlan?.(account)}
+               health={
+@@ -1300,7 +1304,9 @@ function ChoiceRow<E>({
+           />
+           <AccountRowCells
+             lead
+-            type={accountRowType([accountMethodKindLabel(requirement.definition, account.method)])}
++            type={accountRowType([
++              accountMethodKindLabel(requirement.definition, account.method, requirement.provider),
++            ])}
+             plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
+             health={
+               <AccountStatus
