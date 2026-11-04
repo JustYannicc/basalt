@@ -6,10 +6,11 @@ import { generateDeployment } from "./deployment.ts";
 import { stackFingerprint } from "./fingerprint.ts";
 import { nativeFixture } from "./native-stack-fixture-helpers.ts";
 import { resourceId } from "./native-stack.ts";
+import { readGeneratedInventory } from "./generated-inventory.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cleanups: (() => void)[] = [];
-afterEach(() => cleanups.splice(0).forEach(cleanup => cleanup()));
+afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 const declaration = (extra = "") => `yield* Cloudflare.Worker("Api", {
   main: new URL("./worker.ts", import.meta.url).pathname, ${extra}
 });`;
@@ -19,7 +20,9 @@ function fixture() {
   cleanups.push(fixture.dispose);
   mkdirSync(join(fixture.root, "architecture"));
   const model = join(fixture.root, "architecture/model.c4");
-  writeFileSync(model, `
+  writeFileSync(
+    model,
+    `
     specification {
       element module
       deploymentNode stage
@@ -31,17 +34,33 @@ function fixture() {
         metadata { resources "${resourceId("Cloudflare.Worker", "Api")}" }
       }
     }
-  `);
+  `,
+  );
   return { ...fixture, model };
 }
 
 test("source-only edits change the fresh fingerprint without changing the generated deployment", async () => {
   const f = fixture();
+  expect(readGeneratedInventory(f.root)).toBeUndefined();
   const before = await generateDeployment(f.root);
+  const inventory = readGeneratedInventory(f.root);
+  expect(inventory).toEqual([
+    {
+      id: resourceId("Cloudflare.Worker", "Api"),
+      kind: "Worker",
+      source: "alchemy.run.ts",
+      declaredName: "Api",
+    },
+  ]);
   const fingerprint = stackFingerprint(f.root);
-  writeFileSync(join(f.root, "worker.ts"), 'export default { fetch() { return new Response("changed"); } };');
+  writeFileSync(
+    join(f.root, "worker.ts"),
+    'export default { fetch() { return new Response("changed"); } };',
+  );
   expect(stackFingerprint(f.root)).not.toBe(fingerprint);
+  expect(readGeneratedInventory(f.root)).toBeUndefined();
   expect(await generateDeployment(f.root)).toBe(before);
+  expect(readGeneratedInventory(f.root)).toEqual(inventory);
   expect(before).not.toContain("fingerprint");
 });
 
@@ -52,19 +71,38 @@ test("binding changes still change the committed deployment digest", async () =>
   expect(await generateDeployment(f.root)).not.toBe(before);
 });
 
+test("generated inventory rejects a different evaluator and malformed resource metadata", async () => {
+  const f = fixture();
+  await generateDeployment(f.root);
+  const path = join(f.root, ".generated/architecture/stack-inventory.json");
+  const valid = readFileSync(path, "utf8");
+  writeFileSync(path, valid.replace(/"tooling":"[a-f0-9]+"/, '"tooling":"outdated"'));
+  expect(readGeneratedInventory(f.root)).toBeUndefined();
+  writeFileSync(path, valid.replace(/"id":"resource-[a-f0-9]+"/, '"id":"invalid"'));
+  expect(() => readGeneratedInventory(f.root)).toThrow("Invalid generated stack inventory");
+});
+
 test("resource and model drift still fail in both directions", async () => {
   const f = fixture();
   // Keep one real declaration so the stale mapping path is exercised.
-  f.write('yield* Cloudflare.Worker("Other", { main: new URL("./worker.ts", import.meta.url).pathname });');
+  f.write(
+    'yield* Cloudflare.Worker("Other", { main: new URL("./worker.ts", import.meta.url).pathname });',
+  );
   await expect(generateDeployment(f.root)).rejects.toThrow("staleMappings");
   f.write(declaration());
-  writeFileSync(f.model, readFileSync(f.model, "utf8").replace(/metadata \{ resources [^}]+\}/, ""));
+  writeFileSync(
+    f.model,
+    readFileSync(f.model, "utf8").replace(/metadata \{ resources [^}]+\}/, ""),
+  );
   await expect(generateDeployment(f.root)).rejects.toThrow("unmodelledResources");
 });
 
 test("source changes during generation fail instead of returning a mixed snapshot", async () => {
   const f = fixture();
   const generating = generateDeployment(f.root);
-  writeFileSync(join(f.root, "worker.ts"), 'export default { fetch() { return new Response("changed"); } };');
+  writeFileSync(
+    join(f.root, "worker.ts"),
+    'export default { fetch() { return new Response("changed"); } };',
+  );
   await expect(generating).rejects.toThrow("Source changed during deployment generation");
 });

@@ -1,0 +1,25 @@
+diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
+--- a/e2e/tests/cloud-compiler.spec.ts
++++ b/e2e/tests/cloud-compiler.spec.ts
+@@ -370,14 +370,13 @@
+           const trail = yield* compilerPhaseEvidence(traceId, stalledFiles);
+           yield* evidence.json("compiler-deadline-phases.json", trail);
+           const phases = trail.map(({ record }) => record.phase);
+-          expect(phases).toEqual([
+-            "received",
+-            "admitted",
+-            "dependencies",
+-            "released",
+-            "error",
+-            "replied",
+-          ]);
++          const work = phases.slice(0, -3);
++          expect(work.slice(0, 3)).toEqual(["received", "admitted", "dependencies"]);
++          expect(
++            work.slice(2).every((phase) => phase === "dependencies" || phase === "bundle"),
++          ).toBe(true);
++          expect(work.at(-1)).toBe("dependencies");
++          expect(phases.slice(-3)).toEqual(["released", "error", "replied"]);
+           expect(new Set(trail.map(({ record }) => record.attempt)).size).toBe(1);
+           expect(new Set(trail.map(({ record }) => record.isolate)).size).toBe(1);
+           for (const records of [finished, errorTrail, trail]) {

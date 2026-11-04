@@ -1,7 +1,7 @@
 {
   "identity": "provider-config-mirrors",
   "file": "0184-provider-config-mirrors.patch",
-  "content_sha256": "2e71055c099b70ae65eb413c997efaddd6706ee38a0e6f0076e45addcadc336e",
+  "content_sha256": "eb56190ac07d16f19a36d1f7751d9101adacce8ae01b5625c3df9b746bfe0572",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

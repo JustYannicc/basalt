@@ -71,7 +71,7 @@ index cf582b6..6c3bb54 100644
   * A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its
   * connection. Completing a connection started from the app saves the account and links it to the
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 1a8bd5e..ea1c9f4 100644
+index b4612a3..26cd124 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -24,6 +24,8 @@ const errorMessage = Match.type<HostedError>().pipe(
@@ -871,10 +871,10 @@ index e2dbddf..7a9158f 100644
 +    );
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index e3b27ce..ec0be5d 100644
+index 6e703cb..129a404 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3557,6 +3557,18 @@ export const scenarios = plan({
+@@ -3569,6 +3569,18 @@ export const scenarios = plan({
        local: na("Uses hosted organization account policies."),
      },
    },

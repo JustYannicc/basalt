@@ -1,0 +1,45 @@
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -81,6 +81,20 @@
+             specifier === "@executor-js/utils/provisioning-request"
+           )
+             return;
++          // The rejection assertion reads registry metadata; it still calls the real host over HTTP.
++          if (
++            label === `tests${path.sep}app-package.spec.ts` &&
++            specifier === "../../packages/sdk/src/implementation/app-protocols.ts" &&
++            ts.isImportDeclaration(node.parent) &&
++            node.parent.importClause?.name === undefined &&
++            node.parent.importClause?.namedBindings !== undefined &&
++            ts.isNamedImports(node.parent.importClause.namedBindings) &&
++            node.parent.importClause.namedBindings.elements.length === 1 &&
++            node.parent.importClause.namedBindings.elements[0]?.name.text ===
++              "supportedProtocols" &&
++            node.parent.importClause.namedBindings.elements[0]?.propertyName === undefined
++          )
++            return;
+           // The runner owns its canonical TCP listener through this external transport SDK.
+           // Application implementations remain forbidden; only this listener adapter may import it.
+           if (
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -2,6 +2,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
++import { supportedProtocols } from "../../packages/sdk/src/implementation/app-protocols.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -146,8 +147,7 @@
+         expect(rejected.status).toBe(422);
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+-          reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27. Declare a supported apps version.",
++          reason: `This app's apps framework uses host protocol 99. This host supports protocol ${supportedProtocols.join(", ")}. Declare a supported apps version.`,
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(

@@ -1,0 +1,34 @@
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -142,6 +142,9 @@
+     inspected !== undefined &&
+     inspected.reports.length === 0 &&
+     inspected.hasUsageReporter === true;
++  const queued =
++    inspected?.reports.filter((report) => report.result === null && report.lastAttempt === null) ??
++    [];
+   const cells = inspected?.reports.some((report) =>
+     report.result?.observation.windows.some((entry) => entry.measure.unlimited !== true),
+   );
+@@ -151,6 +154,7 @@
+     !open &&
+     cells !== true &&
+     !unread &&
++    queued.length === 0 &&
+     !pending &&
+     error === undefined &&
+     !AsyncResult.isFailure(result)
+@@ -183,6 +187,12 @@
+               Usage from {inspected?.usageReporterLabel} · {unreadLabel()}
+             </p>
+           )}
++          {!open &&
++            queued.map((report) => (
++              <p key={report.source.id} className="text-muted-foreground" data-usage-unread>
++                Usage from {report.source.label} · <span>{unreadLabel(report)}</span>
++              </p>
++            ))}
+           {!open && pending && (
+             <p role="status" className="text-muted-foreground">
+               Refreshing usage…

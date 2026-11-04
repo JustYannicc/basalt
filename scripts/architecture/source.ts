@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import ts from "typescript";
 import { configurationIssues } from "./configuration.ts";
 import { executionFiles, isExecutionPath } from "./execution-files.ts";
-import { filesBelow } from "./files.ts";
 import { pythonDependencies } from "./python.ts";
-import { StaticValues } from "./static-values.ts";
+import type { StaticValues } from "./static-values.ts";
+import { SourceWorkspace } from "./source-workspace.ts";
 
 export { filesBelow } from "./files.ts";
 
@@ -28,15 +28,15 @@ export interface Dependency {
   evidence: string;
 }
 export const values = (value: string | string[] | undefined): string[] =>
-  (Array.isArray(value) ? value : value?.split("|") ?? []).map(v => v.trim()).filter(Boolean);
+  (Array.isArray(value) ? value : (value?.split("|") ?? [])).map((v) => v.trim()).filter(Boolean);
 
 export function runtimeFiles(root: string, modules: Module[] = []): string[] {
-  return executionFiles(root, modules)
-    .filter(path => /\.[cm]?[jt]sx?$/.test(path));
+  return executionFiles(root, modules).filter((path) => /\.[cm]?[jt]sx?$/.test(path));
 }
 
 export function owner(file: string, modules: Module[]): Module | undefined {
-  return modules.filter(m => file === m.code || file.startsWith(m.code + "/"))
+  return modules
+    .filter((m) => file === m.code || file.startsWith(m.code + "/"))
     .sort((a, b) => b.code.length - a.code.length)[0];
 }
 
@@ -46,7 +46,8 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   for (const module of modules) {
     if (paths.has(module.code)) errors.push(`Duplicate code mapping: ${module.code}`);
     paths.add(module.code);
-    if (!existsSync(join(root, module.code))) errors.push(`${module.id}: missing code ${module.code}`);
+    if (!existsSync(join(root, module.code)))
+      errors.push(`${module.id}: missing code ${module.code}`);
     if (resolve(root, module.code) !== root && !resolve(root, module.code).startsWith(root + "/"))
       errors.push(`${module.id}: code path escapes repository`);
   }
@@ -56,7 +57,7 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
     for (const entry of readdirSync(path).sort()) {
       const code = `${parent}/${entry}`;
       if (!isExecutionPath(code)) continue;
-      if (!modules.some(m => m.code === code || m.code.startsWith(code + "/")))
+      if (!modules.some((m) => m.code === code || m.code.startsWith(code + "/")))
         errors.push(`Unmodelled module: ${code}`);
     }
   }
@@ -67,27 +68,22 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   return errors;
 }
 
-function resolveImport(root: string, file: string, specifier: string): string | undefined {
-  if (!specifier.startsWith(".")) {
-    for (const path of filesBelow(join(root, "packages")).filter(p => p.endsWith("/package.json"))) {
-      const manifest = JSON.parse(readFileSync(path, "utf8"));
-      if (specifier === manifest.name || specifier.startsWith(manifest.name + "/"))
-        return relative(root, dirname(path));
-    }
+function fetchBinding(
+  call: ts.CallExpression,
+  module: Module,
+  source: ts.SourceFile,
+): string | undefined {
+  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "fetch")
     return undefined;
-  }
-  const path = resolve(dirname(join(root, file)), specifier.replace(/\.js$/, ".ts"));
-  return relative(root, path);
-}
-
-function fetchBinding(call: ts.CallExpression, module: Module, source: ts.SourceFile): string | undefined {
-  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "fetch") return undefined;
   const receiver = call.expression.expression;
   const names = [receiver.getText(source)];
   if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
-  return module.bindings.find(binding => {
+  return module.bindings.find((binding) => {
     const name = binding.split("=")[0];
-    return names.some(candidate => candidate === name || candidate === `env.${name}` || candidate === `this.env.${name}`);
+    return names.some(
+      (candidate) =>
+        candidate === name || candidate === `env.${name}` || candidate === `this.env.${name}`,
+    );
   });
 }
 
@@ -98,22 +94,40 @@ function usesBoundTransport(node: ts.Node, module: Module, source: ts.SourceFile
 }
 
 function isGlobalFetch(expression: ts.Expression, values: StaticValues): boolean {
-  return (ts.isIdentifier(expression) && expression.text === "fetch" && values.isUnshadowedGlobal(expression)) ||
-    (ts.isPropertyAccessExpression(expression) && expression.name.text === "fetch" &&
-      ts.isIdentifier(expression.expression) && expression.expression.text === "globalThis" &&
-      values.isUnshadowedGlobal(expression.expression));
+  return (
+    (ts.isIdentifier(expression) &&
+      expression.text === "fetch" &&
+      values.isUnshadowedGlobal(expression)) ||
+    (ts.isPropertyAccessExpression(expression) &&
+      expression.name.text === "fetch" &&
+      ts.isIdentifier(expression.expression) &&
+      expression.expression.text === "globalThis" &&
+      values.isUnshadowedGlobal(expression.expression))
+  );
 }
 
 function isGlobalRequire(expression: ts.Expression, values: StaticValues): boolean {
-  return ts.isIdentifier(expression) && expression.text === "require" && values.isUnshadowedGlobal(expression);
+  return (
+    ts.isIdentifier(expression) &&
+    expression.text === "require" &&
+    values.isUnshadowedGlobal(expression)
+  );
 }
 
 function matchesHost(host: string, hosts: string[]): boolean {
-  return hosts.some(candidate => host === candidate || (candidate.startsWith("*.") && host.endsWith(candidate.slice(1))));
+  return hosts.some(
+    (candidate) =>
+      host === candidate || (candidate.startsWith("*.") && host.endsWith(candidate.slice(1))),
+  );
 }
 
 // Source checks parse owned code and bind only that closed file set. They never execute source.
-export function sourceDependencies(root: string, modules: Module[], services: OutsideService[]): {
+export function sourceDependencies(
+  root: string,
+  modules: Module[],
+  services: OutsideService[],
+  workspace = new SourceWorkspace(),
+): {
   dependencies: Dependency[];
   errors: string[];
 } {
@@ -122,7 +136,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
   const add = (source: string, target: string, evidence: string) =>
     dependencies.push({ source, target, evidence });
   const paths = runtimeFiles(root, modules);
-  const staticValues = new StaticValues(paths);
+  const { values: staticValues, resolveImport } = workspace.read(root, paths);
   for (const path of paths) {
     const file = relative(root, path).replaceAll("\\", "/");
     const module = owner(file, modules);
@@ -142,9 +156,15 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
     }
     const checkImport = (node: ts.Node, specifier: string, dynamicPackage = false) => {
       if (specifier === "cloudflare:workers") return;
-      if (specifier.startsWith("node:") && !["node:http", "node:https", "node:http2", "node:net", "node:tls"].includes(specifier)) return;
-      const declaredLibrary = module.libraries.some(lib => specifier === lib || specifier.startsWith(lib + "/"));
-      const local = resolveImport(root, file, specifier);
+      if (
+        specifier.startsWith("node:") &&
+        !["node:http", "node:https", "node:http2", "node:net", "node:tls"].includes(specifier)
+      )
+        return;
+      const declaredLibrary = module.libraries.some(
+        (lib) => specifier === lib || specifier.startsWith(lib + "/"),
+      );
+      const local = resolveImport(file, specifier);
       if (local === "scripts/architecture/gen/model.ts") return;
       if (local !== undefined) {
         const target = owner(local, modules);
@@ -152,11 +172,19 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
         else if (target.id !== module.id) add(module.id, target.id, `${file}: ${specifier}`);
         return;
       }
-      const service = services.find(s => s.sdks.some(sdk => specifier === sdk || specifier.startsWith(sdk + "/")));
+      const service = services.find((s) =>
+        s.sdks.some((sdk) => specifier === sdk || specifier.startsWith(sdk + "/")),
+      );
       if (service) add(module.id, service.id, `${file}: ${specifier}`);
-      else if (dynamicPackage && !declaredLibrary) report(node, `Unmodelled dynamic package import: ${specifier}`);
-      else if (!dynamicPackage && !declaredLibrary &&
-        !["effect", "alchemy", "@cloudflare/containers"].some(library => specifier === library || specifier.startsWith(library + "/")))
+      else if (dynamicPackage && !declaredLibrary)
+        report(node, `Unmodelled dynamic package import: ${specifier}`);
+      else if (
+        !dynamicPackage &&
+        !declaredLibrary &&
+        !["effect", "alchemy", "@cloudflare/containers"].some(
+          (library) => specifier === library || specifier.startsWith(library + "/"),
+        )
+      )
         report(node, `Unmodelled SDK or library: ${specifier}`);
     };
     const observedHosts = new Set<string>();
@@ -166,13 +194,15 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
         observedHosts.add(host);
         return;
       }
-      const service = services.find(candidate => matchesHost(host, candidate.hosts));
+      const service = services.find((candidate) => matchesHost(host, candidate.hosts));
       if (service) {
         add(module.id, service.id, `${file}: ${host}`);
         observedHosts.add(host);
         return;
       }
-      const endpoint = modules.find(candidate => candidate.id !== module.id && candidate.endpointHosts?.includes(host));
+      const endpoint = modules.find(
+        (candidate) => candidate.id !== module.id && candidate.endpointHosts?.includes(host),
+      );
       if (endpoint) {
         add(module.id, endpoint.id, `${file}: ${host}`);
         observedHosts.add(host);
@@ -181,13 +211,26 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
       report(node, `Unmodelled outside host: ${host}`);
     };
     const visit = (node: ts.Node) => {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier))
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      )
         checkImport(node, node.moduleSpecifier.text);
-      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || isGlobalRequire(node.expression, staticValues))) {
+      if (
+        ts.isCallExpression(node) &&
+        (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          isGlobalRequire(node.expression, staticValues))
+      ) {
         const argument = node.arguments[0];
         const specifier = argument && staticValues.moduleSpecifier(argument);
         if (specifier === undefined) report(node, "Dynamic import needs a statically known module");
-        else checkImport(node, specifier, argument !== undefined && staticValues.packageSpecifier(argument));
+        else
+          checkImport(
+            node,
+            specifier,
+            argument !== undefined && staticValues.packageSpecifier(argument),
+          );
       }
       if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
         const prefix = ts.isTemplateExpression(node) ? node.head.text : node.text;
@@ -198,13 +241,27 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
           else report(node, "Outside URL has a dynamic host");
         }
       }
-      if (ts.isVariableDeclaration(node) && node.initializer && isGlobalFetch(node.initializer, staticValues))
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.initializer &&
+        isGlobalFetch(node.initializer, staticValues)
+      )
         report(node, "Aliased outbound fetch needs an explicit gateway adapter");
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "fetch" &&
-        !isGlobalFetch(node.expression, staticValues)) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "fetch" &&
+        !isGlobalFetch(node.expression, staticValues)
+      ) {
         const binding = fetchBinding(node, module, source);
-        if (binding) add(module.id, binding.split("=")[1]!, `${file}: ${node.expression.expression.getText(source)}`);
-        else report(node, `Unmodelled fetch binding: ${node.expression.expression.getText(source)}`);
+        if (binding)
+          add(
+            module.id,
+            binding.split("=")[1]!,
+            `${file}: ${node.expression.expression.getText(source)}`,
+          );
+        else
+          report(node, `Unmodelled fetch binding: ${node.expression.expression.getText(source)}`);
       }
       if (ts.isCallExpression(node) && isGlobalFetch(node.expression, staticValues)) {
         const binding = fetchBinding(node, module, source);
@@ -212,11 +269,16 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
           add(module.id, binding.split("=")[1]!, `${file}: ${node.expression.getText(source)}`);
         } else {
           const argument = node.arguments[0];
-          const literalUrl = argument && (ts.isStringLiteralLike(argument) || ts.isTemplateExpression(argument));
+          const literalUrl =
+            argument && (ts.isStringLiteralLike(argument) || ts.isTemplateExpression(argument));
           if (!argument) report(node, "Computed outbound fetch needs an explicit gateway adapter");
           else if (!literalUrl) {
             const host = staticValues.urlHost(argument) ?? staticValues.boundedUrlHost(argument);
-            if (!host) report(node, "Computed outbound fetch needs a statically known host or an explicit gateway adapter");
+            if (!host)
+              report(
+                node,
+                "Computed outbound fetch needs a statically known host or an explicit gateway adapter",
+              );
             else if (!observedHosts.has(host)) addHost(node, host);
           }
         }
@@ -225,6 +287,9 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
     };
     visit(source);
   }
-  const python = pythonDependencies(root, modules, services);
-  return { dependencies: [...dependencies, ...python.dependencies], errors: [...errors, ...python.errors] };
+  const python = pythonDependencies(root, modules, services, workspace);
+  return {
+    dependencies: [...dependencies, ...python.dependencies],
+    errors: [...errors, ...python.errors],
+  };
 }

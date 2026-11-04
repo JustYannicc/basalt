@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-self-host-account-targets",
+  "file": "0216-self-host-account-targets.patch",
+  "content_sha256": "f53051ee1715bf3550474bb68adfa7fd23bc7f5ec5e34d08cfe5dfdf5e702e44",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
