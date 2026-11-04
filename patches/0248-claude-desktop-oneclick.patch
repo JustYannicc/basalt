@@ -352,7 +352,7 @@ index e2cd9d1..413fa42 100644
  
    /** Runs one change against the signed intent, then reloads; returns the error to show, if any. */
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
-index 3904ce6..a0dd188 100644
+index 3904ce6..d8e1a7e 100644
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
 @@ -5,7 +5,7 @@
@@ -379,7 +379,7 @@ index 3904ce6..a0dd188 100644
          );
          yield* browser.use("Open Connect", (page) =>
            page.goto(`/org/${actors.organization.slug}/connect`),
-@@ -335,27 +339,170 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+@@ -335,27 +339,191 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
          yield* browser.use("Its limits are stated up front", (page) =>
            guide(page, "Claude Desktop").getByText("third-party mode", { exact: false }).waitFor(),
          );
@@ -400,14 +400,17 @@ index 3904ce6..a0dd188 100644
 +          );
 +        expect(yield* manual()).toBe(false);
 +        const download = () =>
-+          browser.use("One click issues and downloads setup", async (page) => {
-+            const [file] = await Promise.all([
-+              page.waitForEvent("download"),
-+              guide(page, "Claude Desktop")
-+                .getByRole("button", { name: "Download setup file", exact: true })
-+                .click(),
-+            ]);
-+            return { name: file.suggestedFilename(), path: await file.path() };
++          Effect.gen(function* () {
++            const [file] = yield* browser.use("One click issues and downloads setup", (page) =>
++              Promise.all([
++                page.waitForEvent("download"),
++                guide(page, "Claude Desktop")
++                  .getByRole("button", { name: "Download setup file", exact: true })
++                  .click(),
++              ]),
++            );
++            const path = yield* browser.use("Wait for the setup download", () => file.path());
++            return { name: file.suggestedFilename(), path };
 +          });
 +        yield* browser.use("First click loses the claim response", (page) =>
 +          guide(page, "Claude Desktop")
@@ -433,8 +436,6 @@ index 3904ce6..a0dd188 100644
          expect(String(desktop[0]?.body.name)).toContain("Claude Desktop");
 -        yield* browser.checkpoint("Claude Desktop: steps with the key");
 -        const file = yield* browser.use("Download the setup file", (page) =>
--          Promise.all([
--            page.waitForEvent("download"),
 +        expect(config).toEqual({
 +          inferenceProvider: "gateway",
 +          inferenceGatewayBaseUrl: yield* browser.use("Read fixture origin", (page) =>
@@ -492,14 +493,18 @@ index 3904ce6..a0dd188 100644
 +            .getByText("sk-fake-pool-key", { exact: true })
 +            .waitFor({ state: "detached" }),
 +        );
-+        yield* browser.use("Choose another pool for an uncertain claim", async (page) => {
-+          await guide(page, "Claude Desktop")
-+            .getByRole("combobox", { name: "Pool for models" })
-+            .click();
-+          await page.getByRole("option", { name: "Team pool" }).click();
-+          await page.unroute("**/setup/claim/**");
-+          let consumed = false;
-+          await page.route("**/setup/claim/**", (route) => {
++        yield* browser.use("Open the pool selector", (page) =>
++          guide(page, "Claude Desktop").getByRole("combobox", { name: "Pool for models" }).click(),
++        );
++        yield* browser.use("Choose another pool for an uncertain claim", (page) =>
++          page.getByRole("option", { name: "Team pool" }).click(),
++        );
++        yield* browser.use("Stop answering claims normally", (page) =>
++          page.unroute("**/setup/claim/**"),
++        );
++        let consumed = false;
++        yield* browser.use("Lose a consumed claim response", (page) =>
++          page.route("**/setup/claim/**", (route) => {
 +            if (!consumed) {
 +              consumed = true;
 +              return route.fulfill({ status: 200, contentType: "application/json", body: "{" });
@@ -509,15 +514,20 @@ index 3904ce6..a0dd188 100644
 +              contentType: "application/json",
 +              body: JSON.stringify({ error: "already consumed" }),
 +            });
-+          });
-+          await guide(page, "Claude Desktop")
++          }),
++        );
++        yield* browser.use("Request setup with the uncertain claim", (page) =>
++          guide(page, "Claude Desktop")
 +            .getByRole("button", { name: "Download setup file", exact: true })
-+            .click();
-+          await guide(page, "Claude Desktop").getByRole("alert").waitFor();
-+        });
++            .click(),
++        );
++        yield* browser.use("The uncertain claim offers recovery", (page) =>
++          guide(page, "Claude Desktop").getByRole("alert").waitFor(),
++        );
 +        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
-+        yield* browser.use("Retry a consumed link without minting again", async (page) => {
-+          await Promise.all([
++        yield* browser.use("Retry a consumed link without minting again", (page) =>
+           Promise.all([
+-            page.waitForEvent("download"),
 +            page.waitForResponse(
 +              (response) => response.url().includes("/setup/claim/") && response.status() === 410,
 +            ),
@@ -526,32 +536,42 @@ index 3904ce6..a0dd188 100644
 +              .getByRole("button", { name: "Download setup file", exact: true })
                .click(),
 -          ]).then(([download]) => download.suggestedFilename()),
-+          ]);
-+          await guide(page, "Claude Desktop")
++          ]),
++        );
++        yield* browser.use("A consumed claim keeps its recovery message", (page) =>
++          guide(page, "Claude Desktop")
 +            .getByRole("alert")
 +            .getByText("A key may already have been issued", { exact: false })
-+            .waitFor();
-+        });
++            .waitFor(),
++        );
 +        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
 +        yield* browser.use("Uncertain key exposes revocation recovery", (page) =>
 +          guide(page, "Claude Desktop")
 +            .getByRole("button", { name: "Show Connected agents" })
 +            .waitFor(),
 +        );
-+        yield* browser.use("Restore normal claim delivery", async (page) => {
-+          await page.unroute("**/setup/claim/**");
-+          await page.route("**/setup/claim/**", service.claim);
-+        });
-+        yield* browser.use("Revoke the failed Desktop attempt", async (page) => {
-+          const row = rows(page)
-+            .filter({ hasText: "Claude Desktop" })
-+            .filter({ hasText: "Team pool" })
-+            .first();
-+          await row.getByRole("button", { name: /Manage/ }).click();
-+          await page.getByRole("menuitem", { name: "Revoke", exact: true }).click();
-+          await page.getByRole("button", { name: "Revoke computer", exact: true }).click();
-+          await row.waitFor({ state: "detached" });
-+        });
++        yield* browser.use("Stop answering consumed claims", (page) =>
++          page.unroute("**/setup/claim/**"),
++        );
++        yield* browser.use("Restore normal claim delivery", (page) =>
++          page.route("**/setup/claim/**", service.claim),
++        );
++        const failedDesktop = (page: Page) =>
++          rows(page).filter({ hasText: "Claude Desktop" }).filter({ hasText: "Team pool" }).first();
++        yield* browser.use("Manage the failed Desktop attempt", (page) =>
++          failedDesktop(page)
++            .getByRole("button", { name: /Manage/ })
++            .click(),
++        );
++        yield* browser.use("Revoke the failed Desktop attempt", (page) =>
++          page.getByRole("menuitem", { name: "Revoke", exact: true }).click(),
++        );
++        yield* browser.use("Confirm revoking the failed Desktop attempt", (page) =>
++          page.getByRole("button", { name: "Revoke computer", exact: true }).click(),
++        );
++        yield* browser.use("The failed Desktop attempt leaves the list", (page) =>
++          failedDesktop(page).waitFor({ state: "detached" }),
++        );
 +        const recovered = yield* download();
 +        expect(recovered.name).toBe("claude-desktop-config.json");
 +        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(3);
@@ -562,7 +582,7 @@ index 3904ce6..a0dd188 100644
  
          yield* browser.use("Open the pool endpoint", (page) =>
            page.getByRole("tab", { name: "Pool endpoint" }).click(),
-@@ -371,7 +518,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+@@ -371,7 +539,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
            page.getByText("export OPENAI_API_KEY=sk-fake-pool-key").waitFor(),
          );
          yield* browser.checkpoint("Pool endpoint: key and example");
