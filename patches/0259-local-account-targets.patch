@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
-index 32d0417..889bc19 100644
+index 32d04174e..889bc19a6 100644
 --- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 @@ -188,7 +188,7 @@ export const retirementReader = (
@@ -12,7 +12,7 @@ index 32d0417..889bc19 100644
              ),
            ),
 diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
-index 3386971..9d38172 100644
+index 3386971de..9d381721a 100644
 --- a/apps/hosted/server/src/implementation/mcp.ts
 +++ b/apps/hosted/server/src/implementation/mcp.ts
 @@ -106,6 +106,20 @@ export const hostedMcpBackend = Effect.gen(function* () {
@@ -38,7 +38,7 @@ index 3386971..9d38172 100644
    );
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
 new file mode 100644
-index 0000000..cfc2f5c
+index 000000000..cfc2f5c1e
 --- /dev/null
 +++ b/e2e/support/account-target-sdk-source.ts
 @@ -0,0 +1,69 @@
@@ -112,10 +112,10 @@ index 0000000..cfc2f5c
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
 +`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b7..bf5ce22 100644
+index a4dfec258..7127e9cd3 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8806,6 +8806,16 @@ export const scenarios = plan({
+@@ -8832,6 +8832,16 @@ export const scenarios = plan({
        cloud: na("Uses a runner-owned public SDK host."),
      },
    },
@@ -134,7 +134,7 @@ index a57b0b7..bf5ce22 100644
      title: "app call receipts fence concurrent dispatch and retain terminal outcomes after restart",
 diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
 new file mode 100644
-index 0000000..d0c8a8a
+index 000000000..d0c8a8a4f
 --- /dev/null
 +++ b/e2e/tests/account-targets.spec.ts
 @@ -0,0 +1,79 @@
@@ -218,7 +218,7 @@ index 0000000..d0c8a8a
 +  );
 +});
 diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/execute.ts
-index 50e6928..97a58f3 100644
+index 50e6928c5..97a58f3ab 100644
 --- a/packages/mcp/src/contracts/execute.ts
 +++ b/packages/mcp/src/contracts/execute.ts
 @@ -493,7 +493,7 @@ export const SearchToolResult = Schema.Struct({
@@ -255,7 +255,7 @@ index 50e6928..97a58f3 100644
    parameters: CallInput,
    success: McpExecutionResult,
 diff --git a/packages/mcp/src/contracts/targets.ts b/packages/mcp/src/contracts/targets.ts
-index 4e4893d..2d2fee5 100644
+index 4e4893d45..2d2fee517 100644
 --- a/packages/mcp/src/contracts/targets.ts
 +++ b/packages/mcp/src/contracts/targets.ts
 @@ -1,7 +1,7 @@
@@ -268,7 +268,7 @@ index 4e4893d..2d2fee5 100644
   * Every user requirement of the app with the caller's linked accounts for it, oldest link first,
   * after product and grant checks. Calls use them: the newest for a plain requirement, all for
 diff --git a/packages/mcp/src/implementation/accounts.ts b/packages/mcp/src/implementation/accounts.ts
-index f50ff30..98320af 100644
+index f50ff300c..98320af2d 100644
 --- a/packages/mcp/src/implementation/accounts.ts
 +++ b/packages/mcp/src/implementation/accounts.ts
 @@ -32,7 +32,7 @@ export const discoveryAccounts = (linked: McpAppAccounts): AppAccounts | undefin
@@ -282,7 +282,7 @@ index f50ff30..98320af 100644
   * The accounts each user requirement uses, with their ID, label and description. Search lists this
 diff --git a/packages/sdk/src/contracts/account-target.ts b/packages/sdk/src/contracts/account-target.ts
 new file mode 100644
-index 0000000..0a419c7
+index 000000000..0a419c7ca
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-target.ts
 @@ -0,0 +1,107 @@
@@ -394,7 +394,7 @@ index 0000000..0a419c7
 +  >;
 +}
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 487c263..62382ff 100644
+index 487c26368..62382ff0c 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,4 @@
@@ -411,7 +411,7 @@ index 487c263..62382ff 100644
    method: AuthMethodName,
    label: Schema.String,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index a7acd01..3f17614 100644
+index 38b73b12e..e73d886b0 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,3 +1,4 @@
@@ -419,7 +419,7 @@ index a7acd01..3f17614 100644
  import { AppCallsHost } from "./app-calls.ts";
  import { InteractiveHost } from "./interactive-accounts.ts";
  import {
-@@ -367,6 +368,7 @@ export interface ExecutorInputs {
+@@ -372,6 +373,7 @@ export interface ExecutorInputs {
    readonly hooks?: ResourceLifecycle;
    readonly appCalls?: import("./app-calls.ts").AppCallHooks;
    readonly toolPolicy?: import("./tool-policy.ts").ToolPolicyHook;
@@ -427,7 +427,7 @@ index a7acd01..3f17614 100644
    readonly workflows?: WorkflowRuntime;
    /** Authenticated product review page for a durable workflow question. */
    readonly workflowInputUrl?: (input: {
-@@ -504,6 +506,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -509,6 +511,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       */
      readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
    };
@@ -435,7 +435,7 @@ index a7acd01..3f17614 100644
    readonly [AppCallsHost]: import("./app-calls.ts").AppCallsHost;
    readonly appConnections: import("./app-calls.ts").AppConnections;
    readonly apps: Omit<FlatExecutor["apps"], (typeof LegacyVersionEndpoints)[number]> & {
-@@ -572,6 +575,7 @@ export type PromiseExecutor = Promisify<
+@@ -577,6 +580,7 @@ export type PromiseExecutor = Promisify<
      Executor,
      | typeof WorkflowHost
      | typeof AppCallsHost
@@ -444,7 +444,7 @@ index a7acd01..3f17614 100644
      | typeof RepositoryHost
      | typeof InteractiveHost
 diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
-index 801ffe3..d3f60a1 100644
+index 801ffe3e0..d3f60a1e0 100644
 --- a/packages/sdk/src/contracts/storage.ts
 +++ b/packages/sdk/src/contracts/storage.ts
 @@ -28,7 +28,7 @@ import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
@@ -457,7 +457,7 @@ index 801ffe3..d3f60a1 100644
  });
  
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
-index 12ead74..cfb6efc 100644
+index 7d77da3ae..e3cf6fef8 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
 @@ -1,3 +1,4 @@
@@ -465,7 +465,7 @@ index 12ead74..cfb6efc 100644
  import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
  import {
    ApiErrorResponse,
-@@ -1670,6 +1671,8 @@ export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "
+@@ -1672,6 +1673,8 @@ export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "
    });
  /** Every way a live call fails. A resumed call is the same call, so it fails the same ways. */
  const toolCallErrors = [
@@ -475,7 +475,7 @@ index 12ead74..cfb6efc 100644
    CredentialsError,
    AppNotFound,
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index b508f39..2c06eaa 100644
+index b508f390a..2c06eaac7 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
 @@ -63,3 +63,4 @@ export { asciiJson } from "./implementation/ascii-json.ts";
@@ -485,7 +485,7 @@ index b508f39..2c06eaa 100644
 +export * from "./contracts/account-target.ts";
 diff --git a/packages/sdk/src/implementation/account-target-schema.ts b/packages/sdk/src/implementation/account-target-schema.ts
 new file mode 100644
-index 0000000..9d5f8a8
+index 000000000..9d5f8a894
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-target-schema.ts
 @@ -0,0 +1,16 @@
@@ -507,7 +507,7 @@ index 0000000..9d5f8a8
 +});
 diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
 new file mode 100644
-index 0000000..696dafd
+index 000000000..696dafd15
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-targets.ts
 @@ -0,0 +1,219 @@
@@ -731,7 +731,7 @@ index 0000000..696dafd
 +  return { operations, execution, requireCloudCall, requireCloud };
 +};
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index c15b7eb..0e9c2d0 100644
+index c15b7eb97..0e9c2d095 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
 @@ -307,6 +307,9 @@ export const makeAccounts = (
@@ -745,19 +745,16 @@ index c15b7eb..0e9c2d0 100644
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d2a7f6e..e05c99d 100644
+index adca5b7d0..120955d72 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -1,6 +1,8 @@
- import { composedToolPolicy } from "./tool-policy.ts";
- import { makeAppConfirmations } from "./app-confirmations.ts";
- import { makeAppCalls, AppCallWorkflow } from "./app-calls.ts";
+@@ -1,3 +1,5 @@
 +import { AccountTargetsHost } from "../contracts/account-target.ts";
 +import { makeAccountTargets } from "./account-targets.ts";
- import { makeAppCallReceipts } from "./app-call-receipts.ts";
- import { AppCallsHost } from "../contracts/app-calls.ts";
- import { makeAppConnections } from "./app-connections.ts";
-@@ -342,6 +344,7 @@ export const createExecutor = (
+ import { type AppCallEffectIdentity } from "./app-call-effects.ts";
+ import { loadStoredWorkerBuild } from "./worker-build-storage.ts";
+ import { BlobStore } from "../contracts/blobs.ts";
+@@ -376,6 +378,7 @@ export const createExecutor = (
        workflowRuns: workflows.runs,
      };
      const search = makeToolSearch({ store: options.database.toolSearch, crypto });
@@ -765,7 +762,7 @@ index d2a7f6e..e05c99d 100644
      const tools = makeTools(
        options.database,
        oauth,
-@@ -362,6 +365,7 @@ export const createExecutor = (
+@@ -396,6 +399,7 @@ export const createExecutor = (
        options.hooks,
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
        options.toolPolicy,
@@ -773,7 +770,7 @@ index d2a7f6e..e05c99d 100644
      );
      const interactiveOperations = makeInteractiveAccounts(
        db,
-@@ -546,6 +550,22 @@ export const createExecutor = (
+@@ -600,6 +604,22 @@ export const createExecutor = (
        schedules: schedules.operations,
        accounts: {
          ...accountOperations,
@@ -796,7 +793,7 @@ index d2a7f6e..e05c99d 100644
          remove: (input) =>
            Effect.gen(function* () {
              const saved = yield* storedAccount(db, input.account, input.owner).pipe(
-@@ -698,6 +718,7 @@ export const createExecutor = (
+@@ -752,6 +772,7 @@ export const createExecutor = (
          receipts: appCallReceipts,
          confirmations: appConnectionStore.confirmations,
        },
@@ -805,7 +802,7 @@ index d2a7f6e..e05c99d 100644
        publications: catalog.publications,
        registry: catalog.registry,
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 9da527b..3cfcc09 100644
+index 9da527be6..3cfcc09b8 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
 @@ -7,7 +7,7 @@ import type { ExecutorDatabase } from "./storage.ts";
@@ -818,7 +815,7 @@ index 9da527b..3cfcc09 100644
  });
  
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 5bcfb32..ab67128 100644
+index 5bcfb327d..ab671281e 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,4 @@
@@ -846,7 +843,7 @@ index 5bcfb32..ab67128 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index e1d3b37..1943dc6 100644
+index e1d3b378c..1943dc698 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
 @@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
@@ -868,7 +865,7 @@ index e1d3b37..1943dc6 100644
        lockAccountObservation: (id: string) =>
          sql`update executor_account_observations set id = id where id = ${id}`.pipe(
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 9159828..d455c41 100644
+index eb972232b..ea518b869 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -781,6 +781,10 @@ export const makeTools = (
@@ -965,7 +962,7 @@ index 9159828..d455c41 100644
          const context = yield* resolve(state, resolveAccount, ahead?.recheck).pipe(
            Effect.withSpan("sdk.accounts.resolve"),
            Effect.provideService(GrantReadAhead, grants),
-@@ -1783,6 +1828,11 @@ export const makeTools = (
+@@ -1785,6 +1830,11 @@ export const makeTools = (
                      "executor.tool.name": saved.tool,
                      "executor.approval.id": input.requestId,
                    });
