@@ -86,6 +86,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Term | Meaning |
 | --- | --- |
 | Build | The owned programs that prepare source, verify downloads and bundle the product. |
+| Prebooted runtime | A ready test runtime started before a scenario. Binding-change proofs switch between two such runtimes without launching a replacement and restore the original on exit. |
 | Deployment | The owned orchestration and provisioning programs that publish and check the product. |
 | Brand configuration | Shared literal data read by runtime, build and deployment programs. |
 | Provider source | The outside service supplying pinned Home source for provider catalog checks. |
