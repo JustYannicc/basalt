@@ -231,14 +231,16 @@ model {
         Projects application logs before the node formats or queues them and independently before
         control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,
         timestamp and validated generated request ID. Container log collection is enabled in the
-        stack. For child output, the supervisor forwards only closed numeric maintenance signals.
-        Unexpected process exits emit POOL_CHILD_EXIT with only a closed home, node or home_import
-        child name, bounded numeric exit status and failure category before cleanup.
+        stack. The supervisor forwards closed numeric maintenance signals during normal operation.
+        Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
+        child name, bounded numeric exit status and failure category before cleanup. Home exits also
+        attach the last eight unrecognized output lines, redacted before memory retention and bounded
+        to 512 UTF-8 bytes each. Oversized lines and private-key blocks are omitted.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
         `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
         offsets are bounded to 24 hours from supervisor `main()` entry and use a monotonic clock;
-        duration equals end minus start. Its failures, readiness HTTP errors and uncaught
+        duration equals end minus start. Supervisor failures, readiness HTTP errors and uncaught
         exceptions still emit numeric categories on stderr, without exception text, class names,
         tracebacks or client addresses.
         `home_boot` measures each Home launch through the supervisor's readiness wait. An empty
@@ -258,7 +260,7 @@ model {
         libraries "socket|http.client"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach eight unrecognized output lines redacted before retention and bounded to 512 UTF-8 bytes each; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"

@@ -5,10 +5,12 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
@@ -43,6 +45,101 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class OutputPrivacyTests(unittest.TestCase):
+    def test_home_exit_keeps_bounded_redacted_unrecognized_output(self) -> None:
+        secret = "fixture-management-secret"
+        database = "postgresql://fixture:database-password@private.example/pool"
+        lines = [f"old line {index}" for index in range(20)] + [
+            f"Authorization: Bearer {secret}",
+            f"database connection failed: {database}",
+            "refresh_token=unknown-refresh-secret",
+            "panic: runtime error: invalid memory address or nil pointer dereference",
+        ]
+        program = "import sys; " + "; ".join(
+            f"print({line!r}, file=sys.stderr, flush=True)" for line in lines
+        ) + "; sys.exit(1)"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"POOL_DATABASE_URL": database}),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            child = supervisor.Child("home", [sys.executable, "-c", program],
+                {**os.environ, "MANAGEMENT_PASSWORD": secret}, pathlib.Path.cwd())
+            child.process.wait(timeout=5)
+            with self.assertRaises(StartupError):
+                supervisor.wait_for_home(child, secret, threading.Event())
+            if child.process.stdout is not None:
+                child.process.stdout.close()
+        self.assertEqual(stdout.getvalue(), "")
+        marker, payload = stderr.getvalue().strip().split(" ", 1)
+        self.assertEqual(marker, "POOL_CHILD_EXIT")
+        receipt = json.loads(payload)
+        self.assertIn("output_tail", receipt, "Home's fatal output was discarded")
+        tail = receipt["output_tail"]
+        self.assertEqual(len(tail), 8)
+        self.assertIn("panic: runtime error: invalid memory address", tail[-1])
+        for value in (secret, database, "database-password", "unknown-refresh-secret", "old line 0"):
+            self.assertNotIn(value, stderr.getvalue())
+        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in tail))
+
+    def test_home_tail_drops_oversized_lines_and_private_key_blocks(self) -> None:
+        from .crash_tail import HomeCrashTail
+
+        lines = [
+            "before overflow",
+            "x" * 8192 + "secret-in-oversized-line",
+            "-----BEGIN PRIVATE KEY-----",
+            "private-key-body",
+            "-----END PRIVATE KEY-----",
+            "é" * 700,
+            "fatal: database connection refused",
+        ]
+        program = "import sys; " + "; ".join(
+            f"print({line!r}, file=sys.stderr, flush=True)" for line in lines
+        ) + "; sys.exit(1)"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            child = supervisor.Child("home", [sys.executable, "-c", program],
+                os.environ.copy(), pathlib.Path.cwd())
+            child.process.wait(timeout=5)
+            supervisor.report_exit(child, 1, supervisor.FailureCategory.RUNTIME)
+            if child.process.stdout is not None:
+                child.process.stdout.close()
+        self.assertEqual(stdout.getvalue(), "")
+        receipt = json.loads(stderr.getvalue().split(" ", 1)[1])
+        tail = receipt["output_tail"]
+        self.assertIsInstance(child.diagnostics, HomeCrashTail)
+        self.assertEqual(tail[-1], "fatal: database connection refused")
+        self.assertIn("[oversized line omitted]", tail)
+        self.assertIn("[private key omitted]", tail)
+        self.assertNotIn("secret-in-oversized-line", stderr.getvalue())
+        self.assertNotIn("private-key-body", stderr.getvalue())
+        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in tail))
+
+    def test_home_tail_redacts_encoded_and_unfamiliar_credential_fields(self) -> None:
+        from .crash_tail import HomeCrashTail
+
+        tail = HomeCrashTail({"POOL_MANAGEMENT_KEY": "known+fixture/password"})
+        values = [
+            "known+fixture/password", "known%2Bfixture%2Fpassword",
+            "unknown-access-secret", "unknown-cookie-secret", "unknown-basic-secret",
+            "unknown-private-secret", "fixture@example.test",
+        ]
+        for line in [
+            values[0], values[1],
+            'access_token="unknown-access-secret"',
+            "Cookie: session=unknown-cookie-secret",
+            "Basic unknown-basic-secret",
+            '{"client_secret":"unknown-private-secret"}',
+            "fixture@example.test",
+            "panic: runtime error: index out of range [4] with length 0",
+        ]:
+            tail.append(line)
+        output = json.dumps(tail.snapshot())
+        for secret in values:
+            self.assertNotIn(secret, output)
+        self.assertIn("index out of range [4] with length 0", output)
+
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()
         self.assertEqual(len(lines), len(expected), "unexpected supervisor stdout line count")

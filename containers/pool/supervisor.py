@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import signal
 import subprocess
@@ -28,6 +29,7 @@ from .pool_contract import (
     require_tmpfs,
 )
 from .readiness import Readiness, start_ready_server
+from .crash_tail import HomeCrashTail, MAX_INPUT_CHARS
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
@@ -63,6 +65,7 @@ class Child:
         on_policy_probe: Callable[[str], None] | None = None,
     ) -> None:
         self.name = name
+        self.diagnostics = HomeCrashTail({**os.environ, **env}) if name == "home" else None
         self._on_policy_fused = on_policy_fused
         self._on_policy_probe = on_policy_probe
         self._fuse_parser = NativePolicyFuseParser()
@@ -76,6 +79,7 @@ class Child:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",
             bufsize=1,
         )
         self._reader = threading.Thread(target=self._read_output, daemon=True)
@@ -85,7 +89,13 @@ class Child:
         stream = self.process.stdout
         if stream is None:
             return
-        while line := stream.readline(8192):
+        oversized = False
+        while line := stream.readline(MAX_INPUT_CHARS):
+            if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+                if not oversized and self.diagnostics is not None:
+                    self.diagnostics.append("x" * MAX_INPUT_CHARS)
+                oversized = not line.endswith("\n")
+                continue
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
             fused = self._fuse_parser.feed(self.name, line)
@@ -103,6 +113,16 @@ class Child:
             safe = safe_child_output_line(self.name, line)
             if safe is not None:
                 print(safe, flush=True)
+            elif self.diagnostics is not None:
+                self.diagnostics.append(line)
+
+
+def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
+    reader = getattr(child, "_reader", None)
+    if reader is not None:
+        # Reap the final pipe bytes before taking the crash snapshot, with a bounded wait.
+        reader.join(timeout=0.2)
+    report_child_exit(child.name, exit_code, category, getattr(child, "diagnostics", None))
 
 
 def wait_for_home(
@@ -117,7 +137,7 @@ def wait_for_home(
             child._reader.join(timeout=0.2)
             if home_boot_requires_import(exit_code, child.config_empty.is_set()):
                 return "empty"
-            report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
+            report_exit(child, exit_code, FailureCategory.HOME_STARTUP)
             raise StartupError(f"Home exited before readiness (exit {exit_code})")
         if management_ready(management_key):
             return "ready"
@@ -256,7 +276,7 @@ def main() -> int:
                 for child in children:
                     exit_code = child.process.poll()
                     if exit_code is not None:
-                        report_child_exit(child.name, exit_code, category)
+                        report_exit(child, exit_code, category)
                         raise StartupError(
                             f"{child.name} exited before the pool was healthy (exit {exit_code})"
                         )
@@ -276,7 +296,7 @@ def main() -> int:
                 exit_code = child.process.poll()
                 if exit_code is not None:
                     readiness.set_ready(False)
-                    report_child_exit(child.name, exit_code, category)
+                    report_exit(child, exit_code, category)
                     raise StartupError(
                         f"{child.name} exited unexpectedly (exit {exit_code})"
                     )
