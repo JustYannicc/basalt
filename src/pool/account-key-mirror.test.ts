@@ -146,3 +146,33 @@ test("oversized unsigned mirror bodies deliver at most one overflow byte before 
   assert.equal(delivered, accountMirrorMaxBytes + 1);
   assert.equal(calls, 0);
 });
+
+test("Codex mirrors require acknowledged WebSocket enablement and readback on every retry", async () => {
+  const file = { id: reference, provider: "codex", websockets: false };
+  let persist = true;
+  let patches = 0;
+  const home = new HomeClient(async (path, init) => {
+    if (path === "/v8/management/credentials" && init?.method === "POST") {
+      file.websockets = false;
+      return Response.json({ name: `${reference}.json` });
+    }
+    if (path === "/v8/management/credentials") return Response.json({ files: [file] });
+    assert.equal(path, "/v8/management/credentials/fields");
+    assert.equal(init?.method, "PATCH");
+    assert.deepEqual(JSON.parse(String(init.body)), { id: reference, websockets: true });
+    patches++;
+    if (persist) file.websockets = true;
+    return Response.json({ status: "ok" });
+  });
+  const invoke = async () =>
+    handleAccountKeyMirror(
+      await request({ action: "upsert", credential: { type: "codex", access_token: "synthetic" } }),
+      { home, signingKey, now: () => now },
+    );
+  assert.equal((await invoke()).status, 200);
+  assert.equal(file.websockets, true);
+  assert.equal((await invoke()).status, 200);
+  assert.equal(patches, 2);
+  persist = false;
+  assert.equal((await invoke()).status, 503);
+});

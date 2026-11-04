@@ -1,5 +1,6 @@
 import { mirrorHomeConfig } from "./account-config-mirror.ts";
 import type { HomeClient } from "./control.ts";
+import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 import { failureResponse, json, object, readBody, unavailable } from "./json.ts";
 import { openEnvelope } from "./token.ts";
 
@@ -78,6 +79,7 @@ export async function handleAccountKeyMirror(
         body: JSON.stringify({ ...value.credential, uuid: value.reference }),
       });
       if (saved.name !== `${value.reference}.json`) return unavailable();
+      await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
     }
     return json(null);
   } catch (error) {
