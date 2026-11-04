@@ -87,8 +87,10 @@ export type DeploymentLedger =
       gitCommit: string;
       pins: PinSummary;
       payload: DeploymentPayload;
-      /** The failed release after this success that the release now running rolls forward over. */
+      /** The oldest failed attempt, whose backup predates all later attempts' writes. */
       superseded?: SupersededRelease;
+      /** All attempts, newest first, when failures span multiple commits. */
+      supersededAttempts?: SupersededRelease[];
     }
   | {
       state: "unresolved";
@@ -159,8 +161,8 @@ export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
 }
 
 /**
- * The production ledger. With `rollForward`, failed attempts of one SHA after the last success
- * are set aside when the release now running contains its commit: the ledger is then ready at the
+ * The production ledger. With `rollForward`, failed attempts on one ancestry chain after the last success
+ * are set aside when the release now running contains their commits: the ledger is then ready at the
  * last success, and that release deploys forward from it, re-applying everything the failed one
  * did. Anything else stays unresolved. Rollback paths read the ledger without it.
  */
@@ -297,7 +299,13 @@ export async function beginReleaseDeployment(
  */
 export function keepRollForwardGates(ledger: DeploymentLedger, report: ClassificationReport): DeploymentLedger {
   if (ledger.state !== "ready" || !ledger.superseded) return ledger;
-  const { payload } = ledger.superseded;
+  const superseded = (ledger.supersededAttempts ?? [ledger.superseded]).find(
+    ({ payload }) =>
+      (payload.databaseChanged && !report.databaseChanged) ||
+      (payload.workflowChanged && !report.workflowChanged),
+  );
+  if (!superseded) return ledger;
+  const { payload } = superseded;
   const dropped = [
     ...payload.databaseChanged && !report.databaseChanged ? ["database"] : [],
     ...payload.workflowChanged && !report.workflowChanged ? ["Workflow identity"] : [],
@@ -305,13 +313,14 @@ export function keepRollForwardGates(ledger: DeploymentLedger, report: Classific
   if (!dropped.length) return ledger;
   return {
     state: "unresolved",
-    deploymentId: ledger.superseded.deploymentId,
-    gitCommit: ledger.superseded.gitCommit,
-    deploymentStatus: ledger.superseded.deploymentStatus,
+    deploymentId: superseded.deploymentId,
+    gitCommit: superseded.gitCommit,
+    deploymentStatus: superseded.deploymentStatus,
     reason: "latest production deployment did not finish successfully",
     lastSuccessful: { deploymentId: ledger.deploymentId, gitCommit: ledger.gitCommit, pins: ledger.pins },
     payload,
-    supersedeRefusal: `deployment ${ledger.superseded.deploymentId} changed the ${dropped.join(" and ")}, ` +
+    supersedeRefusal:
+      `deployment ${superseded.deploymentId} changed the ${dropped.join(" and ")}, ` +
       "but this release doesn't, so rolling forward would skip its backup or drain check",
   };
 }
@@ -672,8 +681,8 @@ async function runCompletedAt(
 }
 
 /**
- * Same-SHA retries count as one failed release. Validate every attempt and retain the oldest
- * payload: its backup predates all of that release's writes. Different SHAs still need a decision.
+ * Validate every attempt before checking their ancestry chain. Same-SHA retries keep identical
+ * pins and gates. The oldest payload supplies the backup from before any attempt's writes.
  */
 async function supersedeFailedRelease(
   deployments: Deployment[],
@@ -687,9 +696,9 @@ async function supersedeFailedRelease(
   if (index < 0) return { refusal: "the last successful deployment is missing from the ledger" };
   const attempts = deployments.slice(0, index);
   if (attempts.length === 0) return { refusal: "no failed release follows the last success" };
-  const candidate = attempts[0]!.sha;
-  if (attempts.some((attempt) => attempt.sha !== candidate))
-    return { refusal: `${index} deployment records with different SHAs follow the last success; a person decides` };
+  const mixedCommits = attempts.some(({ sha }) => sha !== attempts[0]!.sha);
+  const byCommit = new Map<string, SupersededRelease>();
+  const validated: SupersededRelease[] = [];
   let original: SupersededRelease | undefined;
   for (const failed of attempts) {
     const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
@@ -700,7 +709,9 @@ async function supersedeFailedRelease(
     } catch {
       return refuse("has unreadable ledger metadata");
     }
-    const { statuses, why } = await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
+    const { statuses, why } = mixedCommits
+      ? { statuses: await listStatuses(environment, failed.id, fetcher), why: undefined }
+      : await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
     const status = statuses[0]?.state ?? "missing";
     if (!endedWithoutSuccess(statuses))
       return refuse(`is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`);
@@ -710,21 +721,45 @@ async function supersedeFailedRelease(
     if (payload.baseGitCommit !== lastSuccessful.gitCommit ||
         stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins))
       return refuse("was not based on the last successful deployment");
-    if (original && (payload.databaseChanged !== original.payload.databaseChanged ||
-        payload.workflowChanged !== original.payload.workflowChanged ||
-        stableStringify(payload.pins) !== stableStringify(original.payload.pins)))
+    const sameCommit = byCommit.get(failed.sha);
+    if (
+      sameCommit &&
+      (payload.databaseChanged !== sameCommit.payload.databaseChanged ||
+        payload.workflowChanged !== sameCommit.payload.workflowChanged ||
+        stableStringify(payload.pins) !== stableStringify(sameCommit.payload.pins))
+    )
       return refuse("has different pins or safety gates from another attempt of the same SHA");
     original = { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status, payload };
+    validated.push(original);
+    if (!sameCommit) byCommit.set(failed.sha, original);
   }
   if (!original) return { refusal: "no failed release follows the last success" };
-  let contained: boolean;
-  try {
-    contained = rollForward.contains(candidate, rollForward.candidateGitCommit);
-  } catch (error) {
-    return { refusal: `deployment ${original.deploymentId} could not be checked against ${rollForward.candidateGitCommit}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}` };
+  const newerCommits = new Set([rollForward.candidateGitCommit]);
+  const checked = new Set<string>();
+  for (const failed of validated) {
+    for (const descendant of newerCommits) {
+      const comparison = `${failed.gitCommit}:${descendant}`;
+      if (
+        checked.has(comparison) ||
+        (failed.gitCommit === descendant && descendant !== rollForward.candidateGitCommit)
+      )
+        continue;
+      let contained: boolean;
+      try {
+        contained = rollForward.contains(failed.gitCommit, descendant);
+      } catch (error) {
+        return {
+          refusal: `deployment ${failed.deploymentId} could not be checked against ${descendant}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}`,
+        };
+      }
+      if (!contained)
+        return {
+          refusal: `deployment ${failed.deploymentId} is not contained in ${descendant}, so the failed attempts and candidate do not form one ancestry chain`,
+        };
+      checked.add(comparison);
+    }
+    newerCommits.add(failed.gitCommit);
   }
-  if (!contained)
-    return { refusal: `deployment ${original.deploymentId} is not contained in ${rollForward.candidateGitCommit}, so that release would not re-apply it` };
   const success = deployments[index]!;
   return {
     ready: {
@@ -733,6 +768,7 @@ async function supersedeFailedRelease(
       gitCommit: lastSuccessful.gitCommit,
       pins: lastSuccessful.pins,
       payload: parseDeploymentPayload(success.payload),
+      ...(mixedCommits ? { supersededAttempts: validated } : {}),
     },
     superseded: original,
   };

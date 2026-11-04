@@ -1,4 +1,4 @@
-// Same-SHA retries retain the first attempt's rollback point; different releases need a decision.
+// Failed release chains retain the oldest attempt's rollback point and every safety gate.
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
@@ -185,13 +185,222 @@ test("same-SHA retries cannot change the recorded base, pins or safety gates", a
   }
 });
 
-test("a mixed-SHA failure chain stays unresolved for a person", async () => {
-  const second: Row = { id: 9, sha: sha("3"), payload: releasePayload(sha("1"), sha("3")), history: ["in_progress", "failure"] };
-  const next = releasing([sha("2"), sha("3")], sha("4"));
-  const ledger = await readDeploymentLedger(environment, fetcherFor([second, failed(), success()]), next);
+const productionBase = "ca23b9d358cdfdf8a7b0f92f4736db84f9a73eed";
+const productionA = "2c389a59d3b64ac1679692d852e6e0d97132281b";
+const productionB = "8ee98a027ff38a40c0deeac6a4a9dbf673a7cbd3";
+const productionCandidate = "3267ecf32f083473a5f269a8da6ff2b77ca8ee56";
+
+function productionFailures(): Row[] {
+  const attempts = [
+    { ...failed(undefined, productionB, productionBase), id: 7543985128 },
+    { ...failed(undefined, productionA, productionBase), id: 7541351107 },
+    { ...failed(undefined, productionA, productionBase), id: 7539838881 },
+    { ...failed(undefined, productionA, productionBase), id: 7539612568 },
+  ].map((row, index) => {
+    const report = transition(productionBase, row.sha, true, true);
+    const backup = createRecordedBackup(report, "main", index === 3 ? "PS_5" : "PS_10", true);
+    return {
+      ...row,
+      payload: {
+        ...releasePayload(productionBase, row.sha, true, true),
+        backupName: backup.name,
+        backupMetadata: backup.metadata,
+      },
+    };
+  });
+  return [...attempts, { ...success(productionBase), id: 7530506292 }];
+}
+
+test("production's three A failures then B roll forward using real ancestry and the oldest backup", async () => {
+  const rows = productionFailures();
+  const next = rollForwardTo(productionCandidate);
+  const report = transition(productionBase, productionCandidate, true, true);
+  const ledger = keepRollForwardGates(
+    await readDeploymentLedger(environment, fetcherFor(rows), next),
+    report,
+  );
+  assert.equal(ledger.state, "ready");
+  if (ledger.state !== "ready") return;
+  assert.equal(ledger.deploymentId, 7530506292);
+  assert.equal(ledger.superseded?.deploymentId, 7539612568);
+  assert.deepEqual(
+    ledger.supersededAttempts?.map(({ deploymentId }) => deploymentId),
+    rows.slice(0, 4).map(({ id }) => id),
+  );
+  const posted: Array<Record<string, unknown>> = [];
+  await beginReleaseDeployment(
+    report,
+    environment,
+    fetcherFor(rows, posted),
+    backupOf(report),
+    next,
+  );
+  const recorded = posted[0]!.payload as DeploymentPayload;
+  assert.equal(recorded.rollForwardOf, productionA);
+  assert.deepEqual(
+    recorded.rollbackBackup,
+    backupOf(transition(productionBase, productionA, true, true)),
+  );
+  assert.notEqual(
+    recorded.rollbackBackup?.name,
+    (rows[1]!.payload as DeploymentPayload).backupName,
+  );
+});
+
+test("failed commits both contained by the candidate still refuse when they do not form a chain", async () => {
+  const second: Row = {
+    id: 9,
+    sha: sha("3"),
+    payload: releasePayload(sha("1"), sha("3")),
+    history: ["in_progress", "failure"],
+  };
+  const next: RollForward = {
+    candidateGitCommit: sha("4"),
+    contains: (_ancestor, descendant) => descendant === sha("4"),
+  };
+  const ledger = await readDeploymentLedger(
+    environment,
+    fetcherFor([second, failed(), success()]),
+    next,
+  );
   assert.equal(ledger.state, "unresolved");
-  assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", /2 deployment records with different SHAs follow the last success/);
-  assert.deepEqual(next.calls, [], "ancestry is never asked");
+  assert.match(
+    ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+    /not contained in 3{40}.*ancestry chain/,
+  );
+});
+
+test("a chain cannot return to an older SHA after a newer failed attempt", async () => {
+  const rows = productionFailures();
+  rows.unshift({ ...rows[1]!, id: 7543985129 });
+  const ledger = await readDeploymentLedger(
+    environment,
+    fetcherFor(rows),
+    rollForwardTo(productionCandidate),
+  );
+  assert.equal(ledger.state, "unresolved");
+  assert.match(
+    ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+    /ancestry chain/,
+  );
+});
+
+test("mixed-SHA attempts must keep the union of gates at classification and deployment creation", async () => {
+  const rows = [
+    {
+      ...failed(undefined, sha("3")),
+      id: 9,
+      payload: releasePayload(sha("1"), sha("3"), false, true),
+    },
+    failed(),
+    success(),
+  ];
+  for (const [databaseChanged, workflowChanged, label] of [
+    [true, false, "Workflow identity"],
+    [false, true, "database"],
+  ] as const) {
+    const report = transition(sha("1"), sha("4"), databaseChanged, workflowChanged);
+    const next = releasing([sha("2"), sha("3")], sha("4"));
+    const ledger = keepRollForwardGates(
+      await readDeploymentLedger(environment, fetcherFor(rows), next),
+      report,
+    );
+    assert.equal(ledger.state, "unresolved");
+    assert.match(
+      ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+      new RegExp(`changed the ${label}`),
+    );
+    const posted: Array<Record<string, unknown>> = [];
+    await assert.rejects(
+      beginReleaseDeployment(
+        report,
+        environment,
+        fetcherFor(rows, posted),
+        databaseChanged ? backupOf(report) : undefined,
+        next,
+      ),
+      /would skip its backup or drain check/,
+    );
+    assert.deepEqual(posted, []);
+  }
+  const report = transition(sha("1"), sha("4"), true, true);
+  const next = releasing([sha("2"), sha("3")], sha("4"));
+  assert.equal(
+    keepRollForwardGates(await readDeploymentLedger(environment, fetcherFor(rows), next), report)
+      .state,
+    "ready",
+  );
+});
+
+test("one unfinished record in a mixed-SHA chain still refuses before ancestry checks", async () => {
+  for (const history of [
+    ["pending"],
+    ["queued"],
+    ["in_progress"],
+    ["inactive"],
+    [],
+    ["success", "failure"],
+  ]) {
+    const rows = productionFailures();
+    rows[2]!.history = history;
+    const next = releasing([productionA, productionB], productionCandidate);
+    const ledger = await readDeploymentLedger(environment, fetcherFor(rows), next);
+    assert.equal(ledger.state, "unresolved", JSON.stringify(history));
+    assert.deepEqual(next.calls, []);
+  }
+});
+
+test("a completed run cannot replace a pending status inside a mixed-SHA chain", async () => {
+  const rows = productionFailures();
+  const pending = rows[2]!;
+  pending.history = ["pending"];
+  pending.payload = {
+    ...(pending.payload as DeploymentPayload),
+    run: { repository: environment.repository, id: 123, attempt: 1 },
+  };
+  const fetcher = fetcherFor(rows);
+  let runLookups = 0;
+  const ledger = await readDeploymentLedger(
+    environment,
+    async (input, init) => {
+      if (String(input).includes("/actions/runs/")) {
+        runLookups++;
+        return Response.json({
+          id: 123,
+          run_attempt: 1,
+          repository: { full_name: environment.repository },
+          status: "completed",
+          updated_at: "2026-10-28T20:00:00Z",
+        });
+      }
+      return fetcher(input, init);
+    },
+    rollForwardTo(productionCandidate),
+    () => Date.parse("2026-11-04T12:00:00Z"),
+  );
+  assert.equal(ledger.state, "unresolved");
+  assert.match(ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "", /is pending/);
+  assert.equal(runLookups, 0);
+});
+
+test("mixed-SHA chains still validate every attempt's payload, kind, base and same-SHA gates", async () => {
+  for (const invalid of [
+    null,
+    {
+      ...releasePayload(productionBase, productionA, true, true),
+      kind: "rollback",
+      rollbackOf: productionA,
+    },
+    releasePayload(sha("5"), productionA, true, true),
+    releasePayload(productionBase, productionA, true, false),
+  ]) {
+    const rows = productionFailures();
+    rows[2]!.payload = invalid;
+    const next = releasing([productionA, productionB], productionCandidate);
+    const ledger = await readDeploymentLedger(environment, fetcherFor(rows), next);
+    assert.equal(ledger.state, "unresolved");
+    assert.deepEqual(next.calls, []);
+  }
 });
 
 test("a failed release the next release doesn't contain stays unresolved", async () => {

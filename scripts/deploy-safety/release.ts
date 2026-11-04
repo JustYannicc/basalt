@@ -47,11 +47,17 @@ async function main(args: string[]): Promise<void> {
       deployable,
       manualRequired: plan.manualRequired,
       latestDeploymentState: plan.ledger.state,
-      ...(plan.ledger.state === "ready" && plan.ledger.superseded ? { supersededDeployment: plan.ledger.superseded } : {}),
+      ...(plan.ledger.state === "ready" && plan.ledger.superseded
+        ? { supersededDeployment: plan.ledger.superseded }
+        : {}),
+      ...(plan.ledger.state === "ready" && plan.ledger.supersededAttempts
+        ? { supersededDeployments: plan.ledger.supersededAttempts }
+        : {}),
     };
     noteRollForward(
       plan.ledger.state === "ready" ? plan.ledger.superseded : undefined,
       plan.ledger.state === "unresolved" ? plan.ledger.supersedeRefusal : undefined,
+      plan.ledger.state === "ready" ? plan.ledger.supersededAttempts : undefined,
     );
     writeActionOutputs({
       deployable: String(deployable),
@@ -313,10 +319,19 @@ function writeActionOutputs(values: Record<string, string>): void {
 }
 
 /** Says in the Actions log which failed release this run rolls forward over, or why it can't. */
-function noteRollForward(superseded: SupersededRelease | undefined, refusal: string | undefined): void {
-  if (superseded)
-    process.stderr.write(`::notice::Rolling forward over failed production deployment ${superseded.deploymentId} (${superseded.gitCommit}, ${superseded.deploymentStatus}): this release contains that commit, deploys from the last success and re-applies its migrations and data steps\n`);
-  if (refusal) process.stderr.write(`::warning::The failed production deployment is not rolled forward over: ${refusal}\n`);
+function noteRollForward(
+  superseded: SupersededRelease | undefined,
+  refusal: string | undefined,
+  attempts?: SupersededRelease[],
+): void {
+  for (const failed of attempts ?? (superseded ? [superseded] : []))
+    process.stderr.write(
+      `::notice::Rolling forward over failed production deployment ${failed.deploymentId} (${failed.gitCommit}, ${failed.deploymentStatus}): this release contains that commit, deploys from the last success and re-applies its migrations and data steps\n`,
+    );
+  if (refusal)
+    process.stderr.write(
+      `::warning::The failed production deployment is not rolled forward over: ${refusal}\n`,
+    );
 }
 
 function print(value: unknown): void {
