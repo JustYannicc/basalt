@@ -27,18 +27,29 @@ const pins: ReleasePins = {
     tag: "v1",
     commit: sha("b"),
     binary: "home",
-    assets: { amd64: { name: "amd64", sha256: "c".repeat(64) }, arm64: { name: "arm64", sha256: "d".repeat(64) } },
+    assets: {
+      amd64: { name: "amd64", sha256: "c".repeat(64) },
+      arm64: { name: "arm64", sha256: "d".repeat(64) },
+    },
   },
   node: {
     repository: "https://github.com/router-for-me/CLIProxyAPI.git",
     tag: "v1",
     commit: sha("e"),
     binary: "node",
-    assets: { amd64: { name: "amd64", sha256: "f".repeat(64) }, arm64: { name: "arm64", sha256: "0".repeat(64) } },
+    assets: {
+      amd64: { name: "amd64", sha256: "f".repeat(64) },
+      arm64: { name: "arm64", sha256: "0".repeat(64) },
+    },
   },
 };
 
-function transition(base: string, candidate: string, databaseChanged = false, workflowChanged = false): ClassificationReport {
+function transition(
+  base: string,
+  candidate: string,
+  databaseChanged = false,
+  workflowChanged = false,
+): ClassificationReport {
   return {
     schemaVersion: 1,
     base: { gitCommit: base, pins },
@@ -55,7 +66,12 @@ function transition(base: string, candidate: string, databaseChanged = false, wo
 const backupOf = (value: ClassificationReport) => createRecordedBackup(value, "main", "PS_5", true);
 
 /** A release payload; a database-changing one carries its backup like a real manual release. */
-function releasePayload(base: string, candidate: string, databaseChanged = false, workflowChanged = false): DeploymentPayload {
+function releasePayload(
+  base: string,
+  candidate: string,
+  databaseChanged = false,
+  workflowChanged = false,
+): DeploymentPayload {
   const value = transition(base, candidate, databaseChanged, workflowChanged);
   return deploymentPayloadFor(value, "release", databaseChanged ? backupOf(value) : undefined);
 }
@@ -63,32 +79,59 @@ function releasePayload(base: string, candidate: string, databaseChanged = false
 type Row = { id: number; sha: string; payload: unknown; history: string[] };
 
 // The last success, sha 1, released over sha 0.
-const success = (commit = sha("1")): Row =>
-  ({ id: 7, sha: commit, payload: releasePayload(sha("0"), commit), history: ["in_progress", "success"] });
+const success = (commit = sha("1")): Row => ({
+  id: 7,
+  sha: commit,
+  payload: releasePayload(sha("0"), commit),
+  history: ["in_progress", "success"],
+});
 // The failed manual release, sha 2 by default, classified as database-changing.
-const failed = (history = ["in_progress", "failure"], commit = sha("2"), base = sha("1")): Row =>
-  ({ id: 8, sha: commit, payload: releasePayload(base, commit, true), history });
+const failed = (history = ["in_progress", "failure"], commit = sha("2"), base = sha("1")): Row => ({
+  id: 8,
+  sha: commit,
+  payload: releasePayload(base, commit, true),
+  history,
+});
 
 function fetcherFor(rows: Row[], posted: Array<Record<string, unknown>> = []) {
   return async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : undefined;
     if (url.pathname.endsWith("/deployments") && method === "GET")
-      return Response.json(rows.map(({ id, sha: commit, payload }, index) => ({
-        id, sha: commit, environment: "production", payload, created_at: `2026-10-28T1${8 - index}:00:00Z`,
-      })));
+      return Response.json(
+        rows.map(({ id, sha: commit, payload }, index) => ({
+          id,
+          sha: commit,
+          environment: "production",
+          payload,
+          created_at: `2026-10-28T1${8 - index}:00:00Z`,
+        })),
+      );
     if (url.pathname.endsWith("/deployments") && method === "POST") {
       posted.push(body!);
-      return Response.json({ id: 9, sha: body!.ref, environment: "production", payload: body!.payload }, { status: 201 });
+      return Response.json(
+        { id: 9, sha: body!.ref, environment: "production", payload: body!.payload },
+        { status: 201 },
+      );
     }
     const match = /\/deployments\/(\d+)\/statuses$/.exec(url.pathname);
-    if (match && method === "POST") return Response.json({ id: 99, state: body!.state }, { status: 201 });
+    if (match && method === "POST")
+      return Response.json({ id: 99, state: body!.state }, { status: 201 });
     const row = rows.find(({ id }) => String(id) === match?.[1]);
     // GitHub lists statuses newest first; each history is written oldest first.
-    if (row) return Response.json(row.history.map((state, index) => ({
-      id: row.id * 10 + index, state, created_at: `2026-10-28T19:0${index}:00Z`,
-    })).reverse());
+    if (row)
+      return Response.json(
+        row.history
+          .map((state, index) => ({
+            id: row.id * 10 + index,
+            state,
+            created_at: `2026-10-28T19:0${index}:00Z`,
+          }))
+          .reverse(),
+      );
     throw new Error(`Unexpected GitHub fixture request: ${method} ${url.pathname}`);
   };
 }
@@ -109,33 +152,55 @@ function releasing(ancestors: string[] = [sha("2")], candidate = sha("3")) {
 test("one failed release the next release contains is rolled forward over", async () => {
   for (const status of ["failure", "error"]) {
     const next = releasing();
-    const ledger = await readDeploymentLedger(environment, fetcherFor([failed(["in_progress", status]), success()]), next);
+    const ledger = await readDeploymentLedger(
+      environment,
+      fetcherFor([failed(["in_progress", status]), success()]),
+      next,
+    );
     assert.equal(ledger.state, "ready", status);
     if (ledger.state !== "ready") continue;
     assert.equal(ledger.gitCommit, sha("1"));
     assert.equal(ledger.deploymentId, 7);
     const { payload, ...superseded } = ledger.superseded!;
-    assert.deepEqual(superseded, { deploymentId: 8, gitCommit: sha("2"), deploymentStatus: status });
+    assert.deepEqual(superseded, {
+      deploymentId: 8,
+      gitCommit: sha("2"),
+      deploymentStatus: status,
+    });
     assert.equal(payload.candidateGitCommit, sha("2"));
     assert.deepEqual(next.calls, ["2<=3"]);
     // The next release is classified from the last success, so its report passes the guard.
-    assert.doesNotThrow(() => assertReportUsesLatestDeploy(transition(sha("1"), sha("3"), true), ledger));
+    assert.doesNotThrow(() =>
+      assertReportUsesLatestDeploy(transition(sha("1"), sha("3"), true), ledger),
+    );
   }
   // Re-releasing the failed commit itself also rolls forward.
-  const again = await readDeploymentLedger(environment, fetcherFor([failed(), success()]), releasing([], sha("2")));
+  const again = await readDeploymentLedger(
+    environment,
+    fetcherFor([failed(), success()]),
+    releasing([], sha("2")),
+  );
   assert.equal(again.state, "ready");
 });
 
 test("same-SHA failures roll forward with the first attempt's rollback backup", async () => {
   const first = failed();
   const firstBackup = backupOf(transition(sha("1"), sha("2"), true));
-  const laterBackup = createRecordedBackup(transition(sha("1"), sha("2"), true), "main", "PS_10", true);
+  const laterBackup = createRecordedBackup(
+    transition(sha("1"), sha("2"), true),
+    "main",
+    "PS_10",
+    true,
+  );
   const retry: Row = {
-    ...failed(["in_progress", "error"]), id: 9,
+    ...failed(["in_progress", "error"]),
+    id: 9,
     payload: {
       ...releasePayload(sha("1"), sha("2"), true),
-      backupName: laterBackup.name, backupMetadata: laterBackup.metadata,
-      rollForwardOf: sha("2"), rollbackBackup: firstBackup,
+      backupName: laterBackup.name,
+      backupMetadata: laterBackup.metadata,
+      rollForwardOf: sha("2"),
+      rollbackBackup: firstBackup,
     },
   };
   const rows = [retry, first, success()];
@@ -148,24 +213,57 @@ test("same-SHA failures roll forward with the first attempt's rollback backup", 
   assert.deepEqual(next.calls, ["2<=3"]);
   const report = transition(sha("1"), sha("3"), true);
   const posted: Array<Record<string, unknown>> = [];
-  await beginReleaseDeployment(report, environment, fetcherFor(rows, posted), backupOf(report), releasing());
+  await beginReleaseDeployment(
+    report,
+    environment,
+    fetcherFor(rows, posted),
+    backupOf(report),
+    releasing(),
+  );
   const recorded = posted[0]!.payload as DeploymentPayload;
   assert.deepEqual(recorded.rollbackBackup, firstBackup);
   assert.notEqual(recorded.rollbackBackup?.name, laterBackup.name);
   assert.equal(recorded.rollForwardOf, sha("2"));
-  const succeeded: Row = { id: 10, sha: sha("3"), payload: recorded, history: ["in_progress", "success"] };
+  const succeeded: Row = {
+    id: 10,
+    sha: sha("3"),
+    payload: recorded,
+    history: ["in_progress", "success"],
+  };
   const after = await readDeploymentLedger(environment, fetcherFor([succeeded, ...rows]));
   assert.deepEqual(releaseBackup(after), { ...firstBackup, rolledForwardOver: sha("2") });
-  await assert.rejects(beginReleaseDeployment(transition(sha("1"), sha("3")), environment,
-    fetcherFor(rows), undefined, releasing()), /would skip its backup or drain check/);
-  assert.equal((await readDeploymentLedger(environment, fetcherFor(rows), releasing([]))).state, "unresolved");
+  await assert.rejects(
+    beginReleaseDeployment(
+      transition(sha("1"), sha("3")),
+      environment,
+      fetcherFor(rows),
+      undefined,
+      releasing(),
+    ),
+    /would skip its backup or drain check/,
+  );
+  assert.equal(
+    (await readDeploymentLedger(environment, fetcherFor(rows), releasing([]))).state,
+    "unresolved",
+  );
 });
 
 test("every same-SHA attempt must have failed without ever succeeding", async () => {
-  for (const history of [["in_progress"], ["pending"], ["queued"], [], ["inactive"], ["success", "failure"]]) {
+  for (const history of [
+    ["in_progress"],
+    ["pending"],
+    ["queued"],
+    [],
+    ["inactive"],
+    ["success", "failure"],
+  ]) {
     const retry = { ...failed(), id: 9 };
     const next = releasing();
-    const ledger = await readDeploymentLedger(environment, fetcherFor([retry, failed(history), success()]), next);
+    const ledger = await readDeploymentLedger(
+      environment,
+      fetcherFor([retry, failed(history), success()]),
+      next,
+    );
     assert.equal(ledger.state, "unresolved", JSON.stringify(history));
     assert.deepEqual(next.calls, []);
   }
@@ -175,11 +273,28 @@ test("same-SHA retries cannot change the recorded base, pins or safety gates", a
   for (const original of [
     failed(undefined, sha("2"), sha("5")),
     { ...failed(), payload: releasePayload(sha("1"), sha("2"), false, true) },
-    { ...failed(), payload: { ...releasePayload(sha("1"), sha("2"), true), pins: { ...pins, tools: { commit: sha("f") } } } },
-    { ...failed(), payload: { ...releasePayload(sha("1"), sha("2"), true), kind: "rollback", rollbackOf: sha("2") } },
+    {
+      ...failed(),
+      payload: {
+        ...releasePayload(sha("1"), sha("2"), true),
+        pins: { ...pins, tools: { commit: sha("f") } },
+      },
+    },
+    {
+      ...failed(),
+      payload: {
+        ...releasePayload(sha("1"), sha("2"), true),
+        kind: "rollback",
+        rollbackOf: sha("2"),
+      },
+    },
   ]) {
     const next = releasing();
-    const ledger = await readDeploymentLedger(environment, fetcherFor([{ ...failed(), id: 9 }, original, success()]), next);
+    const ledger = await readDeploymentLedger(
+      environment,
+      fetcherFor([{ ...failed(), id: 9 }, original, success()]),
+      next,
+    );
     assert.equal(ledger.state, "unresolved");
     assert.deepEqual(next.calls, []);
   }
@@ -436,48 +551,129 @@ test("mixed-SHA chains still validate every attempt's payload, kind, base and sa
 
 test("a failed release the next release doesn't contain stays unresolved", async () => {
   // Another branch, or main rewritten after the failed release.
-  const ledger = await readDeploymentLedger(environment, fetcherFor([failed(), success()]), releasing([]));
+  const ledger = await readDeploymentLedger(
+    environment,
+    fetcherFor([failed(), success()]),
+    releasing([]),
+  );
   assert.equal(ledger.state, "unresolved");
-  assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", /is not contained in 3{40}/);
-  assert.throws(() => assertReportUsesLatestDeploy(transition(sha("1"), sha("3")), ledger), /unresolved \(failure\).*not superseded: deployment 8/);
+  assert.match(
+    ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+    /is not contained in 3{40}/,
+  );
+  assert.throws(
+    () => assertReportUsesLatestDeploy(transition(sha("1"), sha("3")), ledger),
+    /unresolved \(failure\).*not superseded: deployment 8/,
+  );
 
   // Git that can't answer fails closed.
-  const broken: RollForward = { candidateGitCommit: sha("3"), contains: () => { throw new Error("fatal: Not a valid commit name"); } };
-  const unanswered = await readDeploymentLedger(environment, fetcherFor([failed(), success()]), broken);
+  const broken: RollForward = {
+    candidateGitCommit: sha("3"),
+    contains: () => {
+      throw new Error("fatal: Not a valid commit name");
+    },
+  };
+  const unanswered = await readDeploymentLedger(
+    environment,
+    fetcherFor([failed(), success()]),
+    broken,
+  );
   assert.equal(unanswered.state, "unresolved");
-  assert.match(unanswered.state === "unresolved" ? unanswered.supersedeRefusal ?? "" : "", /could not be checked/);
+  assert.match(
+    unanswered.state === "unresolved" ? (unanswered.supersedeRefusal ?? "") : "",
+    /could not be checked/,
+  );
 
   // Without a release asking, as on every rollback path, the failure is still there.
-  assert.equal((await readDeploymentLedger(environment, fetcherFor([failed(), success()]))).state, "unresolved");
+  assert.equal(
+    (await readDeploymentLedger(environment, fetcherFor([failed(), success()]))).state,
+    "unresolved",
+  );
 });
 
 test("pending, in-progress, status-less, inactive and once-successful records still block", async () => {
-  for (const history of [["in_progress"], ["pending"], ["queued"], [], ["in_progress", "inactive"], ["in_progress", "success", "failure"]]) {
+  for (const history of [
+    ["in_progress"],
+    ["pending"],
+    ["queued"],
+    [],
+    ["in_progress", "inactive"],
+    ["in_progress", "success", "failure"],
+  ]) {
     const next = releasing();
-    const ledger = await readDeploymentLedger(environment, fetcherFor([failed(history), success()]), next);
+    const ledger = await readDeploymentLedger(
+      environment,
+      fetcherFor([failed(history), success()]),
+      next,
+    );
     assert.equal(ledger.state, "unresolved", JSON.stringify(history));
     assert.deepEqual(next.calls, [], JSON.stringify(history));
   }
 });
 
 test("rollback records and releases from another base still block", async () => {
-  const rollback = { ...deploymentPayloadFor(transition(sha("1"), sha("2")), "rollback"), rollbackOf: sha("2") };
-  const rolledBack: Row = { id: 8, sha: sha("1"), payload: rollback, history: ["in_progress", "failure"] };
-  assert.equal((await readDeploymentLedger(environment, fetcherFor([rolledBack, success()]), releasing([sha("1")]))).state, "unresolved");
+  const rollback = {
+    ...deploymentPayloadFor(transition(sha("1"), sha("2")), "rollback"),
+    rollbackOf: sha("2"),
+  };
+  const rolledBack: Row = {
+    id: 8,
+    sha: sha("1"),
+    payload: rollback,
+    history: ["in_progress", "failure"],
+  };
+  assert.equal(
+    (
+      await readDeploymentLedger(
+        environment,
+        fetcherFor([rolledBack, success()]),
+        releasing([sha("1")]),
+      )
+    ).state,
+    "unresolved",
+  );
 
-  const ledger = await readDeploymentLedger(environment, fetcherFor([failed(undefined, sha("2"), sha("5")), success()]), releasing());
+  const ledger = await readDeploymentLedger(
+    environment,
+    fetcherFor([failed(undefined, sha("2"), sha("5")), success()]),
+    releasing(),
+  );
   assert.equal(ledger.state, "unresolved");
-  assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", /not based on the last successful deployment/);
+  assert.match(
+    ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+    /not based on the last successful deployment/,
+  );
 });
 
 test("rolling forward is rechecked when the next release begins", async () => {
   const next = transition(sha("1"), sha("3"), true);
   const backup = backupOf(next);
-  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), backup), /unresolved/);
-  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), backup, releasing([])), /not superseded/);
+  await assert.rejects(
+    beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), backup),
+    /unresolved/,
+  );
+  await assert.rejects(
+    beginReleaseDeployment(
+      next,
+      environment,
+      fetcherFor([failed(), success()]),
+      backup,
+      releasing([]),
+    ),
+    /not superseded/,
+  );
 
   const posted: Array<Record<string, unknown>> = [];
-  assert.equal(await beginReleaseDeployment(next, environment, fetcherFor([failed(), success()], posted), backup, releasing()), 9);
+  assert.equal(
+    await beginReleaseDeployment(
+      next,
+      environment,
+      fetcherFor([failed(), success()], posted),
+      backup,
+      releasing(),
+    ),
+    9,
+  );
   const payload = posted[0]!.payload as DeploymentPayload;
   assert.equal(posted[0]!.ref, sha("3"));
   assert.equal(payload.baseGitCommit, sha("1"));
@@ -489,49 +685,105 @@ test("a release that rolls forward records the failed release's backup as its ro
   const failedRelease = transition(sha("1"), sha("2"), true);
   const next = transition(sha("1"), sha("3"), true);
   const posted: Array<Record<string, unknown>> = [];
-  await beginReleaseDeployment(next, environment, fetcherFor([failed(), success()], posted), backupOf(next), releasing());
+  await beginReleaseDeployment(
+    next,
+    environment,
+    fetcherFor([failed(), success()], posted),
+    backupOf(next),
+    releasing(),
+  );
   const recorded = posted[0]!.payload as DeploymentPayload;
   assert.equal(recorded.rollForwardOf, sha("2"));
   assert.deepEqual(recorded.rollbackBackup, backupOf(failedRelease));
   assert.equal(recorded.backupName, backupOf(next).name);
 
   // Once C succeeds, a manual rollback of C restores B1, not B2.
-  const succeeded: Row = { id: 9, sha: sha("3"), payload: recorded, history: ["in_progress", "success"] };
-  const ledger = await readDeploymentLedger(environment, fetcherFor([succeeded, failed(), success()]));
+  const succeeded: Row = {
+    id: 9,
+    sha: sha("3"),
+    payload: recorded,
+    history: ["in_progress", "success"],
+  };
+  const ledger = await readDeploymentLedger(
+    environment,
+    fetcherFor([succeeded, failed(), success()]),
+  );
   assert.equal(ledger.state, "ready");
-  assert.deepEqual(releaseBackup(ledger), { ...backupOf(failedRelease), rolledForwardOver: sha("2") });
+  assert.deepEqual(releaseBackup(ledger), {
+    ...backupOf(failedRelease),
+    rolledForwardOver: sha("2"),
+  });
   assert.doesNotThrow(() => assertManualRollbackCandidate(next, ledger));
   const rollbackPosts: Array<Record<string, unknown>> = [];
-  assert.equal(await beginRollbackDeployment(next, environment, fetcherFor([succeeded, failed(), success()], rollbackPosts), 9), 9);
+  assert.equal(
+    await beginRollbackDeployment(
+      next,
+      environment,
+      fetcherFor([succeeded, failed(), success()], rollbackPosts),
+      9,
+    ),
+    9,
+  );
   assert.equal((rollbackPosts[0]!.payload as DeploymentPayload).backupName, backupOf(next).name);
 
   // A recorded rollback point that isn't the rolled-forward release's backup from this base is refused.
-  for (const rollbackBackup of [backupOf(transition(sha("5"), sha("2"), true)), backupOf(transition(sha("1"), sha("6"), true))]) {
+  for (const rollbackBackup of [
+    backupOf(transition(sha("5"), sha("2"), true)),
+    backupOf(transition(sha("1"), sha("6"), true)),
+  ]) {
     const tampered: Row = { ...succeeded, payload: { ...recorded, rollbackBackup } };
-    await assert.rejects(readDeploymentLedger(environment, fetcherFor([tampered, failed(), success()])), /rollback backup is not the rolled-forward release's backup/);
+    await assert.rejects(
+      readDeploymentLedger(environment, fetcherFor([tampered, failed(), success()])),
+      /rollback backup is not the rolled-forward release's backup/,
+    );
   }
   // A release that rolls forward over one without a backup records no rollback point.
   const plainPosts: Array<Record<string, unknown>> = [];
   const plainFailure = failed(undefined, sha("2"), sha("1"));
   plainFailure.payload = releasePayload(sha("1"), sha("2"));
-  await beginReleaseDeployment(transition(sha("1"), sha("3")), environment, fetcherFor([plainFailure, success()], plainPosts), undefined, releasing());
+  await beginReleaseDeployment(
+    transition(sha("1"), sha("3")),
+    environment,
+    fetcherFor([plainFailure, success()], plainPosts),
+    undefined,
+    releasing(),
+  );
   assert.equal((plainPosts[0]!.payload as DeploymentPayload).rollbackBackup, undefined);
 });
 
 test("a revert that drops the failed release's database or Workflow gate stays unresolved", async () => {
-  for (const [failedFlags, label] of [[[true, false], "database"], [[false, true], "Workflow identity"]] as const) {
+  for (const [failedFlags, label] of [
+    [[true, false], "database"],
+    [[false, true], "Workflow identity"],
+  ] as const) {
     const failedPayload = releasePayload(sha("1"), sha("2"), failedFlags[0], failedFlags[1]);
     const rows = [failed(undefined, sha("2"), sha("1")), success()];
     rows[0]!.payload = failedPayload;
     const revert = transition(sha("1"), sha("3"));
-    const ledger = keepRollForwardGates(await readDeploymentLedger(environment, fetcherFor(rows), releasing()), revert);
+    const ledger = keepRollForwardGates(
+      await readDeploymentLedger(environment, fetcherFor(rows), releasing()),
+      revert,
+    );
     assert.equal(ledger.state, "unresolved", label);
-    assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", new RegExp(`changed the ${label}`));
+    assert.match(
+      ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+      new RegExp(`changed the ${label}`),
+    );
     assert.equal(ledger.state === "unresolved" ? ledger.lastSuccessful?.gitCommit : "", sha("1"));
-    await assert.rejects(beginReleaseDeployment(revert, environment, fetcherFor(rows), undefined, releasing()), /would skip its backup or drain check/);
+    await assert.rejects(
+      beginReleaseDeployment(revert, environment, fetcherFor(rows), undefined, releasing()),
+      /would skip its backup or drain check/,
+    );
     // Keeping the gate lets it roll forward.
     const kept = transition(sha("1"), sha("3"), failedFlags[0], failedFlags[1]);
-    assert.equal(keepRollForwardGates(await readDeploymentLedger(environment, fetcherFor(rows), releasing()), kept).state, "ready", label);
+    assert.equal(
+      keepRollForwardGates(
+        await readDeploymentLedger(environment, fetcherFor(rows), releasing()),
+        kept,
+      ).state,
+      "ready",
+      label,
+    );
   }
 });
 
@@ -548,11 +800,22 @@ test("a release of b2781c6 rolls forward over the failed 2a2bc67 release, using 
   assert.equal(ledger.state === "ready" ? ledger.superseded?.gitCommit : "", realFailure);
 
   // An older commit does not contain the failed release.
-  const older = await readDeploymentLedger(environment, fetcherFor(rows), rollForwardTo(realSuccess));
+  const older = await readDeploymentLedger(
+    environment,
+    fetcherFor(rows),
+    rollForwardTo(realSuccess),
+  );
   assert.equal(older.state, "unresolved");
   // A commit Git can't find fails closed.
-  const missing = await readDeploymentLedger(environment, fetcherFor(rows), rollForwardTo(sha("f")));
+  const missing = await readDeploymentLedger(
+    environment,
+    fetcherFor(rows),
+    rollForwardTo(sha("f")),
+  );
   assert.equal(missing.state, "unresolved");
-  assert.match(missing.state === "unresolved" ? missing.supersedeRefusal ?? "" : "", /could not be checked/);
+  assert.match(
+    missing.state === "unresolved" ? (missing.supersedeRefusal ?? "") : "",
+    /could not be checked/,
+  );
   assert.throws(() => rollForwardTo(realNext).contains("not-a-sha", realNext), /exact commit SHAs/);
 });
