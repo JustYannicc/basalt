@@ -245,3 +245,21 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted
    accounts: Schema.Array(AccountId).check(Schema.isMaxLength(500)),
  });
  export type LastSuccessAtInput = typeof LastSuccessAtInput.Type;
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+index c03bee3..9806f0c 100644
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -109,7 +109,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+       const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
+       const accounts = yield* Effect.forEach(linked, (row) =>
+         Effect.gen(function* () {
+-          if (row.requirementScope !== "app" || row.requirementProvider !== row.provider)
++          // The pool access token authorizes calls; it is not a provider credential for Home.
++          if (
++            row.requirement === "pool" ||
++            row.requirementScope !== "app" ||
++            row.requirementProvider !== row.provider
++          )
+             return undefined;
+           const reference = yield* homeReference(executor, row);
+           return {

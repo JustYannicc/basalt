@@ -257,6 +257,16 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     origin: `http://127.0.0.1:${server.address().port}`,
     async reconcile(pool) {
       await memberships.refresh(pool);
+      console.error(
+        "RESET_MEMBERSHIP",
+        JSON.stringify({
+          state: values.get("native-pool-memberships-v1"),
+          actual: await homeMembership.actual(pool),
+          groups: [...groups.values()],
+          members: [...members.values()],
+          files: [...files.keys()],
+        }),
+      );
     },
     product(origin) {
       productOrigin = origin;
@@ -352,8 +362,8 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       for (const removal of removals.values()) removal.release();
       removals.clear();
       for (const timer of timers) {
-        clearTimeout(timer.id);
-        timer.reject(new Error("Synthetic collection closed"));
+        clearTimeout(timer.id ?? timer);
+        timer.reject?.(new Error("Synthetic collection closed"));
       }
       timers.clear();
       collections.clear();
