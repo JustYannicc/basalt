@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -123,7 +124,7 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
       assert.equal(carried.package, "@executor.sh/miro");
       assert.ok(carried.files.some(file => file.path === "openapi.ts"));
     } else {
-      assert.deepEqual(await source.json(), gitlabSource);
+      assert.deepEqual(await source.json(), JSON.parse(onServedFramework(JSON.stringify(gitlabSource))));
       assert.ok(gitlabSource.files.find(file => file.path === "index.ts")?.content.includes("account.site"));
     }
   }
@@ -187,7 +188,7 @@ test("Zendesk source is served locally and catalog requests cannot choose its te
       assert.equal(source.status, 200);
       assert.equal(source.headers.get("cache-control"), "public, max-age=300");
       if (method === "HEAD") assert.equal(await source.text(), "");
-      else assert.deepEqual(await source.json(), sourceSnapshot);
+      else assert.deepEqual(await source.json(), JSON.parse(onServedFramework(JSON.stringify(sourceSnapshot))));
     }
   }
   assert.deepEqual(zendeskAddition().source, sourceSnapshot);
