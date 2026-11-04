@@ -71,7 +71,7 @@ export const proveHostedAtlassian = ({
     );
     const servedSdkVersion = manifest.dependencies?.apps;
     check(
-      servedSdkVersion === "0.0.1-beta.104-basalt.1",
+      servedSdkVersion === "0.0.1-beta.104-basalt.2",
       "Serve the pinned Basalt framework release",
     );
     const frameworkRelease = checked(
