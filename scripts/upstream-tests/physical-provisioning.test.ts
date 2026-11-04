@@ -34,11 +34,10 @@ const fixture = async () => {
     insert into executor_accounts values ('key', 'organization:team', 'apiKey');
   `);
   const observe = async (pools = true) => {
-    const { rows } = await database.query<{ pending: number; failed: number }>(
-      readiness,
-      readiness.includes("$1") ? [pools] : [],
-    );
+    const { rows } = await database.query(readiness, readiness.includes("$1") ? [pools] : []);
     assert.equal(rows.length, 1);
+    assert.equal(typeof rows[0]?.pending, "number");
+    assert.equal(typeof rows[0]?.failed, "number");
     return rows[0]!;
   };
   return { database, observe };
