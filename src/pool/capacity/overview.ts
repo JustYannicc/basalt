@@ -144,7 +144,6 @@ function accountInputs(
       .map((reading) => [reading.account, reading]),
   );
   const totals = new Map<string, number>();
-  const points = data.points.filter((item) => matches(item, provider, windowSeconds, mode, unitId));
   const cohort = groupId(provider, windowSeconds, mode, unitId);
   for (const [account, demand] of Object.entries(data.accountDemandTotals[cohort] ?? {}))
     totals.set(account, demand);

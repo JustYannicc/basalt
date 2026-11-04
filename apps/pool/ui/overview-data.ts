@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolOverviewResult, PoolPersonalOverviewResult } from "../overview-contract.ts";
 import type { PoolUsageSeriesResult } from "../usage-series-contract.ts";
@@ -50,73 +50,78 @@ export function seriesRead(result: PoolUsageSeriesResult, partial: boolean): Ser
 
 /** Commit one refresh together. Never combine a retained good part with a newer failed read. */
 export function useOverview(api: PoolApi, days: RangeDays) {
-  const [state, setState] = useState<Overview>({});
-  const latest = useRef(0);
+  const query = useMemo(() => ({ api, days }), [api, days]);
+  const [snapshot, setSnapshot] = useState<{ query: typeof query; value: Overview }>();
+  const state = snapshot?.query === query ? snapshot.value : {};
+  const latest = useRef({ id: 0 });
+  const setState = useCallback((value: Overview) => setSnapshot({ query, value }), [query]);
   const load = useCallback(async () => {
-    const id = ++latest.current;
+    const pending = latest.current;
+    const id = ++pending.id;
     const to = Date.now();
     const range = seriesRange(days, to);
-    const [capacity, usage] = await Promise.all([
+    return Promise.all([
       api.capacity(days, to),
       api.overviewUsage({ from: range.from, to: range.to, days }),
-    ]);
-    if (id !== latest.current) return;
-    if (managersOnly(usage)) {
-      setState({ usage, coherent: false });
-      const personal = await api.personalOverview({ from: range.from, to: range.to, days });
-      if (id !== latest.current) return;
-      setState({ usage, personal, coherent: false });
-      return;
-    }
-    if (!usage.ok) {
-      setState({ capacity, usage, people: usage, models: usage, coherent: false });
-      return;
-    }
-    const value = usage.value;
-    const coherent = capacity.ok && coherentOverview(capacity.value, value, range);
-    const completeHours = new Set(value.homeCapture.completeHours.map((at) => Date.parse(at)));
-    const hourly = new Map(
-      value.requestsByHour.map((point) => [
-        JSON.stringify([point.provider, Date.parse(point.at)]),
-        point,
-      ]),
-    );
-    const withRequests = !capacity.ok
-      ? capacity
-      : {
-          ok: true as const,
-          value: {
-            ...capacity.value,
-            points: capacity.value.points.map((point) => {
-              const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
-              const complete = completeHours.has(point.hour);
-              return {
-                ...point,
-                requests: requests?.requests ?? (complete ? 0 : null),
-                coverage: requests?.coverage ?? (complete ? 1 : null),
-                sourceAt: requests?.sourceAt
-                  ? Date.parse(requests.sourceAt)
-                  : complete && value.homeCapture.capturedAt
-                    ? Date.parse(value.homeCapture.capturedAt)
-                    : null,
-              };
-            }),
-          },
-        };
-    setState({
-      capacity: withRequests,
-      usage,
-      people: { ok: true, value: seriesRead(value.people, value.partial) },
-      models: { ok: true, value: seriesRead(value.models, value.partial) },
-      coherent,
+    ]).then(async ([capacity, usage]) => {
+      if (id !== pending.id) return;
+      if (managersOnly(usage)) {
+        setState({ usage, coherent: false });
+        const personal = await api.personalOverview({ from: range.from, to: range.to, days });
+        if (id !== pending.id) return;
+        setState({ usage, personal, coherent: false });
+        return;
+      }
+      if (!usage.ok) {
+        setState({ capacity, usage, people: usage, models: usage, coherent: false });
+        return;
+      }
+      const value = usage.value;
+      const coherent = capacity.ok && coherentOverview(capacity.value, value, range);
+      const completeHours = new Set(value.homeCapture.completeHours.map((at) => Date.parse(at)));
+      const hourly = new Map(
+        value.requestsByHour.map((point) => [
+          JSON.stringify([point.provider, Date.parse(point.at)]),
+          point,
+        ]),
+      );
+      const withRequests = !capacity.ok
+        ? capacity
+        : {
+            ok: true as const,
+            value: {
+              ...capacity.value,
+              points: capacity.value.points.map((point) => {
+                const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
+                const complete = completeHours.has(point.hour);
+                return {
+                  ...point,
+                  requests: requests?.requests ?? (complete ? 0 : null),
+                  coverage: requests?.coverage ?? (complete ? 1 : null),
+                  sourceAt: requests?.sourceAt
+                    ? Date.parse(requests.sourceAt)
+                    : complete && value.homeCapture.capturedAt
+                      ? Date.parse(value.homeCapture.capturedAt)
+                      : null,
+                };
+              }),
+            },
+          };
+      setState({
+        capacity: withRequests,
+        usage,
+        people: { ok: true, value: seriesRead(value.people, value.partial) },
+        models: { ok: true, value: seriesRead(value.models, value.partial) },
+        coherent,
+      });
     });
-  }, [api, days]);
+  }, [api, days, setState]);
   useEffect(() => {
-    setState({});
+    const pending = latest.current;
     void load();
     const stop = api.poll(() => void load(), refresh);
     return () => {
-      latest.current++;
+      pending.id++;
       stop();
     };
   }, [api, load]);

@@ -267,7 +267,7 @@ index 0aced1f18..1d3ab53b7 100644
        ...input,
        pool: pool.pool,
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
-index 3007bdc13..a93b3c704 100644
+index 3007bdc13..1bb3c55ef 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
 @@ -22,7 +22,7 @@ import {
@@ -314,7 +314,7 @@ index 3007bdc13..a93b3c704 100644
      const response = yield* client.post(new URL(path, origin).href, {
        body: HttpBody.jsonUnsafe({ envelope }),
      });
-@@ -298,6 +308,51 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
+@@ -298,6 +308,50 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
      }),
    );
  
@@ -359,7 +359,6 @@ index 3007bdc13..a93b3c704 100644
 +    trackedUsageRead,
 +    Effect.catchTags({
 +      SqlError: () => new StorageError(),
-+      SchemaError: () => new PoolUsageUnavailable(),
 +    }),
 +  );
 +

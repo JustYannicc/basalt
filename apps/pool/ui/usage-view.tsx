@@ -33,13 +33,16 @@ const otherShade = "bg-foreground/10";
 function useUsage(load: () => Promise<Result<UsageSummary>>, poll: Poll) {
   const [summary, setSummary] = useState<UsageSummary>();
   const [error, setError] = useState<string>();
-  const read = useCallback(async () => {
-    const result = await load();
-    if (result.ok) {
-      setSummary(result.value);
-      setError(undefined);
-    } else setError(result.message);
-  }, [load]);
+  const read = useCallback(
+    async () =>
+      load().then((result) => {
+        if (result.ok) {
+          setSummary(result.value);
+          setError(undefined);
+        } else setError(result.message);
+      }),
+    [load],
+  );
   useEffect(() => {
     void read();
     return poll(() => void read(), 5 * 60_000);
