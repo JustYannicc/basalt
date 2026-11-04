@@ -1,7 +1,7 @@
 {
   "identity": "account-method-alternatives",
   "file": "0256-account-method-alternatives.patch",
-  "content_sha256": "00977a6cb3c65bcaacbc9cc863151f75e52dd473978aad8a05bc895db666a9df",
+  "content_sha256": "308fd4a2bc136c65b354a5a2f4f7372915fcdb9a2782b3686c4f6010874ee7b7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -379,7 +379,7 @@ index af54ed9..b875913 100644
    };
  };
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b0b8335..d7b9d70 100644
+index b0b8335..76f8127 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,3 +1,4 @@
@@ -398,14 +398,14 @@ index b0b8335..d7b9d70 100644
    };
  });
  /** Keep only the checks of apps the caller can see. */
-@@ -275,6 +278,7 @@ export const connectAccount = (
-         scope: input.scope,
-         reason: "requirement",
-       });
+@@ -282,6 +285,7 @@ export const connectAccount = (
+         : yield* AccountGrants.reconnect.pipe(
+             Effect.provideService(AccountTargets.reconnect, { account: input.account }),
+           );
 +    yield* requireProviderConnectionTarget(app, input.requirement);
-     // A reconnect keeps the account where it is shared; a new account goes where the caller asks.
-     const reconnect =
-       input.account === undefined
+     const destination =
+       reconnect === undefined
+         ? (input.destination ?? ({ kind: "personal" } as const))
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
 index 4ec827d..e8d31d9 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts

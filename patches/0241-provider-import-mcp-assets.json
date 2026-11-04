@@ -1,7 +1,7 @@
 {
   "identity": "provider-import-mcp-assets",
   "file": "0241-provider-import-mcp-assets.patch",
-  "content_sha256": "827f17f9293e849d0db841b5124f5936b401500c3b064fc4a12f678ae27c2e73",
+  "content_sha256": "e01de715463bd3aa25d16b5f73bf30d58900b3c6139f4efaf7d8e97afb51fcf0",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
