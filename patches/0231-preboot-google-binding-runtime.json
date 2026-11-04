@@ -1,7 +1,7 @@
 {
   "identity": "basalt-preboot-google-binding-runtime",
   "file": "0231-preboot-google-binding-runtime.patch",
-  "content_sha256": "c06aa511fee94aecfd017231a1eb9bd522e2d649dc817e2f1ff5a6b4be7e54b4",
+  "content_sha256": "eb8b0c39ee97ebff6625f3f36f5562e221e6f8d41d1a337f6da02435634fb7ac",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

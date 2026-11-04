@@ -2,17 +2,6 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 index b548a9a1a..7e5bb2b9f 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -261,7 +261,9 @@ export const startCloudEnvironment = (input: {
-       ).pipe(Effect.asVoid, Effect.orDie),
-     );
-     const emulators = `${directory}/emulators.json`;
--    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
-+    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), {
-+      mode: 0o600,
-+    });
-     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
-     const analyticsPort = yield* startAnalyticsCollector(directory);
-     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
 @@ -646,9 +648,15 @@ export const startCloudEnvironment = (input: {
      const prebootBinding = process.env.BASALT_E2E_PREBOOT_BINDING;
      if (
