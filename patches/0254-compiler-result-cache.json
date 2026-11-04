@@ -1,7 +1,7 @@
 {
   "identity": "basalt-compiler-result-cache",
   "file": "0254-compiler-result-cache.patch",
-  "content_sha256": "9b6d8d079d1663b69fa4d78aafc33213919646b9df180343630c7b4938972614",
+  "content_sha256": "e959e5e103ec477c7746e510c50d2fdc12afc8773b0ffd931019071b1f98e34d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
