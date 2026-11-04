@@ -6,6 +6,6 @@
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "remove_with": "provider-import-mcp-assets",
+  "remove_with": "upstream-provider-import-mcp-assets",
   "requires": "MCP Apps browser assets match the account import contracts using Bun 1.4.2. Keep this refresh after earlier generated asset carries until the generated output is adopted upstream."
 }
