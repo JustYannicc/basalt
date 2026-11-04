@@ -47,7 +47,9 @@ export class ImportRemoval {
     recipient: string,
     target: string,
     approval?: unknown,
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     if (this.busy) throw new RemovalRefused();
     this.busy = true;
     try {
@@ -57,6 +59,7 @@ export class ImportRemoval {
         recipient,
         target,
         approval,
+        signal,
       );
     } finally {
       this.busy = false;
@@ -73,13 +76,15 @@ export class ImportRemoval {
     recipient: string,
     target: string,
     rawApproval: unknown,
+    signal?: AbortSignal,
   ) {
     const now = this.deps.now?.() ?? Date.now();
     const protect = (value: unknown) => protectArtifact(value, this.deps.secret, recipient, target);
     if (action === "prepare")
       return prepareRecovery(this.deps, selection, rawApproval, recipient, target);
-    if (action === "resume") return resumeRecovery(this.deps, selection, rawApproval, target);
-    if (action === "apply") return this.apply(selection, target, rawApproval, now);
+    if (action === "resume")
+      return resumeRecovery(this.deps, selection, rawApproval, target, signal);
+    if (action === "apply") return this.apply(selection, target, rawApproval, now, signal);
     if (action !== "inventory" && action !== "backup" && action !== "dry-run")
       throw new RemovalRefused(400);
     const snapshot = await readRemoval(this.deps, selection);
@@ -152,6 +157,7 @@ export class ImportRemoval {
     target: string,
     rawApproval: unknown,
     now: number,
+    signal?: AbortSignal,
   ) {
     const approval = Schema.decodeUnknownSync(Approval)(rawApproval);
     if (
@@ -200,7 +206,7 @@ export class ImportRemoval {
     };
     await saveReceipt(this.deps, key, receipt);
     return removalResult(
-      await executeRemoval(this.deps, selection, snapshot, receipt, key, plan.expiresAt),
+      await executeRemoval(this.deps, selection, snapshot, receipt, key, plan.expiresAt, signal),
       "apply",
       false,
     );

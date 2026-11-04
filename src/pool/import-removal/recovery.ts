@@ -184,6 +184,7 @@ export async function resumeRecovery(
   selection: RemovalSelection,
   raw: unknown,
   target: string,
+  signal?: AbortSignal,
 ) {
   const approval = Schema.decodeUnknownSync(Approval)(raw);
   if (
@@ -264,7 +265,7 @@ export async function resumeRecovery(
     throw executionFailure(error, "receipt", started);
   }
   return removalResult(
-    await executeRemoval(deps, selection, snapshot, receipt, key, plan.expiresAt),
+    await executeRemoval(deps, selection, snapshot, receipt, key, plan.expiresAt, signal),
     "resume",
     false,
   );

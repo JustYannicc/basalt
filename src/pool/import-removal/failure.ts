@@ -1,3 +1,5 @@
+import { PoolStartupDeadline } from "../lifecycle.ts";
+
 export const removalPhases = [
   "readiness",
   "snapshot",
@@ -28,6 +30,7 @@ export const homeCodes = [
   "invalid_request",
   "unauthorized",
   "forbidden",
+  "precondition_failed",
 ] as const;
 export interface RemovalDiagnostic {
   phase: (typeof removalPhases)[number];
@@ -109,7 +112,8 @@ export function executionFailure(
 ): RemovalExecutionFailure {
   if (error instanceof RemovalExecutionFailure) return error;
   const timeout =
-    error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    error instanceof PoolStartupDeadline ||
+    (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"));
   return new RemovalExecutionFailure({
     phase,
     code: timeout

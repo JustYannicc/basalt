@@ -23,6 +23,15 @@
             "mode": "manual",
             "requires": "Carry 0169 adapts Home upstream PR 168. Retire after the pinned Home returns atomically saved credential IDs from v8 OAuth completion, including the first plugin success poll, and passes the real Claude exchange, cross-handler receipt, cancellation, forced failure rollback, pending-secret purge, expiry and legacy-response regressions. No Executor storage or protocol change is required."
           }
+        },
+        {
+          "identity": "cliproxy-home-conditional-deletion",
+          "file": "0267-home-conditional-deletion.patch",
+          "sha256": "3ad72e2e39ed9342a819d63078d1d90057a9fdb17eebceb060fc1e4519895ac8",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after native Home exposes dedicated conditional credential and membership deletion routes which compare the approved PostgreSQL full-row checksum under the mutation lock, refuse stale rows without deletion, and pass refresh-race and unchanged-row deletion regressions."
+          }
         }
       ]
     },

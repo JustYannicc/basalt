@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, createHash } from "node:crypto";
 import { test } from "node:test";
 import pg from "pg";
 import { decryptArtifact } from "../production-ops/artifact.ts";
@@ -67,7 +67,7 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     const decrypt = (value: unknown) => JSON.parse(decryptArtifact(value, privateKey, target));
     const before = await read();
     const deletes = () => fixture.events.filter(event => event.method === "DELETE").length;
-    const initialDeletes = deletes();
+    let initialDeletes = deletes();
     const weakRecipient = generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ type: "spki", format: "der" }).toString("base64");
     await assert.rejects(invoke({ action: "backup", recipient: weakRecipient }), "Recovery recipients must retain the existing RSA 3072 minimum");
     const standalone = await invoke({ action: "backup" });
@@ -114,6 +114,55 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     await fixture.data("/credentials/status", "PATCH", { name: imports[1]!.id, disabled: true });
     assert.equal(deletes(), initialDeletes);
     dry = await invoke();
+    for (const kind of ["credential", "membership"] as const) {
+        const racedSnapshot = await read();
+        let refreshed = false;
+        operation = new ImportRemoval({
+          ...deps,
+          storage: new MemoryStorage(),
+          home: async (path, init) => {
+            if (!refreshed && (kind === "credential" || path.includes("channel-group-details"))) {
+              refreshed = true;
+              if (kind === "credential")
+                await sql!.query("UPDATE auth SET version=version+1 WHERE uuid=$1", [
+                  selection.remove[0]!.id,
+                ]);
+              else
+                await sql!.query("UPDATE channel_group_detail SET updated_at=now() WHERE id=$1", [
+                  racedSnapshot.memberships[0]!.id,
+                ]);
+            }
+            return client.response(path, init);
+          },
+        });
+        // Exercise a selected membership before credentials, so neither race probe consumes a row.
+        const row =
+          kind === "credential" ? racedSnapshot.credentials[0]! : racedSnapshot.memberships[0]!;
+        const path =
+          kind === "credential"
+            ? `/credentials/conditional?id=${row.id}`
+            : `/channel-group-details/${row.id}/conditional`;
+        if (kind === "credential") {
+          await assert.rejects(invoke(approve(dry)));
+        } else {
+          await sql!.query("UPDATE channel_group_detail SET updated_at=now() WHERE id=$1", [
+            row.id,
+          ]);
+          const stale = await client.response(path, {
+            method: "DELETE",
+            headers: { "if-match": `"${createHash("sha256").update(row.row).digest("hex")}"` },
+          });
+          assert.equal(stale.status, 412);
+          await stale.body?.cancel();
+        }
+        const survived = await read();
+        assert.ok(survived.credentials.every((row) => !row.deleted));
+        assert.ok(survived.memberships.every((row) => !row.deleted));
+        assert.deepEqual(survived.retain, before.retain);
+        operation = new ImportRemoval(deps);
+        dry = await invoke();
+      }
+      initialDeletes = deletes();
     const failedStorage = new MemoryStorage();
     operation = new ImportRemoval({ ...deps, storage: failedStorage, home: async () => new Response(null, { status: 503 }) });
     await assert.rejects(invoke(approve(dry)));
@@ -149,9 +198,9 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     assert.ok(after.credentials.every(row => row.deleted));
     assert.ok(after.memberships.every(row => row.deleted));
     assert.deepEqual(after.retain, before.retain);
-    const expectedPaths = [...selection.remove.map(row => `/v8/management/credentials?id=${row.id}`),
-      ...before.memberships.map(row => `/v8/management/channel-group-details/${row.id}`)].sort();
-    assert.deepEqual(fixture.events.filter(event => event.method === "DELETE").map(event => event.path).sort(), expectedPaths);
+    const expectedPaths = [...selection.remove.map(row => `/v8/management/credentials/conditional?id=${row.id}`),
+      ...before.memberships.map(row => `/v8/management/channel-group-details/${row.id}/conditional`)].sort();
+    assert.deepEqual(fixture.events.filter(event => event.method === "DELETE").slice(initialDeletes).map(event => event.path).sort(), expectedPaths);
     const repeated = await invoke({ ...approve(recovery), selection: importRecoveryName });
     assert.equal(repeated.repeated, true);
     assert.equal(deletes() - initialDeletes, 8);

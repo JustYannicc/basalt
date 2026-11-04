@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, createHash } from "node:crypto";
 import { decryptArtifact } from "./artifact.ts";
 import { productionOperation } from "./client.ts";
 import { MemoryStorage } from "../pool-tests/sharing-fixture.ts";
@@ -54,13 +54,25 @@ export function fixture() {
       readyCalls > calls.length,
       "Every DELETE must finish readiness before its deadline starts",
     );
-    calls.push(path);
     const url = new URL(path, "http://127.0.0.1");
-    const row =
-      url.pathname === "/credentials"
-        ? state.credentials.find((row) => row.id === url.searchParams.get("id"))
-        : state.memberships.find((row) => row.id === url.pathname.split("/").at(-1));
+    const row = url.pathname.startsWith("/credentials")
+      ? state.credentials.find((row) => row.id === url.searchParams.get("id"))
+      : state.memberships.find(
+          (row) =>
+            row.id ===
+            url.pathname
+              .split("/")
+              .filter((part) => part !== "conditional")
+              .at(-1),
+        );
     assert.ok(row);
+    if (url.pathname.endsWith("/conditional")) {
+      const expected = new Headers(init.headers).get("if-match");
+      const actual = `"${createHash("sha256").update(row.row).digest("hex")}"`;
+      if (expected !== actual)
+        return Response.json({ error: "precondition_failed" }, { status: 412 });
+    }
+    calls.push(path);
     row.deleted = true;
     row.row = JSON.stringify({ ...JSON.parse(row.row), deleted: true, version: 2 });
     return Response.json({ status: "ok" });
@@ -79,6 +91,7 @@ export function fixture() {
   const invoke = (
     action = "migrate",
     extra: Partial<Parameters<typeof productionOperation>[0]> = {},
+    signal?: AbortSignal,
   ) =>
     productionOperation(
       {
@@ -94,7 +107,12 @@ export function fixture() {
         ...extra,
       },
       async (_url, init) =>
-        handleImportRemoval(new Request(target, init), operation, secret, target),
+        handleImportRemoval(
+          new Request(target, { ...init, signal: signal ?? init?.signal }),
+          operation,
+          secret,
+          target,
+        ),
     );
   const approve = (previous: Record<string, unknown>) => {
     const artifact = previous.artifact;

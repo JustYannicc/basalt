@@ -87,6 +87,7 @@ export async function handleImportRemoval(
       signed.operation.recipient,
       target,
       signed.operation,
+      request.signal,
     );
     return Response.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

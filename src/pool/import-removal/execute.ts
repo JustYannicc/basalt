@@ -58,18 +58,19 @@ export async function executeRemoval(
   receipt: RemovalReceipt,
   key: string,
   expiresAt: number,
+  requestSignal?: AbortSignal,
 ) {
   let expected = initial;
   const steps = [
     ...selection.remove.map((row) => ({
       kind: "credential" as const,
       id: row.id,
-      path: `/credentials?id=${encodeURIComponent(row.id)}`,
+      path: `/credentials/conditional?id=${encodeURIComponent(row.id)}`,
     })),
     ...initial.memberships.map((row) => ({
       kind: "membership" as const,
       id: row.id,
-      path: `/channel-group-details/${row.id}`,
+      path: `/channel-group-details/${row.id}/conditional`,
     })),
   ];
   try {
@@ -78,14 +79,17 @@ export async function executeRemoval(
       const row = rows.find((row) => row.id === step.id);
       if (!row || !/^(?:[a-f0-9-]{36}|[1-9][0-9]*)$/.test(row.id)) throw new RemovalRefused();
       if (row.deleted) continue;
+      requestSignal?.throwIfAborted();
       let started = Date.now();
       try {
         await deps.ready();
+        requestSignal?.throwIfAborted();
       } catch (error) {
         throw executionFailure(error, "readiness", started, step.id);
       }
       // Warmup may refresh tokens. Such a change needs a newly reviewed plan, before any DELETE.
       const current = await readRemoval(deps, selection);
+      requestSignal?.throwIfAborted();
       if (canonical(current) !== canonical(expected) || (deps.now?.() ?? Date.now()) >= expiresAt)
         throw new RemovalExecutionFailure({
           phase: "snapshot",
@@ -95,12 +99,34 @@ export async function executeRemoval(
         });
       receipt.pending = { kind: step.kind, id: step.id, beforeSha256: sha256(row.row) };
       await saveReceipt(deps, key, receipt);
+      requestSignal?.throwIfAborted();
+      if ((deps.now?.() ?? Date.now()) >= expiresAt)
+        throw new RemovalExecutionFailure({
+          phase: "snapshot",
+          code: "snapshot_changed",
+          elapsedMs: 0,
+          rowId: step.id,
+        });
       started = Date.now();
       const phase = step.kind === "credential" ? "credential-delete" : "membership-delete";
-      const signal = AbortSignal.timeout(10_000);
+      const deadline = AbortSignal.timeout(10_000);
+      const signal = requestSignal ? AbortSignal.any([requestSignal, deadline]) : deadline;
       try {
         await homeResponse(async () => {
-          const response = await deps.home(step.path, { method: "DELETE", signal });
+          const response = await deps.home(step.path, {
+            method: "DELETE",
+            signal,
+            headers: { "if-match": `"${sha256(row.row)}"` },
+          });
+          if (response.status === 412) {
+            await response.body?.cancel();
+            throw new RemovalExecutionFailure({
+              phase,
+              code: "snapshot_changed",
+              elapsedMs: Date.now() - started,
+              rowId: step.id,
+            });
+          }
           if (!response.ok) throw await homeFailure(response, phase, started, step.id);
           await response.body?.cancel();
           return response;
