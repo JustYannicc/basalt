@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { classifyRefs } from "./classify.ts";
@@ -12,6 +12,7 @@ import {
 } from "./fixtures.test-helpers.ts";
 import {
   materializePatchManifest,
+  parsePatchRecord,
   parseRegistrySource,
   patchRecordPath,
   serializePatchLayout,
@@ -194,4 +195,44 @@ test("storage-only migration keeps exact-ref classification unchanged and ignore
   writeFileSync(join(root, "patches/0004-workflow.json"), JSON.stringify(patchManifest.patches[1]));
   unlinkSync(join(root, "patches/0001-review.json"));
   await assert.rejects(classifyRefs(root, head, commit(root)), /Missing or orphan/);
+});
+
+
+test("replacement provenance preserves its original digest and pin and rejects incomplete records", () => {
+  const original = patchManifest.patches[0]!;
+  const replacement = { ...original, rebased_from: "a".repeat(64), rebased_from_pin: "b".repeat(40) };
+  const file = original.file.replace(/\.patch$/, ".json");
+  assert.deepEqual(parsePatchRecord(JSON.stringify(replacement), file), replacement);
+  for (const invalid of [
+    { ...replacement, rebased_from: undefined },
+    { ...replacement, rebased_from_pin: undefined },
+    { ...replacement, rebased_from_pin: "main" },
+    { ...replacement, rebased_from: original.content_sha256 },
+  ]) assert.throws(() => parsePatchRecord(JSON.stringify(invalid), file));
+});
+
+
+test("filesystem loading verifies archived replacement bytes and identity", (context) => {
+  const root = makeReleaseRoot();
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const original = patchManifest.patches[0]!;
+  const pin = "b".repeat(40);
+  const archive = join(root, "patches/archive", pin);
+  mkdirSync(archive, { recursive: true });
+  const record = original.file.replace(/\.patch$/, ".json");
+  const originalBytes = readFileSync(join(root, "patches", original.file));
+  writeFileSync(join(archive, original.file), originalBytes);
+  writeFileSync(join(archive, record), JSON.stringify(original));
+  const nextBytes = Buffer.concat([originalBytes, Buffer.from("\n")]);
+  writeFileSync(join(root, "patches", original.file), nextBytes);
+  writeFileSync(join(root, "patches", record), JSON.stringify({
+    ...original, content_sha256: sha256PatchContent(nextBytes),
+    rebased_from: original.content_sha256, rebased_from_pin: pin,
+  }));
+  assert.equal(readPatchManifest(root).patches[0]!.rebased_from, original.content_sha256);
+  writeFileSync(join(archive, original.file), "changed");
+  assert.throws(() => readPatchManifest(root), /provenance mismatch/);
+  writeFileSync(join(archive, original.file), originalBytes);
+  writeFileSync(join(archive, record), JSON.stringify({ ...original, identity: "other-identity" }));
+  assert.throws(() => readPatchManifest(root), /provenance mismatch/);
 });

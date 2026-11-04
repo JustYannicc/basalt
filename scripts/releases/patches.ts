@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { GitHubApi } from "./github.ts";
@@ -27,6 +28,19 @@ export function readPatchManifest(root: string): PatchManifestV3 {
     }));
   const manifest = materializePatchManifest(source, files);
   if (manifest.pool_carries) assertPoolCarryManifestContent(manifest, readFileSync(join(root, manifest.pool_carries.manifest)));
+  for (const patch of manifest.patches) {
+    if (patch.rebased_from === undefined) continue;
+    const directory = join(root, "patches/archive", patch.rebased_from_pin!);
+    const originalPath = join(directory, patch.file);
+    const recordPath = join(directory, patch.file.replace(/\.patch$/, ".json"));
+    if (!lstatSync(originalPath).isFile() || !lstatSync(recordPath).isFile())
+      throw new Error(`Archived carry must be regular files: ${patch.file}`);
+    const digest = createHash("sha256").update(readFileSync(originalPath)).digest("hex");
+    const original = JSON.parse(readFileSync(recordPath, "utf8"));
+    if (digest !== patch.rebased_from || original.content_sha256 !== digest ||
+      original.identity !== patch.identity || original.file !== patch.file)
+      throw new Error(`Archived carry provenance mismatch: ${patch.file}`);
+  }
   return manifest;
 }
 

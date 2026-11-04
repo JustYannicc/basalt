@@ -20,6 +20,8 @@ export type ReleasePins = {
 };
 
 type PatchRecordBase = {
+  rebased_from?: string;
+  rebased_from_pin?: string;
   upstream_issue?: number;
   identity: string;
   file: string;
