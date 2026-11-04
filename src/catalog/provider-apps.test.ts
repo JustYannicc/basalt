@@ -9,7 +9,7 @@ import type { Feed } from "./feed.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
-test("OpenAI and Anthropic publish installable sources with the canonical saved-account identity", async () => {
+test("Supported providers publish installable sources with the canonical saved-account identity", async () => {
   const origin = "https://catalog.example.test";
   const feed = await (await handleCatalog(new Request(`${origin}/catalog/index.json`), async () =>
     Response.json({ version: 1, apps: [] }))).json() as Feed;
@@ -29,5 +29,5 @@ test("OpenAI and Anthropic publish installable sources with the canonical saved-
     assert.ok(declaration, `${lab} is missing its provider declaration`);
     assert.equal(declaration.content, readFileSync(`${root}src/pool/provider-accounts/definitions.ts`, "utf8"));
   }
-  assert.equal(providerApps.length, 2);
+  assert.equal(providerApps.length, providerAppLabs.length);
 });

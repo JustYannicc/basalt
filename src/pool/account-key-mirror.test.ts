@@ -75,6 +75,6 @@ test("oversized unsigned mirror bodies deliver at most one overflow byte before 
   const home = new HomeClient(async () => { calls++; return Response.json({}); });
   assert.equal((await handleAccountKeyMirror(incoming, { home, signingKey })).status, 413);
   assert.equal(cancelled, true);
-  assert.equal(delivered, 65_537);
+  assert.equal(delivered, 1_048_577);
   assert.equal(calls, 0);
 });

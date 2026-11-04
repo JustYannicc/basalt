@@ -215,7 +215,7 @@ export class HomeClient {
     changed?: () => Promise<void>) { this.fetchHome = fetchHome; this.clock = clock; this.changed = changed; }
   async response(path: string, init?: RequestInit): Promise<Response> {
     const mutation = init?.method !== undefined && !["GET", "HEAD"].includes(init.method.toUpperCase())
-      && /^(?:\/(?:credentials|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(path);
+      && /^(?:\/(?:credentials|config\/api-keys|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(path);
     if (mutation) await this.changed?.();
     try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); }
     catch {

@@ -1,0 +1,532 @@
+diff --git a/apps/hosted/server/src/implementation/account-key-mirror.ts b/apps/hosted/server/src/implementation/account-key-mirror.ts
+index af54ed9..738b5ff 100644
+--- a/apps/hosted/server/src/implementation/account-key-mirror.ts
++++ b/apps/hosted/server/src/implementation/account-key-mirror.ts
+@@ -10,13 +10,16 @@ import { signEnvelope } from "./pool-token.ts";
+ export const homeAccountKeyMirror = (options: {
+   readonly origin: string;
+   readonly signingKey: Redacted.Redacted<string>;
+-  readonly credential: JsonObject;
++  readonly credential:
++    | JsonObject
++    | ((context: AccountAcquisitionMirrorContext) => Promise<JsonObject>);
++  readonly removalCredential?: JsonObject;
+   /** Home field name -> existing account field name. */
+   readonly fields: Readonly<Record<string, string>>;
+ }) => {
+   if (
+-    "uuid" in options.credential ||
+-    "id" in options.credential ||
++    (typeof options.credential !== "function" &&
++      ("uuid" in options.credential || "id" in options.credential)) ||
+     Object.keys(options.fields).some((field) => ["uuid", "id", "type"].includes(field))
+   )
+     throw new Error("Account mirror mapping cannot replace its assigned identity");
+@@ -25,12 +28,13 @@ export const homeAccountKeyMirror = (options: {
+     action: "upsert" | "remove",
+     credential?: JsonObject,
+   ) => {
++    context.signal.throwIfAborted();
+     const at = Date.now();
+     const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
+       reference: Redacted.value(context.reference),
+       action,
+       at,
+-      expiresAt: at + 30_000,
++      expiresAt: Math.min(context.deadline, at + 30_000),
+       ...(credential === undefined ? {} : { credential }),
+     });
+     const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
+@@ -44,7 +48,13 @@ export const homeAccountKeyMirror = (options: {
+   return {
+     mirror: async (context: AccountAcquisitionMirrorContext) => {
+       const saved = Redacted.value(context.fields);
+-      const credential = { ...options.credential };
++      const credential = {
++        ...(typeof options.credential === "function"
++          ? await options.credential(context)
++          : options.credential),
++      };
++      if ("uuid" in credential || "id" in credential)
++        throw new Error("Account mirror cannot replace its assigned identity");
+       for (const [target, source] of Object.entries(options.fields)) {
+         const value = saved[source];
+         if (typeof value !== "string" || value.length === 0)
+@@ -53,6 +63,7 @@ export const homeAccountKeyMirror = (options: {
+       }
+       await send(context, "upsert", credential);
+     },
+-    remove: (context: AccountAcquisitionAccountContext) => send(context, "remove"),
++    remove: (context: AccountAcquisitionAccountContext) =>
++      send(context, "remove", options.removalCredential),
+   };
+ };
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+index 4350ccc..ee43288 100644
+--- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -22,6 +22,7 @@ import {
+   accountAcquisitionPrefix,
+ } from "./pool-account-acquisition-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
++import { providerMirror } from "./pool-provider-mirror.ts";
+ import { homeAccountKeyMirror } from "./account-key-mirror.ts";
+ 
+ /** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
+@@ -66,15 +67,22 @@ export const poolAccountAcquisition = (
+         return await response.json();
+       };
+       const oauth = capability.connection === "home-oauth";
+-      const mirror = homeAccountKeyMirror({
+-        origin,
+-        signingKey: secret,
+-        credential: { type: "typesafe" },
+-        fields: { token: "token" },
+-      });
++      const mirror =
++        capability.connection === "token-mirror"
++          ? homeAccountKeyMirror({
++              origin,
++              signingKey: secret,
++              credential: { type: "typesafe" },
++              fields: { token: "token" },
++            })
++          : providerMirror(capability, { origin, signingKey: secret });
+       const driver = accountAcquisitionDriver({
+         id: "basalt-home",
+-        revision: oauth ? "oauth-v1" : "key-mirror-v1",
++        revision: oauth
++          ? "oauth-v1"
++          : capability.connection === "token-mirror"
++            ? "key-mirror-v1"
++            : "provider-mirror-v1",
+         start: async (context, reconnect) => {
+           if (!oauth) throw new Error("This account uses its saved API-key connection");
+           return Schema.decodeUnknownSync(InteractiveStart)(
+@@ -98,23 +106,27 @@ export const poolAccountAcquisition = (
+           else await mirror.remove(context);
+         },
+         ...(oauth ? {} : { mirror: mirror.mirror }),
+-        observeAccount: async (context) => {
+-          const answer = await send(context, "observe", {
+-            reference: Redacted.value(context.reference),
+-          });
+-          const failure = Schema.Struct({ failure: ProviderError.fields.reason });
+-          if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
+-          const { result } = Schema.decodeUnknownSync(
+-            Schema.Struct({ result: Schema.NullOr(AccountObservationResult) }),
+-          )(answer);
+-          if (result === null) return undefined;
+-          return oauth
+-            ? result
+-            : {
+-                ...result,
+-                observation: { ...result.observation, offering: "metered_api" as const },
+-              };
+-        },
++        ...(capability.connection === "config-mirror"
++          ? {}
++          : {
++              observeAccount: async (context) => {
++                const answer = await send(context, "observe", {
++                  reference: Redacted.value(context.reference),
++                });
++                const failure = Schema.Struct({ failure: ProviderError.fields.reason });
++                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
++                const { result } = Schema.decodeUnknownSync(
++                  Schema.Struct({ result: Schema.NullOr(AccountObservationResult) }),
++                )(answer);
++                if (result === null) return undefined;
++                return oauth
++                  ? result
++                  : {
++                      ...result,
++                      observation: { ...result.observation, offering: "metered_api" as const },
++                    };
++              },
++            }),
+         ...(oauth
+           ? {
+               check: async (context: AccountAcquisitionAccountContext) => {
+diff --git a/apps/hosted/server/src/implementation/pool-provider-mirror.ts b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+new file mode 100644
+index 0000000..9d54ecb
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+@@ -0,0 +1,184 @@
++import type { AccountAcquisitionMirrorContext, JsonObject } from "@executor-js/sdk/core";
++import { Redacted } from "effect";
++import type { ProviderCapability } from "./pool-provider-capabilities.ts";
++import { homeAccountKeyMirror } from "./account-key-mirror.ts";
++
++const object = (value: unknown): value is JsonObject =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++const missing = (): never => {
++  throw new Error("Provider account configuration unavailable");
++};
++const nativeFamilies: Readonly<Record<string, string>> = {
++  openai: "codex",
++  anthropic: "claude",
++  gemini: "gemini",
++  vertex: "vertex",
++  xai: "xai",
++  meta: "meta",
++};
++function field(context: AccountAcquisitionMirrorContext, name: string): string {
++  const value = Redacted.value(context.fields)[name];
++  return typeof value === "string" && value.length > 0 ? value : missing();
++}
++async function read(
++  context: AccountAcquisitionMirrorContext,
++  url: string,
++  token: string,
++): Promise<JsonObject> {
++  const signal = AbortSignal.any([
++    context.signal,
++    AbortSignal.timeout(Math.max(1, Math.min(15_000, context.deadline - Date.now()))),
++  ]);
++  const response = await context.fetch(url, {
++    signal,
++    redirect: "error",
++    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
++  });
++  if (!response.ok) {
++    await response.body?.cancel();
++    return missing();
++  }
++  const reader = response.body?.getReader();
++  if (!reader) return missing();
++  const chunks: Uint8Array[] = [];
++  let size = 0;
++  try {
++    for (;;) {
++      const next = await reader.read();
++      if (next.done) break;
++      size += next.value.byteLength;
++      if (size > 2_000_000) return missing();
++      chunks.push(next.value);
++    }
++  } finally {
++    await reader.cancel();
++  }
++  const data = new Uint8Array(size);
++  let offset = 0;
++  for (const chunk of chunks) {
++    data.set(chunk, offset);
++    offset += chunk.byteLength;
++  }
++  const value: unknown = JSON.parse(new TextDecoder().decode(data));
++  return object(value) ? value : missing();
++}
++function models(value: unknown): JsonObject[] {
++  if (!Array.isArray(value) || !value.length || value.length > 2000) return missing();
++  const ids = value.map((row: unknown) => (object(row) ? row.id : undefined));
++  if (ids.some((id) => typeof id !== "string" || !id || id.length > 256)) return missing();
++  return [...new Set(ids)].map((id) => ({ name: String(id), alias: String(id) }));
++}
++async function cloudflare(
++  context: AccountAcquisitionMirrorContext,
++  method: string,
++  token: string,
++): Promise<JsonObject> {
++  const origin = "https://api.cloudflare.com/client/v4";
++  let accountId: string;
++  if (method === "accountToken") accountId = field(context, "accountId");
++  else {
++    const accounts = await read(context, `${origin}/accounts?per_page=2&page=1`, token);
++    if (
++      accounts.success !== true ||
++      !Array.isArray(accounts.result) ||
++      accounts.result.length !== 1 ||
++      !object(accounts.result[0]) ||
++      typeof accounts.result[0].id !== "string" ||
++      (object(accounts.result_info) &&
++        typeof accounts.result_info.total_count === "number" &&
++        accounts.result_info.total_count !== 1)
++    )
++      throw new Error(
++        "Choose an account API token when a user token can access multiple Cloudflare accounts",
++      );
++    accountId = accounts.result[0].id;
++  }
++  if (!/^[0-9a-f]{32}$/.test(accountId)) return missing();
++  const found: JsonObject[] = [];
++  for (let page = 1; page <= 20; page++) {
++    const result = await read(
++      context,
++      `${origin}/accounts/${accountId}/ai/models/search?per_page=100&page=${page}`,
++      token,
++    );
++    if (result.success !== true || !Array.isArray(result.result)) return missing();
++    for (const row of result.result) {
++      if (!object(row)) return missing();
++      if (
++        object(row.task) &&
++        (row.task.name === "Text Generation" || row.task.name === "text-generation") &&
++        typeof row.name === "string"
++      )
++        found.push({ id: row.name });
++    }
++    const info = object(result.result_info) ? result.result_info : undefined;
++    if (
++      (info && typeof info.total_pages === "number" && page >= info.total_pages) ||
++      result.result.length < 100
++    )
++      return { "base-url": `${origin}/accounts/${accountId}/ai/v1`, models: models(found) };
++  }
++  return missing();
++}
++
++export function providerMirror(
++  capability: ProviderCapability,
++  options: {
++    readonly origin: string;
++    readonly signingKey: Redacted.Redacted<string>;
++  },
++) {
++  const family = nativeFamilies[capability.lab] ?? "openai-compatibility";
++  const serviceAccount = capability.lab === "vertex" && capability.method === "serviceAccount";
++  return homeAccountKeyMirror({
++    ...options,
++    fields: {},
++    ...(serviceAccount ? {} : { removalCredential: { type: "config", family } }),
++    credential: async (context): Promise<JsonObject> => {
++      if (serviceAccount) {
++        const source = field(context, "serviceAccount");
++        if (source.length > 48_000) return missing();
++        const account: unknown = JSON.parse(source);
++        if (
++          !object(account) ||
++          account.type !== "service_account" ||
++          typeof account.project_id !== "string" ||
++          !account.project_id ||
++          typeof account.client_email !== "string" ||
++          !account.client_email ||
++          typeof account.private_key !== "string" ||
++          !account.private_key.startsWith("-----BEGIN PRIVATE KEY-----") ||
++          account.token_uri !== "https://oauth2.googleapis.com/token"
++        )
++          return missing();
++        return {
++          type: "vertex",
++          service_account: account,
++          project_id: account.project_id,
++          email: account.client_email,
++          location: "us-central1",
++        };
++      }
++      const token = field(context, "token");
++      let group: JsonObject = {};
++      if (capability.lab === "openai") group = { "base-url": "https://api.openai.com/v1" };
++      if (capability.lab === "cloudflare")
++        group = await cloudflare(context, capability.method, token);
++      if (capability.lab === "kimi" || capability.lab === "openrouter") {
++        const endpoint =
++          capability.lab === "kimi" ? "https://api.moonshot.ai/v1" : "https://openrouter.ai/api/v1";
++        const result = await read(context, `${endpoint}/models`, token);
++        group = { "base-url": endpoint, models: models(result.data) };
++      }
++      return {
++        type: "config",
++        family,
++        token,
++        group:
++          family === "openai-compatibility"
++            ? { ...group, name: `basalt-${capability.lab}-${Redacted.value(context.reference)}` }
++            : group,
++      };
++    },
++  });
++}
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+index c9ebab2..6ab4326 100644
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -8,6 +8,13 @@ const Source = Schema.Struct({
+   package: Schema.String,
+   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+ });
++const Mirror = Schema.Struct({
++  action: Schema.Literals(["upsert", "remove"]),
++  reference: Schema.String,
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++  credential: Schema.optional(Schema.Json),
++});
+ const Acquisition = Schema.Struct({
+   action: Schema.String,
+   provider: Schema.String,
+@@ -46,10 +53,42 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+           : file,
+     ),
+   });
++  const mirrors = yield* Ref.make<readonly (typeof Mirror.Type)[]>([]);
+   const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
+   const observation = yield* Ref.make<Schema.Json | null>(null);
+   const clockOffset = yield* Ref.make(0);
+   const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "POST",
++      "/pool/v1/account-mirrors",
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== "sbam1" ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const actual = Buffer.from(signature, "base64url");
++        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Mirror))(
++          Buffer.from(payload, "base64url").toString(),
++        );
++        const now = yield* Clock.currentTimeMillis;
++        if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
++          return HttpServerResponse.empty({ status: 401 });
++        yield* Ref.update(mirrors, (items) => [...items, input]);
++        return HttpServerResponse.jsonUnsafe(null);
++      }),
++    ),
+     HttpRouter.add(
+       "GET",
+       "/catalog/index.json",
+@@ -135,6 +174,7 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+     origin: `http://127.0.0.1:${server.address.port}`,
+     sources,
+     calls: Ref.get(calls),
++    mirrors: Ref.get(mirrors),
+     observation: (value: Schema.Json) => Ref.set(observation, value),
+     advance: (milliseconds: number) => Ref.update(clockOffset, (offset) => offset + milliseconds),
+   };
+diff --git a/e2e/tests/account-family-pools.spec.ts b/e2e/tests/account-family-pools.spec.ts
+index ade6ed5..1fc1f51 100644
+--- a/e2e/tests/account-family-pools.spec.ts
++++ b/e2e/tests/account-family-pools.spec.ts
+@@ -133,12 +133,10 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many().re
+             expect(response.status, JSON.stringify(response.body)).toBe(200);
+             return yield* body(Methods, response);
+           });
+-        expect((yield* methods(manager)).unavailable).toEqual([
+-          { requirement: "openai", method: "apiKey" },
+-        ]);
++        expect((yield* methods(manager)).unavailable).toEqual([]);
+         for (const pool of [first, second]) {
+           const unavailable = (yield* methods(pool)).unavailable;
+-          expect(unavailable).toContainEqual({ requirement: "openai", method: "apiKey" });
++          expect(unavailable).not.toContainEqual({ requirement: "openai", method: "apiKey" });
+           expect(unavailable).not.toContainEqual({ requirement: "openai", method: "codex" });
+         }
+         // Activation remains operator-owned; only this scenario's two actual pool apps are opted in.
+diff --git a/e2e/tests/provider-apps.spec.ts b/e2e/tests/provider-apps.spec.ts
+index 3c56f43..46ae3f0 100644
+--- a/e2e/tests/provider-apps.spec.ts
++++ b/e2e/tests/provider-apps.spec.ts
+@@ -9,6 +9,7 @@ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
+ import { providerMethodsUi } from "../support/provider-apps-ui.ts";
+ import { serverControl } from "../support/server-control.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Catalog = Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }));
+@@ -73,6 +74,17 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many(), a
+         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+         const pool = (yield* body(Resource, deployed)).id;
+         apps.push(pool);
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++            params: [
++              JSON.stringify({ fixture: { app: pool, membership: "executor-links-v1" } }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("start");
+         for (const [lab, method] of [
+           ["openai", "codex"],
+           ["anthropic", "claude"],
+@@ -106,22 +118,39 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many(), a
+             Methods,
+             yield* api.request(actors.owner, "GET", `${appPath}/accounts/methods`),
+           );
+-          expect(methods.unavailable.map((item) => item.method)).toEqual(["apiKey"]);
+-          const unsupportedCreation = crypto.randomUUID();
+-          expect(
+-            (yield* api.request(actors.owner, "POST", `${appPath}/accounts/app/${lab}`, {
+-              creation: unsupportedCreation,
++          expect(methods.unavailable).toEqual([]);
++          const keyCreation = crypto.randomUUID();
++          const createdKey = yield* api.request(
++            actors.owner,
++            "POST",
++            `${appPath}/accounts/app/${lab}`,
++            {
++              creation: keyCreation,
+               method: "apiKey",
+-              fields: { token: "synthetic-unsupported-key" },
+-            })).status,
+-          ).toBe(422);
++              fields: { token: `synthetic-${lab}-key` },
++            },
++          );
++          expect(createdKey.status, JSON.stringify(createdKey.body)).toBe(200);
++          const savedKey = (yield* body(Resource, createdKey)).id;
++          accounts.push(savedKey);
++          expect(JSON.stringify(createdKey.body)).not.toContain(`synthetic-${lab}-key`);
++          const keyPoolPath = `${prefix}/apps/${pool}/accounts/app/${lab}/${savedKey}`;
++          expect((yield* api.request(actors.owner, "PUT", keyPoolPath)).status).toBe(200);
++          const mirrored = yield* catalog.mirrors;
++          expect(mirrored.at(-1)).toMatchObject({
++            action: "upsert",
++            credential: {
++              type: "config",
++              family: lab === "openai" ? "codex" : "claude",
++              token: `synthetic-${lab}-key`,
++            },
++          });
++          expect(mirrored.at(-1)?.reference).toMatch(/^[0-9a-f-]{36}$/);
++          expect((yield* api.request(actors.owner, "PUT", keyPoolPath)).status).toBe(200);
++          expect(yield* catalog.mirrors).toHaveLength(mirrored.length);
+           expect(
+-            (yield* api.request(
+-              actors.owner,
+-              "GET",
+-              `${prefix}/accounts/acc_${unsupportedCreation}`,
+-            )).status,
+-          ).toBe(403);
++            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${savedKey}`)).status,
++          ).toBe(200);
+           const toolKey = yield* api.request(
+             actors.owner,
+             "POST",
+@@ -141,7 +170,7 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many(), a
+               "PUT",
+               `${appPath}/accounts/app/${lab}/${toolAccount}`,
+             )).status,
+-          ).toBe(422);
++          ).toBe(200);
+           expect(
+             (yield* api.request(actors.member, "GET", `${appPath}/accounts/methods`)).status,
+           ).toBe(403);
+@@ -159,8 +188,8 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many(), a
+               "POST",
+               `${prefix}/connections/${connection}/submit`,
+               {
+-                method: "apiKey",
+-                fields: { token: "synthetic-unsupported-key" },
++                method: "missing-method",
++                fields: { token: "synthetic-unknown-key" },
+               },
+             )).status,
+           ).toBe(422);
