@@ -1,68 +1,99 @@
-"""Keep only bounded Home error records after secret removal."""
+"""Project bounded Home error records onto a fixed diagnostic vocabulary."""
 
 from __future__ import annotations
 
-import base64
-import re
 import threading
 from collections import deque
-from collections.abc import Mapping
-from urllib.parse import unquote, urlsplit
 
-from .child_signals import HOME_LOG_LINE
+from .child_signals import HOME_INIT_FAILURE_PREFIXES, HOME_LOG_LINE
 
 
 MAX_TAIL_LINES = 8
 MAX_LINE_BYTES = 512
 MAX_INPUT_CHARS = 8192
-REDACTED = "[redacted]"
-SECRET_NAME = re.compile(r"key|token|secret|password|passwd|credential|dsn|url|auth|cookie", re.I)
-URI = re.compile(r"[a-z][a-z0-9+.-]*://[^\s<>\"']+", re.I)
-HEADER = re.compile(r"\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=].*", re.I)
-AUTH = re.compile(r"\b(?:Bearer|Basic)\s+[^\s,;]+", re.I)
-OPAQUE = re.compile(r"[a-zA-Z0-9_+/.=-]{24,}")
-EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+")
-ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-STRUCTURED_OR_QUOTED = re.compile(r"[{}\[\]\"'`\\]")
-ASSIGNMENT = re.compile(r"(?:^|\s)[a-zA-Z_][a-zA-Z0-9_.-]*\s*=")
-ERROR_LEVELS = frozenset(("error", "fatal", "panic"))
+LEVEL_PREFIXES = {"error": "error: ", "fatal": "fatal: ", "panic": "panic: "}
+PUNCTUATION = ("", ":", ",", ";", ".")
+UNKNOWN_TOKENS = {suffix: "<v>" + suffix for suffix in PUNCTUATION}
+
+# A subset of literals at Home eca75d6: cmd/home/main.go and
+# internal/cluster/{home_incarnation,coordinator,events,database_snapshot,management/auth}.go.
+HOME_ERROR_PHRASES = (
+    "http server error",
+    "listener accept error",
+    "cluster coordinator error",
+    "cluster event watcher error",
+    "Home incarnation is fenced",
+    "Home incarnation is not active",
+    "Home incarnation not found",
+    "cluster election found no live nodes",
+    "cluster coordinator is not initialized",
+    "cluster event watcher repository is nil",
+    "credential id cannot change",
+    "credential provider cannot change",
+    "decode database snapshot manifest",
+)
+
+# Go stdlib diagnostic literals: syscall/zerrors_linux_amd64.go,
+# internal/poll/fd.go, io/io.go, context/context.go, encoding/json,
+# crypto/{tls,x509} and net's operation names. No formatted values are included.
+GO_ERROR_PHRASES = (
+    "permission denied",
+    "no such file or directory",
+    "address already in use",
+    "connection refused",
+    "connection reset by peer",
+    "broken pipe",
+    "network is unreachable",
+    "i/o timeout",
+    "use of closed network connection",
+    "context canceled",
+    "context deadline exceeded",
+    "EOF unexpected EOF",
+    "invalid character looking for beginning of value",
+    "unexpected end of JSON input",
+    "json: cannot unmarshal into Go struct field of type",
+    "x509: certificate signed by unknown authority",
+    "x509: certificate has expired or is not yet valid",
+    "x509: certificate is valid for not",
+    "tls: handshake failure",
+    "tls: bad certificate",
+    "tls: internal error",
+    "tls: first record does not look like a TLS handshake",
+    "dial tcp udp unix connect read write open stat lstat mkdir rename remove listen accept lookup",
+)
+
+_words = frozenset(
+    word.rstrip(":,;.")
+    for phrase in (
+        *HOME_ERROR_PHRASES,
+        *GO_ERROR_PHRASES,
+        *(phrase for phrases in HOME_INIT_FAILURE_PREFIXES.values() for phrase in phrases),
+    )
+    for word in phrase.split()
+)
+ERROR_TOKENS = {word + suffix: word + suffix for word in _words for suffix in PUNCTUATION}
 
 
-def percent_decoded(value: str) -> str | None:
-    # Bound recursive encoding and refuse ambiguous or malformed leftovers.
-    for _ in range(3):
-        if "%" not in value:
-            return value
-        try:
-            decoded = unquote(value, errors="strict")
-        except UnicodeError:
-            return None
-        if decoded == value:
-            return None
-        value = decoded
-    return value if "%" not in value else None
+def project_error(message: str, prefix: str) -> str | None:
+    tokens = []
+    size = len(prefix)
+    known = False
+    for token in message.split():
+        approved = ERROR_TOKENS.get(token)
+        safe = approved if approved is not None else UNKNOWN_TOKENS.get(token[-1], "<v>")
+        if tokens and safe == tokens[-1] and safe.startswith("<v>"):
+            continue
+        next_size = size + len(safe) + bool(tokens)
+        if next_size > MAX_LINE_BYTES:
+            break
+        tokens.append(safe)
+        size = next_size
+        known = known or approved is not None
+    return prefix + " ".join(tokens) if known else None
 
 
 class HomeCrashTail:
-    def __init__(self, environment: Mapping[str, str]) -> None:
-        secrets = set()
-        for name, value in environment.items():
-            if value and SECRET_NAME.search(name):
-                secrets.update(part for part in (value, value.strip(), *value.splitlines()) if part)
-                try:
-                    uri = urlsplit(value)
-                    secrets.update(unquote(part) for part in (uri.username, uri.password) if part)
-                except ValueError:
-                    pass
-        variants = set(secrets)
-        for value in secrets:
-            decoded = percent_decoded(value)
-            if decoded:
-                variants.add(decoded)
-            for encode in (base64.b64encode, base64.urlsafe_b64encode):
-                encoded = encode(value.encode("utf-8")).decode("ascii")
-                variants.update((encoded, encoded.rstrip("=")))
-        self._secrets = sorted((value for value in variants if value), key=len, reverse=True)
+    def __init__(self) -> None:
         self._lines: deque[str] = deque(maxlen=MAX_TAIL_LINES)
         self._lock = threading.Lock()
         self._private_key = False
@@ -78,27 +109,15 @@ class HomeCrashTail:
                 return
             if len(line) >= MAX_INPUT_CHARS:
                 return
-            match = HOME_LOG_LINE.fullmatch(ANSI.sub("", line).strip())
-            if match is None or match["level"] not in ERROR_LEVELS:
+            match = HOME_LOG_LINE.fullmatch(line.strip())
+            if match is None:
                 return
-            message = percent_decoded(match["message"])
-            if message is None or STRUCTURED_OR_QUOTED.search(message):
+            prefix = LEVEL_PREFIXES.get(match["level"])
+            if prefix is None:
                 return
-            if any(not char.isprintable() or (not char.isascii() and not char.isalnum()) for char in message):
-                return
-            for secret in self._secrets:
-                message = message.replace(secret, REDACTED)
-            # Unknown fields are rejected as a whole, never guessed by their names.
-            if ASSIGNMENT.search(message):
-                return
-            safe = HEADER.sub(REDACTED, message)
-            safe = AUTH.sub(REDACTED, safe)
-            safe = URI.sub(REDACTED, safe)
-            safe = EMAIL.sub(REDACTED, safe)
-            safe = OPAQUE.sub(REDACTED, safe).strip()
-            if safe:
-                record = match["level"] + ": " + safe
-                self._lines.append(record.encode("utf-8")[:MAX_LINE_BYTES].decode("utf-8", errors="ignore"))
+            record = project_error(match["message"], prefix)
+            if record is not None:
+                self._lines.append(record)
 
     def snapshot(self) -> list[str]:
         with self._lock:

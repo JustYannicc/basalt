@@ -65,7 +65,7 @@ class Child:
         on_policy_probe: Callable[[str], None] | None = None,
     ) -> None:
         self.name = name
-        self.diagnostics = HomeCrashTail({**os.environ, **env}) if name == "home" else None
+        self.diagnostics = HomeCrashTail() if name == "home" else None
         self._on_policy_fused = on_policy_fused
         self._on_policy_probe = on_policy_probe
         self._fuse_parser = NativePolicyFuseParser()

@@ -98,12 +98,14 @@ class OutputPrivacyTests(unittest.TestCase):
         ]
         for payload in payloads:
             with self.subTest(payload=payload):
-                lines = [payload, self.home_log(payload), self.home_log("HTTP server stopped")]
+                reason = "cluster coordinator error: connection refused"
+                lines = [payload, self.home_log(payload), self.home_log(reason)]
                 snapshot, receipt, stdout, stderr = self.home_exit(lines)
                 for value in ("short-cookie", "short-pass!", "quoted-short-pass!", "backtick-pass!", "curly-quoted-pass!", "curly-single-pass!"):
                     self.assertNotIn(value, json.dumps(snapshot))
                     self.assertNotIn(value, stdout + stderr)
-                self.assertEqual(snapshot, ["fatal: HTTP server stopped"])
+                projected = ["fatal: credential <v>: <v>"] if payload.startswith("credential ") else []
+                self.assertEqual(snapshot, [*projected, "fatal: " + reason])
                 self.assertEqual(receipt["output_tail"], snapshot)
 
     def test_real_home_child_redacts_short_known_secret_encodings(self) -> None:
@@ -130,11 +132,11 @@ class OutputPrivacyTests(unittest.TestCase):
                     for value in forms:
                         self.assertNotIn(value, json.dumps(snapshot))
                         self.assertNotIn(value, stdout + stderr)
-                    self.assertEqual(snapshot, ["fatal: credential decode failed: [redacted]"])
+                    self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"])
                     self.assertEqual(receipt["output_tail"], snapshot)
 
     def test_home_error_tail_is_bounded_and_rejects_other_output(self) -> None:
-        lines = [self.home_log(f"fatal operation {index}") for index in range(20)] + [
+        lines = [self.home_log(f"cluster coordinator error: connection refused {index}") for index in range(20)] + [
             "panic: unformatted output",
             self.home_log("ordinary informational message", "info "),
             self.home_log("é" * 700),
@@ -153,6 +155,69 @@ class OutputPrivacyTests(unittest.TestCase):
             self.assertNotIn(value, json.dumps(snapshot))
             self.assertNotIn(value, stderr)
         self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in snapshot))
+
+    def test_real_home_child_bounds_whole_projected_tokens(self) -> None:
+        message = "failed to start HTTPS server: " + "permission " * 100 + "/run/unknown-secret"
+        snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)])
+        self.assertEqual(receipt["output_tail"], snapshot)
+        self.assertEqual(len(snapshot), 1)
+        self.assertLessEqual(len(snapshot[0].encode("utf-8")), 512)
+        self.assertTrue(snapshot[0].endswith(" permission"))
+        self.assertNotIn("unknown-secret", json.dumps(snapshot))
+        self.assertNotIn("unknown-secret", stdout + stderr)
+
+    def test_real_home_child_projects_unknown_colon_values_and_paths(self) -> None:
+        cases = [
+            ("failed to init runtime: access_token: short-pass!",
+                "fatal: failed to init runtime: <v>: <v>"),
+            ("failed to start HTTPS server: open /run/a!b: permission denied",
+                "fatal: failed to start HTTPS server: open <v>: permission denied"),
+        ]
+        for stream in ("stdout", "stderr"):
+            for message, expected in cases:
+                with self.subTest(stream=stream, message=message):
+                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], stream=stream)
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for value in ("access_token", "short-pass!", "/run/a!b", "a!b"):
+                        self.assertNotIn(value, json.dumps(snapshot))
+                        self.assertNotIn(value, stdout + stderr)
+
+    def test_real_home_child_projects_hex_base32_nested_and_split_encodings(self) -> None:
+        import base64
+
+        raw = b"fixture!"
+        encoded = base64.b64encode(raw)
+        unpadded = encoded.decode("ascii").rstrip("=")
+        fragments = [unpadded[index:index + 4] for index in range(0, len(unpadded), 4)]
+        forms = [
+            raw.hex(),
+            raw.hex().upper(),
+            base64.b32encode(raw).decode("ascii").rstrip("="),
+            base64.b64encode(encoded).decode("ascii"),
+            base64.b64encode(encoded).decode("ascii").rstrip("="),
+            " ".join(fragments),
+        ]
+        for value in forms:
+            with self.subTest(value=value):
+                snapshot, receipt, stdout, stderr = self.home_exit([
+                    self.home_log("credential decode failed: " + value),
+                ])
+                self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"])
+                self.assertEqual(receipt["output_tail"], snapshot)
+                for fragment in value.split():
+                    self.assertNotIn(fragment, json.dumps(snapshot))
+                    self.assertNotIn(fragment, stdout + stderr)
+        for pieces in (["fix", "ture!"], fragments):
+            with self.subTest(pieces=pieces):
+                snapshot, receipt, stdout, stderr = self.home_exit([
+                    self.home_log("credential decode failed: " + piece) for piece in pieces
+                ])
+                self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"] * len(pieces))
+                self.assertEqual(receipt["output_tail"], snapshot)
+                for piece in pieces:
+                    self.assertNotIn(piece, json.dumps(snapshot))
+                    self.assertNotIn(piece, stdout + stderr)
 
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()

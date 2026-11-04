@@ -235,10 +235,11 @@ model {
         Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
         child name, bounded numeric exit status and failure category before cleanup. Home exits also
         attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,
-        captured before startup-error projection and redacted before memory retention. Each is bounded
-        to 512 UTF-8 bytes. Structured or quoted values, oversized lines and private-key blocks are
-        omitted. Literal, base64, base64url and percent-encoded known secrets are removed regardless
-        of length or hex case; ambiguous encodings are rejected.
+        captured before startup-error projection. Before retention, every token is projected onto
+        fixed words from pinned runtime and standard-library error literals, fixed punctuation and
+        placeholders. Unknown fields, paths and encodings cannot add words to that vocabulary.
+        Each record is bounded to 512 bytes without partial tokens. Oversized lines and private-key
+        blocks are omitted. Dynamic details and text suppressed inside the runtime remain unavailable.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
         `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
@@ -263,7 +264,7 @@ model {
         libraries "socket|http.client"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight allowlisted formatter error records captured before count projection, with structured and quoted values rejected and literal or encoded known secrets removed before retention, bounded to 512 UTF-8 bytes each; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight formatter error records captured before count projection, projected onto fixed words from pinned Home and standard-library error literals, fixed punctuation and placeholders before retention, bounded to 512 bytes each without partial tokens; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"
