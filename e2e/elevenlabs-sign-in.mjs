@@ -54,7 +54,8 @@ const program = Effect.gen(function* () {
     BETTER_AUTH_SECRET: authSecret,
     EXECUTOR_NPM_REGISTRY: registry.url,
     EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
-    EXECUTOR_OAUTH_CLIENT_METADATA_URL: "https://elevenlabs-host.example/oauth/client-metadata.json",
+    EXECUTOR_OAUTH_CLIENT_METADATA_URL:
+      "https://elevenlabs-host.example/oauth/client-metadata.json",
     EXECUTOR_OAUTH_CALLBACK_URL: "https://elevenlabs-host.example/oauth/callback",
     EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify([fixture.rest, new URL(fixture.mcp).origin]),
   });
@@ -184,7 +185,13 @@ const program = Effect.gen(function* () {
     );
   }
   const tools = yield* request("GET", `${path}/tools/index`);
-  for (const name of ["fixture_read", "fixture_write", "list_voices", "generate_audio"])
+  for (const name of [
+    "fixture_read",
+    "fixture_write",
+    "list_voices",
+    "generate_audio",
+    "unclassified_audio",
+  ])
     check(
       `discover ${name}`,
       tools.items.some((item) => item.name === name),
@@ -206,6 +213,7 @@ const program = Effect.gen(function* () {
   for (const [tool, accountId] of [
     ["fixture_write", token.id],
     ["generate_audio", oauth.id],
+    ["unclassified_audio", oauth.id],
   ]) {
     const refused = yield* response("POST", `${path}/tools/call`, {
       tool,
@@ -240,7 +248,7 @@ const program = Effect.gen(function* () {
   );
   check(
     "MCP audio generation never ran",
-    fixture.calls.some((call) => call.tool === "generate_audio"),
+    fixture.calls.some((call) => ["generate_audio", "unclassified_audio"].includes(call.tool)),
     false,
   );
   check(

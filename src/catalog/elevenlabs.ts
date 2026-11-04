@@ -9,10 +9,14 @@ export function withElevenLabsSignIn(feed: Feed): Feed {
     ...feed,
     apps: feed.apps.map((entry): FeedEntry => {
       if (entry.id !== "elevenlabs") return entry;
-      if (entry.package !== elevenlabsSource.package) throw new Error("ElevenLabs catalog package changed");
+      if (entry.package !== elevenlabsSource.package)
+        throw new Error("ElevenLabs catalog package changed");
       return {
         ...entry,
-        auth: [{ method: "oauth", kind: "oauth2", label: "Sign in with ElevenLabs" }, ...entry.auth],
+        auth: [
+          { method: "oauth", kind: "oauth2", label: "Sign in with ElevenLabs" },
+          ...entry.auth,
+        ],
       };
     }),
   };

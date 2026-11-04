@@ -140,6 +140,31 @@ jobs:
             .generated/vercel-sign-in/ci/upstream-calls.json
             .generated/vercel-sign-in/ci/failure.txt
           if-no-files-found: warn
+  elevenlabs-sign-in:
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Verify ElevenLabs client metadata sign-in, retained tokens and audio approval
+        run: bun e2e/elevenlabs-sign-in.mjs .generated/elevenlabs-sign-in/ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: elevenlabs-sign-in
+          path: |
+            .generated/elevenlabs-sign-in/ci/report.json
+            .generated/elevenlabs-sign-in/ci/partial-results.json
+            .generated/elevenlabs-sign-in/ci/upstream-calls.json
+            .generated/elevenlabs-sign-in/ci/failure.txt
+          if-no-files-found: warn
   slack-health:
     runs-on: ubuntu-latest
     timeout-minutes: 10

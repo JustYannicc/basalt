@@ -37,12 +37,24 @@ export async function startElevenLabsFixture() {
   let product;
   let challenge;
   let issuedClient;
-  const scopes = ["convai_read", "convai_write", "text_to_speech", "speech_history_read", "flows", "image_video_generation", "voice_generation", "ads_read"];
-  const credential = (request) =>
-    request.headers["xi-api-key"] === "synthetic-elevenlabs-rest" ? "rest" :
-    ({
-            "Bearer synthetic-elevenlabs-oauth": "oauth",
-    })[request.headers.authorization] ?? (request.headers.authorization ? "other" : "none");
+  const scopes = [
+    "convai_read",
+    "convai_write",
+    "text_to_speech",
+    "speech_history_read",
+    "flows",
+    "image_video_generation",
+    "voice_generation",
+    "ads_read",
+  ];
+  const credential = (request) => {
+    const key = request.headers["xi-api-key"];
+    const bearer = request.headers.authorization;
+    if (key !== undefined && bearer !== undefined) return "mixed";
+    if (key === "synthetic-elevenlabs-rest") return "rest";
+    if (bearer === "Bearer synthetic-elevenlabs-oauth") return "oauth";
+    return key !== undefined || bearer !== undefined ? "other" : "none";
+  };
   const rest = await listen(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (documents.has(url.pathname)) return json(response, documents.get(url.pathname));
@@ -89,7 +101,9 @@ export async function startElevenLabsFixture() {
       challenge = url.searchParams.get("code_challenge");
       issuedClient = url.searchParams.get("client_id");
       assert.equal(issuedClient, "https://elevenlabs-host.example/oauth/client-metadata.json");
-      const metadataResponse = await fetch(`${product}/oauth/client-metadata.json`, { redirect: "manual" });
+      const metadataResponse = await fetch(`${product}/oauth/client-metadata.json`, {
+        redirect: "manual",
+      });
       assert.equal(metadataResponse.status, 200);
       const metadata = await metadataResponse.json();
       assert.equal(metadata.client_id, issuedClient);
@@ -105,7 +119,10 @@ export async function startElevenLabsFixture() {
     if (url.pathname === "/token") {
       const input = new URLSearchParams(await body(request));
       assert.equal(input.get("code"), "synthetic-elevenlabs-code");
-      assert.equal(createHash("sha256").update(input.get("code_verifier")).digest("base64url"), challenge);
+      assert.equal(
+        createHash("sha256").update(input.get("code_verifier")).digest("base64url"),
+        challenge,
+      );
       assert.equal(input.get("client_id"), issuedClient);
       issued++;
       return json(response, {
@@ -154,9 +171,14 @@ export async function startElevenLabsFixture() {
         tools: [
           {
             name: "list_voices",
-            description: "Read the synthetic project.",
+            description: "List the synthetic voices.",
             inputSchema: { type: "object", properties: {}, additionalProperties: false },
             annotations: { readOnlyHint: true },
+          },
+          {
+            name: "unclassified_audio",
+            description: "An audio tool with no read-only promise.",
+            inputSchema: { type: "object", properties: {}, additionalProperties: false },
           },
           {
             name: "generate_audio",
@@ -179,7 +201,9 @@ export async function startElevenLabsFixture() {
     rest: rest.origin,
     mcp: `${mcp.origin}/mcp`,
     documents,
-    setProduct: (origin) => { product = origin; },
+    setProduct: (origin) => {
+      product = origin;
+    },
     calls,
     registrations: () => registered,
     exchanges: () => issued,
