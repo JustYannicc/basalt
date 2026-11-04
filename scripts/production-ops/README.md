@@ -98,6 +98,18 @@ proofs. Decrypt that output privately and include the prepared, non-secret proof
 in the migration request. Tokens and credential references never belong in
 workflow inputs.
 
+Use `action=prepare`, `selection=google-client-diagnostics` with
+`request={"organization":"<organization-id>","accounts":["<exact-account-id>"]}`
+to distinguish operator-client availability from saved Google client provenance.
+The encrypted result contains `configuredClientAvailable` and an account-ID map
+of booleans: `savedClientPresent` means the saved authorization client ID exists,
+`firstPartyRegistrationMatches` means the saved registration names `google`, and
+`clientIdMatches` compares the saved ID with the configured Google client's ID.
+The flags are independent; no ID value, secret or token is returned. The operation
+accepts 1–50 distinct exact accounts in that organization and uses a SQL read-only
+transaction. It makes no provider request, refresh or account change. These flags
+do not establish grant health or authorize a reconnect.
+
 For a standalone encrypted snapshot use `action=backup` and select `accounts`,
 `pools`, `departures`, `reporters`, `workflows` or a registered migration name.
 Snapshots retain the complete affected tables as an encrypted restore superset;

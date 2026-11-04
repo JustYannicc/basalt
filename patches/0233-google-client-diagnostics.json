@@ -1,0 +1,9 @@
+{
+  "identity": "executor-google-client-diagnostics",
+  "file": "0233-google-client-diagnostics.patch",
+  "content_sha256": "609d1d70aefd44a6c05458cd192b51334c70c2245253d68afc4f78343d0a4ed6",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
