@@ -483,6 +483,9 @@ jobs:
       - name: Verify discarded rotated refresh revocation after account deletion
         timeout-minutes: 5
         run: node scripts/oauth-discard-tests/prove.ts
+      - name: Keep OAuth naming independent of account reads and health
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name 'OAuth naming stays editable while account details and health are pending'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
