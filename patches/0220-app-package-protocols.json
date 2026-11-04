@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-package-protocols",
+  "file": "0220-app-package-protocols.patch",
+  "content_sha256": "d9c7a3037c253316cf447365be14bd9f6c5b878dc15aaa7ce17945e29315da37",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
