@@ -1,5 +1,6 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
+import * as Command from "alchemy/Command";
 import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseInfrastructure } from "./database.ts";
@@ -31,7 +32,7 @@ export const poolWorker = Effect.gen(function* () {
   const application = yield* image.Application;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
-  return yield* Cloudflare.Worker("PoolWorker", {
+  const worker = yield* Cloudflare.Worker("PoolWorker", {
     main: fileURLToPath(new URL("./worker.ts", import.meta.url)),
     workersDev: false,
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
@@ -53,4 +54,25 @@ export const poolWorker = Effect.gen(function* () {
       })),
     },
   });
+  const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(Config.withDefault(""));
+  if (receiptPath) {
+    yield* Command.Exec("PoolImagePublicationReceipt", {
+      command: "node capture-pool-image.ts",
+      cwd: fileURLToPath(new URL("../../scripts/deploy-safety/", import.meta.url)),
+      env: {
+        BASALT_POOL_IMAGE_RECEIPT: receiptPath,
+        GITHUB_SHA: yield* Config.NonEmptyString("GITHUB_SHA"),
+        CLOUDFLARE_ACCOUNT_ID: application.accountId,
+        CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
+        POOL_APPLICATION_ID: application.applicationId,
+        POOL_IMAGE_INPUT_HASH: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
+        POOL_IMAGE_DIGEST: application.hash.pipe(Output.map((hash) => hash?.digest ?? "")),
+        POOL_IMAGE_REF: application.configuration.pipe(Output.map((configuration) => configuration.image)),
+        POOL_WORKER_READY: worker.workerName,
+      },
+      memo: false,
+      timeout: "1 minute",
+    });
+  }
+  return worker;
 });
