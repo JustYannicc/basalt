@@ -173,6 +173,64 @@ class OutputPrivacyTests(unittest.TestCase):
             ["home_boot", "config_apply", "node_launch", "initial_health"],
         )
 
+    def test_supervisor_names_the_child_that_exits_before_or_after_readiness(self) -> None:
+        for phase, category in (("initial_health", 4), ("runtime", 5)):
+            for name, exit_code in (("home", -9), ("node", 17)):
+                with self.subTest(phase=phase, child=name):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+
+                    def child(child_name: str, *args: Any) -> Any:
+                        exits = iter([None, exit_code] if phase == "runtime" else [exit_code])
+                        return SimpleNamespace(name=child_name, process=SimpleNamespace(
+                            poll=lambda: next(exits) if child_name == name else None,
+                        ))
+
+                    class PolicyMonitor:
+                        def __init__(self, *args: Any) -> None:
+                            pass
+
+                        def run(self, stop: Any) -> None:
+                            pass
+
+                    def ready_server(ready: readiness.Readiness) -> None:
+                        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+
+                    with (
+                        tempfile.TemporaryDirectory() as root,
+                        patch.object(supervisor, "ROOT", pathlib.Path(root)),
+                        patch.object(supervisor, "env_required", return_value=TOKEN_SENTINEL),
+                        patch.object(supervisor, "require_tmpfs"),
+                        patch.object(supervisor, "start_ready_server", side_effect=ready_server),
+                        patch.object(supervisor, "PolicyHealthMonitor", PolicyMonitor),
+                        patch.object(supervisor, "child_environment", return_value={}),
+                        patch.object(supervisor, "Child", side_effect=child),
+                        patch.object(supervisor, "wait_for_home", return_value="ready"),
+                        patch.object(supervisor, "apply_pool_config"),
+                        patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
+                        patch.object(supervisor, "check_services", return_value=True),
+                        patch.object(supervisor, "terminate_children"),
+                        redirect_stdout(stdout),
+                        redirect_stderr(stderr),
+                    ):
+                        self.assertEqual(supervisor.main(), 1)
+                    lines = stderr.getvalue().splitlines()
+                    marker, payload = lines[0].split(" ", 1)
+                    self.assertEqual(marker, "POOL_CHILD_EXIT")
+                    self.assertEqual(json.loads(payload), {"child": name, "exit_code": exit_code, "category": category})
+                    self.assert_closed_output(stdout.getvalue(), "\n".join(lines[1:]), [category],
+                        ["home_boot", "config_apply", "node_launch", "initial_health"])
+
+    def test_child_exit_diagnostic_rejects_unbounded_names_and_statuses(self) -> None:
+        from . import runtime_signals
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            runtime_signals.report_child_exit(TOKEN_SENTINEL, 1, runtime_signals.FailureCategory.RUNTIME)
+            runtime_signals.report_child_exit("home", True, runtime_signals.FailureCategory.RUNTIME)
+            runtime_signals.report_child_exit("home", 256, runtime_signals.FailureCategory.RUNTIME)
+            runtime_signals.report_child_exit("home", -256, runtime_signals.FailureCategory.RUNTIME)
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_startup_phase_record_uses_bounded_monotonic_offsets(self) -> None:
         from . import runtime_signals
 

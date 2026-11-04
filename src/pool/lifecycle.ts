@@ -55,7 +55,22 @@ export class PoolLifecycle {
 
   warm(): Promise<PoolStatus> {
     if (this.warming) return this.warming;
-    this.warming = this.ensureWarm().finally(() => { this.warming = undefined; });
+    const work = this.ensureWarm().finally(() => { if (this.warming === work) this.warming = undefined; });
+    this.warming = work;
+    return this.warming;
+  }
+
+  restart(): Promise<PoolStatus> {
+    const previous = this.warming;
+    const restart = (async () => {
+      // A pending warm must finish before destruction, or its retry loop could relaunch the old boot.
+      await previous?.catch(() => {});
+      await this.driver.stop();
+      this.served = false;
+      return this.ensureWarm();
+    })();
+    const work = restart.finally(() => { if (this.warming === work) this.warming = undefined; });
+    this.warming = work;
     return this.warming;
   }
 

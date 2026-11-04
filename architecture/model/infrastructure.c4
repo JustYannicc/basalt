@@ -1,5 +1,8 @@
 // Resource mappings are authored here; the deployment overlay is generated.
 model {
+  extend basalt.build {
+    metadata { resources "resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef" }
+  }
   extend basalt.catalog {
     metadata { resources "resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2" }
   }
@@ -209,8 +212,8 @@ model {
   }
   containerRegistry = adapter "Container registry" {
     #external
-    technology "Docker Hub"
-    metadata { hosts "registry-1.docker.io" }
+    technology "Docker Hub · Cloudflare"
+    metadata { hosts "registry-1.docker.io|registry.cloudflare.com" }
   }
   packageSource = adapter "Package source" {
     #external
@@ -220,6 +223,7 @@ model {
   basalt.build -[sync]-> releaseSource "download verified release sources and binaries"
   basalt.deployment -[sync]-> releaseSource "download CI actions"
   basalt.build -[sync]-> containerRegistry "pull pinned images"
+  basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
   basalt.build -[sync]-> packageSource "install build packages"
   basalt.deployment -[sync]-> packageSource "install deployment packages"
   basalt.deployment -[sync]-> deploymentProvider "provision source namespace"
