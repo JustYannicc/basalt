@@ -5,7 +5,7 @@ diff --git a/packages/apps/package.json b/packages/apps/package.json
  {
    "name": "apps",
 -  "version": "0.0.1-beta.104-basalt.4",
-+  "version": "0.0.1-beta.104-basalt.5",
++  "version": "0.0.1-beta.104-basalt.6",
    "private": true,
    "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
    "type": "module",

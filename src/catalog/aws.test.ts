@@ -36,7 +36,7 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, "module");
   assert.deepEqual(manifest.dependencies, {
-    apps: "0.0.1-beta.104-basalt.5",
+    apps: "0.0.1-beta.104-basalt.6",
     "@modelcontextprotocol/sdk": "1.32.1",
   });
   assert.deepEqual(provenance.dependencies, manifest.dependencies);
