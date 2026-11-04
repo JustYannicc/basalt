@@ -66,7 +66,9 @@ export function accountStatus(account: Account, sites: readonly { readonly id: s
     ...(reset && index === resetMeter ? { detail: text(reset, 256) } : {}),
   }));
   return {
-    accountInfo: identityOf(account, sites),
+    // A label that is only the account's id is the host's reference for it, which the host never
+    // shows, so a check that named it would be refused whole; such an account reports no identity.
+    ...(account.label === account.id ? {} : { accountInfo: identityOf(account, sites) }),
     status: {
       badges,
       meters,

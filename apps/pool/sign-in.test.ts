@@ -69,6 +69,12 @@ test("identity never undoes a connected sign-in", async () => {
     (await withIdentity(connected, async () => ({ ok: true, value: { accounts: [account as never] } }), sites)).accountInfo?.email,
     "someone@example.com",
   );
+  // A label that is only the account's id is its reference, so no identity is added.
+  const unnamed = { id: "a1", provider: "codex", label: "a1" };
+  assert.deepEqual(
+    await withIdentity(connected, async () => ({ ok: true, value: { accounts: [unnamed as never] } }), sites),
+    connected,
+  );
   // Malformed, refused, rejected and late answers all keep the connected result.
   assert.deepEqual(await withIdentity(connected, async () => ({ ok: true }), sites), connected);
   assert.deepEqual(await withIdentity(connected, async () => ({ ok: false }), sites), connected);
