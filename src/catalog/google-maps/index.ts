@@ -1,3 +1,4 @@
+import { catalog } from "../settings.ts";
 import type { Addition, FeedEntry } from "../feed.ts";
 import official from "./source.json" with { type: "json" };
 import hostedRoutes from "./hosted-routes.source.json" with { type: "json" };
@@ -55,7 +56,7 @@ const renderSource = (origin: string) => {
       };
       if (manifest.dependencies?.apps === undefined)
         throw new Error("The pinned Google Maps manifest has no apps dependency.");
-      manifest.dependencies.apps = "0.0.1-beta.104-basalt.1";
+      manifest.dependencies.apps = catalog.framework;
       return { ...file, content: `${JSON.stringify(manifest, null, 2)}\n` };
     }
     if (file.path === "README.md")

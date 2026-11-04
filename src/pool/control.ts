@@ -612,7 +612,7 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
   const action = accountActionPath.exec(path);
-  const routePath = action ? action[2] === "resets" ? "/accounts/:id/resets" : "/accounts/:id/action"
+  const routePath = action ? (action[2] === "resets" || action[2] === "resets/attempt") ? "/accounts/:id/resets" : "/accounts/:id/action"
     : /^\/accounts\/[^/]+\/observations\/refresh$/.test(path) ? "/accounts/:id/observations/refresh"
     : /^\/accounts\/[^/]+\/observations$/.test(path) ? "/accounts/:id/observations"
     : /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"

@@ -4,6 +4,7 @@ import { createHostedRoutesProvider } from "./google-maps/hosted-routes.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { catalog } from "./settings.ts";
 import { handleCatalog } from "./worker.ts";
 import { googleMapsAddition } from "./google-maps/index.ts";
 import { hostedRoutesProviderDefinition } from "./google-maps/provider.ts";
@@ -27,7 +28,7 @@ test("Maps source serves hosted Routes on this origin and preserves the official
   assert.ok(byPath.get("index.ts")!.includes(`createHostedRoutesProvider("${origin}")`));
   assert.doesNotMatch(byPath.get("index.ts")!, /other\.test/);
   assert.equal(byPath.get("hosted-routes.ts"), readFileSync(new URL("./google-maps/hosted-routes.ts", import.meta.url), "utf8"));
-  assert.equal(JSON.parse(byPath.get("package.json")!).dependencies.apps, "0.0.1-beta.104-basalt.1");
+  assert.equal(JSON.parse(byPath.get("package.json")!).dependencies.apps, catalog.framework);
 });
 
 test("Maps catalog replaces the official listing once and rejects a changed package identity", async () => {

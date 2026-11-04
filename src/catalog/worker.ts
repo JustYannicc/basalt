@@ -1,6 +1,7 @@
 import { withServiceIdentities } from "./service-identities.ts";
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
+import { onServedFramework } from "./framework.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
@@ -77,7 +78,7 @@ export async function handleCatalog(
       };
       body = JSON.stringify(withServiceIdentities(mergeFeed(feed, additions)));
     } else {
-      body = await response.text();
+      body = onServedFramework(await response.text());
     }
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {

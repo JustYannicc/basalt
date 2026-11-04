@@ -28,3 +28,13 @@ export interface ResetResult {
   readonly cooldownCleared: boolean;
   readonly usageRefreshQueued: boolean;
 }
+
+/** The latest durable attempt; reading it never retries provider or follow-up work. */
+export interface ResetAttempt extends ResetResult {
+  readonly provider: "codex" | "claude";
+  readonly creditId: string;
+  readonly startedAt: string;
+  /** The original provider idempotency window, including when its outcome remains unknown. */
+  readonly retryUntil: string;
+  readonly canRetryProvider: boolean;
+}
