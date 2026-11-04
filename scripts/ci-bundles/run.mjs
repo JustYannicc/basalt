@@ -43,6 +43,7 @@ async function bootstrap() {
       cwd, env: baseEnvironment,
       timeoutMs: Math.max(1, Math.max(...suites.map((suite) => suite.timeoutMs)) - (Date.now() - started)),
       log: join(output, "preparation.log"), monitor, suite: "shared-preparation",
+      echo: text === "node e2e/check-boundary.ts",
     });
     assert.equal(result.code, 0, `Shared preparation failed: ${text}`);
   }
