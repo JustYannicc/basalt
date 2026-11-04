@@ -234,6 +234,9 @@ model {
         stack. For child output, the supervisor forwards only closed numeric maintenance signals.
         Unexpected process exits emit POOL_CHILD_EXIT with only a closed home, node or home_import
         child name, bounded numeric exit status and failure category before cleanup.
+        A known startup exit retains exactly one closed receipt if its bounded reader drain
+        fails or exhausts the operation deadline. The drain failure stays terminal; it cannot
+        authorize another launch or publish readiness.
         A runtime Home exit 1 permits two replacement generations per supervisor lifetime,
         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
         Replacement rotates boot identity and requires fresh policy and service health.
