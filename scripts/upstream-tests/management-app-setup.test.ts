@@ -6,7 +6,7 @@ import { prepareManagementApp } from "../../.upstream/e2e/support/management-app
 import { SessionClients, type Session } from "../../.upstream/e2e/support/api.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
 
-test("management setup uses its scenario target when the ambient target has no scenario id", async () => {
+test("management setup uses its scenario target when the ambient target has no scenario id and dispatches before waiting", async () => {
   const base = Target.of({
     metadata: {
       target: "cloud",
@@ -27,16 +27,21 @@ test("management setup uses its scenario target when the ambient target has no s
     fixtures: { origin: "http://127.0.0.1:1234", token: Redacted.make("fixture") },
   });
   const target = Target.of({ ...base, scenarioId: "scenario-owned" });
-  const requests: string[] = [];
+  const requests: { method: string; path: string }[] = [];
+  let dispatched = false;
   const actor: Session = {
     cookies: Effect.succeed(Redacted.make([])),
     send: () => Effect.die("unexpected direct actor request"),
   };
   const clients = SessionClients.of({
     session: () => Effect.succeed(actor),
-    request: (_actor, _method, path) =>
+    request: (_actor, method, path) =>
       Effect.sync(() => {
-        requests.push(path);
+        requests.push({ method, path });
+        if (method === "POST" && path === "/api/onboarding/prepare") {
+          dispatched = true;
+          return { status: 200, body: { status: "ready" } };
+        }
         return {
           status: 200,
           body:
@@ -53,6 +58,7 @@ test("management setup uses its scenario target when the ambient target has no s
   const fixtureCalls: string[] = [];
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
+      assert.equal(dispatched, true, "readiness cannot finish before provisioning is dispatched");
       fixtureCalls.push(request.url);
       assert.equal(request.body._tag, "Uint8Array");
       if (request.body._tag === "Uint8Array")
@@ -73,7 +79,8 @@ test("management setup uses its scenario target when the ambient target has no s
   assert.equal(result.account, "account");
   assert.deepEqual(fixtureCalls, ["http://127.0.0.1:1234/management-provisioned"]);
   assert.deepEqual(requests, [
-    "/api/auth/get-session",
-    "/api/organizations/organization/inventory",
+    { method: "POST", path: "/api/onboarding/prepare" },
+    { method: "GET", path: "/api/auth/get-session" },
+    { method: "GET", path: "/api/organizations/organization/inventory" },
   ]);
 });
