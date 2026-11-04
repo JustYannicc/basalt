@@ -1,10 +1,4 @@
-import {
-  existsSync,
-  readFileSync,
-  symlinkSync,
-  lstatSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, symlinkSync, lstatSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -60,6 +54,7 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-te
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "clients")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
 const modules = join(root, "node_modules");
 if (!existsSync(modules)) symlinkSync(".upstream/apps/hosted/cloud/node_modules", modules, "dir");
