@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "id": "pr7-provider-pools",
+  "artifact": {
+    "name": "pr7-provider-pools.html",
+    "sha256": "c6ace5b8d5f7af188539d7703d8b789dd3709843917db17b714222910b43d5ab"
+  },
+  "requirements": [
+    {
+      "id": "shared-provider-account",
+      "text": "One saved provider account serves its management app and two pools without acquiring another account; unlinking one pool preserves the other pool and provider account.",
+      "proofs": [
+        {
+          "scenario": "accountFamilyPools",
+          "target": "self-host",
+          "job": "host-managed-accounts-cloud"
+        }
+      ]
+    },
+    {
+      "id": "provider-owned-selection",
+      "text": "Pool Accounts selects and unselects provider-owned saved accounts without a pool-owned Subscription or Login file section.",
+      "gap": {
+        "state": "open",
+        "owner": "Provider/pool owner",
+        "reason": "The HTTP account-family journey proves links and unlinking, but not the real Pool Accounts selection presentation or ownership labels."
+      }
+    },
+    {
+      "id": "unavailable-labs",
+      "text": "Unsupported labs appear in one Not available yet disclosure instead of full acquisition sections.",
+      "gap": {
+        "state": "open",
+        "owner": "Provider/pool owner",
+        "reason": "No registered browser scenario asserts the disclosure and its contents."
+      }
+    },
+    {
+      "id": "select-only-delta",
+      "text": "The pool links to the provider app for acquisition and only selects accounts already connected there.",
+      "gap": {
+        "state": "open",
+        "owner": "Provider/pool owner",
+        "reason": "The original PR7 mock retained a secondary Connect new account footer; the later accepted select-only delta needs its own browser assertions."
+      }
+    },
+    {
+      "id": "retained-adoption",
+      "text": "Existing pool-owned accounts remain accessible after exact-ID adoption into provider apps.",
+      "gap": {
+        "state": "open",
+        "owner": "Provider adoption owner",
+        "reason": "The account-family fixture starts with provider ownership and does not prove retained-account adoption."
+      }
+    }
+  ],
+  "approvalDeltas": [
+    "Later accepted select-only contract r3 replaces the original mock's secondary Connect new account footer; it is an approval delta, not behavior attributed to the pinned original HTML."
+  ]
+}

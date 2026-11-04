@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import ts from "typescript";
+import { declaredScenarios, implementsScenario } from "./mock-scenarios.ts";
 import { parseDocument } from "yaml";
 
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -13,7 +13,13 @@ type Proof = { scenario: string; target: string; job: string };
 type Contract = {
   id: string;
   artifact: { name: string; sha256: string };
-  requirements: { id: string; text: string; proofs: Proof[] }[];
+  requirements: {
+    id: string;
+    text: string;
+    proofs: Proof[];
+    gap?: { state: "open"; owner: string; reason: string };
+  }[];
+  approvalDeltas: string[];
 };
 
 export function parseMockContract(value: unknown): Contract {
@@ -26,6 +32,9 @@ export function parseMockContract(value: unknown): Contract {
     !/^[a-z0-9][a-z0-9.-]+\.html$/.test(value.artifact.name) ||
     typeof value.artifact.sha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.artifact.sha256) ||
+    (value.approvalDeltas !== undefined &&
+      (!Array.isArray(value.approvalDeltas) ||
+        value.approvalDeltas.some((delta) => typeof delta !== "string" || !delta.trim()))) ||
     !Array.isArray(value.requirements) ||
     !value.requirements.length
   )
@@ -35,11 +44,30 @@ export function parseMockContract(value: unknown): Contract {
       !object(requirement) ||
       !word(requirement.id) ||
       typeof requirement.text !== "string" ||
-      !requirement.text.trim() ||
-      !Array.isArray(requirement.proofs) ||
-      !requirement.proofs.length
+      !requirement.text.trim()
     )
       throw new Error("Every approved requirement needs a named behavioral proof");
+    if (requirement.gap !== undefined) {
+      const gap = requirement.gap;
+      if (
+        requirement.proofs !== undefined ||
+        !object(gap) ||
+        gap.state !== "open" ||
+        typeof gap.owner !== "string" ||
+        !gap.owner.trim() ||
+        typeof gap.reason !== "string" ||
+        !gap.reason.trim()
+      )
+        throw new Error("An open gap needs an owner and reason, without claimed proofs");
+      return {
+        id: requirement.id,
+        text: requirement.text,
+        proofs: [],
+        gap: { state: "open" as const, owner: gap.owner, reason: gap.reason },
+      };
+    }
+    if (!Array.isArray(requirement.proofs) || !requirement.proofs.length)
+      throw new Error("Every approved requirement needs a behavioral proof or explicit open gap");
     const proofs = requirement.proofs.map((proof: unknown) => {
       if (
         !object(proof) ||
@@ -60,71 +88,8 @@ export function parseMockContract(value: unknown): Contract {
     id: value.id,
     artifact: { name: value.artifact.name, sha256: value.artifact.sha256 },
     requirements,
+    approvalDeltas: (value.approvalDeltas ?? []) as string[],
   };
-}
-
-const propertyName = (name: ts.PropertyName) =>
-  ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
-const properties = (node: ts.Node | undefined) =>
-  new Map(
-    node && ts.isObjectLiteralExpression(node)
-      ? node.properties.flatMap((property) =>
-          ts.isPropertyAssignment(property)
-            ? [[propertyName(property.name), property.initializer] as const]
-            : [],
-        )
-      : [],
-  );
-
-function declaredScenarios(source: string) {
-  const file = ts.createSourceFile("test-plan.ts", source, ts.ScriptTarget.Latest, true);
-  const scenarios = new Map<string, { file: string; title: string; targets: string[] }>();
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      node.name.getText(file) === "scenarios" &&
-      node.initializer &&
-      ts.isCallExpression(node.initializer) &&
-      node.initializer.expression.getText(file) === "plan"
-    ) {
-      for (const [key, entry] of properties(node.initializer.arguments[0])) {
-        const fields = properties(entry),
-          path = fields.get("file"),
-          title = fields.get("title");
-        if (key && path && title && ts.isStringLiteral(path) && ts.isStringLiteral(title))
-          scenarios.set(key, {
-            file: path.text,
-            title: title.text,
-            targets: [...properties(fields.get("targets"))].flatMap(([target, value]) =>
-              target && ts.isIdentifier(value) && value.text === "scheduled" ? [target] : [],
-            ),
-          });
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return scenarios;
-}
-
-function implementsScenario(source: string, key: string) {
-  const file = ts.createSourceFile("scenario.ts", source, ts.ScriptTarget.Latest, true);
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === "effect" &&
-      node.expression.expression.getText(file) === "it" &&
-      node.arguments.length >= 2 &&
-      node.arguments[0]!.getText(file) === `scenarios.${key}.title` &&
-      (ts.isArrowFunction(node.arguments[1]!) || ts.isFunctionExpression(node.arguments[1]!))
-    )
-      found = true;
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
 }
 
 // Only literal selectors in required steps establish coverage. Indirect or computed
@@ -155,6 +120,29 @@ function runsScenario(job: Record<string, unknown>, proof: Proof, title: string)
   });
 }
 
+function enforcesAggregate(job: Record<string, unknown>) {
+  return (
+    job.if === "always()" &&
+    job["continue-on-error"] === undefined &&
+    job.defaults === undefined &&
+    Array.isArray(job.steps) &&
+    job.steps.some(
+      (step: unknown) =>
+        object(step) &&
+        step.if === undefined &&
+        step["continue-on-error"] === undefined &&
+        step["working-directory"] === undefined &&
+        step.shell === undefined &&
+        typeof step.run === "string" &&
+        step.run.trim() === "node scripts/ci/gate.ts" &&
+        object(step.env) &&
+        step.env.CI_NEEDS === "${{ toJSON(needs) }}" &&
+        step.env.CI_JOBS === "${{ needs.select.outputs.jobs }}" &&
+        step.env.CI_BOAT_JOBS === "${{ needs.select.outputs.boat_jobs }}",
+    )
+  );
+}
+
 export function mockConformanceErrors(root: string, requiredJobs: readonly string[]) {
   const directory = join(root, "e2e/conformance");
   if (!existsSync(directory)) return ["Approved-mock registry is missing"];
@@ -174,7 +162,9 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
     !object(data) ||
     !object(data.jobs) ||
     !object(data.jobs.check) ||
-    !Array.isArray(data.jobs.check.needs)
+    !Array.isArray(data.jobs.check.needs) ||
+    data.defaults !== undefined ||
+    !enforcesAggregate(data.jobs.check)
   )
     return ["Required aggregate CI gate is missing"];
   const jobs = data.jobs,
@@ -217,4 +207,25 @@ export function mockConformanceErrors(root: string, requiredJobs: readonly strin
       }
   }
   return errors;
+}
+
+export function mockConformanceGaps(root: string) {
+  const directory = join(root, "e2e/conformance");
+  return readdirSync(directory)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .flatMap((file) => {
+      const contract = parseMockContract(JSON.parse(readFileSync(join(directory, file), "utf8")));
+      return contract.requirements.flatMap((requirement) =>
+        requirement.gap
+          ? [
+              {
+                contract: contract.id,
+                requirement: requirement.id,
+                ...requirement.gap,
+              },
+            ]
+          : [],
+      );
+    });
 }
