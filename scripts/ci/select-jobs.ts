@@ -5,11 +5,15 @@ import { heavyJobs } from "./areas.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");
+const fast = process.argv.includes("--fast");
+if (full && fast) throw new Error("Choose one CI lane");
 let selection;
 try {
   const { changed, inputs } = full
     ? { changed: [], inputs: [] }
-    : changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "");
+    : fast
+      ? { changed: [], inputs: [] }
+      : changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "");
   selection = { ...selectPaths(inputs), changed, inputs, full };
   if (full) selection.jobs = [...heavyJobs];
 } catch {
@@ -23,7 +27,10 @@ writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    "jobs=" +
+    "full_suite=" +
+      String(routed.full) +
+      "\n" +
+      "jobs=" +
       JSON.stringify(routed.jobs) +
       "\n" +
       "hosted_jobs=" +
@@ -39,7 +46,12 @@ if (process.env.GITHUB_OUTPUT)
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    "Selected " +
+    (routed.full
+      ? "Full suite.\n\n"
+      : fast
+        ? "PR fast lane. Heavy suites were not run.\n\n"
+        : "Affected suites.\n\n") +
+      "Selected " +
       selection.jobs.length +
       " of " +
       heavyJobs.length +
