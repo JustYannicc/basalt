@@ -1,0 +1,311 @@
+diff --git a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+index a439227..2d618ee 100644
+--- a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+@@ -1,4 +1,4 @@
+-import { useState } from "react";
++import { useRef, useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { AssistantGuideSteps, EndpointField } from "@executor-js/ui/dashboard/connect";
+ import { PoolSelect } from "./computer-quick-setup.tsx";
+@@ -7,8 +7,8 @@ import { computerName, type PoolKey, type PoolSetup } from "./pool-setup.tsx";
+ /*
+  * Claude Desktop runs on a pool through its third-party inference mode. That mode has no claude.ai
+  * account, so its connectors come from the same configuration: the deployment's MCP server with
+- * OAuth sign-in, never a stored token. Anthropic documents Import configuration only for files
+- * holding bootstrap keys, so the steps lead and the file is offered as untested.
++ * OAuth sign-in, never a stored tools token. The downloaded fields match the documented settings;
++ * native Desktop acceptance of this full static configuration has not been proven.
+  */
+ 
+ /** The fields the in-app configuration window writes, as its exported JSON config names them. */
+@@ -46,26 +46,37 @@ export function ClaudeDesktopSetup({
+   readonly server: string;
+   readonly mcpUrl: string;
+ }) {
+-  const [issued, setIssued] = useState<PoolKey>();
++  const [issued, setIssued] = useState<{
++    readonly pool: string | undefined;
++    readonly key: PoolKey;
++  }>();
++  const issuing = useRef(false);
++  const current = issued?.pool === setup.pool ? issued?.key : undefined;
+   const [busy, setBusy] = useState(false);
+   const [problem, setProblem] = useState<string>();
+-  const create = async () => {
++  const create = async (saveFile: boolean) => {
++    if (issuing.current) return;
++    issuing.current = true;
+     setBusy(true);
+     setProblem(undefined);
+     try {
+-      setIssued(await setup.issueKey(`${computerName()} · Claude Desktop`));
++      const pool = setup.pool;
++      const key = current ?? (await setup.issueKey(`${computerName()} · Claude Desktop`));
++      setIssued({ pool, key });
++      if (saveFile) download("claude-desktop-config.json", desktopConfig(key, server, mcpUrl));
+     } catch (error) {
+       setProblem(setup.failure(error));
+     }
++    issuing.current = false;
+     setBusy(false);
+   };
+   return (
+     <>
+-      <div className="flex flex-wrap items-center gap-2">
++      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+         <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">Models from</span>
+-        <PoolSelect setup={setup} />
+-        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create()}>
+-          {issued ? "Create another key" : "Create key"}
++        <PoolSelect setup={setup} disabled={busy} />
++        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create(true)}>
++          Download setup file
+         </Button>
+       </div>
+       {problem ? (
+@@ -74,59 +85,54 @@ export function ClaudeDesktopSetup({
+         </p>
+       ) : (
+         <p className="mt-3 text-[13px] leading-5 text-muted-foreground">
+-          {issued
+-            ? "Your key is shown only now. It's listed under Connected agents, where you can revoke it."
+-            : "Creates a key for Claude Desktop on this computer, then shows the steps."}
++          {current
++            ? "Open Developer › Configure Third-Party Inference in Claude Desktop, import this file, then apply the changes. Revoke its key under Connected agents."
++            : "Downloads your pool connection and tools configuration."}
+         </p>
+       )}
+-      {issued && (
+-        <>
+-          <AssistantGuideSteps
+-            className="mt-4"
+-            guide={{
+-              steps: [
+-                <>
+-                  In Claude Desktop, open <Ui>Help › Troubleshooting › Enable Developer Mode</Ui>,
+-                  then <Ui>Developer › Configure Third-Party Inference</Ui>.
+-                </>,
+-                <>
+-                  Under <Ui>Connection</Ui>, choose <Ui>Gateway</Ui> and paste this base URL.
+-                  <EndpointField endpoint={issued.baseUrl} label="Copy base URL" />
+-                </>,
+-                <>
+-                  Keep <Ui>Static API key</Ui> and the <Ui>Bearer</Ui> auth scheme, and paste this
+-                  key. Leave model discovery on; your pool&rsquo;s models fill the picker.
+-                  <EndpointField endpoint={issued.key} label="Copy key" />
+-                </>,
+-                <>
+-                  Under <Ui>MCP servers</Ui>, add <Ui>{server}</Ui> as a Streamable HTTP server with
+-                  this URL and OAuth sign-in.
+-                  <EndpointField endpoint={mcpUrl} />
+-                </>,
+-                <>
+-                  Click <Ui>Apply Changes</Ui>, then <Ui>Save & Restart</Ui>, and choose the
+-                  third-party option at sign-in.
+-                </>,
+-              ],
+-            }}
+-          />
+-          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-3">
+-            <Button
+-              variant="outline"
+-              size="sm"
+-              onClick={() =>
+-                download("claude-desktop-config.json", desktopConfig(issued, server, mcpUrl))
+-              }
+-            >
+-              Download setup file
+-            </Button>
+-            <span className="text-xs leading-5 text-muted-foreground">
+-              Untested: load it with <Ui>Import configuration</Ui> in the same window instead of
+-              steps 2 to 4.
+-            </span>
+-          </div>
+-        </>
+-      )}
++      <details className="mt-4 min-w-0 border-t pt-3">
++        <summary className="cursor-pointer text-[13px] font-medium text-foreground">
++          Set it up by hand
++        </summary>
++        {!current && (
++          <Button size="sm" loading={busy} disabled={busy} onClick={() => void create(false)}>
++            Create key
++          </Button>
++        )}
++        {current && (
++          <>
++            <AssistantGuideSteps
++              className="mt-4"
++              guide={{
++                steps: [
++                  <>
++                    In Claude Desktop, open <Ui>Help › Troubleshooting › Enable Developer Mode</Ui>,
++                    then <Ui>Developer › Configure Third-Party Inference</Ui>.
++                  </>,
++                  <>
++                    Under <Ui>Connection</Ui>, choose <Ui>Gateway</Ui> and paste this base URL.
++                    <EndpointField endpoint={current.baseUrl} label="Copy base URL" />
++                  </>,
++                  <>
++                    Keep <Ui>Static API key</Ui> and the <Ui>Bearer</Ui> auth scheme, and paste this
++                    key. Leave model discovery on; your pool&rsquo;s models fill the picker.
++                    <EndpointField endpoint={current.key} label="Copy key" />
++                  </>,
++                  <>
++                    Under <Ui>MCP servers</Ui>, add <Ui>{server}</Ui> as a Streamable HTTP server
++                    with this URL and OAuth sign-in.
++                    <EndpointField endpoint={mcpUrl} />
++                  </>,
++                  <>
++                    Click <Ui>Apply Changes</Ui>, then <Ui>Save & Restart</Ui>, and choose the
++                    third-party option at sign-in.
++                  </>,
++                ],
++              }}
++            />
++          </>
++        )}
++      </details>
+       <p className="mt-3 text-xs leading-5 text-muted-foreground">
+         Claude Desktop then runs on your pool in its third-party mode: chats stay on this computer,
+         with no claude.ai or mobile access, sharing or voice.
+diff --git a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+index 36b483c..b0e22a0 100644
+--- a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+@@ -10,10 +10,20 @@ import { Spinner } from "@executor-js/ui/components/spinner";
+ import { poolLabel, type PoolSetup } from "./pool-setup.tsx";
+ 
+ /** Which pool a new computer's models run on. */
+-export function PoolSelect({ setup }: { readonly setup: PoolSetup }) {
++export function PoolSelect({
++  setup,
++  disabled = false,
++}: {
++  readonly setup: PoolSetup;
++  readonly disabled?: boolean;
++}) {
+   const pools = setup.view?.pools ?? [];
+   return (
+-    <Select value={setup.pool ?? ""} onValueChange={setup.setPool} disabled={!pools.length}>
++    <Select
++      value={setup.pool ?? ""}
++      onValueChange={setup.setPool}
++      disabled={disabled || !pools.length}
++    >
+       <SelectTrigger size="sm" aria-label="Pool for models" className="w-44 text-xs">
+         <SelectValue placeholder="Your pool" />
+       </SelectTrigger>
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+index 3904ce6..903087b 100644
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -5,7 +5,7 @@
+  * deployment's own Worker, so the scenario stands in for it with a small fake.
+  */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, FileSystem } from "effect";
+ import type { Page, Route } from "playwright";
+ import { scenarios } from "../test-plan.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -335,27 +335,83 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Its limits are stated up front", (page) =>
+           guide(page, "Claude Desktop").getByText("third-party mode", { exact: false }).waitFor(),
+         );
+-        yield* browser.checkpoint("Claude Desktop: before a key");
+-        yield* browser.use("Create a key", (page) =>
+-          guide(page, "Claude Desktop").getByRole("button", { name: "Create key" }).click(),
+-        );
+-        yield* browser.use("The steps show the key once", (page) =>
+-          guide(page, "Claude Desktop").getByText("sk-fake-pool-key").waitFor(),
++        const fs = yield* FileSystem.FileSystem;
++        yield* browser.use("Use phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
+         );
++        const manual = () =>
++          browser.use("Manual steps stay collapsed", (page) =>
++            guide(page, "Claude Desktop")
++              .getByText("Set it up by hand", { exact: true })
++              .evaluate((element) => element.parentElement?.hasAttribute("open")),
++          );
++        expect(yield* manual()).toBe(false);
++        const download = () =>
++          browser.use("One click issues and downloads setup", async (page) => {
++            const [file] = await Promise.all([
++              page.waitForEvent("download"),
++              guide(page, "Claude Desktop")
++                .getByRole("button", { name: "Download setup file", exact: true })
++                .click(),
++            ]);
++            return { name: file.suggestedFilename(), path: await file.path() };
++          });
++        const file = yield* download();
++        expect(file.name).toBe("claude-desktop-config.json");
++        if (file.path === null) return yield* Effect.die("Download has no local file");
++        const text = yield* fs.readFileString(file.path);
++        const config = JSON.parse(text);
+         const desktop = service.calls.filter((call) => call.path === "links");
+         expect(desktop).toHaveLength(1);
+         expect(desktop[0]?.body).toMatchObject({ tools: false, pool: "own" });
+         expect(String(desktop[0]?.body.name)).toContain("Claude Desktop");
+-        yield* browser.checkpoint("Claude Desktop: steps with the key");
+-        const file = yield* browser.use("Download the setup file", (page) =>
+-          Promise.all([
+-            page.waitForEvent("download"),
+-            guide(page, "Claude Desktop")
+-              .getByRole("button", { name: "Download setup file" })
+-              .click(),
+-          ]).then(([download]) => download.suggestedFilename()),
++        expect(config).toEqual({
++          inferenceProvider: "gateway",
++          inferenceGatewayBaseUrl: yield* browser.use("Read fixture origin", (page) =>
++            Promise.resolve(new URL(page.url()).origin),
++          ),
++          inferenceGatewayApiKey: "sk-fake-pool-key",
++          inferenceGatewayAuthScheme: "bearer",
++          managedMcpServers: [
++            {
++              name: expect.any(String),
++              transport: "http",
++              url: expect.stringMatching(/^https?:\/\/.+\/mcp$/),
++              oauth: true,
++            },
++          ],
++        });
++        expect(text).toBe(JSON.stringify(config, null, 2) + "\n");
++        const repeated = yield* download();
++        if (repeated.path === null) return yield* Effect.die("Repeated download has no local file");
++        expect(yield* fs.readFileString(repeated.path)).toBe(text);
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(1);
++        expect(yield* manual()).toBe(false);
++        yield* browser.use("Show manual setup", (page) =>
++          guide(page, "Claude Desktop").getByText("Set it up by hand", { exact: true }).click(),
++        );
++        yield* browser.use("The existing key is available by hand", (page) =>
++          guide(page, "Claude Desktop").getByText("sk-fake-pool-key").waitFor(),
++        );
++        expect(
++          yield* browser.use("Phone layout keeps actions inside the viewport", (page) =>
++            guide(page, "Claude Desktop").evaluate((element) => {
++              const controls = [...element.querySelectorAll("button,summary")].filter(
++                (item) => item.getClientRects().length,
++              );
++              return (
++                controls.every((item) => {
++                  const r = item.getBoundingClientRect();
++                  return r.left >= 0 && r.right <= window.innerWidth;
++                }) && document.documentElement.scrollWidth <= window.innerWidth
++              );
++            }),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Claude Desktop: phone single-click setup and manual fallback");
++        yield* browser.use("Restore desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
+         );
+-        expect(file).toBe("claude-desktop-config.json");
+ 
+         yield* browser.use("Open the pool endpoint", (page) =>
+           page.getByRole("tab", { name: "Pool endpoint" }).click(),
