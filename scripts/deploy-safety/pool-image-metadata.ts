@@ -7,14 +7,14 @@ const capabilityLabel = "io.signalbox.pool.oauth-completion-receipts";
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const manifestTypes = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json";
 
-async function boundedJson(fetcher: Fetcher, url: string, init: RequestInit, expectedDigest?: string) {
+async function boundedJson(fetcher: Fetcher, url: string, init: RequestInit, expectedDigest?: string, acceptedStatuses: readonly number[] = [200]) {
   let response: Response;
   try {
     response = await fetcher(url, { ...init, redirect: "error", signal: AbortSignal.timeout(15_000) });
   } catch {
     throw new SafetyGateError("Pool image metadata request failed");
   }
-  if (response.status !== 200 || !response.body) {
+  if (!acceptedStatuses.includes(response.status) || !response.body) {
     await response.body?.cancel();
     throw new SafetyGateError(`Pool image metadata request returned HTTP ${response.status}`);
   }
@@ -64,7 +64,7 @@ export async function inspectPoolImage(
   const issued = record(cloudflareResult(await boundedJson(fetcher,
     `https://api.cloudflare.com/client/v4/accounts/${encodePathSegment(credentials.accountId)}/containers/registries/registry.cloudflare.com/credentials`,
     { method: "POST", headers: withBearer(credentials.apiToken, { "Content-Type": "application/json" }),
-      body: JSON.stringify({ permissions: ["pull"], expiration_minutes: 60 }) },
+      body: JSON.stringify({ permissions: ["pull"], expiration_minutes: 60 }) }, undefined, [200, 201],
   ), "pool registry credentials").result, "Pool registry credentials");
   const username = stringField(issued.username ?? issued.user, "Pool registry username");
   const password = stringField(issued.password, "Pool registry password");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,8 @@ import type { Fetcher } from "./http.ts";
 const credentials = { accountId: "fixture", apiToken: "synthetic-api-token" };
 const hash = (bytes: string) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-function registry(options: { label?: string; architecture?: string; corrupt?: "manifest" | "config"; index?: "unique" | "ambiguous" } = {}) {
+function registry(options: { label?: string; architecture?: string; corrupt?: "manifest" | "config"; index?: "unique" | "ambiguous";
+  credentialStatus?: number; manifestStatus?: number; configStatus?: number } = {}) {
   const config = JSON.stringify({ os: "linux", architecture: options.architecture ?? "amd64", config: { Labels: options.label === "" ? {} : {
     "io.signalbox.pool.oauth-completion-receipts": options.label ?? "1",
   } } });
@@ -33,22 +35,23 @@ function registry(options: { label?: string; architecture?: string; corrupt?: "m
       assert.equal(init?.method, "POST");
       assert.equal(new Headers(init.headers).get("Authorization"), "Bearer synthetic-api-token");
       assert.deepEqual(JSON.parse(String(init.body)), { permissions: ["pull"], expiration_minutes: 60 });
-      return Response.json({ success: true, errors: [], result: { user: "fixture", password: "synthetic-pull-token" } });
+      return Response.json({ success: true, errors: [], result: { username: "fixture", password: "synthetic-pull-token" } },
+        { status: options.credentialStatus ?? 201 });
     }
     assert.equal(url.hostname, "registry.cloudflare.com");
     assert.equal(init?.method, "GET");
     assert.equal(new Headers(init.headers).get("Authorization"), `Basic ${Buffer.from("fixture:synthetic-pull-token").toString("base64")}`);
     const target = decodeURIComponent(url.pathname);
     if (target === `/v2/fixture/pool/blobs/${configDigest}`)
-      return new Response(options.corrupt === "config" ? `${config} ` : config);
-    if (options.index && target === `/v2/fixture/pool/manifests/${digest}`) return new Response(index);
+      return new Response(options.corrupt === "config" ? `${config} ` : config, { status: options.configStatus ?? 200 });
+    if (options.index && target === `/v2/fixture/pool/manifests/${digest}`) return new Response(index, { status: options.manifestStatus ?? 200 });
     assert.equal(target, `/v2/fixture/pool/manifests/${childDigest}`);
-    return new Response(options.corrupt === "manifest" ? `${manifest} ` : manifest);
+    return new Response(options.corrupt === "manifest" ? `${manifest} ` : manifest, { status: options.manifestStatus ?? 200 });
   };
   return { digest, configDigest, fetcher, calls, image: `registry.cloudflare.com/fixture/pool@${digest}` };
 }
 
-test("capture writes actual digest-bound config evidence that the release verifier accepts", async () => {
+test("capture accepts credential issuance HTTP 201 and writes digest-bound evidence for the release verifier", async () => {
   const fixture = registry({ index: "unique" });
   const directory = mkdtempSync(join(tmpdir(), "pool-publication-test-"));
   const file = join(directory, "receipt.json");
@@ -69,6 +72,24 @@ test("capture writes actual digest-bound config evidence that the release verifi
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("only credential issuance accepts HTTP 201; immutable metadata still requires HTTP 200", async () => {
+  const legacy = registry({ credentialStatus: 200 });
+  assert.equal((await inspectPoolImage(legacy.image, legacy.digest, credentials, legacy.fetcher)).configDigest, legacy.configDigest);
+  for (const options of [{ credentialStatus: 202 }, { manifestStatus: 201 }, { configStatus: 201 }]) {
+    const fixture = registry(options);
+    await assert.rejects(inspectPoolImage(fixture.image, fixture.digest, credentials, fixture.fetcher),
+      /Pool image metadata request returned HTTP 20[12]/);
+  }
+});
+
+test("capture command exits unsuccessfully and reports the capture failure", () => {
+  const result = spawnSync(process.execPath, [new URL("./capture-pool-image.ts", import.meta.url).pathname], {
+    env: {}, encoding: "utf8", timeout: 5_000,
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Pool image reference is outside its account or publication digest/);
 });
 
 test("capture writes no receipt for a wrong platform, absent capability, ambiguous index or mismatched bytes", async () => {

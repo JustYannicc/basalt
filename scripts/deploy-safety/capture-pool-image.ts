@@ -21,11 +21,6 @@ export async function capturePoolImage(source: NodeJS.ProcessEnv, fetcher: Fetch
   writeFileSync(source.BASALT_POOL_IMAGE_RECEIPT, JSON.stringify(receipt), { mode: 0o600, flag: "wx" });
 }
 
-// A capture failure belongs to the image assertion, which stops without an automatic rollback.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    await capturePoolImage(process.env);
-  } catch {
-    console.error("Pool publication receipt was not captured; the release image assertion will refuse success");
-  }
+  await capturePoolImage(process.env);
 }
