@@ -268,7 +268,7 @@ test("public app operations, CLI and MCP preserve busy capacity as a recoverable
 test(
   "an abandoned queued request cannot keep the free slot while its continuation is parked",
   { timeout: 5000 },
-  async () => {
+  async (context) => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const admission = makeBuildAdmission(1, "50 seconds");
@@ -298,6 +298,7 @@ test(
         assert.equal(staleStarted, false);
         yield* Fiber.interrupt(stale);
       }),
+      { signal: context.signal },
     );
   },
 );

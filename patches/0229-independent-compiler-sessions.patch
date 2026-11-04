@@ -283,8 +283,62 @@ index 000000000..5596e7102
 +    this.#controller.abort();
 +  }
 +}
+diff --git a/apps/hosted/cloud/src/implementation/compiler-request.ts b/apps/hosted/cloud/src/implementation/compiler-request.ts
+index ad20c1e89..af1314e6b 100644
+--- a/apps/hosted/cloud/src/implementation/compiler-request.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-request.ts
+@@ -1,6 +1,6 @@
+ /** Capacity waiting and admitted compile work each keep their existing 50-second budget. */
+ import { RuntimeBuildFailed } from "@executor-js/sdk/core";
+-import { Duration, Effect } from "effect";
++import { Duration, Effect, Exit } from "effect";
+ 
+ export const compilerQueueBudget = "50 seconds";
+ export const compilerCompileBudget = "50 seconds";
+@@ -45,3 +45,41 @@ export const requestCompile = <A, E, R>(request: Effect.Effect<A, E, R>) =>
+         ),
+     }),
+   );
++
++interface RequestState<A> {
++  closed: boolean;
++  target?: A;
++}
++
++/** A native RPC may deliver its target after its caller has already been interrupted. */
++export const withCompilerRequest = <A extends Disposable, E, R, B, E2, R2>(
++  acquire: Effect.Effect<A, E, R>,
++  use: (target: A) => Effect.Effect<B, E2, R2>,
++) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const context = yield* Effect.context<R>();
++      const state = yield* Effect.acquireRelease(
++        Effect.sync((): RequestState<A> => ({ closed: false })),
++        (state) =>
++          Effect.sync(() => {
++            state.closed = true;
++            state.target?.[Symbol.dispose]();
++          }),
++      );
++      const target = yield* Effect.callback<A, E>((resume) => {
++        // Do not abort this observer: it must dispose a late RPC reply after scope closure.
++        void Effect.runPromiseExitWith(context)(acquire).then((exit) => {
++          if (Exit.isSuccess(exit)) {
++            if (state.closed) {
++              exit.value[Symbol.dispose]();
++              return;
++            }
++            state.target = exit.value;
++          }
++          resume(exit);
++        });
++      });
++      return yield* use(target);
++    }),
++  );
 diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
-index d321a2643..acc74c1d0 100644
+index d321a2643..4a6a46a3b 100644
 --- a/apps/hosted/cloud/src/infrastructure/runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
 @@ -20,6 +20,7 @@ import {
@@ -295,19 +349,25 @@ index d321a2643..acc74c1d0 100644
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Context, Effect, FiberSet, Option, Schema } from "effect";
  import { CurrentOrganization, CurrentUserId } from "@executor-js/hosted-server";
-@@ -149,7 +150,15 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -27,7 +28,7 @@ import { dataChanges } from "../implementation/data-changes.ts";
+ import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
+ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+ import { CloudCompileResult } from "../contracts/builds.ts";
+-import { requestCompile } from "../implementation/compiler-request.ts";
++import { requestCompile, withCompilerRequest } from "../implementation/compiler-request.ts";
+ import { AppCompiler } from "./compiler.ts";
+ import { AppData } from "./app-data-worker.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
+@@ -149,7 +150,12 @@ export const cloudRuntime = Effect.fn(function* (
            Effect.gen(function* () {
              const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
              const result = yield* requestCompile(
 -              compiler.compile(files, publicPaths, headers),
-+              Effect.acquireUseRelease(
-+                compiler.request(),
-+                (request) =>
-+                  Effect.tryPromise({
-+                    try: () => request.compile(files, publicPaths, headers),
-+                    catch: (cause) => new RpcCallError({ method: "compile", cause }),
-+                  }),
-+                (request) => Effect.sync(() => request[Symbol.dispose]()),
++              withCompilerRequest(compiler.request(), (request) =>
++                Effect.tryPromise({
++                  try: () => request.compile(files, publicPaths, headers),
++                  catch: (cause) => new RpcCallError({ method: "compile", cause }),
++                }),
 +              ),
              ).pipe(
                Effect.catchTag("RpcCallError", (error) => {
