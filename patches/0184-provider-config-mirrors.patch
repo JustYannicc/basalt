@@ -1,12 +1,21 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index a14b8c5..fdcc913 100644
+index a14b8c5..c9c4243 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -7,7 +7,7 @@ import { makeRegistryStorage } from "@executor-js/app-registry";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+-import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
++import { poolAccountRegistry } from "@executor-js/hosted-server/pool-account-registry";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import {
+   createExecutor,
 @@ -74,13 +74,14 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
  export const cloudExecutor = Effect.fn(function* (
    databases: Cloudflare.DurableObject<AppDataSupervisor>,
    appSources: AppSources,
-+  imports?: Parameters<typeof poolAccountAcquisition>[2],
++  imports?: Parameters<typeof poolAccountRegistry>[2],
  ) {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
    const secrets = yield* cloudSecrets.pipe(Effect.orDie);
@@ -14,10 +23,18 @@ index a14b8c5..fdcc913 100644
    const poolSigningKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
    const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
 -  const acquisition = yield* poolAccountAcquisition(poolSigningKey, poolOrigin).pipe(
-+  const acquisition = yield* poolAccountAcquisition(poolSigningKey, poolOrigin, imports).pipe(
++  const acquisition = yield* poolAccountRegistry(poolSigningKey, poolOrigin, imports).pipe(
      Effect.provide(BrowserCrypto.layer),
      Effect.orDie,
    );
+@@ -126,6 +127,7 @@ export const cloudExecutor = Effect.fn(function* (
+           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
+         );
+       const lifecycle = yield* hostedResourceLifecycle.pipe(
++        Effect.provide(BrowserCrypto.layer),
+         Effect.provideService(AccessLifecycle, accessLifecycle),
+         Effect.provideContext(services),
+       );
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
 index 0a1d973..4de966b 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
@@ -36,29 +53,38 @@ index 0a1d973..4de966b 100644
      cachedBuildAssets(
        origin,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index ad103f2..d974ff8 100644
+index ad103f2..21ef0fb 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
++import { poolAccountConnections } from "@executor-js/hosted-server/pool-account-acquisition";
  /** The hosted product's cloud services: policy, defaults and plumbing over one executor. */
 +import { makeAccountImports } from "@executor-js/sdk/account-imports";
 +import { providerLoginFile } from "@executor-js/hosted-server/provider-login-file";
  import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
  import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
  import {
-@@ -46,6 +48,7 @@ export const cloudProduct = Effect.fn(function* (
+@@ -46,6 +49,11 @@ export const cloudProduct = Effect.fn(function* (
    const { blobs, sdk, sql, withDatabase, services } = yield* cloudProductServices(
      databases,
      yield* cloudAppSources(tokens),
-+    { makeImports: makeAccountImports, loginFile: providerLoginFile },
++    {
++      makeImports: makeAccountImports,
++      loginFile: providerLoginFile,
++      connections: poolAccountConnections,
++    },
    );
    const hosts = yield* cloudHosts.pipe(Effect.orDie);
    // The default Executor app calls this deployment's API, an OAuth resource, at its canonical origin.
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 70a467b9a16d1250fe294dfb0bdba24888d597e7..e57db75162779292d799ec0f9a89abdcf61c8ad9 100644
+index 70a467b..986e4f7 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -7,6 +7,7 @@
+@@ -4,9 +4,11 @@
+   "type": "module",
+   "sideEffects": false,
+   "exports": {
++    "./pool-account-registry": "./src/implementation/pool-account-registry.ts",
      "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
      ".": "./src/index.ts",
      "./api-keys": "./src/contracts/api-keys.ts",
@@ -246,10 +272,47 @@ index 0000000..fba0223
 +  },
 +});
 diff --git a/apps/hosted/server/src/implementation/account-key-mirror.ts b/apps/hosted/server/src/implementation/account-key-mirror.ts
-index af54ed9..7cc14e0 100644
+index af54ed9..b875913 100644
 --- a/apps/hosted/server/src/implementation/account-key-mirror.ts
 +++ b/apps/hosted/server/src/implementation/account-key-mirror.ts
-@@ -10,13 +10,16 @@ import { signEnvelope } from "./pool-token.ts";
+@@ -7,52 +7,75 @@ import type {
+ import { Redacted } from "effect";
+ import { signEnvelope } from "./pool-token.ts";
+ 
++const send = async (
++  options: { readonly origin: string; readonly signingKey: Redacted.Redacted<string> },
++  context: AccountAcquisitionAccountContext,
++  action: "upsert" | "remove",
++  credential?: JsonObject,
++) => {
++  context.signal.throwIfAborted();
++  const at = Date.now();
++  const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
++    reference: Redacted.value(context.reference),
++    action,
++    at,
++    expiresAt: Math.min(context.deadline, at + 30_000),
++    ...(credential === undefined ? {} : { credential }),
++  });
++  const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
++    method: "POST",
++    signal: context.signal,
++    headers: { "content-type": "application/json" },
++    body: JSON.stringify({ envelope }),
++  });
++  await response.body?.cancel();
++  if (!response.ok) throw new Error("Account mirror backend unavailable");
++};
++
++export const homeAccountRemoval =
++  (options: {
++    readonly origin: string;
++    readonly signingKey: Redacted.Redacted<string>;
++    readonly credential?: JsonObject;
++  }) =>
++  (context: AccountAcquisitionAccountContext) =>
++    send(options, context, "remove", options.credential);
++
  export const homeAccountKeyMirror = (options: {
    readonly origin: string;
    readonly signingKey: Redacted.Redacted<string>;
@@ -269,28 +332,27 @@ index af54ed9..7cc14e0 100644
      Object.keys(options.fields).some((field) => ["uuid", "id", "type"].includes(field))
    )
      throw new Error("Account mirror mapping cannot replace its assigned identity");
-@@ -25,12 +28,13 @@ export const homeAccountKeyMirror = (options: {
-     action: "upsert" | "remove",
-     credential?: JsonObject,
-   ) => {
-+    context.signal.throwIfAborted();
-     const at = Date.now();
-     const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
-       reference: Redacted.value(context.reference),
-       action,
-       at,
+-  const send = async (
+-    context: AccountAcquisitionAccountContext,
+-    action: "upsert" | "remove",
+-    credential?: JsonObject,
+-  ) => {
+-    const at = Date.now();
+-    const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
+-      reference: Redacted.value(context.reference),
+-      action,
+-      at,
 -      expiresAt: at + 30_000,
-+      expiresAt: Math.min(context.deadline, at + 30_000),
-       ...(credential === undefined ? {} : { credential }),
-     });
-     const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
-@@ -39,12 +43,19 @@ export const homeAccountKeyMirror = (options: {
-       headers: { "content-type": "application/json" },
-       body: JSON.stringify({ envelope }),
-     });
-+    await response.body?.cancel();
-     if (!response.ok) throw new Error("Account mirror backend unavailable");
-   };
+-      ...(credential === undefined ? {} : { credential }),
+-    });
+-    const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
+-      method: "POST",
+-      signal: context.signal,
+-      headers: { "content-type": "application/json" },
+-      body: JSON.stringify({ envelope }),
+-    });
+-    if (!response.ok) throw new Error("Account mirror backend unavailable");
+-  };
    return {
      mirror: async (context: AccountAcquisitionMirrorContext) => {
        const saved = Redacted.value(context.fields);
@@ -305,13 +367,15 @@ index af54ed9..7cc14e0 100644
        for (const [target, source] of Object.entries(options.fields)) {
          const value = saved[source];
          if (typeof value !== "string" || value.length === 0)
-@@ -53,6 +64,7 @@ export const homeAccountKeyMirror = (options: {
+           throw new Error("Account mirror fields unavailable");
+         credential[target] = value;
        }
-       await send(context, "upsert", credential);
+-      await send(context, "upsert", credential);
++      await send(options, context, "upsert", credential);
      },
 -    remove: (context: AccountAcquisitionAccountContext) => send(context, "remove"),
 +    remove: (context: AccountAcquisitionAccountContext) =>
-+      send(context, "remove", options.removalCredential),
++      send(options, context, "remove", options.removalCredential),
    };
  };
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
@@ -639,63 +703,186 @@ index c3b5a91..ee77bac 100644
      return yield* executor.accountConnections.cancel({ ...input, owner });
    });
 diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-index 4350ccc..c80666e 100644
+index 4350ccc..907f5b1 100644
 --- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-@@ -22,12 +22,19 @@ import {
-   accountAcquisitionPrefix,
- } from "./pool-account-acquisition-contract.ts";
- import { signEnvelope } from "./pool-token.ts";
+@@ -1,156 +1,84 @@
+-import {
+-  accountAcquisitionDriver,
+-  AccountAcquisitionUnavailable,
+-  identifyProvider,
+-  type AccountAcquisitionContext,
+-  type AccountAcquisitionAccountContext,
+-  type AccountAcquisitionRegistration,
++/** Account creation is composed only by products that serve connection endpoints. */
++import type {
++  AccountAcquisitionContext,
++  PromiseAccountAcquisitionDriver,
+ } from "@executor-js/sdk/core";
+-import { providerDeclaration } from "apps/host";
+-import {
+-  AccountCheckResult,
+-  AccountObservationResult,
+-  InteractiveStart,
+-  InteractiveStatus,
+-  ProviderError,
+-} from "apps/contracts";
+-import { Crypto, Effect, Option, Redacted, Schema, Struct } from "effect";
+-import { providers } from "./pool-provider-definitions.ts";
+-import { providerCapabilities } from "./pool-provider-capabilities.ts";
+-import {
+-  accountAcquisitionPath,
+-  accountAcquisitionPrefix,
+-} from "./pool-account-acquisition-contract.ts";
+-import { signEnvelope } from "./pool-token.ts";
++import { InteractiveStart, InteractiveStatus } from "apps/contracts";
++import { Option, Redacted, Schema } from "effect";
++import type { ProviderCapability } from "./pool-provider-capabilities.ts";
 +import { providerMirror } from "./pool-provider-mirror.ts";
  import { homeAccountKeyMirror } from "./account-key-mirror.ts";
++import { poolAccountRegistry } from "./pool-account-registry.ts";
 +import type { providerLoginFile } from "./provider-login-file.ts";
 +import type { makeAccountImports } from "@executor-js/sdk/account-imports";
  
- /** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
+-/** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
++type Imports = {
++  readonly makeImports?: typeof makeAccountImports;
++  readonly loginFile?: typeof providerLoginFile;
++};
++
++export const poolAccountConnections = (
++  capability: ProviderCapability,
++  options: { readonly origin: string; readonly signingKey: Redacted.Redacted<string> },
++  send: (
++    context: AccountAcquisitionContext,
++    action: string,
++    input?: Record<string, unknown>,
++  ) => Promise<unknown>,
++  imports?: Imports,
++): Pick<
++  PromiseAccountAcquisitionDriver,
++  "start" | "status" | "submit" | "cancel" | "mirror" | "importCredentials"
++> => {
++  const { origin, signingKey: secret } = options;
++  const oauth = capability.connection === "home-oauth";
++  const mirror =
++    capability.connection === "token-mirror"
++      ? homeAccountKeyMirror({
++          origin,
++          signingKey: secret,
++          credential: { type: "typesafe" },
++          fields: { token: "token" },
++        })
++      : providerMirror(capability, { origin, signingKey: secret });
++  return {
++    start: async (context, reconnect) => {
++      if (!oauth) throw new Error("This account uses its saved API-key connection");
++      return Schema.decodeUnknownSync(InteractiveStart)(
++        await send(
++          context,
++          "start",
++          reconnect === undefined ? {} : { reconnect: Redacted.value(reconnect.reference) },
++        ),
++      );
++    },
++    status: async (context, input) =>
++      Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "status", input)),
++    submit: async (context, input) =>
++      Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "submit", input)),
++    cancel: async (context, input) => {
++      if (oauth) await send(context, "cancel", input);
++    },
++    ...(oauth ? {} : { mirror: mirror.mirror }),
++    ...(imports?.loginFile !== undefined &&
++    oauth &&
++    (capability.method === "codex" || capability.method === "claude")
++      ? {
++          importCredentials: homeAccountKeyMirror({
++            origin,
++            signingKey: secret,
++            fields: {},
++            credential: async (context) =>
++              Redacted.value(imports.loginFile!(capability.method, context.fields)),
++          }).mirror,
++        }
++      : {}),
++  };
++};
++
++/** Complete hosts retain the same registration identities and driver revisions as serving hosts. */
  export const poolAccountAcquisition = (
    key: Option.Option<Redacted.Redacted<string>>,
    origin: string,
-+  imports?: {
-+    readonly makeImports: typeof makeAccountImports;
-+    readonly loginFile: typeof providerLoginFile;
-+  },
- ) =>
-   Effect.gen(function* () {
-     if (Option.isNone(key)) return { registrations: [] };
-@@ -66,15 +73,22 @@ export const poolAccountAcquisition = (
-         return await response.json();
-       };
-       const oauth = capability.connection === "home-oauth";
+-) =>
+-  Effect.gen(function* () {
+-    if (Option.isNone(key)) return { registrations: [] };
+-    const secret = key.value;
+-    const crypto = yield* Crypto.Crypto;
+-    const registrations: AccountAcquisitionRegistration[] = [];
+-    for (const capability of providerCapabilities) {
+-      if (capability.connection === "unavailable") continue;
+-      const definition = yield* providerDeclaration(providers[capability.lab]);
+-      const identified = yield* identifyProvider(definition, crypto);
+-      const send = async (
+-        context: AccountAcquisitionContext,
+-        action: string,
+-        input: Record<string, unknown> = {},
+-      ) => {
+-        const at = Date.now();
+-        const envelope = await signEnvelope(Redacted.value(secret), accountAcquisitionPrefix, {
+-          owner: context.owner,
+-          operation: context.operation,
+-          action,
+-          provider: capability.backend,
+-          at,
+-          expiresAt: Math.min(context.deadline, at + 30_000),
+-          ...input,
+-        });
+-        const response = await context.fetch(new URL(accountAcquisitionPath, origin), {
+-          method: "POST",
+-          signal: context.signal,
+-          headers: { "content-type": "application/json" },
+-          body: JSON.stringify({ envelope }),
+-        });
+-        if (!response.ok) {
+-          await response.body?.cancel();
+-          throw new Error("Account acquisition backend unavailable");
+-        }
+-        return await response.json();
+-      };
+-      const oauth = capability.connection === "home-oauth";
 -      const mirror = homeAccountKeyMirror({
 -        origin,
 -        signingKey: secret,
 -        credential: { type: "typesafe" },
 -        fields: { token: "token" },
 -      });
-+      const mirror =
-+        capability.connection === "token-mirror"
-+          ? homeAccountKeyMirror({
-+              origin,
-+              signingKey: secret,
-+              credential: { type: "typesafe" },
-+              fields: { token: "token" },
-+            })
-+          : providerMirror(capability, { origin, signingKey: secret });
-       const driver = accountAcquisitionDriver({
-         id: "basalt-home",
+-      const driver = accountAcquisitionDriver({
+-        id: "basalt-home",
 -        revision: oauth ? "oauth-v1" : "key-mirror-v1",
-+        revision: oauth
-+          ? "oauth-v1"
-+          : capability.connection === "token-mirror"
-+            ? "key-mirror-v1"
-+            : "provider-mirror-v1",
-         start: async (context, reconnect) => {
-           if (!oauth) throw new Error("This account uses its saved API-key connection");
-           return Schema.decodeUnknownSync(InteractiveStart)(
-@@ -98,23 +112,40 @@ export const poolAccountAcquisition = (
-           else await mirror.remove(context);
-         },
-         ...(oauth ? {} : { mirror: mirror.mirror }),
+-        start: async (context, reconnect) => {
+-          if (!oauth) throw new Error("This account uses its saved API-key connection");
+-          return Schema.decodeUnknownSync(InteractiveStart)(
+-            await send(
+-              context,
+-              "start",
+-              reconnect === undefined ? {} : { reconnect: Redacted.value(reconnect.reference) },
+-            ),
+-          );
+-        },
+-        status: async (context, input) =>
+-          Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "status", input)),
+-        submit: async (context, input) =>
+-          Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "submit", input)),
+-        cancel: async (context, input) => {
+-          if (oauth) await send(context, "cancel", input);
+-        },
+-        remove: async (context) => {
+-          if (oauth)
+-            await send(context, "remove", { reference: Redacted.value(context.reference) });
+-          else await mirror.remove(context);
+-        },
+-        ...(oauth ? {} : { mirror: mirror.mirror }),
 -        observeAccount: async (context) => {
 -          const answer = await send(context, "observe", {
 -            reference: Redacted.value(context.reference),
@@ -713,19 +900,172 @@ index 4350ccc..c80666e 100644
 -                observation: { ...result.observation, offering: "metered_api" as const },
 -              };
 -        },
-+        ...(imports !== undefined &&
-+        oauth &&
-+        (capability.method === "codex" || capability.method === "claude")
-+          ? {
-+              importCredentials: homeAccountKeyMirror({
-+                origin,
-+                signingKey: secret,
-+                fields: {},
-+                credential: async (context) =>
-+                  Redacted.value(imports.loginFile(capability.method, context.fields)),
-+              }).mirror,
-+            }
-+          : {}),
+-        ...(oauth
+-          ? {
+-              check: async (context: AccountAcquisitionAccountContext) => {
+-                const answer = await send(context, "check", {
+-                  reference: Redacted.value(context.reference),
+-                });
+-                const failure = Schema.Struct({ failure: ProviderError.fields.reason });
+-                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
+-                const { result } = Schema.decodeUnknownSync(
+-                  Schema.Struct({ result: Schema.Unknown }),
+-                )(answer);
+-                const health = Schema.decodeUnknownSync(
+-                  AccountCheckResult.mapFields(Struct.omit(["observation", "observationInvalid"])),
+-                )(result);
+-                const combined = Schema.decodeUnknownOption(AccountCheckResult)(result);
+-                return Option.isSome(combined)
+-                  ? combined.value
+-                  : { ...health, observationInvalid: true as const };
+-              },
+-            }
+-          : {}),
+-      });
+-      // The previous label-sensitive identity can still name an account deployed by an older app.
+-      for (const provider of new Set([identified.identity, identified.legacy]))
+-        registrations.push({
+-          provider,
+-          method: capability.method,
+-          capabilities: ["model-inference"],
+-          ...(capability.protocol === "typesafe-systemone"
+-            ? { capabilityLabels: { "model-inference": "System One" } }
+-            : {}),
+-          current: true,
+-          exposeHostReference: true,
+-          driver,
+-          fetch: (input, init) => globalThis.fetch(input, init),
+-        });
+-    }
+-    return { registrations };
+-  }).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "registration" })));
++  imports?: Imports,
++) => poolAccountRegistry(key, origin, { ...imports, connections: poolAccountConnections });
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+new file mode 100644
+index 0000000..36634b8
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -0,0 +1,176 @@
++import {
++  accountAcquisitionDriver,
++  AccountAcquisitionUnavailable,
++  identifyProvider,
++  type AccountAcquisitionContext,
++  type AccountAcquisitionAccountContext,
++  type AccountAcquisitionRegistration,
++} from "@executor-js/sdk/core";
++import { providerDeclaration } from "apps/host";
++import { AccountCheckResult, AccountObservationResult, ProviderError } from "apps/contracts";
++import { Crypto, Effect, Option, Redacted, Schema } from "effect";
++import { acquisitionProviders } from "./pool-provider-definitions.ts";
++import { availableProviderCapabilities } from "./pool-provider-capabilities.ts";
++import {
++  accountAcquisitionPath,
++  accountAcquisitionPrefix,
++} from "./pool-account-acquisition-contract.ts";
++import { signEnvelope } from "./pool-token.ts";
++import { homeAccountRemoval } from "./account-key-mirror.ts";
++import type { providerLoginFile } from "./provider-login-file.ts";
++import type { makeAccountImports } from "@executor-js/sdk/account-imports";
++import type { poolAccountConnections } from "./pool-account-acquisition.ts";
++
++const unavailable = async (): Promise<never> => {
++  throw new AccountAcquisitionUnavailable({ reason: "unsupported" });
++};
++const failure = Schema.Struct({ failure: ProviderError.fields.reason });
++const health = Schema.Struct({
++  accountInfo: AccountCheckResult.fields.accountInfo,
++  status: AccountCheckResult.fields.status,
++});
++const healthResponse = Schema.Struct({ result: health });
++
++const nativeProviderFamilies: Readonly<Record<string, string>> = {
++  openai: "codex",
++  anthropic: "claude",
++  gemini: "gemini",
++  vertex: "vertex",
++  xai: "xai",
++  meta: "meta",
++};
++
++/** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
++export const poolAccountRegistry = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  origin: string,
++  imports?: {
++    readonly makeImports?: typeof makeAccountImports;
++    readonly loginFile?: typeof providerLoginFile;
++    readonly connections?: typeof poolAccountConnections;
++  },
++) =>
++  Effect.gen(function* () {
++    if (Option.isNone(key)) return { registrations: [] };
++    const secret = key.value;
++    const crypto = yield* Crypto.Crypto;
++    const registrations: AccountAcquisitionRegistration[] = [];
++    for (const capability of availableProviderCapabilities) {
++      if (capability.connection === "unavailable") continue;
++      const definition = yield* providerDeclaration(
++        acquisitionProviders[capability.lab as keyof typeof acquisitionProviders],
++      );
++      const identified = yield* identifyProvider(definition, crypto);
++      const send = async (
++        context: AccountAcquisitionContext,
++        action: string,
++        input: Record<string, unknown> = {},
++      ) => {
++        const at = Date.now();
++        const envelope = await signEnvelope(Redacted.value(secret), accountAcquisitionPrefix, {
++          owner: context.owner,
++          operation: context.operation,
++          action,
++          provider: capability.backend,
++          at,
++          expiresAt: Math.min(context.deadline, at + 30_000),
++          ...input,
++        });
++        const response = await context.fetch(new URL(accountAcquisitionPath, origin), {
++          method: "POST",
++          signal: context.signal,
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({ envelope }),
++        });
++        if (!response.ok) {
++          await response.body?.cancel();
++          throw new Error("Account backend unavailable");
++        }
++        return await response.json();
++      };
++      const oauth = capability.connection === "home-oauth";
++      const family = nativeProviderFamilies[capability.lab] ?? "openai-compatibility";
++      const remove = homeAccountRemoval({
++        origin,
++        signingKey: secret,
++        ...(capability.connection === "credential-mirror" ||
++        capability.connection === "token-mirror"
++          ? {}
++          : { credential: { type: "config", family } }),
++      });
++      const driver = accountAcquisitionDriver({
++        id: "basalt-home",
++        revision: oauth
++          ? "oauth-v1"
++          : capability.connection === "token-mirror"
++            ? "key-mirror-v1"
++            : "provider-mirror-v1",
++        ...(imports?.connections?.(capability, { origin, signingKey: secret }, send, imports) ?? {
++          start: unavailable,
++          status: unavailable,
++          cancel: async (context, input) => {
++            if (oauth) await send(context, "cancel", input);
++          },
++        }),
++        remove: async (context) => {
++          if (oauth)
++            await send(context, "remove", { reference: Redacted.value(context.reference) });
++          else await remove(context);
++        },
 +        ...(capability.connection === "config-mirror"
 +          ? {}
 +          : {
@@ -733,7 +1073,6 @@ index 4350ccc..c80666e 100644
 +                const answer = await send(context, "observe", {
 +                  reference: Redacted.value(context.reference),
 +                });
-+                const failure = Schema.Struct({ failure: ProviderError.fields.reason });
 +                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
 +                const { result } = Schema.decodeUnknownSync(
 +                  Schema.Struct({ result: Schema.NullOr(AccountObservationResult) }),
@@ -747,19 +1086,43 @@ index 4350ccc..c80666e 100644
 +                    };
 +              },
 +            }),
-         ...(oauth
-           ? {
-               check: async (context: AccountAcquisitionAccountContext) => {
-@@ -152,5 +183,8 @@ export const poolAccountAcquisition = (
-           fetch: (input, init) => globalThis.fetch(input, init),
-         });
-     }
--    return { registrations };
++        ...(oauth
++          ? {
++              check: async (context: AccountAcquisitionAccountContext) => {
++                const answer = await send(context, "check", {
++                  reference: Redacted.value(context.reference),
++                });
++                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
++                const { result: validHealth } = Schema.decodeUnknownSync(healthResponse)(answer);
++                const result = (answer as { result: unknown }).result;
++                const combined = Schema.decodeUnknownOption(AccountCheckResult)(result);
++                return Option.isSome(combined)
++                  ? combined.value
++                  : { ...validHealth, observationInvalid: true as const };
++              },
++            }
++          : {}),
++      });
++      // The previous label-sensitive identity can still name an account deployed by an older app.
++      for (const provider of new Set([identified.identity, identified.legacy]))
++        registrations.push({
++          provider,
++          method: capability.method,
++          capabilities: ["model-inference"],
++          ...(capability.protocol === "typesafe-systemone"
++            ? { capabilityLabels: { "model-inference": "System One" } }
++            : {}),
++          current: true,
++          exposeHostReference: true,
++          driver,
++          fetch: (input, init) => globalThis.fetch(input, init),
++        });
++    }
 +    return {
 +      registrations,
 +      ...(imports === undefined ? {} : { importCredentials: imports.makeImports }),
 +    };
-   }).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "registration" })));
++  }).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "registration" })));
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
 index 477787b..af5e329 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
@@ -830,7 +1193,7 @@ index 477787b..af5e329 100644
        }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/pool-provider-mirror.ts b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
 new file mode 100644
-index 0000000..6bc62d7
+index 0000000..6a13a94
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
 @@ -0,0 +1,216 @@
@@ -854,7 +1217,7 @@ index 0000000..6bc62d7
 +};
 +const decode = <A, I>(schema: Schema.Codec<A, I>, value: unknown) =>
 +  Effect.runPromise(
-+    Schema.decodeUnknownEffect(schema, { onExcessProperty: "preserve" })(value).pipe(
++    Schema.decodeUnknownEffect(schema)(value).pipe(
 +      Effect.mapError(() => new ProviderMirrorUnavailable({ reason: "configuration" })),
 +    ),
 +  );
@@ -887,7 +1250,7 @@ index 0000000..6bc62d7
 +  type: Schema.Literal("service_account"),
 +  project_id: Schema.NonEmptyString,
 +  client_email: Schema.NonEmptyString,
-+  private_key: Schema.String.check(Schema.isPattern(/^-----BEGIN PRIVATE KEY-----/)),
++  private_key: Schema.String.check(Schema.isPattern(/^-----BEGIN PRIVATE KEY-----/u)),
 +  token_uri: Schema.Literal("https://oauth2.googleapis.com/token"),
 +});
 +const nativeFamilies: Readonly<Record<string, string>> = {
@@ -1606,10 +1969,24 @@ index 3d91bd0..227ef41 100644
      targets: ["cloud"],
      reason:
 diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
-index 38c99c5..db18aeb 100644
+index 38c99c5..34308a5 100644
 --- a/e2e/support/provider-account-product.ts
 +++ b/e2e/support/provider-account-product.ts
-@@ -17,11 +17,13 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+@@ -4,7 +4,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { Target } from "./platform.ts";
+ import { serverControl } from "./server-control.ts";
+ 
+-export const providerAccountProduct = (origin: string, catalog?: string, keyAvailable = true) =>
++export const providerAccountProduct = (
++  origin: string,
++  catalog?: string,
++  keyAvailable = true,
++  control: typeof serverControl = serverControl,
++) =>
+   Effect.gen(function* () {
+     const target = yield* Target,
+       fs = yield* FileSystem.FileSystem,
+@@ -17,11 +22,13 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
  import * as Runtime from "@effect/platform-bun/BunRuntime";
  import { main } from "@executor-js/hosted-self-host/server";
  import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
@@ -1624,6 +2001,21 @@ index 38c99c5..db18aeb 100644
    return yield* main.pipe(Effect.provideService(AccountAcquisitionConfiguration, acquisition));
  }).pipe(Effect.provide(NodeCrypto.layer)));
  `,
+@@ -51,11 +58,11 @@ Runtime.runMain(Effect.gen(function* () {
+     );
+     if (checked !== 0)
+       return yield* Effect.die("Provider registration product failed its public API typecheck");
+-    yield* serverControl("stop");
+-    yield* serverControl("environment", 200, {
++    yield* control("stop");
++    yield* control("environment", 200, {
+       EXECUTOR_E2E_PRODUCT_ENTRY: entry,
+       POOL_APP_SIGNING_KEY: "ab".repeat(32),
+       BASALT_POOL_ORIGIN: origin,
+     });
+-    yield* serverControl("start");
++    yield* control("start");
+   });
 diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
 index c9ebab2..9efe802 100644
 --- a/e2e/support/provider-apps-catalog.ts
@@ -1993,7 +2385,7 @@ index 0000000..12e7bfd
 +  });
 diff --git a/e2e/support/retained-pool-source.ts b/e2e/support/retained-pool-source.ts
 new file mode 100644
-index 0000000..adf6b3e
+index 0000000..4cac058
 --- /dev/null
 +++ b/e2e/support/retained-pool-source.ts
 @@ -0,0 +1,24 @@
@@ -2007,7 +2399,7 @@ index 0000000..adf6b3e
 +const subscription = defineProvider({ name: "Retained test Subscription", auth: { codex: interactive({ label: "Subscription" }) },
 +  async health() { return { accountInfo: { displayName: "Retained synthetic subscription" } }; }
 +});
-+const pool = defineProvider({ name: "Retained test pool access", auth: { token: secrets({ fields: object({ token: string() }) }) } });
++const pool = defineProvider({ name: "Retained test pool access", auth: { token: secrets({ label: "Pool token", fields: object({ token: string() }) }) } });
 +const requirements = { app: { accounts: { ${withPool ? "pool, " : ""}subscriptions: subscription.many() } } };
 +export default defineApp(requirements, {
 +  tools: router({ selected: query({ input: object({}) }, async ctx => ({ accounts: ctx.app.accounts.subscriptions.map(account => account.id) })) }),
@@ -2090,6 +2482,49 @@ index ade6ed5..1fc1f51 100644
            expect(unavailable).not.toContainEqual({ requirement: "openai", method: "codex" });
          }
          // Activation remains operator-owned; only this scenario's two actual pool apps are opted in.
+diff --git a/e2e/tests/native-account-create-before-link.spec.ts b/e2e/tests/native-account-create-before-link.spec.ts
+index 92739a6..dbcc0c6 100644
+--- a/e2e/tests/native-account-create-before-link.spec.ts
++++ b/e2e/tests/native-account-create-before-link.spec.ts
+@@ -63,7 +63,16 @@ layer(RuntimeLive, { excludeTestServices: true })("Native token creation before
+             return { id: app.id, path };
+           });
+         const first = yield* deploy("First native token pool"),
+-          second = yield* deploy("Second native token pool");
++          second = yield* deploy("Second native token pool"),
++          provider = yield* deploy("Jev provider app");
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${first.path}/accounts/app/jev/connections`,
++          {},
++        );
++        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++        const connection = yield* body(Resource, pending);
+         // Native activation has no public UI yet. Only this scenario's organization is opted in.
+         yield* legacyStorage([
+           {
+@@ -78,10 +87,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Native token creation before
+           },
+         ]);
+         yield* providerAccountProduct(backend.origin);
+-        const requirement = `${first.path}/accounts/app/jev`;
+-        const pending = yield* api.request(actors.owner, "POST", `${requirement}/connections`, {});
+-        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
+-        const connection = yield* body(Resource, pending);
++        const requirement = `${provider.path}/accounts/app/jev`;
+         const oldSubmit = yield* api.request(
+           actors.owner,
+           "POST",
+@@ -92,7 +98,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Native token creation before
+           },
+         );
+         expect(oldSubmit.status, JSON.stringify(oldSubmit.body)).toBe(409);
+-        expect(JSON.stringify(oldSubmit.body)).toContain("AccountLinkRequired");
++        expect(JSON.stringify(oldSubmit.body)).toContain("ProviderAppConnectionRequired");
+         expect(yield* backend.calls).toHaveLength(0);
+         expect(
+           (yield* api.request(actors.owner, "GET", `${first.path}/accounts/app`)).body,
 diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-selection.spec.ts
 new file mode 100644
 index 0000000..8a54a7c

@@ -58,6 +58,7 @@ const program = Effect.gen(function* () {
       const saved = yield* h.request("GET", `${path}/status`);
       checked("provider-app connection saves through the real host", saved.state, "connected");
       yield* h.request("PUT", `${h.appPath(pool.id)}/accounts/app/${lab}/${saved.account.id}`);
+      yield* Effect.promise(() => h.fixture.reconcile(pool.id));
       const target = `${h.prefix}/pools/${pool.id}/accounts/${saved.account.id}`;
       yield* until(
         h.raw("owner", "GET", `${target}/reset-credits`),

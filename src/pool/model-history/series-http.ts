@@ -1,3 +1,5 @@
+import type { HomeClient } from "../control.ts";
+import { sessionSuccess } from "./session-success.ts";
 import { controlBasePath } from "../../../apps/pool/contract.ts";
 import { fail, failureResponse, json, object, readBody } from "../json.ts";
 import { openEnvelope } from "../token.ts";
@@ -14,6 +16,7 @@ export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
 export async function handleUsageSeries(
   request: Request,
   access: {
+    home?: HomeClient;
     signingKey: string;
     previousSigningKey?: string;
     connectionString: string | undefined;
@@ -55,9 +58,11 @@ export async function handleUsageSeries(
         ? await withHistoryDatabase(access.connectionString, (db) =>
             poolUsageSeries(db, input, authority),
           )
-        : await withHistoryDatabase(access.connectionString, (db) =>
-            lastSuccessAt(db, input, authority),
-          );
+        : input.session !== undefined && access.home !== undefined
+          ? await sessionSuccess(access.home, input, authority)
+          : await withHistoryDatabase(access.connectionString, (db) =>
+              lastSuccessAt(db, input, authority),
+            );
     return json(result);
   } catch (error) {
     if (error instanceof HistoryInputError || error instanceof SyntaxError)

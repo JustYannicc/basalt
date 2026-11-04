@@ -23,11 +23,25 @@ const { chromium } = require("playwright");
 const ready = { name: "basalt:pool-accounts-ready", version: 2, snapshot: false };
 const failed = { ok: false, error: "backend_unavailable", message: "Synthetic pool failure" };
 const empty = { isOwner: true, providers: [], accounts: [] };
-const emptyUsage = { ok: true, value: {
-  scope: "pool", from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z",
-  total: { requests: 0, cost: 0, unpriced: 0, tokens: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-  models: [], days: [], accounts: [], cap: null, readAt: null,
-} };
+const emptyUsage = {
+  ok: true,
+  value: {
+    scope: "pool",
+    from: "2026-10-01T00:00:00Z",
+    to: "2026-11-01T00:00:00Z",
+    total: {
+      requests: 0,
+      cost: 0,
+      unpriced: 0,
+      tokens: { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+    models: [],
+    days: [],
+    accounts: [],
+    cap: null,
+    readAt: null,
+  },
+};
 
 // Optional PR evidence, never committed. Screenshots go to an absolute directory outside the checkout.
 const artifacts = process.env.POOL_UI_ARTIFACTS;
@@ -61,8 +75,22 @@ function poolView(now, { source, revalidationFailed = false, observedAgo, savedA
     state: "active",
     message: null,
     windows: [
-      { id: `${id}-5h`, label: "5 hours", remainingRatio: short, resetAt: iso(2 * hour + 14 * minute), windowSeconds: 5 * 3600, observedAt },
-      { id: `${id}-weekly`, label: "Weekly", remainingRatio: weekly, resetAt: iso(3 * day + 5 * hour), windowSeconds: 7 * 24 * 3600, observedAt },
+      {
+        id: `${id}-5h`,
+        label: "5 hours",
+        remainingRatio: short,
+        resetAt: iso(2 * hour + 14 * minute),
+        windowSeconds: 5 * 3600,
+        observedAt,
+      },
+      {
+        id: `${id}-weekly`,
+        label: "Weekly",
+        remainingRatio: weekly,
+        resetAt: iso(3 * day + 5 * hour),
+        windowSeconds: 7 * 24 * 3600,
+        observedAt,
+      },
     ],
     observedAt,
     freshness: source === "snapshot" ? "stale" : "fresh",
@@ -79,7 +107,11 @@ function poolView(now, { source, revalidationFailed = false, observedAgo, savedA
       reading: {
         source,
         revalidationFailed,
-        readAt: { membership: iso(-savedAgo - 900), credentials: iso(-savedAgo - 400), quota: iso(-savedAgo) },
+        readAt: {
+          membership: iso(-savedAgo - 900),
+          credentials: iso(-savedAgo - 400),
+          quota: iso(-savedAgo),
+        },
       },
       accounts: [
         seat("seat-build-1", "codex", "build-seat-1@example.com", "Pro", left[0]),
@@ -162,7 +194,10 @@ test(
             await exited;
           }
           assert.notEqual(outcome, "timeout", `Browser process ${child.pid} outlived close`);
-          assert.ok(child.exitCode !== null || child.signalCode !== null, `Browser process ${child.pid} still running`);
+          assert.ok(
+            child.exitCode !== null || child.signalCode !== null,
+            `Browser process ${child.pid} still running`,
+          );
           assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
           t.diagnostic(`Owned browser process ${child.pid} exited; no browser remains.`);
         });
@@ -212,7 +247,10 @@ test(
     });
     if (sourceRef)
       for (const file of ["ui/app.tsx", "ui/accounts.tsx", "ui/api.ts"])
-        writeFileSync(join(app, file), execFileSync("git", ["-C", root, "show", `${sourceRef}:apps/pool/${file}`]));
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${sourceRef}:apps/pool/${file}`]),
+        );
     writeFileSync(
       join(app, "deployment.ts"),
       `export const poolOrigin = ${JSON.stringify(parentOrigin)}; export const productName = "Signalbox";`,
@@ -255,7 +293,9 @@ test(
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
     const answer = (entry) =>
-      entry.response.end(JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult));
+      entry.response.end(
+        JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
+      );
     const child = createServer(async (request, response) => {
       if (request.url === "/main.js") {
         response.setHeader("content-type", "application/javascript");
@@ -274,9 +314,21 @@ test(
           if (entry.fresh && answerFresh) answer(entry);
           else held.push(entry);
           arrived();
-        } else response.end(JSON.stringify(name === "usage" ? emptyUsage : name === "computerContext"
-          ? { ok: true, value: { accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts` } }
-          : failed));
+        } else
+          response.end(
+            JSON.stringify(
+              name === "usage"
+                ? emptyUsage
+                : name === "computerContext"
+                  ? {
+                      ok: true,
+                      value: {
+                        accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+                      },
+                    }
+                  : failed,
+            ),
+          );
       } else if (request.url === "/") {
         response.setHeader("content-type", "text/html");
         response.end(
@@ -302,16 +354,22 @@ test(
 
     const release = (fresh) => {
       const [now, later] = [[], []];
-      for (const entry of held) (fresh === undefined || entry.fresh === fresh ? now : later).push(entry);
+      for (const entry of held)
+        (fresh === undefined || entry.fresh === fresh ? now : later).push(entry);
       held = later;
       for (const entry of now) answer(entry);
     };
-    const pending = (fresh) => held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
+    const pending = (fresh) =>
+      held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
     const requests = (count, fresh) =>
       new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           arrived = () => {};
-          reject(new Error(`Expected ${count} held${fresh ? " fresh" : ""} view request(s), saw ${pending(fresh)}`));
+          reject(
+            new Error(
+              `Expected ${count} held${fresh ? " fresh" : ""} view request(s), saw ${pending(fresh)}`,
+            ),
+          );
         }, 10_000);
         arrived = () => {
           if (pending(fresh) < count) return;
@@ -328,7 +386,10 @@ test(
     const capture = async (page, name) => {
       if (!artifacts) return;
       mkdirSync(artifacts, { recursive: true });
-      await page.screenshot({ path: join(artifacts, `${artifactLabel}-${name}.png`), fullPage: true });
+      await page.screenshot({
+        path: join(artifacts, `${artifactLabel}-${name}.png`),
+        fullPage: true,
+      });
       if (name === "snapshot-updating") evidenceVideo = page.video();
     };
     const session = async (work) => {
@@ -336,13 +397,18 @@ test(
       views = [];
       freshResult = undefined;
       answerFresh = false;
-      const context = await browser.newContext({ viewport: { width: 1100, height: 860 },
-        ...(artifacts ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } } : {}),
+      const context = await browser.newContext({
+        viewport: { width: 1100, height: 860 },
+        ...(artifacts
+          ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } }
+          : {}),
       });
       try {
         await context.route("**/*", (route) => {
           const origin = new URL(route.request().url()).origin;
-          return origin === parentOrigin || origin === childOrigin ? route.continue() : route.abort();
+          return origin === parentOrigin || origin === childOrigin
+            ? route.continue()
+            : route.abort();
         });
         assert.deepEqual(await context.cookies(), []);
         const page = await context.newPage();
@@ -356,11 +422,15 @@ test(
           frame.evaluate(() =>
             performance.getEntriesByName("basalt:pool-accounts-ready").map((entry) => entry.detail),
           );
-        const committedAtReady = () => frame.locator("html").getAttribute("data-committed-at-ready");
+        const committedAtReady = () =>
+          frame.locator("html").getAttribute("data-committed-at-ready");
         // Effects from a commit have run by the frame after it, so any extra request would have left.
         const settled = () =>
           frame.evaluate(
-            () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+            () =>
+              new Promise((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+              ),
           );
         await work({ page, frame, accepted, marks, committedAtReady, settled });
       } finally {
@@ -370,13 +440,15 @@ test(
       }
     };
 
-    for (const { populated, recovery, sourced } of sourceRef ? [] : [
-      { populated: false },
-      { populated: true },
-      { populated: true, sourced: true },
-      { populated: true, recovery: "manual" },
-      { populated: true, recovery: "background" },
-    ])
+    for (const { populated, recovery, sourced } of sourceRef
+      ? []
+      : [
+          { populated: false },
+          { populated: true },
+          { populated: true, sourced: true },
+          { populated: true, recovery: "manual" },
+          { populated: true, recovery: "background" },
+        ])
       await t.test(
         recovery
           ? `failed first load, then ${recovery} recovery`
@@ -409,7 +481,16 @@ test(
               }
             : empty;
           if (sourced)
-            value.reading = poolView(Date.now(), { source: "live", observedAgo: 0, savedAgo: 0, left: [[1, 1], [1, 1], [1, 1]] }).value.reading;
+            value.reading = poolView(Date.now(), {
+              source: "live",
+              observedAgo: 0,
+              savedAgo: 0,
+              left: [
+                [1, 1],
+                [1, 1],
+                [1, 1],
+              ],
+            }).value.reading;
           viewResult = recovery ? failed : { ok: true, value };
           await session(async ({ page, frame, accepted, marks, committedAtReady }) => {
             const poll = async () => {
@@ -419,13 +500,19 @@ test(
               });
               await page.evaluate((origin) => {
                 const frame = document.querySelector("iframe");
-                frame.contentWindow.postMessage({ type: "executor:app-active", active: false }, origin);
-                frame.contentWindow.postMessage({ type: "executor:app-active", active: true }, origin);
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: false },
+                  origin,
+                );
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: true },
+                  origin,
+                );
               }, childOrigin);
             };
             assert.deepEqual(await accepted(), []);
             release();
-            const visible = populated ? "1 account" : "Connect your first account";
+            const visible = populated ? "1 account" : "Pick your first account";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
@@ -442,11 +529,21 @@ test(
               return;
             }
             await frame.getByText(visible, { exact: true }).waitFor();
-            assert.equal(await frame.getByRole("link", { name: "Accounts", exact: true }).getAttribute("href"),
-              `${parentOrigin}/org/fixture/apps/pool?view=accounts`);
-            assert.equal(await frame.getByRole("list", { name: "Accounts", exact: true }).count(), 0);
-            assert.equal(await frame.getByText("Synthetic subscription", { exact: true }).count(), 0);
-            await page.waitForFunction(() => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0);
+            assert.equal(
+              await frame.getByRole("link", { name: "Accounts", exact: true }).getAttribute("href"),
+              `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+            );
+            assert.equal(
+              await frame.getByRole("list", { name: "Accounts", exact: true }).count(),
+              0,
+            );
+            assert.equal(
+              await frame.getByText("Synthetic subscription", { exact: true }).count(),
+              0,
+            );
+            await page.waitForFunction(
+              () => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0,
+            );
             assert.deepEqual(
               (await accepted()).map((entry) => entry.data),
               [ready],
@@ -472,40 +569,72 @@ test(
               },
               { origin: parentOrigin, messages: invalid },
             );
-            await page.waitForFunction((count) => Reflect.get(window, "rejected") === count, invalid.length + 1);
+            await page.waitForFunction(
+              (count) => Reflect.get(window, "rejected") === count,
+              invalid.length + 1,
+            );
             assert.equal((await accepted()).length, 1);
             await poll();
             await requests(1, true);
             viewResult = { ok: true, value: empty };
             release();
-            await frame.getByText("Connect your first account", { exact: true }).waitFor();
+            await frame.getByText("Pick your first account", { exact: true }).waitFor();
             assert.equal((await marks()).length, 1);
             assert.equal((await accepted()).length, 1);
             // Keep the same WindowProxy, changing only its actual origin.
             await frame.goto(`${parentOrigin}/spoof`);
-            await page.waitForFunction((count) => Reflect.get(window, "rejected") === count, invalid.length + 2);
+            await page.waitForFunction(
+              (count) => Reflect.get(window, "rejected") === count,
+              invalid.length + 2,
+            );
             assert.equal((await accepted()).length, 1);
           });
         },
       );
 
     const retained = () =>
-      poolView(Date.now(), { source: "snapshot", observedAgo: 18 * minute, savedAgo: 6 * minute, left: [[0.42, 0.71], [0.08, 0.33], [0.9, 0.64]] });
+      poolView(Date.now(), {
+        source: "snapshot",
+        observedAgo: 18 * minute,
+        savedAgo: 6 * minute,
+        left: [
+          [0.42, 0.71],
+          [0.08, 0.33],
+          [0.9, 0.64],
+        ],
+      });
     const live = () =>
-      poolView(Date.now(), { source: "live", observedAgo: 20_000, savedAgo: 2_000, left: [[0.37, 0.69], [0.55, 0.31], [0.88, 0.63]] });
+      poolView(Date.now(), {
+        source: "live",
+        observedAgo: 20_000,
+        savedAgo: 2_000,
+        left: [
+          [0.37, 0.69],
+          [0.55, 0.31],
+          [0.88, 0.63],
+        ],
+      });
     const saved = sourceRef ? "build-seat-1@example.com" : "2 accounts";
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);
       await frame.getByText(saved, { exact: true }).waitFor();
       await capture(page, name);
-      await page.waitForFunction(() => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0);
-      assert.deepEqual((await accepted()).map((entry) => entry.data), [{ ...ready, snapshot: true }]);
+      await page.waitForFunction(
+        () => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0,
+      );
+      assert.deepEqual(
+        (await accepted()).map((entry) => entry.data),
+        [{ ...ready, snapshot: true }],
+      );
       assert.deepEqual(await marks(), [{ source: "snapshot" }]);
       assert.ok((await committedAtReady())?.includes(saved));
       await frame.waitForFunction(() => Reflect.get(window, "followUps").length === 1);
       const [shown] = await frame.evaluate(() => Reflect.get(window, "followUps"));
-      assert.ok(shown.includes(saved), "The fresh follow-up left before the retained view committed");
+      assert.ok(
+        shown.includes(saved),
+        "The fresh follow-up left before the retained view committed",
+      );
       assert.ok(shown.includes("Saved view, updating…"));
     };
     const once = async ({ marks, accepted }) => {
@@ -513,89 +642,109 @@ test(
       assert.equal((await accepted()).length, 1);
     };
 
-    await t.test("a retained view commits first, then one fresh follow-up replaces it", async () => {
-      viewResult = retained();
-      await session(async (probe) => {
-        const { page, frame, settled } = probe;
-        await retainedCommitted(probe, "snapshot-updating");
-        await requests(1, true);
-        await frame.getByText("Saved view, updating…", { exact: true }).waitFor();
-        freshResult = live();
-        release(true);
-        await frame.getByText("Usage read just now", { exact: true }).waitFor();
-        assert.equal(await frame.getByText("Saved view", { exact: false }).count(), 0);
-        await capture(page, "live");
-        await settled();
-        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-        await once(probe);
-      });
-    });
+    await t.test(
+      "a retained view commits first, then one fresh follow-up replaces it",
+      async () => {
+        viewResult = retained();
+        await session(async (probe) => {
+          const { page, frame, settled } = probe;
+          await retainedCommitted(probe, "snapshot-updating");
+          await requests(1, true);
+          await frame.getByText("Saved view, updating…", { exact: true }).waitFor();
+          freshResult = live();
+          release(true);
+          await frame.getByText("Usage read just now", { exact: true }).waitFor();
+          assert.equal(await frame.getByText("Saved view", { exact: false }).count(), 0);
+          await capture(page, "live");
+          await settled();
+          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+          await once(probe);
+        });
+      },
+    );
 
-    await t.test("a follow-up answered at once still lands after the retained commit", { skip: Boolean(sourceRef) }, async () => {
-      viewResult = retained();
-      await session(async (probe) => {
-        const { frame, settled } = probe;
-        freshResult = live();
-        answerFresh = true;
-        await retainedCommitted(probe, "snapshot-immediate");
-        await frame.getByText("Usage read just now", { exact: true }).waitFor();
-        await settled();
-        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-        await once(probe);
-      });
-    });
+    await t.test(
+      "a follow-up answered at once still lands after the retained commit",
+      { skip: Boolean(sourceRef) },
+      async () => {
+        viewResult = retained();
+        await session(async (probe) => {
+          const { frame, settled } = probe;
+          freshResult = live();
+          answerFresh = true;
+          await retainedCommitted(probe, "snapshot-immediate");
+          await frame.getByText("Usage read just now", { exact: true }).waitFor();
+          await settled();
+          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+          await once(probe);
+        });
+      },
+    );
 
-    await t.test("failed revalidation keeps the retained view, says so, and retries fresh only when asked", { skip: Boolean(sourceRef) }, async () => {
-      viewResult = retained();
-      await session(async (probe) => {
-        const { page, frame, settled } = probe;
-        await retainedCommitted(probe, "snapshot-before-failure");
-        await requests(1, true);
-        freshResult = { ...viewResult, value: { ...viewResult.value,
-          reading: { ...viewResult.value.reading, revalidationFailed: true } } };
-        release(true);
-        await frame.getByText(/^Couldn't update; showing a saved view from 6m ago$/).waitFor();
-        await frame.getByText(saved, { exact: true }).waitFor();
-        await capture(page, "revalidation-failed");
-        await settled();
-        // A failed revalidation is an answer, not a reason to ask again.
-        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-        await frame.getByRole("button", { name: "Try again", exact: true }).click();
-        await requests(1, true);
-        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-        freshResult = live();
-        release(true);
-        await frame.getByText("Usage read just now", { exact: true }).waitFor();
-        await settled();
-        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-        await once(probe);
-      });
-    });
+    await t.test(
+      "failed revalidation keeps the retained view, says so, and retries fresh only when asked",
+      { skip: Boolean(sourceRef) },
+      async () => {
+        viewResult = retained();
+        await session(async (probe) => {
+          const { page, frame, settled } = probe;
+          await retainedCommitted(probe, "snapshot-before-failure");
+          await requests(1, true);
+          freshResult = {
+            ...viewResult,
+            value: {
+              ...viewResult.value,
+              reading: { ...viewResult.value.reading, revalidationFailed: true },
+            },
+          };
+          release(true);
+          await frame.getByText(/^Couldn't update; showing a saved view from 6m ago$/).waitFor();
+          await frame.getByText(saved, { exact: true }).waitFor();
+          await capture(page, "revalidation-failed");
+          await settled();
+          // A failed revalidation is an answer, not a reason to ask again.
+          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+          await frame.getByRole("button", { name: "Try again", exact: true }).click();
+          await requests(1, true);
+          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+          freshResult = live();
+          release(true);
+          await frame.getByText("Usage read just now", { exact: true }).waitFor();
+          await settled();
+          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+          await once(probe);
+        });
+      },
+    );
 
-    await t.test("an unreachable follow-up keeps the retained view and its error", { skip: Boolean(sourceRef) }, async () => {
-      viewResult = retained();
-      await session(async (probe) => {
-        const { page, frame, settled } = probe;
-        await retainedCommitted(probe, "snapshot-before-unreachable");
-        await requests(1, true);
-        freshResult = failed;
-        release(true);
-        await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
-        await frame.getByText(saved, { exact: true }).waitFor();
-        await frame.getByText(/^Showing a saved view from 6m ago$/).waitFor();
-        await capture(page, "follow-up-unreachable");
-        await settled();
-        assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-        await frame.getByRole("button", { name: "Try again", exact: true }).click();
-        await requests(1, true);
-        freshResult = live();
-        release(true);
-        await frame.getByText("Usage read just now", { exact: true }).waitFor();
-        assert.equal(await frame.getByText("Synthetic pool failure", { exact: true }).count(), 0);
-        assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-        await once(probe);
-      });
-    });
+    await t.test(
+      "an unreachable follow-up keeps the retained view and its error",
+      { skip: Boolean(sourceRef) },
+      async () => {
+        viewResult = retained();
+        await session(async (probe) => {
+          const { page, frame, settled } = probe;
+          await retainedCommitted(probe, "snapshot-before-unreachable");
+          await requests(1, true);
+          freshResult = failed;
+          release(true);
+          await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
+          await frame.getByText(saved, { exact: true }).waitFor();
+          await frame.getByText(/^Showing a saved view from 6m ago$/).waitFor();
+          await capture(page, "follow-up-unreachable");
+          await settled();
+          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+          await frame.getByRole("button", { name: "Try again", exact: true }).click();
+          await requests(1, true);
+          freshResult = live();
+          release(true);
+          await frame.getByText("Usage read just now", { exact: true }).waitFor();
+          assert.equal(await frame.getByText("Synthetic pool failure", { exact: true }).count(), 0);
+          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+          await once(probe);
+        });
+      },
+    );
 
     await t.test("the sender targets the exact configured parent origin", async () => {
       viewResult = { ok: true, value: empty };
@@ -618,7 +767,9 @@ test(
         await page.goto(childOrigin);
         await requests(2, false);
         release();
-        await page.getByText(sourceRef ? "No accounts yet." : "Connect your first account", { exact: true }).waitFor();
+        await page
+          .getByText(sourceRef ? "No accounts yet." : "Pick your first account", { exact: true })
+          .waitFor();
         assert.deepEqual(await page.evaluate(() => Reflect.get(window, "sentReady")), {
           data: ready,
           targetOrigin: parentOrigin,
@@ -641,11 +792,17 @@ async function compileStyles(app, javascript) {
     outfile: "main.css",
     alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
   });
-  const { compile } = createRequire(join(root, ".upstream/packages/sdk/package.json"))("tailwindcss");
+  const { compile } = createRequire(join(root, ".upstream/packages/sdk/package.json"))(
+    "tailwindcss",
+  );
   const vite = createRequire(
-    realpathSync(join(root, ".upstream/apps/hosted/web/node_modules/@tailwindcss/vite/package.json")),
+    realpathSync(
+      join(root, ".upstream/apps/hosted/web/node_modules/@tailwindcss/vite/package.json"),
+    ),
   );
   const { Scanner } = vite("@tailwindcss/oxide");
-  const candidates = new Scanner({ sources: [] }).scanFiles([{ content: javascript, extension: "js" }]);
+  const candidates = new Scanner({ sources: [] }).scanFiles([
+    { content: javascript, extension: "js" },
+  ]);
   return (await compile(styles.outputFiles[0].text)).build(candidates);
 }

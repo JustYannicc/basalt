@@ -255,6 +255,9 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       acquisition = { pool, id, provider };
     },
     origin: `http://127.0.0.1:${server.address().port}`,
+    async reconcile(pool) {
+      await memberships.refresh(pool);
+    },
     product(origin) {
       productOrigin = origin;
     },

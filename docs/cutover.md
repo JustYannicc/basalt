@@ -38,7 +38,7 @@ Never paste credentials into chat, command arguments, logs, issues or PRs.
 Get the destination pool's existing scoped control token from the deployment
 operator's secure channel. Use its owner's identity and a computer key scoped
 to that same pool. The importer accepts no backend management key or signing
-key. The server verifies the signed pool token and owner on every upload.
+key. Imports use the signed-in owner’s session on the provider app; the pool only selects the saved account.
 
 Create a private JSON file with this shape. Replace the placeholders privately.
 The `path` values resolve relative to that file. Choose each `model` from the
@@ -49,9 +49,13 @@ destination's model catalog so the corresponding subscription can serve it.
   "origin": "https://<deployment-host>",
   "poolToken": "<scoped-pool-control-token>",
   "owner": "<pool-owner>",
+  "organization": "<organization-id>",
+  "poolApp": "<pool-app-id>",
+  "cookie": "<private-owner-session-cookie>",
   "apiKey": "<computer-key-for-this-pool>",
   "accounts": [
-    { "path": "<exported-login-file>", "model": "<model-from-the-catalog>" }
+    { "path": "<exported-login-file>", "model": "<model-from-the-catalog>",
+      "providerApp": "<provider-app-id>", "creation": "<fresh-uuid-retained-for-retries>" }
   ],
   "attempts": 6
 }
@@ -67,9 +71,8 @@ Then run the same command without `--check`. Run local verification through the
 machine's shared heavy-command slot when required by its operating rules.
 HTTPS is required except for loopback fixtures. Redirects are refused.
 
-The tool uploads one file at a time through the supported owner-only
-`POST /pool/v1/login-files` path. It requires generated text and a successful
-usage record for that exact imported account. Pool membership or a successful
+The tool imports each file on its provider app, then selects its saved account in the pool. Retain each creation UUID and the same file across an uncertain response. It requires generated text and a successful
+usage record for that exact imported account and generated session. Pool membership or a successful
 request from another account does not count. It uses fresh sessions, with at
 most `attempts` model requests per file, and up to 45 usage polls per request.
 Every HTTP request has a 60-second timeout. Existing accounts are never disabled
