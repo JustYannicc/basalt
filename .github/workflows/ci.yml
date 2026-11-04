@@ -1036,12 +1036,16 @@ jobs:
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
       - name: Exercise AWS sign-in and tools through the real runtime
-        run: node scripts/check-aws.ts
+        run: |
+          node --test e2e/aws/diagnostics.test.mjs
+          node scripts/check-aws.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: aws-hosted-paste-ui
-          path: .generated/aws-proof/run-*/aws-*.png
+          path: |
+            .generated/aws-proof/run-*/aws-*.png
+            .generated/aws-proof/run-*/failure-summary.json
           if-no-files-found: warn
           include-hidden-files: true
   gitlab-connectors:
