@@ -18,6 +18,7 @@ function environment(value: unknown, context: FastContext): Record<string, strin
         "${{ github.event.pull_request.base.sha || github.event.before }}": context.base,
         "${{ github.event.pull_request.head.sha || github.sha }}": context.head,
         "${{ github.event.pull_request.base.sha }}": context.base,
+        "${{ needs.select.outputs.base_sha }}": context.base,
       };
       if (text.includes("${{")) {
         if (!(text in known)) throw new Error(`Unsupported fast environment expression: ${key}`);
@@ -48,15 +49,18 @@ export function fastPlan(document: unknown, context: FastContext) {
   const env = { ...environment(document.env, context), ...environment(fast.env, context) };
   let nodeVersion: string | undefined, bunVersion: string | undefined;
   const steps: FastStep[] = [];
+  const skipped: { name: string; reason: string }[] = [];
   for (const step of fast.steps) {
-    if (
-      !object(step) ||
-      step.if !== undefined ||
-      step["continue-on-error"] !== undefined ||
-      step.shell !== undefined
-    )
+    if (!object(step) || step["continue-on-error"] !== undefined || step.shell !== undefined)
       throw new Error("Unsupported fast step execution settings");
+    if (
+      step.if !== undefined &&
+      step.if !== "needs.select.outputs.full_suite == 'true'" &&
+      step.if !== "needs.select.outputs.full_suite != 'true'"
+    )
+      throw new Error("Unsupported fast step condition");
     if (typeof step.uses === "string") {
+      if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
       if (step.uses === "actions/checkout@v4") continue;
       if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
       if (step.uses === "actions/setup-node@v4") nodeVersion = String(step.with["node-version"]);
@@ -81,11 +85,19 @@ export function fastPlan(document: unknown, context: FastContext) {
     const cwd = resolve(context.root, directory ?? ".");
     if (relative(context.root, cwd).split(/[\\/]/).includes(".."))
       throw new Error("Fast step escapes checkout");
+    const stepEnv = { ...env, ...environment(step.env, context) };
+    if (step.if === "needs.select.outputs.full_suite == 'true'") {
+      skipped.push({
+        name: typeof step.name === "string" ? step.name : step.run.trim(),
+        reason: "full lane only",
+      });
+      continue;
+    }
     steps.push({
       name: typeof step.name === "string" ? step.name : step.run.trim(),
       command: step.run,
       cwd,
-      env: { ...env, ...environment(step.env, context) },
+      env: stepEnv,
     });
   }
   if (
@@ -96,7 +108,7 @@ export function fastPlan(document: unknown, context: FastContext) {
     !/^\d+\.\d+\.\d+$/.test(bunVersion)
   )
     throw new Error("Fast job needs checks and exact Node/Bun versions");
-  return { nodeVersion, bunVersion, steps };
+  return { nodeVersion, bunVersion, steps, skipped };
 }
 
 export function runFastSteps(

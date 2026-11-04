@@ -38,15 +38,21 @@ test("the local plan preserves every real CI shell command, in its original orde
   assert.deepEqual(
     plan.steps.map((step) => step.command),
     actual.jobs.fast.steps
-      .filter((step: { run?: string }) => step.run !== undefined)
+      .filter(
+        (step: { run?: string; if?: string }) =>
+          step.run !== undefined && step.if !== "needs.select.outputs.full_suite == 'true'",
+      )
       .map((step: { run: string }) => step.run),
   );
   assert.ok(plan.steps.some((step) => step.command === "node scripts/ci/style.ts"));
-  assert.ok(
-    plan.steps.some(
-      (step) => step.name === "Typecheck the patched upstream the way upstream checks itself",
-    ),
+  const upstream = actual.jobs.fast.steps.find(
+    (step: { name?: string }) =>
+      step.name === "Typecheck the patched upstream the way upstream checks itself",
   );
+  assert.ok(upstream);
+  if (upstream.if === "needs.select.outputs.full_suite == 'true'")
+    assert.ok(plan.skipped.some((step) => step.name === upstream.name));
+  else assert.ok(plan.steps.some((step) => step.name === upstream.name));
   assert.equal(plan.nodeVersion, "24.18.0");
   assert.equal(plan.bunVersion, "1.4.2");
 });
@@ -110,4 +116,43 @@ test("new workflow semantics fail until the local runner understands them", () =
     );
   }
   assert.throws(() => fastPlan({ jobs: {} }, context));
+});
+
+test("reviewed lane conditions select ordinary PR steps and report every full-only skip", () => {
+  const value = document();
+  const plan = fastPlan(
+    {
+      ...value,
+      jobs: {
+        fast: {
+          steps: [
+            ...value.jobs.fast.steps,
+            {
+              name: "focused units",
+              if: "needs.select.outputs.full_suite != 'true'",
+              run: "node scripts/ci/unit-tests.ts",
+              env: { BASE_SHA: "${{ needs.select.outputs.base_sha }}" },
+            },
+            {
+              name: "complete units",
+              if: "needs.select.outputs.full_suite == 'true'",
+              run: "npm run check",
+            },
+            {
+              name: "full upstream types",
+              if: "needs.select.outputs.full_suite == 'true'",
+              run: "npm run typecheck:upstream",
+            },
+          ],
+        },
+      },
+    },
+    context,
+  );
+  assert.equal(plan.steps.at(-1)!.name, "focused units");
+  assert.equal(plan.steps.at(-1)!.env.BASE_SHA, context.base);
+  assert.deepEqual(plan.skipped, [
+    { name: "complete units", reason: "full lane only" },
+    { name: "full upstream types", reason: "full lane only" },
+  ]);
 });

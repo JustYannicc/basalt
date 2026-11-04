@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +15,22 @@ for (let index = 0; index < args.length; index++) {
     baseRef = args[++index]!;
   else throw new Error("Usage: npm run ci:fast -- [--base <ref>] [--list]");
 }
+if (!list && !process.env.HEAVY_SLOT_ACTIVE) {
+  const result = spawnSync(
+    "heavy-slot",
+    [process.execPath, fileURLToPath(import.meta.url), ...args],
+    {
+      cwd: root,
+      stdio: "inherit",
+      env: { ...process.env, HEAVY_SLOTS: process.env.HEAVY_SLOTS || "6" },
+    },
+  );
+  if (result.error)
+    throw new Error(
+      "ci:fast requires heavy-slot on PATH because preparation installs dependencies and builds assets. Install the shared slot wrapper before running the complete gate.",
+    );
+  process.exit(result.status ?? 1);
+}
 const git = (...arguments_: string[]) =>
   execFileSync("git", arguments_, { cwd: root, encoding: "utf8" }).trim();
 const base = git("rev-parse", "--verify", `${baseRef}^{commit}`);
@@ -24,7 +40,7 @@ try {
   ({ parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml"));
 } catch {
   throw new Error(
-    "Prepare this checkout first with npm run prepare:upstream, then run ci:fast again.",
+    "Prepare this checkout first with heavy-slot npm run prepare:upstream, then run ci:fast again.",
   );
 }
 const plan = fastPlan(parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")), {
@@ -48,6 +64,7 @@ if (list) {
   mkdirSync(directory, { recursive: true });
   const evidence = mkdtempSync(join(directory, `${head.slice(0, 8)}-`));
   const startedAt = new Date().toISOString();
+  for (const step of plan.skipped) console.log(`Skipped ${step.name}: ${step.reason}`);
   const result = runFastSteps(plan.steps, {
     ...process.env,
     CI: "true",
@@ -59,7 +76,15 @@ if (list) {
   writeFileSync(
     join(evidence, "result.json"),
     JSON.stringify(
-      { base, head, startedAt, completedAt: new Date().toISOString(), ...result },
+      {
+        base,
+        head,
+        lane: "fast-only",
+        skipped: plan.skipped,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        ...result,
+      },
       null,
       2,
     ) + "\n",
