@@ -133,27 +133,39 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
         Exit.isFailure(exit)
           ? Effect.gen(function* () {
               const diagnostics = { runtimeDirectory: target.directory, apps: lastApps };
-              yield* Effect.scoped(Effect.gen(function* () {
-                const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
-                diagnostics.provisioning = yield* database.run({
-                  sql: `select kind, status, attempts, available_at, updated_at from hosted_provisioning
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
+                  diagnostics.provisioning = yield* database.run({
+                    sql: `select kind, status, attempts, available_at, updated_at from hosted_provisioning
                     where organization_id = $1 order by kind, updated_at limit 50`,
-                  params: [organization ?? ""],
-                });
-              })).pipe(
+                    params: [organization ?? ""],
+                  });
+                }),
+              ).pipe(
                 Effect.timeout("3 seconds"),
-                Effect.catchCause(() => Effect.sync(() => {
-                  diagnostics.provisioningUnavailable = true;
-                })),
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    diagnostics.provisioningUnavailable = true;
+                  }),
+                ),
               );
               yield* Effect.promise(async () => {
                 try {
                   const log = await readFile(join(target.directory, "cloud.log"), "utf8");
-                  await writeFile(join(directory, "runtime-cloud.log"),
-                    redactLogText(log).slice(-2 * 1024 * 1024), { mode: 0o600 });
-                } catch { diagnostics.cloudLogUnavailable = true; }
-                await writeFile(join(directory, "runtime-diagnostics.json"),
-                  JSON.stringify(diagnostics, null, 2) + "\n", { mode: 0o600 });
+                  await writeFile(
+                    join(directory, "runtime-cloud.log"),
+                    redactLogText(log).slice(-2 * 1024 * 1024),
+                    { mode: 0o600 },
+                  );
+                } catch {
+                  diagnostics.cloudLogUnavailable = true;
+                }
+                await writeFile(
+                  join(directory, "runtime-diagnostics.json"),
+                  JSON.stringify(diagnostics, null, 2) + "\n",
+                  { mode: 0o600 },
+                );
               });
             }).pipe(Effect.catchCause(() => Effect.logWarning("Reset diagnostic retention failed")))
           : Effect.void,
@@ -165,12 +177,20 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
       raw(role, method, path, input).pipe(
         Effect.map((response) => {
           assert.equal(response.status, 200, `${method} ${path}: ${JSON.stringify(response.body)}`);
-          if (resets && method === "GET" && path === `/api/organizations/${organization}/apps`
-            && Array.isArray(response.body)) {
-            lastApps = { total: response.body.length, rows: response.body.slice(0, 50).map((app) => ({
-              id: app.id, name: redactLogText(String(app.name ?? "")).slice(0, 200),
-              activeVersion: app.activeVersion,
-            })) };
+          if (
+            resets &&
+            method === "GET" &&
+            path === `/api/organizations/${organization}/apps` &&
+            Array.isArray(response.body)
+          ) {
+            lastApps = {
+              total: response.body.length,
+              rows: response.body.slice(0, 50).map((app) => ({
+                id: app.id,
+                name: redactLogText(String(app.name ?? "")).slice(0, 200),
+                activeVersion: app.activeVersion,
+              })),
+            };
           }
           return response.body;
         }),
