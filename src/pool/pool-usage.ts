@@ -16,6 +16,8 @@ import { hasUsageLimits, needsQuotaCollection, type QuotaCollection } from "./qu
 // Personal summaries filter before aggregation. Pool managers can inspect the whole pool.
 
 export const summaryPath = `${controlBasePath}/usage/summary`;
+export const managedUsagePath = `${controlBasePath}/managed-usage`;
+export const managedCapPath = `${controlBasePath}/managed-cap`;
 export const maxMembers = 500;
 export const isMemberId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 512;
 // The alarm reads every five minutes; a read only syncs when the alarm fell behind.

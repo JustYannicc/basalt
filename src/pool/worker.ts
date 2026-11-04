@@ -25,7 +25,7 @@ import {
   type HomeApiKeyLookup,
 } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
-import { PoolUsage, summaryPath } from "./pool-usage.ts";
+import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
@@ -293,7 +293,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
       connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
     });
-    if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
+    if (pathname === managedUsagePath || pathname === managedCapPath || pathname.startsWith("/__setup/v1/"))
+      return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);
       // Connect reads this when it opens; copying a setup prompt next mints a key in Home, so start

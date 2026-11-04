@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-management-usage-routes",
+  "file": "0244-pool-management-usage-routes.patch",
+  "content_sha256": "9e94bc31f7a76b3ecbf006dfa20bdeec0a2ac5e0be8992e90e5a8578c75de252",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
