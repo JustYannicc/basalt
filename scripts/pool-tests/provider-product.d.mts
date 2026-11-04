@@ -10,7 +10,7 @@ interface Product {
   origin: string;
   pool: string;
   prefix: string;
-  actors: { organization: { id: string }; owner: { cookies: string; userId: string } };
+  actors: { organization: { id: string }; owner: { headers: { cookie: string }; userId: string } };
   references: Map<string, string>;
   provider(lab: string): Promise<{ id: string }>;
   select(lab: string, id: string): Promise<void>;
