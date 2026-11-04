@@ -1,0 +1,69 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index b548a9a1a..7e5bb2b9f 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -261,7 +261,9 @@ export const startCloudEnvironment = (input: {
+       ).pipe(Effect.asVoid, Effect.orDie),
+     );
+     const emulators = `${directory}/emulators.json`;
+-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
++    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), {
++      mode: 0o600,
++    });
+     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+     const analyticsPort = yield* startAnalyticsCollector(directory);
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+@@ -646,9 +648,15 @@ export const startCloudEnvironment = (input: {
+     const prebootBinding = process.env.BASALT_E2E_PREBOOT_BINDING;
+     if (
+       prebootBinding !== undefined &&
+-      !["credentials", "host", "database", "role", "without-server", "release"].includes(
+-        prebootBinding,
+-      )
++      ![
++        "alternate",
++        "credentials",
++        "host",
++        "database",
++        "role",
++        "without-server",
++        "release",
++      ].includes(prebootBinding)
+     )
+       return yield* new CloudStartFailed({ operation: "Unknown preboot binding" });
+     if (prebootBinding !== undefined && alternatePort === undefined)
+@@ -768,6 +776,7 @@ export const startCloudEnvironment = (input: {
+           );
+           return {
+             binding,
++            launches: launchCount,
+             databaseName: "executor",
+             origin: { host: "127.0.0.1", port: databasePort, database: "executor" },
+           };
+diff --git a/e2e/tests/google-identity-migration.spec.ts b/e2e/tests/google-identity-migration.spec.ts
+index 33dede1f6..7b2339b78 100644
+--- a/e2e/tests/google-identity-migration.spec.ts
++++ b/e2e/tests/google-identity-migration.spec.ts
+@@ -325,12 +325,16 @@ layer(HostedLive, { excludeTestServices: true })("Google recovery operations", (
+         expect(yield* receipt()).toEqual([]);
+         if (changedBinding) {
+           // The runner owns this disposable runtime, as in the production-ops binding scenario.
+-          yield* fixtureRequest(
+-            fixtures,
+-            "/runtime/database-binding",
+-            { binding: "alternate" },
+-            "5 minutes",
+-          );
++          const change = (binding: "original" | "alternate") =>
++            fixtureRequest(fixtures, "/runtime/database-binding", { binding }, "5 minutes").pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(
++                  Schema.Struct({ binding: Schema.Literal(binding), launches: Schema.Literal(2) }),
++                ),
++              ),
++            );
++          yield* Effect.addFinalizer(() => change("original").pipe(Effect.orDie));
++          yield* change("alternate");
+           const inventory = yield* operation("inventory", "accounts", { organization });
+           expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
+           const changed = Schema.decodeUnknownSync(
