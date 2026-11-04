@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    accountConnections = part "Account connections" {
+      description "A completed saved-sign-in connection stays successful when subsequent reads fail. Completion reports stale account reads and offers a read-only retry without repeating the connection. Every selected app refreshes its links and versioned discovery. The account picker retains its active form when refreshed links remove its last available choice."
+      metadata { code ".upstream/apps/hosted/web/src/contracts/identity-consent.ts|.upstream/apps/local/web/src/contracts/identity-consent.ts|.upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx|.upstream/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx" }
+    }
+  }
+}
