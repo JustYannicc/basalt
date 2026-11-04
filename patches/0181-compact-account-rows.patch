@@ -286,10 +286,10 @@ index 0d7653b..e42403a 100644
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
 new file mode 100644
-index 0000000..5737d72
+index 0000000..e7bf9de
 --- /dev/null
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,482 @@
 +/** Account rows are compact two-line rows: aligned columns, health in a word, actions in the menu. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -449,6 +449,17 @@ index 0000000..5737d72
 +            },
 +          },
 +        });
++        // A saved grant that nothing checks.
++        const savedOnly = yield* observationFixture({
++          name: "Saved fixture",
++          observe: false,
++          health: false,
++        });
++        expect(
++          (yield* savedOnly.api.request(savedOnly.actors.owner, "PATCH", savedOnly.accountPath, {
++            label: "Saved only",
++          })).status,
++        ).toBe(200);
 +        for (const [fixture, label] of [
 +          [plain, "Plain mail"],
 +          [rejected, "Rejected mail"],
@@ -634,6 +645,16 @@ index 0000000..5737d72
 +          ["Not rechecked", expect.stringMatching(/before the credentials or app changed$/)],
 +        ]);
 +        expect(reauth).toContain(rejected.app.id);
++        expect(
++          yield* browser.use("Read the unchecked row's Health", (page) =>
++            accountRow(page, "Saved only")
++              .waitFor()
++              .then(() =>
++                accountRow(page, "Saved only").locator("[data-account-health-cell]").count(),
++              ),
++          ),
++          "a saved grant with no check never reads as healthy",
++        ).toBe(0);
 +        expect(inlineRefresh, "Refresh moved into the row menu").toBe(0);
 +        // On the app's own tab, its current rejection is the row's one inline recovery.
 +        const appRejection = yield* browser.use("Open the rejected app's accounts", (page) => {
@@ -1589,10 +1610,10 @@ index a711e92..7f0bed0 100644
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 new file mode 100644
-index 0000000..9a5ee4e
+index 0000000..a368a5e
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,317 @@
 +import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
 +import { HugeiconsIcon } from "@hugeicons/react";
 +import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
@@ -1602,10 +1623,17 @@ index 0000000..9a5ee4e
 +import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
 +import { cn } from "../lib/utils.ts";
 +import { describeAccountCheck } from "./account-health.tsx";
-+import type { AccountRowBinding } from "./account-row.tsx";
++import type { AccountRowBinding, AccountRowInput } from "./account-row.tsx";
 +import { useDashboard } from "./context.tsx";
 +
 +type Check = NonNullable<AccountDriverHealth["check"]>;
++
++/** One check behind the Health column: whose account, and which app reported it. */
++export interface AccountRowHealthSource {
++  readonly account: AccountSummary;
++  /** Absent for the account's own sign-in check. */
++  readonly app?: AppId | undefined;
++}
 +
 +/** What the Health column says. */
 +export type AccountRowHealth =
@@ -1614,8 +1642,10 @@ index 0000000..9a5ee4e
 +  | {
 +      readonly kind: "check";
 +      readonly check: Check;
-+      /** The apps whose checks say this, first one shown; empty for the account's own check. */
-+      readonly apps: readonly AppId[];
++      /** Every member and app whose check says this; the first app is the re-auth link. */
++      readonly sources: readonly AccountRowHealthSource[];
++      /** The row groups several saved accounts, so the tooltip names each member. */
++      readonly grouped: boolean;
 +    }
 +  | { readonly kind: "not-checked" }
 +  /** Nothing can check the account, so the cell stays empty. */
@@ -1630,27 +1660,39 @@ index 0000000..9a5ee4e
 +  "healthy",
 +];
 +
-+/**
-+ * What the Health column shows, from the grant and the stored checks as delivered. The account's
-+ * own check, `health.driver`, wins. Without one the column falls back, for display only, to the
-+ * page's own app check when `own` is given, or else to the row's app checks: a current rejection
-+ * first, then the worst current result, then an outdated one. No check stays empty; a saved grant
-+ * never reads as healthy.
-+ */
-+export const accountRowHealth = (
++/** Lower is worse: grant problems, then current results by severity, then outdated ones. */
++const rank = (health: AccountRowHealth) =>
++  health.kind === "needs-sign-in"
++    ? 0
++    : health.kind === "unavailable"
++      ? 1
++      : health.kind === "check"
++        ? health.check.current
++          ? 2 + severity.indexOf(health.check.status)
++          : 2 + severity.length
++        : health.kind === "not-checked"
++          ? 3 + severity.length
++          : 4 + severity.length;
++
++const grant = (
 +  account: AccountSummary,
 +  bindings: readonly AccountRowBinding[],
-+  own?: AccountRowBinding,
-+): AccountRowHealth => {
++): AccountRowHealth | undefined => {
 +  const signIns = [account.signIn, ...bindings.map((binding) => binding.signIn)].filter(
 +    (signIn) => signIn !== undefined,
 +  );
 +  if (signIns.some((signIn) => accountNeedsSignIn({ ...account, signIn })))
 +    return { kind: "needs-sign-in" };
 +  if (signIns.some((signIn) => signIn.state === "unavailable")) return { kind: "unavailable" };
-+  const driver = account.health?.driver;
-+  if (driver?.check != null) return { kind: "check", check: driver.check, apps: [] };
-+  const results = (own === undefined ? bindings : [own]).flatMap((binding) =>
++  return undefined;
++};
++
++/** The worst of these app checks: current before outdated, then by severity. */
++const worstApp = (
++  account: AccountSummary,
++  bindings: readonly AccountRowBinding[],
++): AccountRowHealth | undefined => {
++  const results = bindings.flatMap((binding) =>
 +    binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
 +  );
 +  for (const current of [true, false])
@@ -1660,11 +1702,78 @@ index 0000000..9a5ee4e
 +      );
 +      const [first] = matching;
 +      if (first !== undefined)
-+        return { kind: "check", check: first.check, apps: matching.map((result) => result.app) };
++        return {
++          kind: "check",
++          check: first.check,
++          sources: matching.map((result) => ({ account, app: result.app })),
++          grouped: false,
++        };
 +    }
-+  return driver?.checkable === true || own?.check?.checkable === true
-+    ? { kind: "not-checked" }
-+    : { kind: "no-check" };
++  return undefined;
++};
++
++/** One saved account: its own check wins, then its app checks; a saved grant alone says nothing. */
++const memberHealth = (row: AccountRowInput): AccountRowHealth => {
++  const driver = row.account.health?.driver;
++  return (
++    grant(row.account, row.bindings) ??
++    (driver?.check == null
++      ? undefined
++      : {
++          kind: "check",
++          check: driver.check,
++          sources: [{ account: row.account }],
++          grouped: false,
++        }) ??
++    worstApp(row.account, row.bindings) ??
++    (driver?.checkable === true || row.bindings.some((binding) => binding.check?.checkable === true)
++      ? { kind: "not-checked" }
++      : { kind: "no-check" })
++  );
++};
++
++/**
++ * The Accounts list's Health column, for display only, from the checks as delivered. Each saved
++ * account in the row is read on its own, its own check before its app checks; the worst member
++ * wins, a current rejection first, and members in the same state share the cell's tooltip.
++ */
++export const accountRowHealth = (members: readonly AccountRowInput[]): AccountRowHealth => {
++  const states = members.map(memberHealth);
++  const worst = states.reduce<AccountRowHealth>(
++    (current, next) => (rank(next) < rank(current) ? next : current),
++    { kind: "no-check" },
++  );
++  if (worst.kind !== "check") return worst;
++  const same = states.filter(
++    (state): state is Extract<AccountRowHealth, { kind: "check" }> =>
++      state.kind === "check" &&
++      state.check.status === worst.check.status &&
++      state.check.current === worst.check.current,
++  );
++  return { ...worst, sources: same.flatMap((state) => state.sources), grouped: members.length > 1 };
++};
++
++/**
++ * An app's Accounts tab: that app's own check comes first, the account's own check only when the
++ * app has none, so the app's failure and its Reconnect are never hidden.
++ */
++export const appRowHealth = (row: AccountRowInput, own: AccountRowBinding): AccountRowHealth => {
++  const driver = row.account.health?.driver;
++  return (
++    grant(row.account, [own]) ??
++    worstApp(row.account, [own]) ??
++    (driver?.check == null
++      ? undefined
++      : {
++          kind: "check",
++          check: driver.check,
++          sources: [{ account: row.account }],
++          grouped: false,
++        }) ??
++    (driver?.checkable === true || own.check?.checkable === true
++      ? { kind: "not-checked" }
++      : { kind: "no-check" })
++  );
 +};
 +
 +const dots = {
@@ -1683,7 +1792,7 @@ index 0000000..9a5ee4e
 +/**
 + * The account's health in a few words. A current rejection is the row's one inline recovery:
 + * `recover` where the page has one, or with `link` a "Needs re-auth ↗" link to the first rejecting
-+ * app's accounts.
++ * member's app.
 + */
 +export function AccountHealthCell({
 +  health,
@@ -1736,9 +1845,14 @@ index 0000000..9a5ee4e
 +        Not checked
 +      </span>
 +    );
-+  const { check, apps } = health;
++  const { check, sources, grouped } = health;
 +  const { label, tone } = describeAccountCheck(check.status);
-+  const where = apps.length === 0 ? "sign-in check" : apps.map(appName).join(", ");
++  const where = sources
++    .map((source) => {
++      const by = source.app === undefined ? "sign-in check" : appName(source.app);
++      return grouped ? `${by} (${source.account.label || "Unnamed account"})` : by;
++    })
++    .join(", ");
 +  const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
 +  const title = check.current
 +    ? `${label} by ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
@@ -1775,7 +1889,7 @@ index 0000000..9a5ee4e
 +    </>
 +  );
 +  const rejected = check.status === "credentials_rejected";
-+  const [first] = apps;
++  const first = sources.find((source) => source.app !== undefined)?.app;
 +  if (rejected && recover === undefined && link && first !== undefined)
 +    return (
 +      <span
@@ -1819,10 +1933,10 @@ index 0000000..9a5ee4e
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
 new file mode 100644
-index 0000000..13f7582
+index 0000000..8eec5e8
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,436 @@
 +/**
 + * The compact account row: one aligned line of identity, type, plan, health and who uses the
 + * account, then full-width bands such as usage. The row renders from `AccountRowInput`, which maps
@@ -1867,18 +1981,38 @@ index 0000000..13f7582
 + * The host's saved-account row. Each binding reads its app's own check record; one dot per app,
 + * however many scopes link the account there.
 + */
-+export const accountRowFromSaved = (row: SavedAccountRowInput): AccountRowInput => ({
-+  account: row,
-+  ...(row.offering === undefined ? {} : { offering: row.offering }),
-+  bindings: [...new Map(row.bindings.map((binding) => [binding.app, binding])).values()].map(
-+    (binding) => ({
++export const accountRowFromSaved = (row: SavedAccountRowInput): AccountRowInput => {
++  // Scopes linking the same app merge into one binding that keeps the worst grant state.
++  const signIns = new Map<AppId, AccountSummary["signIn"]>();
++  for (const binding of row.bindings)
++    signIns.set(binding.app, worseSignIn(signIns.get(binding.app), binding.signIn));
++  return {
++    account: row,
++    ...(row.offering === undefined ? {} : { offering: row.offering }),
++    bindings: [...signIns].map(([app, signIn]) => ({
 +      id: row.id,
-+      app: binding.app,
-+      ...(binding.signIn === undefined ? {} : { signIn: binding.signIn }),
-+      check: row.health?.apps.find((entry) => entry.app === binding.app),
-+    }),
-+  ),
-+});
++      app,
++      ...(signIn === undefined ? {} : { signIn }),
++      check: row.health?.apps.find((entry) => entry.app === app),
++    })),
++  };
++};
++
++/** Reconnect, then unavailable, then saved: the grant state that asks more of the person wins. */
++const signInRank = (signIn: AccountSummary["signIn"]) =>
++  signIn === undefined
++    ? 3
++    : signIn.state === "reconnect" ||
++        (signIn.state === "saved" &&
++          signIn.reconnectAt !== null &&
++          signIn.reconnectAt.getTime() <= Date.now())
++      ? 0
++      : signIn.state === "unavailable"
++        ? 1
++        : 2;
++
++const worseSignIn = (a: AccountSummary["signIn"], b: AccountSummary["signIn"]) =>
++  signInRank(b) < signInRank(a) ? b : a;
 +
 +/** One display group's rows as one input: its first account, with every member's bindings. */
 +export const accountRowGroup = (rows: readonly AccountRowInput[]): AccountRowInput | undefined => {
@@ -2240,7 +2374,7 @@ index 0000000..13f7582
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 3405cfe..4319eb4 100644
+index 3405cfe..d59e3fa 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -1,19 +1,36 @@
@@ -2318,7 +2452,7 @@ index 3405cfe..4319eb4 100644
    readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
    readonly highlight?: AccountId | undefined;
  }) {
-@@ -156,178 +185,160 @@ function AccountsList({
+@@ -156,178 +185,159 @@ function AccountsList({
            Try another label or provider.
          </Empty>
        ) : (
@@ -2346,11 +2480,10 @@ index 3405cfe..4319eb4 100644
 -              account.identity?.name ?? accountFamily(data, account)?.name ?? account.providerName;
              const access = bindingAccess(data, bindings);
 +            // Grouping is display only: every saved account keeps its own row input.
-+            const row = accountRowGroup(
-+              bindings.map(
-+                (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
-+              ),
-+            )!;
++            const members = bindings.map(
++              (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
++            );
++            const row = accountRowGroup(members)!;
 +            const appName = (id: string) => {
 +              const app = apps.find((item) => item.id === id);
 +              return app === undefined ? "an app" : appDisplayName(app, brand);
@@ -2434,7 +2567,7 @@ index 3405cfe..4319eb4 100644
 +                    plan={accountPlan?.(account)}
 +                    health={
 +                      <AccountHealthCell
-+                        health={accountRowHealth(row.account, row.bindings)}
++                        health={accountRowHealth(members)}
 +                        appName={appName}
 +                        link
 +                      />
@@ -2638,7 +2771,7 @@ index 3405cfe..4319eb4 100644
            })}
          </div>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 3d4ccc1..3fe49fc 100644
+index 3d4ccc1..5a22555 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -6,14 +6,7 @@ import { Exit, Option, type Cause } from "effect";
@@ -2686,7 +2819,7 @@ index 3d4ccc1..3fe49fc 100644
 +  accountRowsContainer,
 +  type AccountRowInput,
 +} from "./account-row.tsx";
-+import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
++import { AccountHealthCell, appRowHealth } from "./account-row-health.tsx";
 +import { appDisplayName } from "../../contracts/product-brand.ts";
  import { EmptyState } from "./empty-state.tsx";
  import { Button } from "../components/button.tsx";
@@ -3143,7 +3276,7 @@ index 3d4ccc1..3fe49fc 100644
 -        reconnect}
 -    </>
 +    <AccountHealthCell
-+      health={accountRowHealth(row.account, row.bindings, row.bindings[0])}
++      health={appRowHealth(row, row.bindings[0]!)}
 +      appName={() => appDisplayName(app, brand)}
 +      recover={reconnect}
 +      unavailableLabel="Unavailable"
