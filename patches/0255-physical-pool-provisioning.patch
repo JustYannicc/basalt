@@ -1,0 +1,167 @@
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -1,4 +1,4 @@
+-/** Wait for committed default provisioning in a runner-owned disposable database. */
++/** Wait for committed account-producing jobs in a runner-owned disposable database. */
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import { Client } from "pg";
+@@ -7,6 +7,7 @@
+ 
+ class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed") {}
+ const Configuration = Schema.fromJsonString(Schema.Struct({ database: Schema.String }));
++// Member jobs can retry later steps after creating their accounts. Wait for committed records.
+ const Counts = Schema.Array(
+   Schema.Struct({ pending: Schema.Number, failed: Schema.Number, completed: Schema.Number }),
+ );
+@@ -76,19 +77,34 @@
+               const seen = revision;
+               const [counts] = Schema.decodeUnknownSync(Counts)(
+                 (
+-                  await client.query(`with
++                  await client.query(
++                    `with
+               users as (select status from hosted_provisioning where kind = 'user'),
+               teams as (select id, metadata::jsonb as metadata from organization),
+-              expected as (select team.id, member."userId", team.metadata from teams team
++              expected as (select team.id, member."userId", member.role, team.metadata from teams team
+                 join member on member."organizationId" = team.id join "user" on "user".id = member."userId"
+                 where member.role in ('owner', 'admin') and "user"."emailVerified" = true),
+               missing as (select 1 from expected where not exists (select 1 from executor_accounts account
+                 where account.id = expected.metadata->'executorKeyAccounts'->>expected."userId"
+-                  and account.owner = 'organization:' || expected.id))
++                  and account.owner = 'organization:' || expected.id)),
++              missing_pools as (select 1 from expected where expected.role = 'owner' and not exists (
++                select 1 from jsonb_each(coalesce(expected.metadata->'basaltPools', '{}'::jsonb)) pool
++                join executor_apps app on app.id = pool.value->>'app'
++                join executor_accounts account on account.id = pool.value->>'account'
++                join hosted_app_account_links link on link.app = app.id and link.account = account.id
++                where coalesce(pool.value->>'owner', pool.key) = expected."userId"
++                  and coalesce((pool.value->>'primary')::boolean, true)
++                  and pool.value->>'version' = app.active_deployment
++                  and app.owner = 'organization:' || expected.id
++                  and account.owner = app.owner and account.method = 'token'
++                  and link.requirement = 'pool' and link.subject is null))
+               select ((select count(*) from users where status <> 'succeeded') + (select count(*) from missing)
++                + (case when $1::boolean then (select count(*) from missing_pools) else 0 end)
+                 + (select count(*) from teams where not coalesce((metadata->'executorDefaults'->>'installed')::boolean, false)))::int as pending,
+               (select count(*) from users where status = 'failed')::int as failed,
+-              ((select count(*) from expected) - (select count(*) from missing))::int as completed`)
++              ((select count(*) from expected) - (select count(*) from missing))::int as completed`,
++                    [process.argv[3] === "--pools"],
++                  )
+                 ).rows,
+               );
+               if (counts === undefined || counts.failed !== 0)
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -745,6 +745,7 @@
+         | "without-server"
+         | "target"
+         | "inspect-target"
++        | "provisioned"
+         | "release",
+     ) =>
+       Effect.gen(function* () {
+@@ -754,6 +755,10 @@
+           databaseProxy === undefined
+         )
+           return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
++        if (next === "provisioned") {
++          yield* databaseFixture.provisioned;
++          return { ready: true };
++        }
+         if (prebootBinding !== undefined && changedListener !== undefined) {
+           if (next !== "original" && next !== prebootBinding)
+             return yield* new CloudStartFailed({
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -24,6 +24,7 @@
+     "without-server",
+     "target",
+     "inspect-target",
++    "provisioned",
+     "release",
+   ]),
+ });
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -105,15 +105,15 @@
+           ),
+         );
+       });
+-    const target = Effect.scoped(
++    const provisioning = (pools = false) =>
+       Effect.gen(function* () {
+-        // A clone must not replay unfinished default-account creation between its state reads.
+-        const provisioning = yield* processes.spawn(
++        const provisioningProcess = yield* processes.spawn(
+           ChildProcess.make(
+             "node",
+             [
+               "apps/hosted/testing/production-ops-provisioning-fixture.ts",
+               `${input.directory}/sso-database.json`,
++              ...(pools ? ["--pools"] : []),
+             ],
+             {
+               env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+@@ -122,8 +122,11 @@
+             },
+           ),
+         );
+-        const completed = yield* provisioning.stdout.pipe(Stream.decodeText(), Stream.mkString);
+-        yield* checked(provisioning.exitCode);
++        const completed = yield* provisioningProcess.stdout.pipe(
++          Stream.decodeText(),
++          Stream.mkString,
++        );
++        yield* checked(provisioningProcess.exitCode);
+         yield* Schema.decodeUnknownEffect(
+           Schema.fromJsonString(
+             Schema.Struct({
+@@ -139,6 +142,10 @@
+           completed,
+           { mode: 0o600 },
+         );
++      });
++    const target = Effect.scoped(
++      Effect.gen(function* () {
++        yield* provisioning();
+         // pg_dump and the baseline reads must observe the same account and receipt rows.
+         // SHARE permits the dump's reads but blocks every writer until both states are captured.
+         const commands = yield* Queue.unbounded<string, Cause.Done>();
+@@ -316,5 +323,5 @@
+           )
+         : Effect.succeed(0),
+     );
+-    return { role, target, state, disconnected };
++    return { role, target, state, disconnected, provisioned: provisioning(true) };
+   });
+diff --git a/e2e/support/production-ops-rows.ts b/e2e/support/production-ops-rows.ts
+--- a/e2e/support/production-ops-rows.ts
++++ b/e2e/support/production-ops-rows.ts
+@@ -6,6 +6,7 @@
+ import { cloudLocks } from "./cloud-locks.ts";
+ import { productionOpsAccount } from "./production-ops-account.ts";
+ import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
++import { scenarios } from "../test-plan.ts";
+ 
+ /** All direct rows are synthetic and confined to the managed Cloud's disposable database. */
+ export const productionOpsRows = Effect.gen(function* () {
+@@ -23,6 +24,12 @@
+     label: "Operations foreign organization",
+   }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActors)));
+   const original = yield* productionOpsAccount(actors.owner, actors.organization.id);
++  if (target.scenarioLabel === scenarios.cloudProductionOpsPhysicalDatabase.title) {
++    // Pool/member jobs must finish before synthetic pool metadata makes their input invalid.
++    yield* fixtureRequest(fixtures, "/runtime/database-binding", { binding: "provisioned" }).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
++    );
++  }
+   const id = () => randomUUID();
+   const ownUsers = yield* database
+     .run({

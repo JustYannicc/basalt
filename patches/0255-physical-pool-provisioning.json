@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-physical-pool-provisioning",
+  "file": "0255-physical-pool-provisioning.patch",
+  "content_sha256": "6012281f0484d8fc0e32fea464f721827190863ad7c8443e267e337680e384d1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
