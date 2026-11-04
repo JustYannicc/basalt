@@ -83,10 +83,10 @@ index 7105f19..1ef12f5 100644
      <>
 diff --git a/e2e/support/account-traffic.ts b/e2e/support/account-traffic.ts
 new file mode 100644
-index 0000000..f2be0a2
+index 0000000..f3d9cb4
 --- /dev/null
 +++ b/e2e/support/account-traffic.ts
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,275 @@
 +/**
 + * A native pool's answers for the account traffic scenarios: the series buckets and last successes
 + * the pool app's signed usage routes return, a reporter's weekly window, and the pool app itself
@@ -164,8 +164,10 @@ index 0000000..f2be0a2
 + * rejected one 10 of 10, and the idle one last succeeded 3 days ago. The fifth account's requests
 + * are only other accounts' counts. Without `proven`, the pool can't map any request to an account.
 + */
++// Last successes are fixed at `anchor`, like real records, so polls don't move them. A spec fixes
++// the browser's Date at the same instant, so ages read exactly.
 +export const answer =
-+  (ids: TrafficIds, proven = true) =>
++  (ids: TrafficIds, proven = true, anchor = Date.now()) =>
 +  (assertion: SeriesAssertion) => {
 +    const unavailable = { status: "unavailable", reason: "Synthetic." };
 +    const mapping = {
@@ -189,7 +191,7 @@ index 0000000..f2be0a2
 +        accounts: accounts.map((account) => ({
 +          account,
 +          lastSuccessAt:
-+            ago[account] === undefined ? null : new Date(Date.now() - ago[account]).toISOString(),
++            ago[account] === undefined ? null : new Date(anchor - ago[account]).toISOString(),
 +        })),
 +      };
 +    }
@@ -361,10 +363,10 @@ index 0000000..f2be0a2
 +    return { app, appPath, accounts: saved };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index f39c61a..65e4dd0 100644
+index 6e2b90e..a51a4f9 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9153,6 +9153,18 @@ export const scenarios = plan({
+@@ -9163,6 +9163,18 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows and native pool usage."),
      },
    },
@@ -384,11 +386,11 @@ index f39c61a..65e4dd0 100644
      fixtures: "actors",
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
-index 91ff216..6c1e68a 100644
+index 0d93255..88cba04 100644
 --- a/e2e/tests/account-traffic.spec.ts
 +++ b/e2e/tests/account-traffic.spec.ts
-@@ -3,227 +3,19 @@ import { expect, layer } from "@effect/vitest";
- import { Effect, Schema } from "effect";
+@@ -3,229 +3,19 @@ import { expect, layer } from "@effect/vitest";
+ import { Clock, Effect, Schema } from "effect";
  import type { Page } from "playwright";
  import { body } from "../support/api.ts";
 -import { connectionsPath } from "../support/app-accounts.ts";
@@ -478,8 +480,10 @@ index 91ff216..6c1e68a 100644
 - * rejected one 10 of 10, and the idle one last succeeded 3 days ago. The fifth account's requests
 - * are only other accounts' counts. Without `proven`, the pool can't map any request to an account.
 - */
+-// Last successes are fixed at `anchor`, like real records, so polls don't move them. The browser's
+-// Date is fixed at the same instant, so ages read exactly.
 -const answer =
--  (ids: Ids, proven = true) =>
+-  (ids: Ids, proven = true, anchor = Date.now()) =>
 -  (assertion: SeriesAssertion) => {
 -    const unavailable = { status: "unavailable", reason: "Synthetic." };
 -    const mapping = {
@@ -503,7 +507,7 @@ index 91ff216..6c1e68a 100644
 -        accounts: accounts.map((account) => ({
 -          account,
 -          lastSuccessAt:
--            ago[account] === undefined ? null : new Date(Date.now() - ago[account]).toISOString(),
+-            ago[account] === undefined ? null : new Date(anchor - ago[account]).toISOString(),
 -        })),
 -      };
 -    }
@@ -618,7 +622,7 @@ index 91ff216..6c1e68a 100644
  const cells = (page: Page, label: string) => {
    const row = accountRow(page, label);
    return Promise.all([
-@@ -258,63 +50,18 @@ layer(HostedLive, { excludeTestServices: true })("Account traffic", (it) => {
+@@ -260,63 +50,18 @@ layer(HostedLive, { excludeTestServices: true })("Account traffic", (it) => {
          ).toBe(200);
          expect((yield* connector.check()).status).toBe(200);
  
@@ -693,13 +697,13 @@ index 91ff216..6c1e68a 100644
          const check = (account: string) =>
 diff --git a/e2e/tests/app-account-traffic.spec.ts b/e2e/tests/app-account-traffic.spec.ts
 new file mode 100644
-index 0000000..ac241cd
+index 0000000..308be43
 --- /dev/null
 +++ b/e2e/tests/app-account-traffic.spec.ts
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,268 @@
 +/** An app's Accounts tab shows what the account's pool counted, beside the app's own check. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schema } from "effect";
++import { Clock, Effect, Schema } from "effect";
 +import type { Page } from "playwright";
 +import { Api, body } from "../support/api.ts";
 +import { Browser } from "../support/browser.ts";
@@ -776,7 +780,9 @@ index 0000000..ac241cd
 +          rejected: "unlisted-rejected",
 +          idle: "unlisted-idle",
 +        };
-+        yield* pool.respond(answer(ids));
++        // One instant for the fixture's records and the browser's Date; timers still run.
++        const anchor = yield* Clock.currentTimeMillis;
++        yield* pool.respond(answer(ids, true, anchor));
 +        const viewer = yield* body(
 +          Schema.Struct({ userId: Schema.String }),
 +          yield* api.request(actors.owner, "GET", "/api/viewer"),
@@ -821,6 +827,9 @@ index 0000000..ac241cd
 +            row(page).locator("[data-window-tokens]").waitFor(),
 +          ]);
 +        yield* browser.login(actors.owner);
++        yield* browser.use("Fix the page's Date at the fixture's instant", (page) =>
++          page.clock.setFixedTime(anchor),
++        );
 +        for (const width of [1280, 390]) {
 +          yield* browser.use(`Open the pool's Accounts tab at ${width}px`, (page) =>
 +            page
@@ -891,7 +900,7 @@ index 0000000..ac241cd
 +        expect(share).toBe("92.6%");
 +        // Traffic sits beside the app's own check, which the tooltip still names.
 +        expect(healthTitle).toMatch(
-+          /^41 requests in 7 days · 92\.6% succeeded · last success 1[23] min ago, counted by Tab pool\nHealthy by .+ · checked /,
++          /^41 requests in 7 days · 92\.6% succeeded · last success 12 min ago, counted by Tab pool\nHealthy by .+ · checked /,
 +        );
 +        expect(tokens).toBe("≥ 1.2M tokens");
 +        expect(tokens).not.toContain("$");
@@ -902,7 +911,7 @@ index 0000000..ac241cd
 +            .then(() => row(page).locator("[data-account-traffic-details]").innerText()),
 +        );
 +        expect(details).toMatch(
-+          /^Requests: 41 in 7 days · 92\.6% succeeded · last success 1[23] min ago · counted by Tab pool$/,
++          /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Tab pool$/,
 +        );
 +
 +        const phone = yield* browser.use("Read the tab at 390px", (page) =>
@@ -941,7 +950,7 @@ index 0000000..ac241cd
 +        yield* browser.use("Open the pool's tab again", (page) =>
 +          page.goto(poolTab).then(() => ready(page)),
 +        );
-+        yield* pool.respond(answer(ids, false));
++        yield* pool.respond(answer(ids, false, anchor));
 +        const hidden = yield* browser.use("Wait for the tab's Requests cells to go", (page) =>
 +          page
 +            .locator("[data-account-requests-cell]")
