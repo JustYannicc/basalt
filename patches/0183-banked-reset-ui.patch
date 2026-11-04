@@ -90,10 +90,10 @@ index ef50bd1..fb640e3 100644
  /** The reported plan beside the account's other metadata, when the caller may see usage. */
 diff --git a/apps/hosted/web/src/implementation/pages/account-resets-client.tsx b/apps/hosted/web/src/implementation/pages/account-resets-client.tsx
 new file mode 100644
-index 0000000..e4ae8d8
+index 0000000..3d4a799
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/account-resets-client.tsx
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,84 @@
 +/** The hosted adapter behind a usage cell's banked reset control. The server stays authoritative. */
 +import { useAtomSet } from "@effect/atom-react";
 +import type { AccountId, AppId } from "@executor-js/sdk";
@@ -143,8 +143,9 @@ index 0000000..e4ae8d8
 +} as const;
 +
 +/**
-+ * Only a definite refusal ends a spend. Anything else, including an unreachable backend or a
-+ * dropped connection, may have reached the provider, so the control recovers the same request.
++ * Only a definite refusal ends a spend. An unreachable reset backend is unspent unless the server
++ * recorded the request, which the control checks. Anything else, such as a dropped connection,
++ * may have reached the provider, so the control recovers the same request.
 + */
 +const used = (exit: Exit.Exit<ResetResult, HostedError>): ResetUse => {
 +  if (Exit.isSuccess(exit)) return { kind: "result", result: exit.value };
@@ -153,6 +154,8 @@ index 0000000..e4ae8d8
 +    return { kind: "refused", message: refusedReasons[error.reason] };
 +  if (error?._tag === "Forbidden" || error?._tag === "OrganizationForbidden")
 +    return { kind: "refused", message: "You can't use this account's banked resets" };
++  if (error?._tag === "AccountResetUnavailable")
++    return { kind: "unavailable", message: "This account's banked resets couldn't be reached" };
 +  return { kind: "lost" };
 +};
 +
@@ -167,11 +170,12 @@ index 0000000..e4ae8d8
 +  const use = useAtomSet(useResetAtom(target), { mode: "promiseExit" });
 +  return useMemo(
 +    () => ({
++      key: JSON.stringify([target.organization, target.pool, target.account]),
 +      credits: () => credits().then(read),
 +      attempt: () => attempt().then(read),
 +      use: (spend) => use(spend).then(used),
 +    }),
-+    [credits, attempt, use],
++    [credits, attempt, use, target.organization, target.pool, target.account],
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
@@ -327,14 +331,15 @@ index 7f0bed0..4efb67d 100644
      </div>
 diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
 new file mode 100644
-index 0000000..23f5910
+index 0000000..ef87cf8
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,585 @@
 +/**
 + * The banked reset control on a usage cell: `↻ n` opens a confirm step, and only its "Use reset"
-+ * spends. Every state comes from the product's reads; the server's retained attempt decides
-+ * recovery, and nothing here survives a reload.
++ * spends. The server's retained attempt is the truth for recovery. The only client memory is the
++ * IDs of a spend the server may never have recorded, kept for this tab so a reload cannot mint a
++ * second request while one is unresolved.
 + */
 +import { useEffect, useState, type ReactNode } from "react";
 +import type { DisplayFormat } from "../../contracts/display.ts";
@@ -381,17 +386,24 @@ index 0000000..23f5910
 +export type ResetRead<A> =
 +  | { readonly ok: true; readonly value: A }
 +  | { readonly ok: false; readonly message: string };
-+/** A spend's answer. `lost` means no answer reached the browser: recover, never re-mint. */
++/**
++ * A spend's answer. `refused` is definite and nothing was recorded. `unavailable` means the host
++ * couldn't reach the reset backend: unspent only when no attempt was recorded for the request.
++ * `lost` means no answer reached the browser: recover the same request, never re-mint.
++ */
 +export type ResetUse =
 +  | { readonly kind: "result"; readonly result: ResetResultView }
 +  | { readonly kind: "refused"; readonly message: string }
++  | { readonly kind: "unavailable"; readonly message: string }
 +  | { readonly kind: "lost" };
 +
 +/**
 + * What a product gives the cell when the caller may spend this account's banked resets. Each
-+ * function must keep its identity across renders: `attempt` is read once when the cell mounts.
++ * function keeps its identity across renders: `attempt` is read when the cell mounts. `key` names
++ * the account and pool for the tab's memory of a spend the server may not have recorded.
 + */
 +export interface AccountResetActions {
++  readonly key: string;
 +  readonly credits: () => Promise<
 +    ResetRead<{ readonly provider: Provider; readonly credits: readonly ResetCreditView[] }>
 +  >;
@@ -400,6 +412,22 @@ index 0000000..23f5910
 +}
 +
 +type Spend = { readonly creditId: string; readonly requestId: string };
++/**
++ * A spend without a settled answer. `unknown`: the server holds it without an answer.
++ * `unrecorded`: the server has no record of it, so it may never have arrived. `unread`: its
++ * status couldn't be read.
++ */
++type Unresolved = {
++  readonly kind: "unresolved";
++  readonly status: "unknown" | "unrecorded" | "unread";
++  readonly spend: Spend;
++  readonly attempt?: ResetAttemptView | undefined;
++  /** The last definite answer to a replay; it never proves the original spent nothing. */
++  readonly reason?: string | undefined;
++  /** A replay was sent, so no later answer may say nothing was used. */
++  readonly replayed: boolean;
++  readonly confirming?: boolean;
++};
 +type State =
 +  | { readonly kind: "idle" }
 +  | { readonly kind: "checking" }
@@ -410,12 +438,7 @@ index 0000000..23f5910
 +      readonly usable: number;
 +    }
 +  | { readonly kind: "pending"; readonly spend: Spend }
-+  | {
-+      readonly kind: "unknown";
-+      readonly spend: Spend;
-+      readonly attempt?: ResetAttemptView | undefined;
-+      readonly confirming?: boolean;
-+    }
++  | Unresolved
 +  | { readonly kind: "confirmed"; readonly result: ResetResultView; readonly reading: string }
 +  | { readonly kind: "refused"; readonly message: string };
 +
@@ -431,14 +454,86 @@ index 0000000..23f5910
 +  rate_limited: "The provider is limiting requests",
 +  auth_error: "The provider rejected the account's sign-in",
 +};
++const refusal = (outcome: Outcome) => refusals[outcome] ?? "The provider refused";
++const sentence = (text: string) => `${text.replace(/\.$/u, "")}.`;
 +const shortId = (id: string) => `${id.slice(0, 8)}…${id.slice(-4)}`;
 +const spendOf = (attempt: ResetAttemptView): Spend => ({
 +  creditId: attempt.creditId,
 +  requestId: attempt.requestId,
 +});
-+/** Retry only inside the server's window; this compares its times, it never runs a timer. */
-+const retryable = (attempt: ResetAttemptView | undefined, now: number) =>
-+  attempt !== undefined && attempt.canRetryProvider && Date.parse(attempt.retryUntil) > now;
++/** Whether a same-ID replay may be offered. The server's window decides; no timer runs here. */
++const replayable = (state: Unresolved, now: number) =>
++  state.status === "unrecorded" ||
++  (state.status === "unknown" &&
++    state.attempt !== undefined &&
++    state.attempt.canRetryProvider &&
++    Date.parse(state.attempt.retryUntil) > now);
++
++/**
++ * Where a spend stands, from the server's latest attempt read. A different retained unknown wins,
++ * since the server blocks new spends behind it. `reading` dates a confirmed result.
++ */
++const settled = (
++  spend: Spend,
++  read: ResetRead<ResetAttemptView | null>,
++  options: {
++    readonly replayed: boolean;
++    readonly reason?: string | undefined;
++    readonly reading: string;
++  },
++): State => {
++  const base = {
++    kind: "unresolved",
++    spend,
++    replayed: options.replayed,
++    reason: options.reason,
++  } as const;
++  if (!read.ok) return { ...base, status: "unread" };
++  const attempt = read.value;
++  if (attempt?.requestId === spend.requestId) {
++    if (done.has(attempt.outcome))
++      return { kind: "confirmed", result: attempt, reading: options.reading };
++    if (attempt.outcome === "unknown") return { ...base, status: "unknown", attempt };
++    return options.replayed
++      ? { ...base, status: "unknown", attempt, reason: refusal(attempt.outcome) }
++      : { kind: "refused", message: refusal(attempt.outcome) };
++  }
++  if (attempt?.outcome === "unknown")
++    return { ...base, spend: spendOf(attempt), status: "unknown", attempt };
++  return { ...base, status: "unrecorded" };
++};
++
++/**
++ * The tab's memory of a spend in flight, written before the request leaves and cleared once the
++ * server settles it. sessionStorage scopes it to the tab that minted the IDs and survives reloads;
++ * another device relies on the server's attempt. A storage failure only loses this fallback.
++ */
++const memory = {
++  name: (key: string) => `executor:reset-spend:${key}`,
++  read: (key: string): Spend | undefined => {
++    try {
++      const value: unknown = JSON.parse(sessionStorage.getItem(memory.name(key)) ?? "null");
++      return typeof value === "object" &&
++        value !== null &&
++        "creditId" in value &&
++        "requestId" in value &&
++        typeof value.creditId === "string" &&
++        typeof value.requestId === "string"
++        ? { creditId: value.creditId, requestId: value.requestId }
++        : undefined;
++    } catch {
++      return undefined;
++    }
++  },
++  /** Unresolved states keep their IDs; every other state clears them. */
++  keep: (key: string, state: State) => {
++    try {
++      if (state.kind === "unresolved")
++        sessionStorage.setItem(memory.name(key), JSON.stringify(state.spend));
++      else sessionStorage.removeItem(memory.name(key));
++    } catch {}
++  },
++};
 +
 +/**
 + * The control for the cell header and the note under the cells. `reading` is when the account's
@@ -467,59 +562,98 @@ index 0000000..23f5910
 +  const [stored, setState] = useState<State>({ kind: "idle" });
 +  const state: State =
 +    stored.kind === "confirmed" && stored.reading !== reading ? { kind: "idle" } : stored;
-+  // A retained unknown from another tab, another device or before a reload comes back exactly.
-+  const readAttempt = actions.attempt;
++  const { key, attempt: readAttempt } = actions;
++  const apply = (next: State) => {
++    memory.keep(key, next);
++    setState(next);
++  };
++
++  // After a reload or on another device: the server's unknown first, then this tab's IDs. A
++  // request it settled meanwhile just clears; the row shows that through its usage.
 +  useEffect(() => {
 +    let live = true;
++    const remembered = memory.read(key);
 +    void readAttempt().then((read) => {
-+      if (live && read.ok && read.value?.outcome === "unknown") {
-+        const attempt = read.value;
-+        setState((previous) =>
-+          previous.kind === "idle"
-+            ? { kind: "unknown", spend: spendOf(attempt), attempt }
-+            : previous,
-+        );
-+      }
++      if (!live) return;
++      const spend = read.ok && read.value?.outcome === "unknown" ? spendOf(read.value) : remembered;
++      if (spend === undefined) return;
++      const next = settled(spend, read, { replayed: false, reading: "" });
++      memory.keep(key, next);
++      if (next.kind === "unresolved")
++        setState((previous) => (previous.kind === "idle" ? next : previous));
 +    });
 +    return () => {
 +      live = false;
 +    };
-+  }, [readAttempt]);
++  }, [readAttempt, key]);
 +
-+  /** The server's record of this exact request, after a lost or unknown answer. */
-+  const recover = (spend: Spend, confirming = false) =>
++  const reread = (confirming: boolean) =>
 +    actions.attempt().then((read) => {
-+      const attempt = read.ok && read.value?.requestId === spend.requestId ? read.value : undefined;
-+      if (attempt !== undefined && done.has(attempt.outcome))
-+        return setState({ kind: "confirmed", result: attempt, reading });
-+      setState({
-+        kind: "unknown",
-+        spend,
-+        attempt,
-+        confirming: confirming && retryable(attempt, Date.now()),
++      if (stored.kind !== "unresolved") return;
++      const next = settled(stored.spend, read, {
++        replayed: stored.replayed,
++        reason: stored.reason,
++        reading,
 +      });
++      apply(
++        confirming && next.kind === "unresolved" && replayable(next, Date.now())
++          ? { ...next, confirming: true }
++          : next,
++      );
 +    });
 +
-+  // A retry's refusal says nothing about the original request, so it recovers that request.
-+  const send = (spend: Spend, retrying = false) => {
++  const recover = (spend: Spend, replayed: boolean, reason?: string) =>
++    actions.attempt().then((read) => apply(settled(spend, read, { replayed, reason, reading })));
++
++  const send = (spend: Spend, replayed: boolean) => {
++    memory.keep(key, { kind: "unresolved", status: "unrecorded", spend, replayed });
 +    setState({ kind: "pending", spend });
 +    void actions.use(spend).then((answer) => {
-+      if (answer.kind === "lost" || (retrying && answer.kind === "refused")) return recover(spend);
-+      if (answer.kind === "refused") return setState({ kind: "refused", message: answer.message });
-+      const { result } = answer;
-+      if (done.has(result.outcome)) return setState({ kind: "confirmed", result, reading });
-+      if (result.outcome === "unknown") return recover(spend);
-+      setState({ kind: "refused", message: refusals[result.outcome] ?? "The provider refused" });
++      if (answer.kind === "result" && done.has(answer.result.outcome))
++        return apply({ kind: "confirmed", result: answer.result, reading });
++      // A replay's answer proves nothing about the original, so anything but done recovers.
++      if (replayed)
++        return recover(
++          spend,
++          true,
++          answer.kind === "result"
++            ? answer.result.outcome === "unknown"
++              ? undefined
++              : refusal(answer.result.outcome)
++            : answer.kind === "lost"
++              ? undefined
++              : answer.message,
++        );
++      if (answer.kind === "refused") return apply({ kind: "refused", message: answer.message });
++      if (answer.kind === "result" && answer.result.outcome !== "unknown")
++        return apply({ kind: "refused", message: refusal(answer.result.outcome) });
++      if (answer.kind === "unavailable")
++        // The backend was unreachable: unspent only if the server recorded nothing for it.
++        return actions.attempt().then((read) => {
++          const next = settled(spend, read, { replayed: false, reading });
++          apply(
++            next.kind === "unresolved" && next.status === "unrecorded"
++              ? { kind: "refused", message: answer.message }
++              : next,
++          );
++        });
++      return recover(spend, false);
 +    });
 +  };
 +
-+  // Clicking only reads. A retained unknown shows its state instead of offering a new spend.
++  // Clicking only reads. Anything unresolved shows its state instead of offering a new spend.
 +  const start = () => {
 +    setState({ kind: "checking" });
++    const remembered = memory.read(key);
 +    void Promise.all([actions.attempt(), actions.credits()]).then(([attempt, catalog]) => {
++      const spend =
++        attempt.ok && attempt.value?.outcome === "unknown" ? spendOf(attempt.value) : remembered;
++      if (spend !== undefined) {
++        const next = settled(spend, attempt, { replayed: false, reading: "" });
++        memory.keep(key, next);
++        if (next.kind === "unresolved") return setState(next);
++      }
 +      if (!attempt.ok) return setState({ kind: "refused", message: attempt.message });
-+      if (attempt.value?.outcome === "unknown")
-+        return setState({ kind: "unknown", spend: spendOf(attempt.value), attempt: attempt.value });
 +      if (!catalog.ok) return setState({ kind: "refused", message: catalog.message });
 +      // The catalog's total counts unusable grants too; only these may be offered.
 +      const offered = catalog.value.credits.filter(
@@ -542,19 +676,17 @@ index 0000000..23f5910
 +      ? "Waiting for the provider to answer this reset."
 +      : state.kind === "confirmed"
 +        ? "Reset confirmed. Another can be used once fresh usage arrives."
-+        : state.kind === "unknown"
-+          ? retryable(state.attempt, now)
-+            ? "The last reset request has no answer yet. Retry it below; a new one can't start."
-+            : "The last reset request never got an answer and its retry window ended, so no new reset can start."
-+          : undefined;
++        : state.kind !== "unresolved"
++          ? undefined
++          : state.status === "unread"
++            ? "Couldn't read the last reset request's status, so a new one can't start. Check it below."
++            : replayable(state, now)
++              ? "The last reset request has no answer yet. Retry it below; a new one can't start."
++              : "The last reset request never got an answer and its retry window ended, so no new reset can start.";
 +  const button = (
 +    <Button
 +      variant="ghost"
 +      size="xs"
-+      className={cn(
-+        "h-5.5 shrink-0 px-1.5 text-xs font-semibold tabular-nums",
-+        stale ? "text-muted-foreground" : "text-foreground",
-+      )}
 +      loading={state.kind === "checking" || state.kind === "pending"}
 +      disabledReason={disabledReason}
 +      title={
@@ -562,9 +694,17 @@ index 0000000..23f5910
 +      }
 +      aria-label={disabledReason === undefined ? `${title}. Use one` : title}
 +      data-reset-count={count}
-+      data-reset-control={state.kind}
++      data-reset-control={state.kind === "unresolved" ? state.status : state.kind}
 +    >
-+      <span aria-hidden>↻ {count}</span>
++      <span
++        aria-hidden
++        className={cn(
++          "font-semibold tabular-nums",
++          stale ? "text-muted-foreground" : "text-foreground",
++        )}
++      >
++        ↻ {count}
++      </span>
 +    </Button>
 +  );
 +  const control =
@@ -579,7 +719,7 @@ index 0000000..23f5910
 +        onCancel={() => setState({ kind: "idle" })}
 +        onConfirm={() => {
 +          if (state.kind === "confirm")
-+            send({ creditId: state.credit.id, requestId: crypto.randomUUID() });
++            send({ creditId: state.credit.id, requestId: crypto.randomUUID() }, false);
 +        }}
 +        title="Use a banked reset?"
 +        action="Use reset"
@@ -615,12 +755,13 @@ index 0000000..23f5910
 +      <p role="status" className={noteLine} data-reset-note="pending">
 +        Using a banked reset…
 +      </p>
-+    ) : state.kind === "unknown" ? (
-+      <UnknownNote
++    ) : state.kind === "unresolved" ? (
++      <UnresolvedNote
 +        state={state}
 +        now={now}
-+        // A retry re-reads the server first, so its window and IDs are the retained ones.
-+        onRetry={() => void recover(state.spend, true)}
++        // Both re-read the server first; a replay is offered only from what it says.
++        onCheck={() => void reread(false)}
++        onRetry={() => void reread(true)}
 +        onCancel={() => setState({ ...state, confirming: false })}
 +        onConfirm={() => send(state.spend, true)}
 +      />
@@ -635,9 +776,7 @@ index 0000000..23f5910
 +      </div>
 +    ) : state.kind === "refused" ? (
 +      <div role="status" className={noteLine} data-reset-note="refused">
-+        <span className="min-w-0 wrap-anywhere">
-+          {state.message.replace(/\.$/u, "")}. No reset was used.
-+        </span>
++        <span className="min-w-0 wrap-anywhere">{sentence(state.message)} No reset was used.</span>
 +        <Button variant="ghost" size="xs" onClick={() => setState({ kind: "idle" })}>
 +          Dismiss
 +        </Button>
@@ -648,52 +787,81 @@ index 0000000..23f5910
 +
 +const noteLine = "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground/80";
 +
-+function UnknownNote({
++function UnresolvedNote({
 +  state,
 +  now,
++  onCheck,
 +  onRetry,
 +  onCancel,
 +  onConfirm,
 +}: {
-+  readonly state: Extract<State, { kind: "unknown" }>;
++  readonly state: Unresolved;
 +  readonly now: number;
++  readonly onCheck: () => void;
 +  readonly onRetry: () => void;
 +  readonly onCancel: () => void;
 +  readonly onConfirm: () => void;
 +}) {
 +  const { requestId } = state.spend;
-+  // Without a retained attempt the window is unread; Retry reads it before offering anything.
-+  const open = state.attempt === undefined || retryable(state.attempt, now);
++  const id = (
++    <span className="tabular-nums" title={requestId}>
++      {shortId(requestId)}
++    </span>
++  );
++  const replay = replayable(state, now);
 +  return (
-+    <div role="status" className={noteLine} data-reset-note="unknown" data-request-id={requestId}>
++    <div
++      role="status"
++      className={noteLine}
++      data-reset-note={state.status}
++      data-request-id={requestId}
++    >
 +      <span className="min-w-0 wrap-anywhere">
-+        Status unknown for reset request{" "}
-+        <span className="tabular-nums" title={requestId}>
-+          {shortId(requestId)}
-+        </span>
-+        .{" "}
-+        {open
-+          ? "Retry sends the same request, so it can't spend a second reset."
-+          : "Its retry window ended, so nothing more is sent and no new reset can start."}
++        {state.status === "unread" ? (
++          <>Couldn't read the status of reset request {id}, so a new one can't start yet.</>
++        ) : (
++          <>
++            {state.status === "unrecorded" ? (
++              <>Reset request {id} didn't reach the server, or its answer was lost. </>
++            ) : (
++              <>Status unknown for reset request {id}. </>
++            )}
++            {replay
++              ? "Retry sends the same request, so it can't spend a second reset."
++              : "Its retry window ended, so nothing more is sent and no new reset can start."}
++          </>
++        )}
++        {state.reason !== undefined && (
++          <span className="text-muted-foreground" data-reset-reason>
++            {" "}
++            Last answer: {sentence(state.reason)}
++          </span>
++        )}
 +      </span>
-+      {open && (
-+        <Confirm
-+          open={state.confirming === true}
-+          onOpen={onRetry}
-+          onCancel={onCancel}
-+          onConfirm={onConfirm}
-+          title="Retry the reset request?"
-+          action="Retry"
-+          trigger={
-+            <Button variant="outline" size="xs">
-+              Retry
-+            </Button>
-+          }
-+        >
-+          <p>
-+            Sends request {shortId(requestId)} again, unchanged, so it can't spend a second reset.
-+          </p>
-+        </Confirm>
++      {state.status === "unread" ? (
++        <Button variant="outline" size="xs" onClick={onCheck}>
++          Check again
++        </Button>
++      ) : (
++        replay && (
++          <Confirm
++            open={state.confirming === true}
++            onOpen={onRetry}
++            onCancel={onCancel}
++            onConfirm={onConfirm}
++            title="Retry the reset request?"
++            action="Retry"
++            trigger={
++              <Button variant="outline" size="xs">
++                Retry
++              </Button>
++            }
++          >
++            <p>
++              Sends request {shortId(requestId)} again, unchanged, so it can't spend a second reset.
++            </p>
++          </Confirm>
++        )
 +      )}
 +    </div>
 +  );
@@ -728,7 +896,6 @@ index 0000000..23f5910
 +      <PopoverContent
 +        role="dialog"
 +        aria-label={title}
-+        className="grid w-75 gap-2 p-3 text-[13px] text-muted-foreground"
 +        data-reset-confirm
 +        onOpenAutoFocus={(event) => {
 +          event.preventDefault();
@@ -737,15 +904,17 @@ index 0000000..23f5910
 +            content.querySelector<HTMLButtonElement>("[data-reset-cancel]")?.focus();
 +        }}
 +      >
-+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-+        {children}
-+        <div className="mt-0.5 flex justify-end gap-2">
-+          <Button variant="outline" size="xs" data-reset-cancel onClick={onCancel}>
-+            Cancel
-+          </Button>
-+          <Button size="xs" onClick={onConfirm}>
-+            {action}
-+          </Button>
++        <div className="grid gap-2 text-[13px] text-muted-foreground">
++          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
++          {children}
++          <div className="mt-0.5 flex justify-end gap-2">
++            <Button variant="outline" size="xs" data-reset-cancel onClick={onCancel}>
++              Cancel
++            </Button>
++            <Button size="xs" onClick={onConfirm}>
++              {action}
++            </Button>
++          </div>
 +        </div>
 +      </PopoverContent>
 +    </Popover>

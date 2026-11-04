@@ -154,12 +154,62 @@ const program = Effect.gen(function* () {
   yield* page(() => shot("reset-refused"));
   yield* page(() => note("refused").getByRole("button", { name: "Dismiss" }).click());
 
+  // The POST is dropped before the server records it. The tab keeps its IDs across a reload, and
+  // Retry sends that same request once the connection works: one spend, never a second UUID.
+  h.fixture.resets.mode(id, "reset");
+  const isSpend = (url) => url.pathname.endsWith("/reset");
+  const drop = (route) =>
+    route.request().method() === "POST" ? route.abort("connectionreset") : route.continue();
+  const beforeDrop = consumes().length;
+  yield* page(() =>
+    owner
+      .route(isSpend, drop)
+      .then(() => control.click())
+      .then(() => confirm.getByRole("button", { name: "Use reset", exact: true }).click())
+      .then(() => note("unrecorded").waitFor()),
+  );
+  const dropped = yield* page(() => note("unrecorded").getAttribute("data-request-id"));
+  checked("a dropped POST reaches no provider", consumes().length, beforeDrop);
+  checked(
+    "a dropped POST blocks a new spend",
+    yield* page(() => control.getAttribute("data-reset-control")),
+    "unrecorded",
+  );
+  yield* page(() => shot("reset-unrecorded"));
+  yield* page(() => owner.reload().then(() => note("unrecorded").waitFor()));
+  checked(
+    "a reload keeps the dropped request's ID",
+    yield* page(() => note("unrecorded").getAttribute("data-request-id")),
+    dropped,
+  );
+  yield* page(() =>
+    owner
+      .unroute(isSpend, drop)
+      .then(() => note("unrecorded").getByRole("button", { name: "Retry", exact: true }).click())
+      .then(() => confirm.waitFor()),
+  );
+  checked(
+    "Cancel takes focus before replaying a dropped request",
+    yield* page(cancelFocused),
+    true,
+  );
+  checked("opening that confirm sends nothing", consumes().length, beforeDrop);
+  yield* page(() =>
+    confirm
+      .getByRole("button", { name: "Retry", exact: true })
+      .click()
+      .then(() => note("confirmed").waitFor()),
+  );
+  checked("the replay of a dropped request spends once", consumes().length, beforeDrop + 1);
+  checked("the replay keeps the dropped request's ID", consumes().at(-1).requestId, dropped);
+  checked("the dropped request spent one credit", h.fixture.resets.remaining(id), 3);
+
   // A lost answer is unknown; a reload restores the same request, and Retry replays it exactly.
   h.fixture.resets.mode(id, "unknown");
   const held = h.fixture.resets.hold();
   yield* page(() =>
-    control
-      .click()
+    load()
+      .then(() => control.click())
       .then(() => confirm.getByRole("button", { name: "Use reset", exact: true }).click()),
   );
   yield* Effect.promise(() => held.started);
@@ -208,7 +258,7 @@ const program = Effect.gen(function* () {
   const replay = consumes().at(-1);
   checked("the retry reuses the request ID", replay.requestId, lost.requestId);
   checked("the retry reuses the credit ID", replay.creditId, lost.creditId);
-  checked("the replay spent no second credit", h.fixture.resets.remaining(id), 3);
+  checked("the replay spent no second credit", h.fixture.resets.remaining(id), 2);
 
   // Past the server's retry window, the retained unknown blocks a new spend and offers no retry.
   yield* page(() =>
@@ -244,14 +294,32 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => shot("reset-blocked"));
 
-  // A member without authority over the owner's pool sees no control and reaches no provider.
+  // The owner shares the account and its usage, so a member sees the cells and the count. The
+  // member doesn't own the pool, so the count stays read-only and no provider is reached.
+  const access = yield* h.request("GET", `${account}/access`);
+  yield* h.request("PATCH", `${account}/access`, {
+    audience: { kind: "everyone" },
+    revision: access.revision,
+  });
+  const policy = yield* h.request("GET", `${account}/observations/access`);
+  yield* h.request("PUT", `${account}/observations/access`, {
+    ...policy,
+    read: { kind: "everyone" },
+  });
   const calls = h.fixture.resets.calls.length;
   const member = yield* open("member");
-  yield* page(() => member.goto(accounts).then(() => member.waitForLoadState("networkidle")));
+  yield* page(() =>
+    member.goto(accounts).then(() => member.locator("[data-reset-count]").first().waitFor()),
+  );
   checked(
-    "a member sees no reset control",
-    yield* page(() => member.locator("[data-reset-control]").count()),
-    0,
+    "a member who sees the usage cells sees no reset control",
+    yield* page(() =>
+      Promise.all([
+        member.locator("[data-reset-control]").count(),
+        member.locator("button[data-reset-count]").count(),
+      ]),
+    ),
+    [0, 0],
   );
   checked("a member's view reaches no provider", h.fixture.resets.calls.length, calls);
   checked("only confirmed clicks spent", consumes().length, blocked);
