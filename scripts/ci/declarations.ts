@@ -55,58 +55,73 @@ export function readDeclarations(root = repository) {
     }),
   );
   const files = Object.fromEntries(
-    readdirSync(join(root, "e2e/plans"), { withFileTypes: true }).map((entry) => {
-      if (!entry.isFile() || !/^[a-z0-9-]+\.spec\.ts\.json$/.test(entry.name))
-        throw new Error("Invalid per-file declaration: " + entry.name);
-      const file = entry.name.slice(0, -5);
-      const source = record(json(join(root, "e2e/plans", entry.name)));
-      const scenarios = Object.fromEntries(
-        Object.entries(record(source.scenarios)).map(([key, value]) => {
-          if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key)) throw new Error("Invalid scenario key: " + key);
-          const plan = record(value);
-          return [key, { ...plan, file, title: text(plan.title), targets: record(plan.targets) }];
-        }),
-      );
-      const runs = Object.fromEntries(
-        Object.entries(record(source.runs)).map(([key, value]) => {
-          const ids = strings(value);
-          const scenario = scenarios[key];
-          if (!scenario || !ids.length || new Set(ids).size !== ids.length)
-            throw new Error(file + ": invalid scenario assignment " + key);
-          for (const id of ids) {
-            const group = groups[id];
-            if (!group) throw new Error("Unknown e2e group: " + id);
-            const target = record(scenario.targets[group.target]);
-            if (target.status !== "scheduled" || (target.runtime ?? "managed") !== group.mode)
-              throw new Error(file + ": group runtime does not match " + key);
-          }
-          return [key, ids];
-        }),
-      );
-      for (const key of Object.keys(scenarios))
-        if (!runs[key]) throw new Error(file + ": scenario has no CI job: " + key);
-      const config =
-        source.config === undefined
-          ? []
-          : (Array.isArray(source.config) ? source.config : []).map((value) => {
-              const item = record(value);
-              const job = text(item.job);
-              if (!heavyJobs.includes(job) && job !== "fast")
-                throw new Error("Unknown config job: " + job);
-              return { job, config: text(item.config) };
-            });
-      const inherited = source.inherited === undefined ? [] : strings(source.inherited);
-      if (!Object.keys(scenarios).length && !config.length && !inherited.length)
-        throw new Error(file + ": test has no declared owner or CI job");
-      const inputs = source.inputs === undefined ? [] : strings(source.inputs);
-      if (inputs.some((path) => path.startsWith("/") || path.split("/").includes("..")))
-        throw new Error(file + ": input escapes the repository");
-      const fixture =
-        source.fixture === undefined
-          ? undefined
-          : choice(source.fixture, ["google-routes"] as const);
-      return [file, { scenarios, runs, config, inherited, inputs, fixture }];
-    }),
+    readdirSync(join(root, "e2e/plans"), { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((entry) => {
+        if (!entry.isFile() || !/^[a-z0-9-]+\.spec\.ts\.json$/.test(entry.name))
+          throw new Error("Invalid per-file declaration: " + entry.name);
+        const file = entry.name.slice(0, -5);
+        const source = record(json(join(root, "e2e/plans", entry.name)));
+        if (
+          Object.keys(source).some(
+            (key) =>
+              !["scenarios", "runs", "inherited", "inputs", "config", "fixture"].includes(key),
+          )
+        )
+          throw new Error(file + ": unknown declaration field");
+        if (source.config !== undefined && !Array.isArray(source.config))
+          throw new Error(file + ": expected a config list");
+        const scenarios = Object.fromEntries(
+          Object.entries(record(source.scenarios)).map(([key, value]) => {
+            if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key))
+              throw new Error("Invalid scenario key: " + key);
+            const plan = record(value);
+            return [key, { ...plan, file, title: text(plan.title), targets: record(plan.targets) }];
+          }),
+        );
+        const runs = Object.fromEntries(
+          Object.entries(record(source.runs)).map(([key, value]) => {
+            const ids = strings(value);
+            const scenario = scenarios[key];
+            if (!scenario || !ids.length || new Set(ids).size !== ids.length)
+              throw new Error(file + ": invalid scenario assignment " + key);
+            for (const id of ids) {
+              const group = groups[id];
+              if (!group) throw new Error("Unknown e2e group: " + id);
+              const target = record(scenario.targets[group.target]);
+              if (target.status !== "scheduled" || (target.runtime ?? "managed") !== group.mode)
+                throw new Error(file + ": group runtime does not match " + key);
+            }
+            return [key, ids];
+          }),
+        );
+        for (const key of Object.keys(scenarios))
+          if (!runs[key]) throw new Error(file + ": scenario has no CI job: " + key);
+        const config =
+          source.config === undefined
+            ? []
+            : (Array.isArray(source.config) ? source.config : []).map((value) => {
+                const item = record(value);
+                const job = text(item.job);
+                if (!heavyJobs.includes(job) && job !== "fast")
+                  throw new Error("Unknown config job: " + job);
+                const config = text(item.config);
+                if (!/^[a-z0-9-]+\.config\.ts$/.test(config))
+                  throw new Error("Invalid test config: " + config);
+                return { job, config };
+              });
+        const inherited = source.inherited === undefined ? [] : strings(source.inherited);
+        if (!Object.keys(scenarios).length && !config.length && !inherited.length)
+          throw new Error(file + ": test has no declared owner or CI job");
+        const inputs = source.inputs === undefined ? [] : strings(source.inputs);
+        if (inputs.some((path) => path.startsWith("/") || path.split("/").includes("..")))
+          throw new Error(file + ": input escapes the repository");
+        const fixture =
+          source.fixture === undefined
+            ? undefined
+            : choice(source.fixture, ["google-routes"] as const);
+        return [file, { scenarios, runs, config, inherited, inputs, fixture }];
+      }),
   );
   return { groups, files };
 }
