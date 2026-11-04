@@ -16,7 +16,7 @@ const sha = "a".repeat(64);
 
 test("reviewed carried sources match the packages the catalog serves", async () => {
   const reviews = oauthReviews(reviewData);
-  for (const id of ["atlassian", "aws", "elevenlabs", "gitlab", "miro", "slack", "vercel"]) {
+  for (const id of ["atlassian", "aws", "elevenlabs", "gitlab", "gitlab-mcp", "miro", "slack", "vercel"]) {
     const response = await handleCatalog(
       new Request(`https://${brand.host}/catalog/apps/${id}.json`),
       async () => {
@@ -304,4 +304,14 @@ test("the public catalog keeps Vercel sign-in beside exact-method connection gui
   assert.equal(signedIn.oauthDeferrals, undefined);
   assert.deepEqual(signedIn.service?.mcp, ["https://mcp.vercel.com/"]);
   assert.equal(feed.apps.find((app) => app.id === "spotify")?.oauthDeferrals?.[0]?.method, "oauth");
+});
+
+test("GitLab MCP declares manual client setup while keeping its OAuth method available", async () => {
+  const review = oauthReviews(reviewData).find((item) => item.entry === "gitlab-mcp");
+  assert.ok(review);
+  assert.equal(review.methods.oauth?.kind, "deferred");
+  assert.ok(review.sourceSha256);
+  const response = await handleCatalog(new Request(`https://${brand.host}/catalog/apps/gitlab-mcp.json`));
+  assert.equal(response.status, 200);
+  assert.equal(catalogDocumentSha256(await response.json()), review.sourceSha256);
 });
