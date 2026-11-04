@@ -8,26 +8,31 @@ import { mergeFeed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
 
 const sourceBytes = readFileSync(new URL("./aws/source.json", import.meta.url));
-const source: { package: string; files: { path: string; content: string }[] } = JSON.parse(sourceBytes.toString("utf8"));
-const provenance: { kind: string; upstreamIssue: string; sourceSha256: string; dependencies: Record<string, string> } = JSON.parse(
-  readFileSync(new URL("./aws/provenance.json", import.meta.url), "utf8"),
+const source: { package: string; files: { path: string; content: string }[] } = JSON.parse(
+  sourceBytes.toString("utf8"),
 );
+const provenance: {
+  kind: string;
+  upstreamIssue: string;
+  sourceSha256: string;
+  dependencies: Record<string, string>;
+} = JSON.parse(readFileSync(new URL("./aws/provenance.json", import.meta.url), "utf8"));
 
 test("AWS catalog provenance pins the self-contained published source and dependencies", () => {
   assert.equal(provenance.kind, "new-app-contribution");
-  assert.match(provenance.upstreamIssue, /^https:\/\/github\.com\/UsefulSoftwareCo\/executor\/issues\/\d+$/);
+  assert.match(
+    provenance.upstreamIssue,
+    /^https:\/\/github\.com\/UsefulSoftwareCo\/executor\/issues\/\d+$/,
+  );
   assert.equal(provenance.sourceSha256, createHash("sha256").update(sourceBytes).digest("hex"));
   assert.equal(source.package, "aws");
-  assert.deepEqual(
-    source.files.map((file) => file.path).sort(),
-    [
-      "README.md",
-      "icon.ts",
-      "index.ts",
-      "package.json",
-      "provider.ts",
-    ],
-  );
+  assert.deepEqual(source.files.map((file) => file.path).sort(), [
+    "README.md",
+    "icon.ts",
+    "index.ts",
+    "package.json",
+    "provider.ts",
+  ]);
 
   const manifestFile = source.files.find((file) => file.path === "package.json");
   assert.ok(manifestFile);
@@ -37,7 +42,7 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, "module");
   assert.deepEqual(manifest.dependencies, {
-    apps: "0.0.1-beta.104-basalt.6",
+    apps: "0.0.1-beta.104-basalt.8",
     "@modelcontextprotocol/sdk": "1.32.1",
   });
   assert.deepEqual(provenance.dependencies, manifest.dependencies);
@@ -67,7 +72,10 @@ test("the AWS source route serves the pinned source and the index includes its c
     noPublisher,
   );
   assert.equal(sourceResponse.status, 200);
-  assert.deepEqual(await sourceResponse.json(), JSON.parse(onServedFramework(JSON.stringify(source))));
+  assert.deepEqual(
+    await sourceResponse.json(),
+    JSON.parse(onServedFramework(JSON.stringify(source))),
+  );
   assert.equal(publisherCalls, 0);
 
   const indexResponse = await handleCatalog(

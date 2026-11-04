@@ -39,7 +39,10 @@ test("the app source is served locally without contacting the official publisher
     noFetch,
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), JSON.parse(onServedFramework(JSON.stringify(atlassianAddition(new URL(url).origin).source))));
+  assert.deepEqual(
+    await response.json(),
+    JSON.parse(onServedFramework(JSON.stringify(atlassianAddition(new URL(url).origin).source))),
+  );
   const head = await handleCatalog(new Request(url, { method: "HEAD" }), noFetch);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
@@ -99,13 +102,13 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
   const originalManifest = manifest(publicSource);
   const servedManifest = manifest(served);
   assert.equal(originalManifest.dependencies.apps, "0.0.1-beta.103");
-  assert.equal(servedManifest.dependencies.apps, "0.0.1-beta.104-basalt.2");
+  assert.equal(servedManifest.dependencies.apps, "0.0.1-beta.104-basalt.8");
   assert.equal(servedManifest.name, "atlassian");
   assert.equal(servedManifest.private, true);
   assert.equal(servedManifest.type, "module");
   assert.deepEqual(servedManifest, {
     ...originalManifest,
-    dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.2" },
+    dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.8" },
   });
   const sourceFile = (path: string) =>
     served.files.find((file: { path: string }) => file.path === path).content;
