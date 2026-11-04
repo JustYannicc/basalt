@@ -1,8 +1,36 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index fa6e7ff..263b32d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -343,6 +343,16 @@ export const scenarios = plan({
+       cloud: na("Synthetic OAuth issuer uses loopback."),
+     },
+   },
++  accountIdentityFamilyMarks: {
++    legacyStorage: true,
++    file: "account-identity-screens.spec.ts",
++    title: "An identity shared by several apps shows its family mark; single-app rows keep theirs",
++    targets: {
++      local: scheduled,
++      "self-host": na("Local browser proves the row marks; hosted policy is covered separately."),
++      cloud: na("Synthetic OAuth issuer uses loopback."),
++    },
++  },
+   accountIdentityConsentScreen: {
+     file: "account-identity-screens.spec.ts",
+     title:
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index 788ece8..8a22033 100644
+index 788ece8..4a3373f 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
-@@ -267,6 +267,24 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -1,5 +1,6 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
+ import { TestLive, withCase } from "../support/case.ts";
+ import { accountFamilyProduct } from "../support/account-family-product.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+@@ -267,6 +268,24 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
                .getByRole("link", { name: `Connected app ${index + 1}` })
                .waitFor(),
            );
@@ -27,8 +55,162 @@ index 788ece8..8a22033 100644
          yield* browser.use("Inspect each app's requested access", (page) =>
            page
              .locator(".inventory-row")
+@@ -362,6 +381,153 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+     ),
+   );
+ 
++  it.effect(scenarios.accountIdentityFamilyMarks.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const product = yield* accountIdentityProduct,
++          browser = yield* Browser;
++        const connectAll = (origin: string, apps: readonly string[]) =>
++          Effect.gen(function* () {
++            const identities = new Set<string | undefined>();
++            for (const name of apps)
++              identities.add(
++                (yield* product.connect(yield* product.deploy(origin, name, ["read"]))).identity
++                  ?.id,
++              );
++            expect(identities.size, "one verified identity serves every app").toBe(1);
++            const [identity] = identities;
++            expect(identity).toBeDefined();
++            return identity!;
++          });
++        const google = yield* connectAll((yield* accountIdentityIssuer).origin, [
++          "Mail fixture",
++          "Calendar fixture",
++        ]);
++        const atlassian = yield* connectAll((yield* accountIdentityIssuer).origin, [
++          "Issues fixture",
++          "Wiki fixture",
++        ]);
++        const single = yield* connectAll((yield* accountIdentityIssuer).origin, ["Solo fixture"]);
++        const unverified = yield* product.deploy(
++          (yield* accountIdentityIssuer).origin,
++          "Unverified fixture",
++          ["read"],
++          { identity: undefined },
++        );
++        expect((yield* product.connect(unverified)).identity).toBeUndefined();
++        // Production families have public issuers; the loopback issuer verified these subjects.
++        const family = (id: string, issuer: string, name: string) => ({
++          sql: "UPDATE executor_account_identities SET issuer = $1, name = $2 WHERE id = $3",
++          params: [issuer, name, id],
++        });
++        yield* legacyStorage([
++          family(google, "https://accounts.google.com", "Google"),
++          family(atlassian, "https://auth.atlassian.com", "Atlassian"),
++          family(single, "https://accounts.google.com", "Google"),
++        ]);
++        yield* serverControl("start");
++        const paired = yield* body(
++          Schema.Struct({ url: Schema.String }),
++          yield* product.request("POST", "/auth/pair"),
++        );
++        // Deterministic local marks stand in for the logo service; any other logo request fails.
++        const marks: Record<string, string> = {
++          "google.com": "#4285f4",
++          "atlassian.com": "#0052cc",
++        };
++        yield* browser.use("Serve local family marks", (page) =>
++          page.context().route("https://integrations.sh/logo/**", (route) => {
++            const fill = marks[new URL(route.request().url()).pathname.split("/").pop() ?? ""];
++            return fill === undefined
++              ? route.fulfill({ status: 404 })
++              : route.fulfill({
++                  contentType: "image/svg+xml",
++                  body: `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" rx="8" fill="${fill}"/></svg>`,
++                });
++          }),
++        );
++        yield* browser.use("Pair the local browser", (page) =>
++          page.goto(paired.url).then(() => page.getByRole("link", { name: /^Accounts/ }).waitFor()),
++        );
++        yield* browser.use("Open Accounts", (page) =>
++          page
++            .goto("/accounts")
++            .then(() => page.getByRole("heading", { name: /^Accounts/ }).waitFor()),
++        );
++        const row = (page: Page, app: string) =>
++          page
++            .locator(".inventory-row")
++            .filter({ has: page.getByRole("link", { name: app, exact: true }) });
++        const mark = (page: Page, app: string) =>
++          row(page, app)
++            .getByRole("img")
++            .first()
++            .evaluate((element) => ({
++              name: element.getAttribute("aria-label"),
++              images: [...element.querySelectorAll("img")].map((image) => ({
++                src: image.currentSrc || image.src,
++                loaded: image.complete && image.naturalWidth > 0,
++              })),
++            }));
++        const loadedMark = (page: Page, app: string, domain: string) =>
++          row(page, app)
++            .locator(`img[src*="/logo/${domain}"]`)
++            .evaluate((image: HTMLImageElement) =>
++              image.complete && image.naturalWidth > 0
++                ? Promise.resolve()
++                : new Promise<void>((resolve, reject) => {
++                    image.addEventListener("load", () => resolve(), { once: true });
++                    image.addEventListener("error", () => reject(new Error("mark failed")), {
++                      once: true,
++                    });
++                  }),
++            );
++        const expectMarks = (width: string) =>
++          Effect.gen(function* () {
++            for (const [app, name, domain] of [
++              ["Mail fixture", "Google", "google.com"],
++              ["Issues fixture", "Atlassian", "atlassian.com"],
++            ] as const) {
++              yield* browser.use(
++                `${width}: the shared ${name} identity loads its family mark`,
++                (page) => loadedMark(page, app, domain),
++              );
++              const shown = yield* browser.use(`${width}: inspect the ${name} group mark`, (page) =>
++                mark(page, app),
++              );
++              expect(shown.name).toBe(name);
++              expect(shown.images).toHaveLength(1);
++              expect(shown.images[0]!.src).toContain(`/logo/${domain}`);
++              expect(shown.images[0]!.loaded).toBe(true);
++            }
++            for (const [app, label] of [
++              ["Solo fixture", "a verified single-app identity"],
++              ["Unverified fixture", "an unverified account"],
++            ] as const) {
++              const shown = yield* browser.use(`${width}: ${label} keeps its app mark`, (page) =>
++                mark(page, app),
++              );
++              expect(shown.name).toBe(app);
++              expect(shown.images.filter((image) => image.src.includes("/logo/"))).toEqual([]);
++            }
++          });
++        yield* expectMarks("Desktop");
++        yield* browser.checkpoint("Shared identities show their family marks");
++        yield* browser.use("Switch to phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* expectMarks("Phone");
++        expect(
++          yield* browser.use("The phone layout does not overflow", (page) =>
++            page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Shared identity family marks at phone width");
++      }),
++    ),
++  );
++
+   it.effect(scenarios.accountIdentityConsentScreen.title, (context) =>
+     withCase(
+       context,
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
-index 767c9df..773175c 100644
+index 767c9df..5d34eb4 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
 @@ -11,6 +11,7 @@ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
@@ -39,7 +221,7 @@ index 767c9df..773175c 100644
  
  /** One app or pool using the account, with that consumer's own sign-in state and check. */
  export interface AccountRowBinding {
-@@ -455,14 +456,25 @@ export function AccountRowDescription({ account }: { readonly account: AccountSu
+@@ -455,14 +456,26 @@ export function AccountRowDescription({ account }: { readonly account: AccountSu
  }
  
  /** The compact logo, named for assistive technology and on hover, since Type can be blank. */
@@ -50,6 +232,7 @@ index 767c9df..773175c 100644
 +  identityGroup = false,
 +}: {
 +  readonly account: AccountSummary;
++  /** Several apps share the verified identity, so no single app's mark represents the row. */
 +  readonly identityGroup?: boolean;
 +}) {
 +  const identity = identityGroup ? account.identity : undefined;
@@ -69,15 +252,16 @@ index 767c9df..773175c 100644
    );
  }
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index b140659..f5488a2 100644
+index b140659..113b689 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -249,7 +249,7 @@ function AccountsList({
+@@ -249,7 +249,8 @@ function AccountsList({
                      ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
                      : {})}
                  >
 -                  <AccountRowLogo account={account} />
-+                  <AccountRowLogo account={account} identityGroup />
++                  {/* One app's logo would misname an identity that several visible apps share. */}
++                  <AccountRowLogo account={account} identityGroup={apps.length > 1} />
                    <AccountRowName
                      account={account}
                      title={accountTitle(account)}
