@@ -3286,10 +3286,10 @@ index 00000000..12391ff7
 +  );
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 01985bab..6176d512 100644
+index 01985bab..664feeaf 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8712,6 +8712,49 @@ export const scenarios = plan({
+@@ -8712,6 +8712,59 @@ export const scenarios = plan({
        local: na("This scenario exercises hosted service claims and organization inventory."),
      },
    },
@@ -3312,6 +3312,16 @@ index 01985bab..6176d512 100644
 +      "self-host": scheduled,
 +      cloud: managedCloud,
 +      local: na("Hosted personal account authority belongs to the product."),
++    },
++  },
++  workflowDependencyToolPolicy: {
++    fixtures: "actors",
++    file: "workflow-dependency-tool-policy.spec.ts",
++    title: "a workflow-scoped rule applies to a dependency call made by that workflow",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: na("Uses hosted policy evaluation; managed Cloud exercises WorkflowHost.execute."),
 +    },
 +  },
 +  hostedToolPolicies: {
@@ -4070,3 +4080,148 @@ index 0250df7b..bcf31f0e 100644
    }
    return {
      controls,
+diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
+index 3786359a..6b0e5ff3 100644
+--- a/packages/sdk/src/implementation/app-calls.ts
++++ b/packages/sdk/src/implementation/app-calls.ts
+@@ -159,6 +159,7 @@ export const makeAppCalls = (options: {
+             row.authorizer === "local" ? undefined : row.authorizer,
+           ),
+           Effect.provideService(AppCallDepth, depth + 1),
++          Effect.provideService(AppCallWorkflow, identity.workflow),
+           Effect.provideService(AppCallProtection, {
+             source: {
+               app: app.id,
+diff --git a/e2e/tests/workflow-dependency-tool-policy.spec.ts b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+new file mode 100644
+index 00000000..7c767d4a
+--- /dev/null
++++ b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+@@ -0,0 +1,127 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Rule = Schema.Struct({ id: Schema.String, revision: Schema.Int });
++const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
++layer(RuntimeLive, { excludeTestServices: true })("Workflow dependency approval policies", (it) => {
++  it.effect(scenarios.workflowDependencyToolPolicy.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(apps, (id) =>
++            api.request(actors.owner, "DELETE", `${prefix}/apps/${id}`),
++          ).pipe(Effect.orDie),
++        );
++        const deploy = (name: string, source: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [{ path: "index.ts", content: source }, appsManifest],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(Resource, response);
++            apps.push(app.id);
++            return app.id;
++          });
++        const target = yield* deploy(
++          "Dependency policy target",
++          `import {defineApp,query,object,string,router} from "apps";
++const input=object({message:string()});
++const open=query({input},async(_ctx,value)=>value);
++const guarded=query({input,approval:()=>"user-approval"},async(_ctx,value)=>value);
++export default defineApp({},{tools:router({open,guarded})});`,
++        );
++        const source = yield* deploy(
++          "Workflow dependency caller",
++          `import {defineApp,query,workflow,object,string,router} from "apps";
++const input=object({target:string(),tool:string()});
++const invoke=query({input},async(ctx,value)=>ctx.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}));
++const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.do("dependency",{retries:{limit:0,delay:0}},step=>step.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}))};}catch{return {blocked:true};}});
++export default defineApp({dependencies:{remote:{scope:"user",tools:{open:{kind:"query"},guarded:{kind:"query"}}}}},{tools:router({invoke}),workflows:{probe,other:probe}});`,
++        );
++        expect(
++          (yield* api.request(actors.owner, "PUT", `${prefix}/apps/${source}/connections/remote`, {
++            scope: "user",
++            target,
++            revision: 0,
++          })).status,
++        ).toBe(200);
++        const probe = (workflow: string, tool: string) =>
++          Effect.gen(function* () {
++            const started = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${source}/workflow-runs`,
++              { workflow, input: { target, tool } },
++            );
++            expect(started.status, JSON.stringify(started.body)).toBe(200);
++            const run = yield* body(Resource, started);
++            const result = yield* Effect.gen(function* () {
++              return yield* body(
++                Run,
++                yield* api.request(
++                  actors.owner,
++                  "GET",
++                  `${prefix}/apps/${source}/workflow-runs/${run.id}`,
++                ),
++              );
++            }).pipe(
++              Effect.repeat({
++                while: (run) => run.status === "queued" || run.status === "running",
++                schedule: Schedule.spaced("100 millis"),
++              }),
++              Effect.timeout("30 seconds"),
++            );
++            expect(result.status, JSON.stringify(result)).toBe("complete");
++            return result.output;
++          });
++        const ordinary = (tool: string) =>
++          api.request(actors.owner, "POST", `${prefix}/apps/${source}/tools/call`, {
++            tool: "invoke",
++            kind: "query",
++            input: { target, tool },
++          });
++        const policy = (tool: string, mode: string) =>
++          Effect.gen(function* () {
++            const saved = yield* api.request(actors.owner, "POST", `${prefix}/tool-policies`, {
++              target: { kind: "tool", app: target, tool },
++              workflow: "probe",
++              mode,
++            });
++            expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++            return yield* body(Rule, saved);
++          });
++        // A matching always-ask rule must stop a normally approved dependency query.
++        const asks = yield* policy("open", "always-ask");
++        expect(yield* probe("probe", "open")).toEqual({ blocked: true });
++        expect(yield* probe("other", "open")).toEqual({ result: { message: "same arguments" } });
++        expect((yield* ordinary("open")).body).toEqual({ message: "same arguments" });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${prefix}/tool-policies/${asks.id}?revision=${asks.revision}`,
++          )).status,
++        ).toBe(200);
++        expect(yield* probe("probe", "open")).toEqual({ result: { message: "same arguments" } });
++        // A matching never-ask rule satisfies the target ask only for this workflow.
++        yield* policy("guarded", "never-ask");
++        expect(yield* probe("probe", "guarded")).toEqual({ result: { message: "same arguments" } });
++        expect(yield* probe("other", "guarded")).toEqual({ blocked: true });
++        expect((yield* ordinary("guarded")).status).not.toBe(200);
++      }),
++    ),
++  );
++});
