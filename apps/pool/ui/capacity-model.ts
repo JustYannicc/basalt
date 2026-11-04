@@ -1,7 +1,9 @@
-import type { CapacityAggregate, CapacityHistoryPoint, CapacityWeightSource, PoolCapacityHistory } from "../capacity-contract.ts";
+import type {
+  CapacityAggregate, CapacityForecast, CapacityHistoryPoint, CapacityRefillEvent, CapacityWeightSource, PoolCapacityHistory,
+} from "../capacity-contract.ts";
 
-// Measured capacity, one line per provider window and unit. Empty hours stay gaps; nothing here
-// projects, interpolates or invents refills. A window a lab doesn't report simply has no line.
+// One line per provider window and unit. History preserves gaps; forecast and refill data stay
+// separate from measured points. A window a lab doesn't report simply has no line.
 
 export const hourMs = 3_600_000;
 export const dayMs = 24 * hourMs;
@@ -16,12 +18,17 @@ export interface CapacityLine {
   readonly label: string;
   /** Oldest first, one per measured hour. */
   readonly points: readonly CapacityHistoryPoint[];
+  readonly forecast: CapacityForecast | null;
+  readonly refills: readonly CapacityRefillEvent[];
 }
 
 export interface CapacityLab {
   readonly provider: string;
+  readonly readAt: number | null;
   /** Longest window first, so Weekly reads before 5-hour. */
   readonly lines: readonly CapacityLine[];
+  readonly weeklyAccounts: number;
+  readonly fiveHourAccounts: number;
 }
 
 export function windowLabel(seconds: number): string {
@@ -36,7 +43,7 @@ export function windowLabel(seconds: number): string {
 export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
   const labs = new Map<string, Map<string, CapacityHistoryPoint[]>>();
   for (const point of history.points) {
-    const key = JSON.stringify([point.windowSeconds, point.mode, point.unit.id]);
+    const key = JSON.stringify([point.provider, point.windowSeconds, point.mode, point.unit.id]);
     const lines = labs.get(point.provider) ?? new Map<string, CapacityHistoryPoint[]>();
     labs.set(point.provider, lines);
     lines.set(key, [...(lines.get(key) ?? []), point]);
@@ -45,13 +52,27 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
     const built = [...lines].map(([key, points]) => {
       const first = points[0]!;
       const label = windowLabel(first.windowSeconds) + (first.mode ? ` · ${first.mode}` : "");
-      return { key, windowSeconds: first.windowSeconds, mode: first.mode, unit: first.unit, label, points: [...points].sort((a, b) => a.hour - b.hour) };
+      const forecast = history.forecasts.find((entry) => entry.provider === first.provider
+        && entry.windowSeconds === first.windowSeconds && entry.mode === first.mode && entry.unit.id === first.unit.id) ?? null;
+      const refills = history.refillEvents.filter((entry) => entry.provider === first.provider
+        && entry.windowSeconds === first.windowSeconds && entry.mode === first.mode && entry.unitId === first.unit.id);
+      return {
+        key, windowSeconds: first.windowSeconds, mode: first.mode, unit: first.unit, label,
+        points: [...points].sort((a, b) => a.hour - b.hour), forecast, refills,
+      };
     });
     // Two units on one window would otherwise share a label.
     const named = built.map((line) =>
       built.some((other) => other !== line && other.label === line.label) ? { ...line, label: `${line.label} · ${line.unit.label}` } : line,
     );
-    return { provider, lines: named.sort((a, b) => b.windowSeconds - a.windowSeconds || a.label.localeCompare(b.label)) };
+    const ordered = named.sort((a, b) => b.windowSeconds - a.windowSeconds || a.label.localeCompare(b.label));
+    return {
+      provider,
+      readAt: history.readAt,
+      lines: ordered,
+      weeklyAccounts: ordered.find((line) => line.windowSeconds === 604_800)?.points.at(-1)?.last.accountCount ?? 0,
+      fiveHourAccounts: ordered.find((line) => line.windowSeconds === 18_000)?.points.at(-1)?.last.accountCount ?? 0,
+    };
   });
 }
 
@@ -102,8 +123,11 @@ export function outSpans(points: readonly CapacityHistoryPoint[]): Span[] {
 }
 
 export interface LineFacts {
+  readonly asOf: number;
   readonly latest: CapacityHistoryPoint | null;
   readonly lowest: CapacityHistoryPoint | null;
+  /** The lowest observed point in each UTC week, shown on weekly lines. */
+  readonly weeklyLows: readonly CapacityHistoryPoint[];
   readonly outHours: number;
   readonly episodes: number;
   readonly longestHours: number;
@@ -116,13 +140,19 @@ export function lineFacts(line: CapacityLine, to: number): LineFacts {
   const lengths = spans.map((span) => (span.to - span.from) / hourMs);
   let lowest: CapacityHistoryPoint | null = null;
   for (const point of line.points) {
-    const value = share(point.minimum);
-    const best = lowest ? share(lowest.minimum) : null;
-    if (value !== null && (best === null || value < best)) lowest = point;
+    if (!lowest || point.minimum.remaining < lowest.minimum.remaining) lowest = point;
+  }
+  const lows = new Map<number, CapacityHistoryPoint>();
+  if (line.windowSeconds === 604_800) for (const point of line.points) {
+    const week = Math.floor((point.hour + 3 * dayMs) / (7 * dayMs));
+    const known = lows.get(week);
+    if (!known || point.minimum.remaining < known.minimum.remaining) lows.set(week, point);
   }
   return {
+    asOf: to,
     latest: line.points.at(-1) ?? null,
     lowest,
+    weeklyLows: [...lows.values()],
     outHours: lengths.reduce((sum, hours) => sum + hours, 0),
     episodes: spans.length,
     longestHours: Math.max(0, ...lengths),
@@ -131,18 +161,103 @@ export function lineFacts(line: CapacityLine, to: number): LineFacts {
   };
 }
 
-/** Which window the panel opens on: the one with less left at its latest reading. */
-export function pressing(lab: CapacityLab): { readonly key: string; readonly text: string | null } {
-  const ranked = lab.lines
-    .map((line) => ({ line, left: line.points.length ? share(line.points.at(-1)!.last) : null }))
-    .filter((entry): entry is { line: CapacityLine; left: number } => entry.left !== null)
-    .sort((a, b) => a.left - b.left);
-  const first = ranked[0];
-  if (!first) return { key: lab.lines[0]?.key ?? "", text: null };
-  if (lab.lines.length < 2 || ranked.length < 2) return { key: first.line.key, text: null };
-  const other = ranked[1]!;
-  const now = (left: number) => (left <= outShare ? "out now" : `${Math.round(left * 100)}% left now`);
-  return { key: first.line.key, text: `${first.line.label} is more pressing: ${now(first.left)}; ${other.line.label.toLowerCase()} ${now(other.left)}` };
+/** Which window opens first: one that is out now, then the earlier projected run-out. */
+export function pressing(lab: CapacityLab, asOf = lab.readAt): { readonly key: string; readonly text: string | null } {
+  const weeklyLines = lab.lines.filter((line) => line.windowSeconds === 604_800);
+  const fiveLines = lab.lines.filter((line) => line.windowSeconds === 18_000);
+  const weekly = weeklyLines[0];
+  const five = fiveLines[0];
+  const fallback = lab.lines[0];
+  if (!weekly || !five) return { key: fallback?.key ?? "", text: null };
+  const exhaustedNow = (line: CapacityLine) => {
+    const latest = line.points.at(-1);
+    const now = asOf;
+    const fresh = latest && now !== null && now >= latest.last.observedAt.to && now - latest.last.observedAt.from <= 6 * 60_000;
+    return Boolean(fresh && latest!.last.full > 0 && latest!.last.remaining <= latest!.last.full * outShare);
+  };
+  const forecastReady = (line: CapacityLine) => line.forecast?.status === "estimated" && line.forecast.points.length > 0;
+  const projectedRunOut = (line: CapacityLine) => forecastReady(line) ? line.forecast!.runsOutAt : null;
+  const readyLines = lab.lines.filter(forecastReady);
+  const exhausted = lab.lines.filter(exhaustedNow).sort((a, b) => b.windowSeconds - a.windowSeconds);
+  const projected = readyLines.filter((line) => projectedRunOut(line) !== null)
+    .sort((a, b) => projectedRunOut(a)! - projectedRunOut(b)!);
+  const first = exhausted[0] ?? projected[0];
+  const counterpart = (line: CapacityLine) => lab.lines.find((entry) => entry.windowSeconds !== line.windowSeconds && entry.unit.id === line.unit.id && entry.mode === line.mode)
+    ?? lab.lines.find((entry) => entry.windowSeconds !== line.windowSeconds);
+  const at = (line: CapacityLine) => {
+    const nowOut = exhaustedNow(line) || (projectedRunOut(line) !== null && line.forecast!.runsOutAt! <= line.forecast!.points[0]!.at);
+    const runOut = projectedRunOut(line);
+    const missing = !line.forecast || line.forecast.status === "learning" ? "forecast learning" : "forecast unavailable";
+    return nowOut ? "out now" : runOut === null ? forecastReady(line) ? "doesn't run out" : missing : `out ~${whenLabel(runOut)}`;
+  };
+  if (first) {
+    const other = counterpart(first);
+    return {
+      key: first.key,
+      text: `${first.label} is more pressing: ${at(first)}; ${other?.label.toLowerCase() ?? "other window"} ${other ? at(other) : "is unavailable"}`,
+    };
+  }
+  const bothForecastsReady = weeklyLines.every(forecastReady) && fiveLines.every(forecastReady);
+  const stillLearning = [weekly, five].some((line) => !line.forecast || line.forecast.status === "learning");
+  const text = bothForecastsReady ? "No window projects a run-out in the next 72 hours; showing Weekly."
+    : stillLearning ? "Forecast learning; showing Weekly."
+      : "Forecast unavailable; showing Weekly.";
+  return { key: weekly.key, text };
+}
+
+/** Answer-row and panel verdict use the same projected result. */
+export function verdict(line: CapacityLine | undefined, facts: LineFacts | undefined, days: number): {
+  readonly tone: "ok" | "warn" | "learn";
+  readonly short: string;
+  readonly text: string;
+  readonly detail: string | null;
+} {
+  const forecast = line?.forecast;
+  if (!line || !facts?.latest || !forecast || forecast.status === "learning") {
+    const weeks = forecast?.history.completedWeeks ?? 0;
+    return {
+      tone: "learn", short: "Learning",
+      text: `${facts?.measuredHours ?? 0} hours of readings in the last ${days} days. The forecast starts after 2 completed weeks; advice starts after 4.`,
+      detail: `${weeks} completed ${weeks === 1 ? "week" : "weeks"}. No projection or account count yet.`,
+    };
+  }
+  if (forecast.status === "unavailable") return {
+    tone: "learn", short: "Unavailable", text: "The capacity forecast is unavailable.",
+    detail: forecast.reasons.length ? `Reason: ${forecastReasons(forecast.reasons).join("; ")}.` : null,
+  };
+  if (forecast.points.length === 0) return {
+    tone: "learn", short: "Unavailable", text: "The capacity forecast has no projection points.", detail: null,
+  };
+  const projectedOut = forecast.runsOutAt !== null;
+  const low = Math.min(...forecast.points.map((point) => point.median));
+  const outNow = facts.latest.last.full > 0 && facts.latest.last.remaining <= facts.latest.last.full * outShare
+    && facts.asOf >= facts.latest.last.observedAt.to && facts.asOf - facts.latest.last.observedAt.from <= 6 * 60_000;
+  const horizonEnd = forecast.points.at(-1)!.at + hourMs;
+  const dryStretch = forecast.ordinary?.stretches.find((stretch) => forecast.runsOutAt !== null
+    && stretch.from <= forecast.runsOutAt && stretch.to > forecast.runsOutAt);
+  const recovery = dryStretch && dryStretch.to < horizonEnd ? dryStretch.to : null;
+  const projected = projectedOut
+    ? `${outNow ? "Out now" : `Out from ~${whenLabel(forecast.runsOutAt!)}`}${recovery === null ? "" : `; usable capacity returns ~${whenLabel(recovery)}`}.`
+    : `Projected low ${amount(low)} ${line.unit.label} over the next 72 hours.`;
+  const shortfall = forecast.ordinary?.amount ?? 0;
+  const busy = forecast.busy?.amount ?? 0;
+  const explain = shortfall > 0
+    ? `Projected short ${amount(shortfall)} ${line.unit.label}${busy > shortfall ? `, ${amount(busy)} on the busy path` : ""}.`
+    : busy > 0
+      ? `No median shortfall. The busy path is short ${amount(busy)} ${line.unit.label}.`
+      : "No projected shortfall in the next 72 hours.";
+  const sizingCount = Math.max(forecast.ordinary?.accounts ?? 0, forecast.busy?.accounts ?? 0);
+  const sizingNeed = sizingCount > 0;
+  const sizingBasis = forecast.ordinary?.accountBasis === "sustained-trend" ? "the sustained demand rise" : "recurring demand peaks";
+  const sizingDetail = sizingNeed ? `Sizing for ${sizingBasis} needs up to ${sizingCount} more ${forecast.ordinary?.candidate?.label ?? "verified-plan"} accounts on the busy path.` : null;
+  const short = sizingNeed && !projectedOut && shortfall === 0 && busy === 0 ? "More accounts advised" : projectedOut || shortfall > 0 ? "Runs short" : busy > 0 ? "Busy path short" : "Enough";
+  const flagged = facts.latest.last.unknownWeightCount;
+  return {
+    tone: projectedOut || shortfall > 0 || busy > 0 || sizingNeed ? "warn" : "ok",
+    short,
+    text: `${projected} ${explain}`,
+    detail: [sizingDetail, flagged ? `${flagged} of ${facts.latest.last.accountCount} accounts count at a flagged 1x. If their real weight is higher, the shortfall is smaller than shown.` : null].filter(Boolean).join(" ") || null,
+  };
 }
 
 export interface DailyRow {
@@ -192,6 +307,27 @@ export const weightSourceLabel: Record<CapacityWeightSource, string> = {
 };
 
 export const planName = (plan: string | null) => plan ?? "No plan reported";
+
+const forecastReasonLabels: Record<string, string> = {
+  "invalid-input": "forecast inputs are invalid",
+  "insufficient-history": "not enough completed weeks are available",
+  "history-gap": "some hourly readings are missing",
+  "partial-account-coverage": "some readings do not cover every account",
+  "incomplete-current-week": "the current week is incomplete",
+  "missing-account-reading": "an account has no current reading",
+  "unknown-account-weight": "an account weight is unknown",
+  "missing-reset-time": "an account reset time is unknown",
+  "unhealthy-account": "an account is unavailable",
+  "backtest-insufficient": "there is not enough held-out history to check the forecast",
+  "backtest-not-better": "the seasonal forecast did not beat the seasonal naive baseline",
+  "candidate-weight-unavailable": "no verified candidate account weight is available",
+  "partial-exposure-estimate": "small unobserved intervals are estimated from comparable observed exposure",
+  "censored-demand": "exhausted hours measure served use, so unmet demand is unknown",
+  "rolling-expiry-unavailable": "the rolling window's expiry history is unavailable",
+};
+
+export const forecastReasons = (reasons: readonly string[]) =>
+  reasons.map((reason) => forecastReasonLabels[reason] ?? reason.replaceAll("-", " "));
 
 /** The plans in the latest snapshot, flagged where the weight is the unknown-plan 1x fallback. */
 export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {

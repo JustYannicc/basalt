@@ -200,6 +200,13 @@ export const whoLabel = (value: Who) =>
     "other-accounts": "Accounts you can't inspect",
   })[value.kind];
 
+export interface MemberDirectoryEntry {
+  readonly person: string;
+  readonly displayName: string;
+  /** Made at least one request in the selected range. */
+  readonly active: boolean;
+}
+
 export interface Row {
   readonly id: string;
   readonly label: string;
@@ -210,6 +217,9 @@ export interface Row {
   /** Tokens per provider, for the stacked bar. */
   readonly byProvider: Map<string, bigint>;
   readonly children: Row[];
+  readonly empty: boolean;
+  readonly requestTokens: { readonly p50: number | null; readonly p90: number | null; readonly p99: number | null } | null;
+  readonly usageKey: { readonly person?: string | null; readonly provider?: string | null; readonly model?: string | null };
 }
 
 interface Draft {
@@ -220,6 +230,9 @@ interface Draft {
   totals: Totals;
   byProvider: Map<string, bigint>;
   children: Map<string, Draft>;
+  empty?: boolean;
+  requestTokens?: { readonly p50: number | null; readonly p90: number | null; readonly p99: number | null } | null;
+  usageKey?: { readonly person?: string | null; readonly provider?: string | null; readonly model?: string | null };
 }
 
 const draft = (id: string, label: string, countsOnly: boolean, provider: string | null): Draft => ({
@@ -228,18 +241,35 @@ const draft = (id: string, label: string, countsOnly: boolean, provider: string 
 
 function finish(drafts: Iterable<Draft>): Row[] {
   return [...drafts]
-    .map((entry) => ({ ...entry, children: finish(entry.children.values()) }))
+    .map((entry) => ({
+      ...entry,
+      empty: entry.empty ?? entry.totals.requests === 0,
+      requestTokens: entry.requestTokens ?? null,
+      usageKey: entry.usageKey ?? {},
+      children: finish(entry.children.values()),
+    }))
     .sort((a, b) => Number(a.countsOnly) - Number(b.countsOnly) || (b.totals.tokens > a.totals.tokens ? 1 : b.totals.tokens < a.totals.tokens ? -1 : 0)
       || b.totals.requests - a.totals.requests || a.label.localeCompare(b.label));
 }
 
 export type Grouping = "person" | "provider" | "model";
 
-/**
- * Rows for one grouping. People and labs come from the person × provider query and open to each
- * other; models come from the model × provider query and open to nothing.
- */
-export function rows(groups: readonly SeriesGroup[], by: Grouping, providerName: (id: string) => string): Row[] {
+/** Rows open from people to models, labs to people, and model+lab pairs to people. */
+export function rows(
+  groups: readonly SeriesGroup[],
+  by: Grouping,
+  providerName: (id: string) => string,
+  directory: readonly MemberDirectoryEntry[] = [],
+  requestTokens?: {
+    readonly byPerson: readonly { readonly person: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
+    readonly byModel: readonly { readonly provider: string; readonly model: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
+    readonly byModelPerson: readonly { readonly person: string; readonly provider: string; readonly model: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
+  },
+): Row[] {
+  const people = new Map(directory.map((entry) => [entry.person, entry]));
+  const byPerson = new Map(requestTokens?.byPerson.map((value) => [value.person, value]) ?? []);
+  const byModel = new Map(requestTokens?.byModel.map((value) => [JSON.stringify([value.provider, value.model]), value]) ?? []);
+  const byModelPerson = new Map(requestTokens?.byModelPerson.map((value) => [JSON.stringify([value.provider, value.model, value.person]), value]) ?? []);
   const top = new Map<string, Draft>();
   for (const group of groups) {
     const owner = who(group.key);
@@ -249,19 +279,36 @@ export function rows(groups: readonly SeriesGroup[], by: Grouping, providerName:
     const providerLabel = provider ? providerName(provider) : "Provider not recorded";
     let id: string, label: string;
     if (redacted) [id, label] = [whoId(owner), whoLabel(owner)];
-    else if (by === "person") [id, label] = [whoId(owner), whoLabel(owner)];
+    else if (by === "person") {
+      const member = owner.kind === "person" ? people.get(owner.id) : undefined;
+      [id, label] = [whoId(owner), member?.displayName || whoLabel(owner)];
+    }
     else if (by === "provider") [id, label] = [providerKey, providerLabel];
     else [id, label] = [`${providerKey}:${group.key.model ?? ""}`, group.key.model ?? "Model not recorded"];
     const row = top.get(id) ?? draft(id, label, redacted, by === "person" ? null : provider);
     top.set(id, row);
-    const child =
-      redacted || by === "model"
-        ? null
-        : by === "person"
-          ? [providerKey, providerLabel, provider]
-          : [whoId(owner), whoLabel(owner), provider];
+    row.usageKey = by === "person" && owner.kind === "person" ? { person: owner.id }
+      : by === "provider" ? { provider }
+        : by === "model" ? { provider, model: group.key.model ?? null } : {};
+    if (by === "person" && owner.kind === "person") {
+      row.requestTokens = byPerson.get(owner.id) ?? null;
+      const member = people.get(owner.id);
+      if (member) row.empty = !member.active;
+    }
+    if (by === "model" && provider) row.requestTokens = byModel.get(JSON.stringify([provider, group.key.model ?? ""])) ?? null;
+    const child = redacted ? null
+      : by === "person" ? [JSON.stringify([providerKey, group.key.model ?? null]), group.key.model ?? "Model not recorded", provider]
+        : owner.kind === "person" ? [whoId(owner), people.get(owner.id)?.displayName || whoLabel(owner), provider]
+          : null;
     const sub = child ? (row.children.get(child[0]!) ?? draft(child[0]!, child[1]!, false, child[2] ?? null)) : null;
-    if (sub) row.children.set(sub.id, sub);
+    if (sub) {
+      if (by === "person" && owner.kind === "person") sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
+      else if (by === "provider" && owner.kind === "person") sub.usageKey = { person: owner.id, provider };
+      else if (by === "model" && owner.kind === "person") sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
+      if ((by === "model" || by === "person") && owner.kind === "person")
+        sub.requestTokens = byModelPerson.get(JSON.stringify([provider, group.key.model ?? "", owner.id])) ?? null;
+      row.children.set(sub.id, sub);
+    }
     for (const bucket of group.buckets) {
       const before = row.totals.tokens;
       addBucket(row.totals, bucket);
@@ -273,6 +320,16 @@ export function rows(groups: readonly SeriesGroup[], by: Grouping, providerName:
       }
     }
   }
+  if (by === "person") for (const member of directory) {
+    const id = `person:${member.person}`;
+    if (top.has(id)) continue;
+    const row = draft(id, member.displayName || "Member", false, null);
+    row.empty = true;
+    row.usageKey = { person: member.person };
+    row.requestTokens = byPerson.get(member.person) ?? null;
+    top.set(id, row);
+  }
+  for (const row of top.values()) if (row.empty === undefined) row.empty = row.totals.requests === 0;
   return finish(top.values());
 }
 

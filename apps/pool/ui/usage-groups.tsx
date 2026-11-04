@@ -1,9 +1,10 @@
 import { Fragment, useState } from "react";
 import type { Result } from "../index.ts";
+import type { PoolOverviewResult, OverviewMoneyMetric, OverviewUsageSlice } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
 import {
-  coverageNotes, moneyExact, moneyList, rows, tokensExact, tokensShort, total,
+  addDecimal, coverageNotes, decimal, decimalText, money, moneyExact, moneyList, rows, tokensExact, tokensShort,
   type Grouping, type Row, type SeriesRead, type Totals,
 } from "./series-model.ts";
 
@@ -22,9 +23,12 @@ function TokenCell({ totals }: { totals: Totals }) {
   );
 }
 
-function MoneyCell({ list, priced, unpriced }: { list: Totals["home"]; priced: number; unpriced: number }) {
-  if (list.length) return <span title={moneyExact(list)}>{moneyList(list)}</span>;
-  if (priced === 0 && unpriced > 0) return <span className="text-muted-foreground">no price</span>;
+function MoneyCell({ list, priced, excluded, title }: { list: Totals["home"]; priced: boolean; excluded: bigint; title?: string }) {
+  if (list.length) return <span title={`${moneyExact(list)}${excluded ? ` · ${excluded.toLocaleString()} excluded` : ""}`}>
+    {moneyList(list)}{excluded > 0n && <sup aria-label={`${excluded.toLocaleString()} excluded`} className="ml-0.5 text-[10px] text-muted-foreground">†</sup>}
+  </span>;
+  if (title) return <span className="text-muted-foreground" title={title}>unavailable</span>;
+  if (!priced && excluded > 0n) return <span className="text-muted-foreground">excluded</span>;
   return dash;
 }
 
@@ -33,14 +37,23 @@ function Stack({ row, max, name }: { row: Row; max: bigint; name: (id: string) =
   if (!parts.length || max === 0n) return <div className="h-2" />;
   const sum = parts.reduce((all, [, tokens]) => all + tokens, 0n);
   return (
-    <div className="flex h-2 min-w-20 gap-0.5" style={{ width: `${(Number(sum) / Number(max)) * 100}%` }} title={parts.map(([id, tokens]) => `${name(id)} ${tokensShort(tokens)}`).join(" · ")}>
-      {parts.map(([id, tokens]) => <i key={id} className="block h-full rounded-[2px]" style={{ flex: Number(tokens), background: labColor(id) }} />)}
+    <div className="grid min-w-0 gap-1" title={parts.map(([id, tokens]) => `${name(id)} ${tokensShort(tokens)}`).join(" · ")}>
+      <div className="flex h-2 min-w-0 gap-0.5" style={{ width: `${(Number(sum) / Number(max)) * 100}%` }}>
+        {parts.map(([id, tokens]) => <i key={id} className="block h-full rounded-[2px]" style={{ flex: Number(tokens), background: labColor(id) }} />)}
+      </div>
+      <span className="block text-[10px] leading-tight text-muted-foreground">
+        {parts.map(([id, tokens]) => `${name(id)} ${Number((tokens * 100n + sum / 2n) / sum)}%`).join(" · ")}
+      </span>
     </div>
   );
 }
 
 function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) => string }) {
-  const meta = row.countsOnly ? "Counted, not split until account mapping lands" : by === "model" && row.provider ? name(row.provider) : null;
+  const meta = row.countsOnly ? "Counted, not split until account mapping lands"
+    : by === "person" && row.empty ? "No requests in this range"
+        : by === "model" && row.provider ? name(row.provider) : null;
+  const requestSize = row.requestTokens && [row.requestTokens.p50, row.requestTokens.p90, row.requestTokens.p99]
+    .map((value) => value === null || !Number.isSafeInteger(value) || value < 0 ? "—" : tokensShort(BigInt(value))).join(" / ");
   return (
     <span className="flex min-w-0 items-center gap-2">
       {by === "provider" && row.provider ? <LabMark provider={row.provider} name={row.label} small />
@@ -48,27 +61,86 @@ function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) =>
       <span className="min-w-0">
         <span className="block truncate font-medium">{row.label}</span>
         {meta && <span className="block text-xs font-normal text-muted-foreground">{meta}</span>}
+        {requestSize && <span className="block text-xs font-normal text-muted-foreground">Request tokens p50 / p90 / p99: {requestSize}</span>}
       </span>
     </span>
   );
 }
 
-const cells = (totals: Totals) => (
-  <>
-    <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">{totals.requests ? totals.requests.toLocaleString() : dash}</td>
-    <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><TokenCell totals={totals} /></td>
-    <td className="py-2.5 pr-2 text-right tabular-nums"><MoneyCell list={totals.home} priced={totals.homePriced} unpriced={totals.unpriced} /></td>
-    <td className="py-2.5 text-right tabular-nums max-[540px]:hidden"><MoneyCell list={totals.imported} priced={totals.importedPriced} unpriced={0} /></td>
-  </>
-);
+function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
+  if (row.countsOnly || Object.keys(row.usageKey).length === 0) return {
+    apiBilled: [], subscriptionValue: [], apiCount: false, subscriptionCount: false, apiExcluded: 0n, subscriptionExcluded: 0n,
+  };
+  const matches = slices.filter((slice) =>
+    (!Object.hasOwn(row.usageKey, "person") || row.usageKey.person === slice.person)
+    && (!Object.hasOwn(row.usageKey, "provider") || row.usageKey.provider === slice.provider)
+    && (!Object.hasOwn(row.usageKey, "model") || row.usageKey.model === slice.model));
+  const sum = (get: (slice: OverviewUsageSlice) => string | null) => {
+    let value: ReturnType<typeof decimal> = null;
+    for (const slice of matches) {
+      const amount = get(slice);
+      if (amount === null) continue;
+      const parsed = decimal(amount);
+      if (parsed === null) return [];
+      value = value === null ? parsed : addDecimal(value, parsed);
+    }
+    return value === null ? [] : [{ currency: "USD", amount: value }];
+  };
+  return {
+    apiBilled: sum((slice) => slice.apiBilled),
+    subscriptionValue: sum((slice) => slice.subscriptionValue),
+    apiCount: matches.some((slice) => slice.apiPricedRequests > 0),
+    subscriptionCount: matches.some((slice) => slice.subscriptionPricedRequests > 0),
+    apiExcluded: matches.reduce((count, slice) => count + BigInt(slice.apiUnpriced) + BigInt(slice.unknownKind), 0n),
+    subscriptionExcluded: matches.reduce((count, slice) => count + BigInt(slice.subscriptionUnpriced) + BigInt(slice.unknownKind), 0n),
+  };
+}
 
-export function WhoUses({ people, models, days, name, onRetry }: {
+const percentiles = (row: Row) => {
+  if (!row.requestTokens) return dash;
+  const show = (value: number | null) => value === null || !Number.isSafeInteger(value) || value < 0 ? "—" : tokensShort(BigInt(value));
+  return <span title="Per-request total tokens">{show(row.requestTokens.p50)} / {show(row.requestTokens.p90)} / {show(row.requestTokens.p99)}</span>;
+};
+
+const percentileText = (values: { readonly p50: number; readonly p90: number; readonly p99: number }) =>
+  `p50 ${tokensShort(BigInt(values.p50))} · p90 ${tokensShort(BigInt(values.p90))} · p99 ${tokensShort(BigInt(values.p99))}`;
+
+const cells = (row: Row, slices: readonly OverviewUsageSlice[], overview?: PoolOverviewResult) => {
+  const totals = row.totals;
+  const moneyRows = rowMoney(row, slices);
+  return (
+    <>
+      <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">{totals.requests ? totals.requests.toLocaleString() : dash}</td>
+      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><TokenCell totals={totals} /></td>
+      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden">{percentiles(row)}</td>
+      <td className="w-[16%] py-2.5 pr-2 text-right tabular-nums max-[740px]:w-[32%]"><MoneyCell list={moneyRows.apiBilled} priced={moneyRows.apiCount} excluded={moneyRows.apiExcluded} title={overview?.metrics.apiBilled.status === "unavailable" ? overview.metrics.apiBilled.reason : undefined} />
+        <details className="mt-1 hidden text-xs max-[740px]:block">
+          <summary className="cursor-pointer text-muted-foreground">Usage details</summary>
+          <div className="mt-1 grid gap-1 text-right text-pretty">
+            <span>{totals.requests.toLocaleString()} requests</span>
+            <span>Tokens: <TokenCell totals={totals} /></span>
+            <span>Request p50 / p90 / p99: {percentiles(row)}</span>
+            <span>Subscription value: <MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></span>
+            <span>Imported API price: <MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} /></span>
+          </div>
+        </details>
+      </td>
+      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></td>
+      <td className="py-2.5 text-right tabular-nums max-[540px]:hidden"><MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} /></td>
+    </>
+  );
+};
+
+export function WhoUses({ people, models, days, name, onRetry, overview }: {
   people: Result<SeriesRead> | undefined; models: Result<SeriesRead> | undefined; days: number; name: (id: string) => string; onRetry: () => void;
+  overview?: PoolOverviewResult;
 }) {
   const [by, setBy] = useState<Grouping>("person");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const source = by === "model" ? models : people;
-  const list = source?.ok ? rows(source.value.groups, by, name) : [];
+  const directory = overview?.directory.members ?? [];
+  const list = source?.ok ? rows(source.value.groups, by, name, directory, overview?.metrics.requestTokens) : [];
+  const slices = overview?.metrics.usageSlices ?? [];
   const max = list.reduce((top, row) => (row.totals.tokens > top ? row.totals.tokens : top), 0n);
   const toggle = (id: string) => setOpen((current) => { const next = new Set(current); if (!next.delete(id)) next.add(id); return next; });
   return (
@@ -77,7 +149,7 @@ export function WhoUses({ people, models, days, name, onRetry }: {
         <div className="grid gap-1">
           <h2 id="who-heading" className="text-lg font-semibold tracking-[-0.02em]">Who uses what</h2>
           <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-            Last {days} days. Bars are tokens by lab.{by !== "model" && ` Open a row for its ${by === "person" ? "labs" : "people"}.`}
+            Last {days} days. Bars are tokens by lab. Open a row for its {by === "person" ? "models" : "people"}.
           </p>
         </div>
         <Segmented label="Group by" value={by} onChange={(value) => { setBy(value); setOpen(new Set()); }}
@@ -96,11 +168,13 @@ export function WhoUses({ people, models, days, name, onRetry }: {
         <table className="w-full border-collapse text-[13px]">
           <thead>
             <tr className="text-left text-xs whitespace-nowrap text-muted-foreground [&>th]:border-b [&>th]:border-border [&>th]:py-2 [&>th]:pr-2 [&>th]:font-medium">
-              <th scope="col">{by === "person" ? "Person" : by === "provider" ? "Lab" : "Model"}</th>
-              <th scope="col" className="w-[26%]">Tokens by lab</th>
+              <th scope="col" className="w-[32%] max-[740px]:w-[43%]">{by === "person" ? "Person" : by === "provider" ? "Lab" : "Model"}</th>
+              <th scope="col" className="w-[26%] max-[740px]:w-[25%]">Tokens by lab</th>
               <th scope="col" className="text-right max-[540px]:hidden">Requests</th>
               <th scope="col" className="text-right max-[740px]:hidden">Tokens</th>
-              <th scope="col" className="text-right">Home charge</th>
+              <th scope="col" className="text-right max-[740px]:hidden">Request tokens p50/p90/p99</th>
+              <th scope="col" className="text-right">API cost</th>
+              <th scope="col" className="text-right max-[740px]:hidden">Subscription value</th>
               <th scope="col" className="text-right max-[540px]:hidden">Imported API price</th>
             </tr>
           </thead>
@@ -110,7 +184,7 @@ export function WhoUses({ people, models, days, name, onRetry }: {
               const canOpen = row.children.length > 0;
               return (
                 <Fragment key={row.id}>
-                  <tr className={row.countsOnly ? "text-muted-foreground" : undefined}>
+                  <tr className={row.countsOnly || row.empty ? "text-muted-foreground" : undefined}>
                     <th scope="row" className="py-2.5 pr-2 text-left font-normal">
                       {canOpen ? (
                         <button type="button" aria-expanded={expanded} onClick={() => toggle(row.id)}
@@ -125,18 +199,18 @@ export function WhoUses({ people, models, days, name, onRetry }: {
                       )}
                     </th>
                     <td className="py-2.5 pr-2"><Stack row={row} max={max} name={name} /></td>
-                    {cells(row.totals)}
+                    {cells(row, slices, overview)}
                   </tr>
                   {expanded && row.children.map((child) => (
                     <tr key={child.id} className="bg-muted text-xs">
                       <th scope="row" className="py-[7px] pr-2 pl-[34px] text-left font-normal">
                         <span className="flex items-center gap-2">
                           {by === "person" && child.provider && <span className="size-2 shrink-0 rounded-[2px]" style={{ background: labColor(child.provider) }} />}
-                          {child.label}
+                          <span>{child.label}{by === "person" && child.provider && <span className="ml-1 text-muted-foreground">· {name(child.provider)}</span>}</span>
                         </span>
                       </th>
                       <td className="py-[7px] pr-2"><Stack row={child} max={max} name={name} /></td>
-                      {cells(child.totals)}
+                      {cells(child, slices, overview)}
                     </tr>
                   ))}
                 </Fragment>
@@ -145,6 +219,11 @@ export function WhoUses({ people, models, days, name, onRetry }: {
           </tbody>
         </table>
       )}
+      {overview?.metrics.requestTokens.percentiles && <p className="text-xs text-muted-foreground">
+        Request tokens across {overview.metrics.requestTokens.requests.toLocaleString()} requests: {percentileText(overview.metrics.requestTokens.percentiles)}.
+      </p>}
+      {overview?.metrics.requestTokens.status === "unavailable" && <p className="text-xs text-muted-foreground">Request token percentiles unavailable: {overview.metrics.requestTokens.reason}</p>}
+      {by === "person" && overview?.directory && <p className="text-xs text-muted-foreground">{overview.directory.activeCount} of {overview.directory.totalCount} people with pool access made a request in these {days} days.</p>}
       {source?.ok && <Notes read={source.value} />}
     </section>
   );
@@ -161,43 +240,79 @@ function Notes({ read }: { read: SeriesRead }) {
   );
 }
 
-/** Two figures that never add up: what Home charged, and imported API prices in USD. */
-export function Money({ people, days }: { people: Result<SeriesRead> | undefined; days: number }) {
+/** Current API rates keep billed cost and subscription value in USD. */
+export function Money({ people, days, overview, name }: { people: Result<SeriesRead> | undefined; days: number; overview?: PoolOverviewResult; name?: (id: string) => string }) {
   if (!people?.ok) return null;
-  const sum = total(people.value.groups);
-  const apiEquivalent = people.value.coverage.pricing.apiEquivalent;
+  const metrics = overview?.metrics;
+  const api = metrics?.apiBilled;
+  const subscription = metrics?.subscriptionValue;
+  const slices = metrics?.usageSlices ?? [];
+  const providers = [...new Set(slices.map((slice) => slice.provider))].sort();
+  const unknown = api?.excluded.unknownKind ?? 0;
+  const unpriced = (api?.excluded.unpriced ?? 0) + (subscription?.excluded.unpriced ?? 0);
+  const personDay = metrics?.perActivePersonPerDay;
   return (
     <section id="cost" aria-labelledby="cost-heading" className="grid scroll-mt-4 gap-4 pt-12">
       <div className="grid gap-1">
         <h2 id="cost-heading" className="text-lg font-semibold tracking-[-0.02em]">What it cost</h2>
-        <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">Separate figures in their own units. They are never added together.</p>
+        <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">Current provider API rates applied to {days} days of pool requests. Home credits and imported prices stay separate.</p>
       </div>
       <div className="grid grid-cols-2 rounded-lg border border-border max-[540px]:grid-cols-1">
-        <Figure label="Home charge" value={sum.home.length ? moneyList(sum.home) : "None recorded"} exact={moneyExact(sum.home)} days={days}
-          body={`What Home charged for ${sum.homePriced.toLocaleString()} requests, in Home's own units.`} />
-        <Figure label="Imported API price" value={sum.imported.length ? moneyList(sum.imported) : "None recorded"} exact={moneyExact(sum.imported)} days={days} divided
-          body={`Historical USD API prices carried on ${sum.importedPriced.toLocaleString()} imported requests. Not money this pool spent.`} />
+        <Figure label="API cost, estimated billed" value={api?.status === "available" ? overviewAmount(api.amount) : "Unavailable"} days={days}
+          body={metricBody(api, "Waiting for current USD provider prices.")} />
+        <Figure label="Subscription value at API prices" value={subscription?.status === "available" ? overviewAmount(subscription.amount) : "Unavailable"} days={days} divided
+          body={metricBody(subscription, "Waiting for current USD provider prices.")} />
       </div>
       <div className="grid gap-1.5 text-[13px]">
-        <span className="flex items-start gap-2 text-muted-foreground text-pretty">
-          <StateIcon tone="learn" /><span><span className="font-medium text-foreground">API-equivalent cost unavailable.</span> {apiEquivalent.reason}</span>
-        </span>
-        {sum.unpriced > 0 && (
-          <span className="flex items-start gap-2 text-muted-foreground text-pretty">
-            <StateIcon tone="info" /><span><b className="font-medium text-foreground tabular-nums">{sum.unpriced.toLocaleString()}</b> requests have no price, so they add to neither figure.</span>
-          </span>
-        )}
+        {unknown + unpriced > 0 && <span className="flex items-start gap-2 text-muted-foreground text-pretty"><StateIcon tone="info" /><span><b className="font-medium text-foreground tabular-nums">{unknown.toLocaleString()}</b> requests with unknown kind and <b className="font-medium text-foreground tabular-nums">{unpriced.toLocaleString()}</b> unpriced requests are excluded from both totals.</span></span>}
+        {personDay?.status === "available" && <span className="text-muted-foreground">Subscription value per active person per day: p50 {overviewAmount(personDay.p50)}, p90 {overviewAmount(personDay.p90)} across {personDay.activePeople} people and {personDay.completeDays} complete days.</span>}
+        {overview?.consistency === "changed" && <span className="text-warning">Usage changed while this overview was read. Reload for a consistent range.</span>}
       </div>
+      {providers.length > 0 && <table className="w-full border-collapse text-[13px]">
+        <thead><tr className="text-left text-xs text-muted-foreground"><th scope="col" className="border-b border-border py-2 pr-2 font-medium">Lab</th><th scope="col" className="border-b border-border py-2 pr-2 text-right font-medium">API cost</th><th scope="col" className="border-b border-border py-2 text-right font-medium">Subscription value</th></tr></thead>
+        <tbody>{providers.map((provider) => {
+          const lab = slices.filter((slice) => slice.provider === provider);
+          const api = sumOverviewAmounts(lab, "apiBilled");
+          const subscription = sumOverviewAmounts(lab, "subscriptionValue");
+          return <tr key={provider ?? "unknown-provider"}><th scope="row" className="border-b border-border py-2.5 pr-2 text-left font-normal">{provider ? name?.(provider) ?? provider : "Provider not recorded"}</th><td className="border-b border-border py-2.5 pr-2 text-right tabular-nums">{api.amount !== null ? overviewAmount(api.amount) : api.excluded ? "excluded" : "—"}</td><td className="border-b border-border py-2.5 text-right tabular-nums">{subscription.amount !== null ? overviewAmount(subscription.amount) : subscription.excluded ? "excluded" : "—"}</td></tr>;
+        })}</tbody>
+      </table>}
     </section>
   );
 }
 
-function Figure({ label, value, exact, body, days, divided = false }: { label: string; value: string; exact: string; body: string; days: number; divided?: boolean }) {
+function overviewAmount(value: string | null) {
+  if (value === null) return "—";
+  const parsed = decimal(value);
+  return parsed ? money({ currency: "USD", amount: parsed }) : "—";
+}
+
+function sumOverviewAmounts(slices: readonly OverviewUsageSlice[], field: "apiBilled" | "subscriptionValue") {
+  let amount: ReturnType<typeof decimal> = null;
+  let excluded = 0n;
+  for (const slice of slices) {
+    excluded += BigInt(slice.unknownKind) + BigInt(field === "apiBilled" ? slice.apiUnpriced : slice.subscriptionUnpriced);
+    const text = slice[field];
+    if (text === null) continue;
+    const parsed = decimal(text);
+    if (parsed === null) return { amount: null, excluded };
+    amount = amount === null ? parsed : addDecimal(amount, parsed);
+  }
+  return { amount: amount === null ? null : decimalText(amount), excluded };
+}
+
+function metricBody(metric: OverviewMoneyMetric | undefined, fallback: string) {
+  if (!metric || metric.status === "unavailable") return metric?.reason ?? fallback;
+  const price = metric.price ? `${metric.price.source}, ${new Date(metric.price.asOf).toUTCString().replace(" GMT", " UTC")}, ${metric.price.version}` : "price date unavailable";
+  return `Estimated from ${price}. ${metric.pricedRequests.toLocaleString()} priced requests.`;
+}
+
+function Figure({ label, value, body, days, divided = false }: { label: string; value: string; body: string; days: number; divided?: boolean }) {
   return (
     <div className={`grid content-start gap-1 p-4 ${divided ? "border-l border-border max-[540px]:border-t max-[540px]:border-l-0" : ""}`}>
       <span className="text-[13px] font-medium">{label}</span>
-      <span className="text-[26px] leading-tight font-semibold tracking-[-0.03em] tabular-nums" title={exact || undefined}>
-        {value}{exact && <small className="ml-1.5 text-[13px] font-normal tracking-[-0.01em] text-muted-foreground">{days} days</small>}
+      <span className="text-[26px] leading-tight font-semibold tracking-[-0.03em] tabular-nums">
+        {value}<small className="ml-1.5 text-[13px] font-normal tracking-[-0.01em] text-muted-foreground">{days} days</small>
       </span>
       <p className="m-0 text-[13px] text-muted-foreground text-pretty">{body}</p>
     </div>

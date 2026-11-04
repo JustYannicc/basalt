@@ -313,8 +313,8 @@ test("the existing alarm persists weighted capacity without extra Home reads and
   assert.equal((await new CapacityHistory(storage).read("pool-a")).length, 1);
 });
 
-test("capacity history requires the current manager and leaves absent readings empty", async () => {
-  const f = await fixture(async (_pool, user) => ({ canUse: user !== idle, canManage: user === b }));
+test("capacity history requires management rather than model-use authority and leaves absent readings empty", async () => {
+  const f = await fixture(async (_pool, user) => ({ canUse: user !== idle && user !== b, canManage: user === b }));
   const token = await signPoolToken(signingKey, claims);
   const read = (user: string | null, authorization = token, days = "7") => f.usage.handle(new Request(
     `https://pool.example.test/pool/v1/usage/capacity?days=${days}`,
@@ -329,8 +329,28 @@ test("capacity history requires the current manager and leaves absent readings e
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     from: now.getTime() - 7 * 86_400_000, to: now.getTime(), points: [],
-    estimate: { status: "unavailable", reason: "Collecting comparable weighted history. Pattern not known yet." },
+    readAt: null, trackingSince: null, completedWeeks: 0, forecasts: [], refillEvents: [],
+    estimate: { status: "learning", reason: "Forecasts start after two completed weeks; account advice after four." },
   });
   assert.deepEqual(f.calls, []);
   assert.deepEqual(f.audienceCalls, []);
+});
+
+
+test("capacity uses the overview's shared end time and refuses stale or future snapshots", async () => {
+  const f = await fixture(async (_pool, user) => ({ canUse: true, canManage: user === b }));
+  const token = await signPoolToken(signingKey, claims);
+  const read = (to: string) => f.usage.handle(new Request(
+    `https://pool.example.test/pool/v1/usage/capacity?days=7&to=${encodeURIComponent(to)}`,
+    { headers: { authorization: `Bearer ${token}`, [callerHeader]: b } },
+  ));
+  for (const to of ["NaN", "", String(now.getTime() + 1), String(now.getTime() - 5 * 60_000 - 1)])
+    assert.equal((await read(to)).status, 400);
+  const to = now.getTime() - 10_000;
+  const response = await read(String(to));
+  assert.equal(response.status, 200);
+  const result = await response.json() as { from: number; to: number; forecasts: unknown[] };
+  assert.equal(result.to, to);
+  assert.equal(result.from, Math.floor((to - 7 * 86_400_000) / 3_600_000) * 3_600_000);
+  assert.deepEqual(result.forecasts, []);
 });

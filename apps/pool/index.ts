@@ -51,9 +51,9 @@ export const usage = query(
 );
 
 export const capacity = query(
-  { description: "Measured weighted capacity history for pool managers. Missing observations remain gaps.", input: object({ days: number().optional() }) },
-  async (ctx: Context, { days }) => control<import("./capacity-contract.ts").PoolCapacityHistory>(ctx,
-    `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}`),
+  { description: "Measured capacity and seasonal projections for pool managers. Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.", input: object({ days: number().optional(), to: number().optional() }) },
+  async (ctx: Context, { days, to }) => control<import("./capacity-contract.ts").PoolCapacityHistory>(ctx,
+    `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`),
 );
 
 export const addLoginFile = mutation(

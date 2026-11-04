@@ -99,3 +99,21 @@ test("a failed page fails the read instead of showing a partial total as complet
   const result = await readSeries(fetch, input);
   assert.equal(result.ok, false);
 });
+
+
+test("people retain directory names and inactive rows, and open to exact model/person statistics", () => {
+  const list = rows([
+    group({ person: "person-a", provider: "claude", model: "model-a" }, bucket({ tokens: "20" })),
+    group({ person: "person-a", provider: "claude", model: "model-b" }, bucket({ tokens: "10" })),
+  ], "person", () => "Claude", [
+    { person: "person-a", displayName: "Pat Example", active: true },
+    { person: "person-b", displayName: "Idle Example", active: false },
+  ], { byPerson: [], byModel: [], byModelPerson: [
+    { person: "person-a", provider: "claude", model: "model-a", p50: 10, p90: 20, p99: 30 },
+  ] });
+  const pat = list.find((row) => row.label === "Pat Example")!;
+  assert.deepEqual(pat.children.map((row) => row.label), ["model-a", "model-b"]);
+  assert.deepEqual(pat.children[0]!.usageKey, { person: "person-a", provider: "claude", model: "model-a" });
+  assert.equal(pat.children[0]!.requestTokens?.p90, 20);
+  assert.equal(list.find((row) => row.label === "Idle Example")?.empty, true);
+});

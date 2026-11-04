@@ -116,7 +116,7 @@ export function App({ api }: { api: PoolApi }) {
                 <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />
               </>
             ) : (
-              <ManagerOverview data={overview} days={days} providers={view.providers} onRetry={() => void overview.reload()} />
+              <ManagerOverview data={overview} days={days} providers={view.providers} view={view} accountsHref={accountsHref} onRetry={() => void overview.reload()} />
             )}
           </>
         )}

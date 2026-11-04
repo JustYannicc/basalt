@@ -3,11 +3,11 @@ const DAY_HOURS = 24;
 const WEEK_HOURS = 7 * DAY_HOURS;
 const WEEK_MS = WEEK_HOURS * HOUR_MS;
 
-export const MIN_FALLBACK_DAYS = 2;
-export const MIN_PATTERN_WEEKS = 6;
+export const MIN_PATTERN_WEEKS = 2;
+export const MIN_ADVICE_WEEKS = 4;
 export const MAX_PATTERN_WEEKS = 12;
 export const MIN_BACKTEST_HELD_OUT_WEEKS = 2;
-export const MIN_ADVICE_COVERAGE = 1;
+export const MIN_ADVICE_COVERAGE = 0.9;
 export const RECURRING_PERCENTILE = 0.9;
 export const RECURRING_MIN_WEEKS = 2;
 export const ABOVE_USUAL_RATIO = 1.1;
@@ -15,7 +15,6 @@ export const TREND_WEEKS = 3;
 export const CURRENT_JUDGED_AFTER_HOURS = 24;
 export const CURRENT_COUNTS_AFTER_HOURS = 72;
 export const MIN_CURRENT_PROFILE_SHARE = 0.15;
-export const SIZING_MARGIN = 0.1;
 export const PROJECTION_HORIZON_HOURS = 72;
 export const HOLD_UNHEALTHY_AT_LAST_READING = true;
 export const MIN_FORECAST_WINDOW_SECONDS = 60 * 60;
@@ -27,11 +26,17 @@ export interface HourlyDemand {
   readonly demand: number | null;
   /** Share of expected accounts represented in this aggregate. Omit only for complete hours. */
   readonly coverage?: number | null;
+  /** True when quota usage hit zero, making the observed demand a lower bound. */
+  readonly censored?: boolean;
 }
 
 export interface ForecastAccount {
   /** Kept in the input only. It is never returned by this module. */
   readonly id: string;
+  /** Server-assigned stable slot used to pair private accounts across windows. Never a user identifier. */
+  readonly slot?: number;
+  /** Safe plan name for explaining excluded weights. This is never an account identifier. */
+  readonly label?: string;
   /** Full allowance in the forecast's weighted unit. */
   readonly capacity: number;
   /** False when the adapter supplied a fallback weight whose capacity is not established. */
@@ -44,6 +49,14 @@ export interface ForecastAccount {
   readonly usable: boolean;
   /** Historical traffic share used for sticky allocation. */
   readonly share: number;
+  readonly shareKnown?: boolean;
+  /** Estimated use assigned to each source sample time; it will age out of a rolling window. */
+  readonly rollingUse?: readonly { readonly at: number; readonly amount: number }[];
+  /** True only while use since a full, empty-window anchor has been reconciled at every fresh source sample. */
+  readonly rollingHistoryComplete?: boolean;
+  readonly weeklyUsable?: readonly { readonly at: number; readonly usable: boolean }[];
+  readonly weeklyUsabilityComplete?: boolean;
+  readonly windowKnown?: boolean;
 }
 
 export interface CandidateAccount {
@@ -55,6 +68,7 @@ export interface CandidateAccount {
 
 export interface CapacityForecastInput {
   readonly provider: string;
+  readonly mode?: string | null;
   readonly unit: { readonly id: string; readonly label: string };
   /** One provider quota window per call. Different windows are forecast separately. */
   readonly windowSeconds: number;
@@ -78,11 +92,19 @@ export type ForecastReason =
   | "unhealthy-account"
   | "backtest-insufficient"
   | "backtest-not-better"
-  | "candidate-weight-unavailable";
+  | "candidate-weight-unavailable"
+  | "censored-demand"
+  | "partial-exposure-estimate"
+  | "rolling-expiry-history-unavailable"
+  | "five-hour-mode-unknown"
+  | "weekly-capacity-forecast-unavailable"
+  | "unobserved-account-window"
+  | "sticky-routing-unavailable";
 
 export interface MeasuredWeek {
   readonly startAt: number;
   readonly total: number;
+  readonly censored?: boolean;
 }
 
 export interface Backtest {
@@ -97,6 +119,10 @@ export interface ProjectionPoint {
   /** Allowance balance after demand; shortfalls remain below zero until a scheduled refill. */
   readonly balance: number;
   readonly demand: number;
+  readonly low?: number;
+  readonly high?: number;
+  readonly busy?: number;
+  readonly usable?: number | null;
 }
 
 export interface AggregateRefill {
@@ -109,10 +135,12 @@ export interface ShortfallStretch {
   readonly from: number;
   readonly to: number;
   readonly amount: number;
+  readonly worstHour?: number;
 }
 
 export interface CapacityForecast {
   readonly provider: string;
+  readonly mode: string | null;
   readonly unit: { readonly id: string; readonly label: string };
   readonly windowSeconds: number;
   readonly status: "unavailable" | "estimated";
@@ -128,7 +156,7 @@ export interface CapacityForecast {
   readonly measuredWeeks: readonly MeasuredWeek[];
   readonly estimate: null | {
     readonly label: "estimate";
-    readonly basis: "current-rate" | "seasonal-weekday-hour";
+    readonly basis: "seasonal-weekday-hour";
     readonly basedOnDays: number;
     readonly weeklyDemand: number | null;
     readonly profile: readonly number[] | null;
@@ -136,19 +164,27 @@ export interface CapacityForecast {
     readonly streak: number;
     readonly recurringPeak: number | null;
     readonly backtest: Backtest;
+    readonly residualBand: { readonly low: number; readonly high: number; readonly heldOutWeeks: number; readonly residualHours: number };
   };
   readonly projection: null | {
     readonly points: readonly ProjectionPoint[];
     readonly refills: readonly AggregateRefill[];
     readonly shortfalls: readonly ShortfallStretch[];
     readonly runsOutAt: number | null;
+    readonly accountBalances: readonly { readonly at: number; readonly accountIndex: number; readonly remaining: number }[];
     /** Aggregate remaining allowance held unchanged for unusable accounts. */
     readonly heldUnusableRemaining: number;
   };
+  readonly busyShortfalls: readonly ShortfallStretch[];
+  readonly busyRunsOutAt: number | null;
+  readonly backtest: Backtest | null;
   /** Structured count only; null means evidence is not sufficient to make the estimate. */
   readonly accountAdvice: null | {
     readonly candidate: CandidateAccount;
     readonly additionalAccounts: number;
+    readonly busyAccounts?: number;
+    readonly exclusions?: readonly string[];
+    readonly basis: "recurring-pattern" | "sustained-trend";
   };
   readonly reasons: readonly ForecastReason[];
 }
@@ -157,6 +193,7 @@ interface Week {
   readonly startAt: number;
   readonly hours: readonly number[];
   readonly total: number;
+  readonly censored: boolean;
 }
 
 interface PreparedHistory {
@@ -189,6 +226,26 @@ function median(values: readonly number[]): number {
   if (ordered.length === 0) return 0;
   const middle = Math.floor(ordered.length / 2);
   return ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2;
+}
+
+function quantile(values: readonly number[], q: number): number {
+  const ordered = sorted(values);
+  if (!ordered.length) return 0;
+  return ordered[Math.max(0, Math.min(ordered.length - 1, Math.ceil(q * ordered.length) - 1))]!;
+}
+
+/** Calibrate the likely range from leave-one-week-out residuals. */
+function residualBand(weeks: readonly Week[]): { low: number; high: number; heldOutWeeks: number; residualHours: number } {
+  const residuals: number[] = [];
+  for (let held = 0; held < weeks.length; held++) {
+    const training = weeks.filter((_, index) => index !== held);
+    if (!training.length) continue;
+    const shape = profile(training);
+    const level = median(training.map((week) => week.total));
+    for (let hour = 0; hour < WEEK_HOURS; hour++) residuals.push(weeks[held]!.hours[hour]! - shape[hour]! * level);
+  }
+  return { low: Math.min(0, quantile(residuals, 0.1)), high: Math.max(0, quantile(residuals, 0.9)),
+    heldOutWeeks: weeks.length, residualHours: residuals.length };
 }
 
 /** A single exceptional week cannot determine the recurring peak. */
@@ -268,11 +325,11 @@ function prepareHistory(input: CapacityForecastInput): PreparedHistory {
   const weeks: Week[] = [];
   for (let startAt = firstFullWeek; startAt + WEEK_MS <= currentStart; startAt += WEEK_MS) {
     const values = Array.from({ length: WEEK_HOURS }, (_, index) => byAt.get(startAt + index * HOUR_MS));
-    if (values.some((point) => !point || point.demand === null || coverageOf(point) !== 1)) continue;
+    if (values.some((point) => !point || point.demand === null || coverageOf(point) < 0.9)) continue;
     const weekHours = values.map((point) => point!.demand!);
-    weeks.push({ startAt, hours: weekHours, total: sum(weekHours) });
+    weeks.push({ startAt, hours: weekHours, total: sum(weekHours), censored: values.some((point) => point?.censored === true) });
   }
-  const measuredWeeks = weeks.map(({ startAt, total }) => ({ startAt, total }));
+  const measuredWeeks = weeks.map(({ startAt, total, censored }) => ({ startAt, total, censored }));
   return {
     hours, expectedHours: hours.length, observedHours, coverage, missingHours, weeks, measuredWeeks,
     currentHours, currentComplete, currentMissingHours, currentStart, currentElapsedHours,
@@ -281,7 +338,7 @@ function prepareHistory(input: CapacityForecastInput): PreparedHistory {
 }
 
 function backtest(weeks: readonly Week[]): Backtest {
-  const heldOutWeeks = Math.min(3, Math.max(0, weeks.length - 3));
+  const heldOutWeeks = Math.min(3, Math.max(0, weeks.length - 2));
   if (heldOutWeeks < MIN_BACKTEST_HELD_OUT_WEEKS)
     return { heldOutWeeks, seasonalMae: null, naiveMae: null, beatsSeasonalNaive: false };
 
@@ -316,20 +373,28 @@ function simulate(
   from: number,
   now: number,
   windowSeconds: number,
+  rolling: boolean,
 ): CapacityForecast["projection"] {
-  if (accounts.some((account) => account.remaining === null)) return null;
+  if (accounts.length === 0 || accounts.some((account) => account.remaining === null)) return null;
+  if (accounts.some((account) => account.shareKnown === false)) return null;
+  if (accounts.some((account) => account.windowKnown === false)) return null;
+  if (rolling && accounts.some((account) => account.rollingHistoryComplete !== true)) return null;
+  if (windowSeconds === 18_000 && accounts.some((account) => account.weeklyUsabilityComplete === false)) return null;
   const windowMs = windowSeconds * 1_000;
   const state = accounts.map((account) => ({
     account,
     left: account.remaining!,
-    nextReset: account.usable && account.resetAt !== null
+    nextReset: !rolling && account.usable && account.resetAt !== null
       ? nextReset(account.resetAt, now, windowMs) : null,
+    rollingUse: [...(account.rollingUse ?? [])],
   }));
   const points: ProjectionPoint[] = [];
   const refillByAt = new Map<number, AggregateRefill>();
   const shortfalls: ShortfallStretch[] = [];
+  const accountBalances: { at: number; accountIndex: number; remaining: number }[] = [];
   let dryFrom: number | null = null;
   let dryAmount = 0;
+  let dryWorstHour = 0;
   let runsOutAt: number | null = null;
 
   for (let index = 0; index < PROJECTION_HORIZON_HOURS; index++) {
@@ -341,27 +406,38 @@ function simulate(
         if (!HOLD_UNHEALTHY_AT_LAST_READING) entry.left = 0;
         continue;
       }
+      if (rolling) {
+        const expired = entry.rollingUse.filter((use) => use.at + windowMs <= at);
+        entry.rollingUse = entry.rollingUse.filter((use) => use.at + windowMs > at);
+        entry.left = Math.min(entry.account.capacity, entry.left + sum(expired.map((use) => use.amount)));
+      }
       if (entry.nextReset === null) continue;
       while (entry.nextReset <= at) {
+        const restored = Math.max(0, entry.account.capacity - Math.max(0, entry.left));
         entry.left = entry.account.capacity;
         entry.nextReset += windowMs;
-        refillAmount += entry.account.capacity;
+        refillAmount += restored;
         refillWindows++;
       }
     }
     if (refillAmount > 0) {
       refillByAt.set(at, { at, amount: refillAmount, windows: refillWindows });
-      if (dryFrom !== null) {
-        shortfalls.push({ from: dryFrom, to: at, amount: dryAmount });
-        dryFrom = null;
-        dryAmount = 0;
-      }
+    }
+
+    const usableAtHour = (entry: typeof state[number]) => entry.account.usable
+      && (!entry.account.weeklyUsable?.length || (entry.account.weeklyUsable.filter((point) => point.at <= at).at(-1)?.usable ?? true));
+    const availableBeforeDemand = state.reduce((total, entry) => total + (usableAtHour(entry) ? entry.left : 0), 0);
+    if (dryFrom !== null && availableBeforeDemand > 1e-12) {
+      shortfalls.push({ from: dryFrom, to: at, amount: dryAmount, worstHour: dryWorstHour });
+      dryFrom = null;
+      dryAmount = 0;
+      dryWorstHour = 0;
     }
 
     const hourDemand = demandAt(at);
     let need = hourDemand;
     for (let pass = 0; pass < state.length + 1 && need > 1e-12; pass++) {
-      const open = state.filter((entry) => entry.account.usable && entry.left > 1e-12);
+      const open = state.filter((entry) => usableAtHour(entry) && entry.left > 1e-12);
       if (open.length === 0) break;
       const shareTotal = sum(open.map((entry) => entry.account.share)) || open.length;
       let served = 0;
@@ -369,6 +445,7 @@ function simulate(
         const share = entry.account.share || (shareTotal === open.length ? 1 : 0);
         const take = Math.min(need * share / shareTotal, entry.left);
         entry.left -= take;
+        if (rolling && take > 0) entry.rollingUse.push({ at, amount: take });
         served += take;
       }
       if (served <= 1e-12) break;
@@ -377,16 +454,20 @@ function simulate(
     if (need > 1e-9) {
       if (dryFrom === null) dryFrom = at;
       dryAmount += need;
+      dryWorstHour = Math.max(dryWorstHour, need);
       if (runsOutAt === null) runsOutAt = at;
     }
-    const available = state.reduce((total, entry) => total + (entry.account.usable ? entry.left : 0), 0);
-    points.push({ at, balance: available - dryAmount, demand: hourDemand });
+    const available = state.reduce((total, entry) => total + (usableAtHour(entry) ? entry.left : 0), 0);
+    for (const [accountIndex, entry] of state.entries())
+      accountBalances.push({ at, accountIndex: entry.account.slot ?? accountIndex, remaining: entry.left });
+    const usable = state.reduce((total, entry) => total + (usableAtHour(entry) ? entry.account.capacity : 0), 0);
+    points.push({ at, balance: available - dryAmount, demand: hourDemand, usable });
   }
-  if (dryFrom !== null) shortfalls.push({ from: dryFrom, to: from + PROJECTION_HORIZON_HOURS * HOUR_MS, amount: dryAmount });
+  if (dryFrom !== null) shortfalls.push({ from: dryFrom, to: from + PROJECTION_HORIZON_HOURS * HOUR_MS, amount: dryAmount, worstHour: dryWorstHour });
   const heldUnusableRemaining = HOLD_UNHEALTHY_AT_LAST_READING
     ? state.reduce((total, entry) => total + (entry.account.usable ? 0 : entry.left), 0)
     : 0;
-  return { points, refills: [...refillByAt.values()], shortfalls, runsOutAt, heldUnusableRemaining };
+  return { points, refills: [...refillByAt.values()], shortfalls, runsOutAt, accountBalances, heldUnusableRemaining };
 }
 
 function reasonsFor(
@@ -394,15 +475,23 @@ function reasonsFor(
   backtestResult: Backtest,
   accounts: readonly ForecastAccount[],
   patternBasis: boolean,
+  requireResetTime: boolean,
 ): ForecastReason[] {
   const reasons: ForecastReason[] = [];
   if (history.missingHours > 0) reasons.push("history-gap");
   if (history.hours.some((point) => point.demand !== null && coverageOfPoint(point) < 1)) reasons.push("partial-account-coverage");
+  if (history.hours.some((point) => point.demand !== null && coverageOfPoint(point) < 1)) reasons.push("partial-exposure-estimate");
+  if (history.weeks.some((week) => week.censored)) reasons.push("censored-demand");
   if (history.currentMissingHours > 0 && history.currentElapsedHours > 0) reasons.push("incomplete-current-week");
   if (accounts.some((account) => account.remaining === null)) reasons.push("missing-account-reading");
+  if (accounts.length === 0) reasons.push("missing-account-reading");
   if (accounts.some((account) => !account.knownWeight)) reasons.push("unknown-account-weight");
+  if (accounts.some((account) => account.shareKnown === false)) reasons.push("sticky-routing-unavailable");
   if (accounts.some((account) => !account.usable)) reasons.push("unhealthy-account");
-  if (accounts.some((account) => account.usable && account.resetAt === null)) reasons.push("missing-reset-time");
+  if (requireResetTime && accounts.some((account) => account.usable && account.resetAt === null)) reasons.push("missing-reset-time");
+  if (accounts.some((account) => account.rollingHistoryComplete === false)) reasons.push("rolling-expiry-history-unavailable");
+  if (accounts.some((account) => account.weeklyUsabilityComplete === false)) reasons.push("weekly-capacity-forecast-unavailable");
+  if (accounts.some((account) => account.windowKnown === false)) reasons.push("unobserved-account-window");
   if (patternBasis && backtestResult.heldOutWeeks < MIN_BACKTEST_HELD_OUT_WEEKS) reasons.push("backtest-insufficient");
   else if (patternBasis && !backtestResult.beatsSeasonalNaive) reasons.push("backtest-not-better");
   return reasons;
@@ -418,13 +507,14 @@ function unavailable(
   reason: ForecastReason,
 ): CapacityForecast {
   return {
-    provider: input.provider, unit: input.unit, windowSeconds: input.windowSeconds, status: "unavailable",
+    provider: input.provider, mode: input.mode ?? null, unit: input.unit, windowSeconds: input.windowSeconds, status: "unavailable",
     history: {
       from: history.from, through: history.through, expectedHours: history.expectedHours,
       observedHours: history.observedHours, coverage: history.coverage, missingHours: history.missingHours,
       completeWeeks: history.weeks.length,
     },
-    measuredWeeks: history.measuredWeeks, estimate: null, projection: null, accountAdvice: null, reasons: [reason],
+    measuredWeeks: history.measuredWeeks, estimate: null, projection: null, busyShortfalls: [], busyRunsOutAt: null, backtest: null,
+    accountAdvice: null, reasons: [reason],
   };
 }
 
@@ -445,41 +535,35 @@ export function forecastCapacity(input: CapacityForecastInput): CapacityForecast
     observedHours: history.observedHours, coverage: history.coverage, missingHours: history.missingHours,
     completeWeeks: history.weeks.length,
   };
-  const fallbackStart = Math.max(history.from, history.through - 7 * DAY_HOURS * HOUR_MS);
-  const recentObservedHours = history.hours.filter((point) => point.at >= fallbackStart && coverageOfPoint(point) > 0).length;
-  if (history.weeks.length < MIN_PATTERN_WEEKS && recentObservedHours < MIN_FALLBACK_DAYS * DAY_HOURS) {
+  if (history.weeks.length < MIN_PATTERN_WEEKS) {
     return {
-      provider: input.provider, unit: input.unit, windowSeconds: input.windowSeconds, status: "unavailable",
+      provider: input.provider, mode: input.mode ?? null, unit: input.unit, windowSeconds: input.windowSeconds, status: "unavailable",
       history: historyMeta, measuredWeeks: history.measuredWeeks, estimate: null, projection: null,
-      accountAdvice: null, reasons: ["insufficient-history", ...(history.missingHours > 0 ? ["history-gap" as const] : [])],
+      busyShortfalls: [], busyRunsOutAt: null, backtest: null, accountAdvice: null,
+      reasons: ["insufficient-history", ...(history.missingHours > 0 ? ["history-gap" as const] : [])],
     };
   }
 
-  const patternBasis = history.weeks.length >= MIN_PATTERN_WEEKS;
+  const patternBasis = true;
   const backtestResult = patternBasis ? backtest(history.weeks) : {
     heldOutWeeks: 0, seasonalMae: null, naiveMae: null, beatsSeasonalNaive: false,
   };
-  const reasons = reasonsFor(history, backtestResult, input.accounts, patternBasis);
+  const reasons = reasonsFor(history, backtestResult, input.accounts, patternBasis,
+    input.windowSeconds !== 18_000 || input.mode?.trim().toLowerCase() === "fixed");
   let demandAt: (at: number) => number;
+  let lowDemandAt: (at: number) => number;
+  let busyDemandAt: (at: number) => number;
+  let sizingDemandAt: (at: number) => number;
+  let sizingBusyDemandAt: (at: number) => number;
   let estimate: NonNullable<CapacityForecast["estimate"]>;
 
-  if (!patternBasis) {
-    const recent = history.hours.filter((point) => point.at >= fallbackStart && point.demand !== null && coverageOfPoint(point) > 0);
-    const coveredHours = recent.length;
-    const amount = sum(recent.flatMap((point) => point.demand === null ? [] : [point.demand]));
-    const rate = coveredHours > 0 ? amount / coveredHours : 0;
-    demandAt = () => rate;
-    estimate = {
-      label: "estimate", basis: "current-rate", basedOnDays: Math.floor(history.observedHours / DAY_HOURS),
-      weeklyDemand: rate * WEEK_HOURS, profile: null, classification: null, streak: 0,
-      recurringPeak: null, backtest: backtestResult,
-    };
-  } else {
+  {
     const weeks = history.weeks;
     const shape = profile(weeks);
     const totals = weeks.map((week) => week.total);
+    const medianLevel = median(totals);
     const peak = recurringPeak(totals);
-    const baseline = weeks.slice(0, -TREND_WEEKS);
+    const baseline = weeks.slice(0, Math.max(1, weeks.length - TREND_WEEKS));
     const basePeak = recurringPeak(baseline.map((week) => week.total));
     const elapsedHours = Math.min(WEEK_HOURS, history.currentElapsedHours);
     const currentDemand = sum(history.currentHours);
@@ -506,33 +590,71 @@ export function forecastCapacity(input: CapacityForecastInput): CapacityForecast
     const streakLevels = [...(currentCounts && projectedCurrentWeek !== null ? [projectedCurrentWeek] : []), ...streakWeeks.map((week) => week.total)];
     const sizingLevel = classification === "trend" && streakLevels.length > 0
       ? Math.max(peak, Math.min(...streakLevels)) : peak;
-    const nextWeekAt = weekStart(input.now) + WEEK_MS;
-    const nearTermLevel = projectedCurrentWeek ?? peak;
-    demandAt = (at) => {
-      const level = at < nextWeekAt ? nearTermLevel : sizingLevel;
-      const index = Math.floor((at - weekStart(at)) / HOUR_MS);
-      return shape[index]! * level;
-    };
+    const forecastLevel = medianLevel;
+    const residuals = residualBand(weeks);
+    demandAt = (at) => shape[Math.floor((at - weekStart(at)) / HOUR_MS)]! * forecastLevel;
+    sizingDemandAt = (at) => shape[Math.floor((at - weekStart(at)) / HOUR_MS)]! * sizingLevel;
+    sizingBusyDemandAt = (at) => Math.max(0, sizingDemandAt(at) + residuals.high);
+    lowDemandAt = (at) => Math.max(0, demandAt(at) + residuals.low);
+    busyDemandAt = (at) => Math.max(0, demandAt(at) + residuals.high);
     estimate = {
       label: "estimate", basis: "seasonal-weekday-hour", basedOnDays: Math.floor(history.observedHours / DAY_HOURS),
       weeklyDemand: sizingLevel, profile: shape, classification, streak, recurringPeak: peak, backtest: backtestResult,
+      residualBand: residuals,
     };
   }
 
-  const projection = simulate(input.accounts, demandAt, Math.ceil(input.now / HOUR_MS) * HOUR_MS, input.now, input.windowSeconds);
+  const from = Math.ceil(input.now / HOUR_MS) * HOUR_MS;
+  const mode = input.mode?.trim().toLowerCase();
+  const rollingMode = mode?.includes("rolling") ?? false;
+  const fiveHourModeKnown = input.windowSeconds !== 18_000 || mode === "fixed" || rollingMode;
+  if (!fiveHourModeKnown) reasons.push("five-hour-mode-unknown");
+  const rolling = rollingMode;
+  const rollingSupported = !rolling || input.windowSeconds === 18_000;
+  if (!rollingSupported) reasons.push("rolling-expiry-history-unavailable");
+  const canSimulate = fiveHourModeKnown && rollingSupported;
+  const projection = canSimulate ? simulate(input.accounts, demandAt, from, input.now, input.windowSeconds, rolling) : null;
+  const lowerDemandProjection = canSimulate ? simulate(input.accounts, lowDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
+  const busyProjection = canSimulate ? simulate(input.accounts, busyDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
+  const sizingProjection = canSimulate ? simulate(input.accounts, sizingDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
+  const sizingBusyProjection = canSimulate ? simulate(input.accounts, sizingBusyDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
+  if (projection && lowerDemandProjection && busyProjection) {
+    const points = projection.points.map((point, index) => ({
+      ...point,
+      low: busyProjection.points[index]!.balance,
+      high: lowerDemandProjection.points[index]!.balance,
+      busy: busyProjection.points[index]!.balance,
+      usable: point.usable,
+    }));
+    Object.assign(projection, { points });
+  }
   const candidate = input.candidateAccount;
   const adviceAllowed = patternBasis && candidate !== null && candidate !== undefined
-    && history.coverage >= MIN_ADVICE_COVERAGE && history.missingHours === 0
-    && backtestResult.beatsSeasonalNaive && history.weeks.length >= MIN_PATTERN_WEEKS
-    && input.accounts.every((account) => account.capacity > 0 && account.knownWeight);
-  const totalCapacity = input.accounts.reduce((total, account) => total + account.capacity, 0);
-  const accountAdvice = adviceAllowed && estimate.weeklyDemand !== null
-    ? { candidate, additionalAccounts: Math.max(0, Math.ceil((estimate.weeklyDemand * (1 + SIZING_MARGIN) - totalCapacity) / candidate.capacity - 1e-9)) }
+    && history.coverage >= MIN_ADVICE_COVERAGE
+    && backtestResult.beatsSeasonalNaive && history.weeks.length >= MIN_ADVICE_WEEKS
+    && !history.weeks.some((week) => week.censored)
+    && input.accounts.every((account) => account.capacity > 0 && account.knownWeight && account.usable
+      && account.remaining !== null && account.shareKnown !== false && (rolling || account.resetAt !== null));
+  const shortfallAmount = (value: NonNullable<typeof projection>) => input.windowSeconds === 18_000
+    ? Math.max(0, ...value.shortfalls.map((stretch) => stretch.worstHour ?? 0))
+    : value.shortfalls.reduce((total, stretch) => total + stretch.amount, 0);
+  const ordinaryShortfall = projection ? shortfallAmount(projection) : 0;
+  const sizingShortfall = sizingProjection ? shortfallAmount(sizingProjection) : ordinaryShortfall;
+  const accountAdvice = adviceAllowed && sizingProjection && sizingBusyProjection
+    ? {
+      candidate,
+      additionalAccounts: Math.ceil(Math.max(0, sizingShortfall - 1e-9) / candidate.capacity),
+      busyAccounts: Math.ceil(Math.max(0, shortfallAmount(sizingBusyProjection) - 1e-9) / candidate.capacity),
+      exclusions: [...new Set(input.accounts.filter((account) => !account.knownWeight).map((account) => account.label ?? "Unverified plan"))],
+      basis: estimate.classification === "trend" ? "sustained-trend" as const : "recurring-pattern" as const,
+    }
     : null;
   if (!candidate) reasons.push("candidate-weight-unavailable");
   return {
-    provider: input.provider, unit: input.unit, windowSeconds: input.windowSeconds, status: "estimated",
-    history: historyMeta, measuredWeeks: history.measuredWeeks, estimate, projection, accountAdvice,
+    provider: input.provider, mode: input.mode ?? null, unit: input.unit, windowSeconds: input.windowSeconds, status: "estimated",
+    history: historyMeta, measuredWeeks: history.measuredWeeks, estimate, projection,
+    busyShortfalls: busyProjection?.shortfalls ?? [], busyRunsOutAt: busyProjection?.runsOutAt ?? null,
+    backtest: backtestResult, accountAdvice,
     reasons: [...new Set(reasons)],
   };
 }

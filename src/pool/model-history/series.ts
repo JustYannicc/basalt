@@ -91,12 +91,13 @@ export async function poolUsageSeries(
   db: HistoryDatabase,
   raw: unknown,
   authority: SeriesAuthority,
+  transaction: "owned" | "caller" = "owned",
 ): Promise<PoolUsageSeriesResult> {
   const input = seriesInput(raw);
   authorizeSeries(input, authority);
   const scope = await cursorScope(input, authority),
     after = readSeriesCursor(input.after, scope, input.by);
-  await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  if (transaction === "owned") await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     const query = await seriesQuery(db, input, authority, after);
@@ -148,10 +149,10 @@ export async function poolUsageSeries(
     }
     if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
       throw new Error("Usage page exceeds its byte bound");
-    await db.query("COMMIT");
+    if (transaction === "owned") await db.query("COMMIT");
     return result;
   } catch (error) {
-    await db.query("ROLLBACK").catch(() => {});
+    if (transaction === "owned") await db.query("ROLLBACK").catch(() => {});
     throw error;
   }
 }

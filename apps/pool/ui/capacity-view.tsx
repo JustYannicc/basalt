@@ -5,7 +5,7 @@ import type { Result } from "../index.ts";
 import { providerName } from "./accounts.tsx";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
-  amount, capacityLabs, dailyRows, dayLong, lineFacts, planChips, pressing, whenLabel,
+  amount, capacityLabs, dailyRows, dayLong, forecastReasons, lineFacts, planChips, pressing, verdict, whenLabel,
   type CapacityLab, type CapacityLine, type LineFacts,
 } from "./capacity-model.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
@@ -21,31 +21,7 @@ export interface Verdict {
   readonly detail: string | null;
 }
 
-/** Measured facts only: no projection is shown until the backend provides one. */
-export function verdict(line: CapacityLine | undefined, facts: LineFacts | undefined, days: number): Verdict {
-  if (!line || !facts?.latest) return { tone: "learn", short: "No readings", text: `Nothing measured in the last ${days} days.`, detail: null };
-  const unit = line.unit.label;
-  const latest = facts.latest;
-  const flagged = latest.last.unknownWeightCount;
-  const detail = flagged
-    ? `${flagged} of ${latest.last.accountCount} accounts count at a flagged 1x because their plan is unknown, so real capacity may be higher than shown.`
-    : null;
-  const tracked = facts.measuredHours < days * 24 * 0.5 ? ` Only ${facts.measuredHours} hours of readings so far.` : "";
-  if (facts.outHours > 0)
-    return {
-      tone: "warn",
-      short: "Ran out",
-      text: `Every account was out ${facts.episodes}× for ${facts.outHours}h in ${days} days, longest ${facts.longestHours}h.${tracked}`,
-      detail,
-    };
-  const low = facts.lowest ?? latest;
-  return {
-    tone: "ok",
-    short: "Never ran out",
-    text: `Lowest ${amount(low.minimum.remaining)} of ${amount(low.minimum.full)} ${unit} in ${days} days, ${whenLabel(low.hour)} UTC.${tracked}`,
-    detail,
-  };
-}
+export { verdict } from "./capacity-model.ts";
 
 export interface LabSummary {
   readonly lab: CapacityLab;
@@ -56,7 +32,7 @@ export interface LabSummary {
 export function labSummaries(history: PoolCapacityHistory, days: number): LabSummary[] {
   return capacityLabs(history).map((lab) => {
     const verdicts = lab.lines.map((line) => verdict(line, lineFacts(line, history.to), days));
-    return { lab, verdict: verdicts.find((entry) => entry.tone === "warn") ?? verdicts[0] ?? verdict(undefined, undefined, days) };
+    return { lab, verdict: verdicts.find((entry) => entry.tone === "warn") ?? verdicts.find((entry) => entry.tone === "learn") ?? verdicts[0] ?? verdict(undefined, undefined, days) };
   });
 }
 
@@ -64,12 +40,13 @@ export function CapacitySection({ result, providers, days, onRetry }: {
   result: Result<PoolCapacityHistory> | undefined; providers: readonly Provider[]; days: number; onRetry: () => void;
 }) {
   const labs = result?.ok ? capacityLabs(result.value) : [];
+  const [choices, setChoices] = useState<Readonly<Record<string, string>>>({});
   return (
     <section id="capacity" aria-labelledby="capacity-heading" className="grid scroll-mt-4 gap-4 pt-12">
       <div className="grid gap-1">
         <h2 id="capacity-heading" className="text-lg font-semibold tracking-[-0.02em]">Do we have enough accounts?</h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-          Allowance left across each lab's accounts, measured over the last {days} days. Each lab has its own unit; they never add up across labs.
+          Allowance left across each lab's accounts over the last {days} days and the next 72 hours. Five-hour charts appear only where accounts report that window. Each lab has its own unit; labs never add up.
         </p>
       </div>
       {result === undefined ? (
@@ -90,7 +67,8 @@ export function CapacitySection({ result, providers, days, onRetry }: {
       ) : (
         <div>
           {labs.map((lab, index) => (
-            <Panel key={lab.provider} lab={lab} history={result.value} name={providerName(providers, lab.provider)} days={days} first={index === 0} />
+            <Panel key={lab.provider} lab={lab} history={result.value} name={providerName(providers, lab.provider)} days={days} first={index === 0}
+              chosen={choices[lab.provider]} onChoose={(key) => setChoices((previous) => ({ ...previous, [lab.provider]: key }))} />
           ))}
         </div>
       )}
@@ -98,27 +76,48 @@ export function CapacitySection({ result, providers, days, onRetry }: {
   );
 }
 
-function Panel({ lab, history, name, days, first }: { lab: CapacityLab; history: PoolCapacityHistory; name: string; days: number; first: boolean }) {
-  const press = pressing(lab);
-  const [chosen, setChosen] = useState<string>();
-  const line = lab.lines.find((entry) => entry.key === (chosen ?? press.key)) ?? lab.lines[0]!;
+function Panel({ lab, history, name, days, first, chosen, onChoose }: { lab: CapacityLab; history: PoolCapacityHistory; name: string; days: number; first: boolean; chosen?: string; onChoose: (key: string) => void }) {
+  const press = pressing(lab, history.to);
+  const line = lab.lines.find((entry) => entry.key === (chosen ?? press.key))
+    ?? lab.lines.find((entry) => entry.key === press.key) ?? lab.lines[0]!;
   const facts = lineFacts(line, history.to);
   const result = verdict(line, facts, days);
   const chips = planChips(facts.latest);
   const accounts = facts.latest?.last.accountCount ?? 0;
   const color = labColor(lab.provider);
+  const weekly = line.windowSeconds === 604_800;
+  const onlyReporting = !weekly && lab.fiveHourAccounts < lab.weeklyAccounts;
+  const accountLabel = !weekly && lab.weeklyAccounts > accounts
+    ? `${accounts} of ${lab.weeklyAccounts} accounts report this window`
+    : `${accounts} ${accounts === 1 ? "account" : "accounts"}`;
+  const windowLines = lab.lines.filter((entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000);
+  const optionLabels = new Map<string, string>();
+  for (const entry of windowLines) {
+    const label = entry.windowSeconds === 18_000 ? "5-hour" : "Weekly";
+    const sameWindow = windowLines.filter((other) => other.windowSeconds === entry.windowSeconds);
+    optionLabels.set(entry.key, entry.mode
+      ? sameWindow.length > 1 ? `${entry.label} · ${entry.unit.label}` : entry.label
+      : sameWindow.length > 1 ? `${label} · ${entry.unit.label}` : label);
+  }
+  for (const entry of windowLines) {
+    const label = optionLabels.get(entry.key)!;
+    if (windowLines.some((other) => other.key !== entry.key && optionLabels.get(other.key) === label))
+      optionLabels.set(entry.key, `${label} (${entry.unit.id})`);
+  }
   return (
     <article aria-labelledby={`lab-${lab.provider}`} className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}>
       <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
         <LabMark provider={lab.provider} name={name} />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">{name}</h3>
-          <span className="text-sm text-muted-foreground">{accounts} {accounts === 1 ? "account" : "accounts"} · in {line.unit.label}</span>
+          <span className="text-sm text-muted-foreground">{accountLabel} · in {line.unit.label}</span>
         </div>
         <div className="justify-self-end max-[540px]:col-span-full max-[540px]:justify-self-start">
-          {lab.lines.length > 1 && (
+          {windowLines.length > 1 && (
             <div className="grid justify-items-end gap-1 max-[540px]:justify-items-start">
-              <Segmented label={`${name} limit window`} value={line.key} options={lab.lines.map((entry) => ({ id: entry.key, label: entry.label }))} onChange={setChosen} />
+              <Segmented label={`${name} limit window`} value={line.key} options={lab.lines
+                .filter((entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000)
+                .map((entry) => ({ id: entry.key, label: optionLabels.get(entry.key)! }))} onChange={onChoose} />
               {press.text && <span className="max-w-[19rem] text-right text-xs text-muted-foreground text-pretty max-[540px]:text-left">{press.text}</span>}
             </div>
           )}
@@ -131,32 +130,104 @@ function Panel({ lab, history, name, days, first }: { lab: CapacityLab; history:
         {chips.length > 0 && (
           <ul aria-label={`${name} plans`} className="col-start-2 col-end-[-1] m-0 mt-1 flex list-none flex-wrap gap-1.5 p-0 max-[540px]:col-span-full">
             {chips.map((chip) => (
-              <li key={chip.plan} className={`inline-flex h-[22px] items-center gap-1 rounded-sm border px-[7px] text-xs whitespace-nowrap ${chip.flagged ? "border-dashed border-warning/45" : "border-border"}`}>
+              <li key={chip.plan} className={`inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border px-[7px] text-xs break-words [overflow-wrap:anywhere] ${chip.flagged ? "border-dashed border-warning/45" : "border-border"}`}>
                 {chip.plan} <span className="text-muted-foreground">×{chip.accounts}</span>
                 {chip.note && <span className={chip.flagged ? "text-warning" : "text-muted-foreground"}>· {chip.note}</span>}
               </li>
             ))}
           </ul>
         )}
-        <div className="col-start-2 col-end-[-1] mt-2.5 flex items-start gap-1.5 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
-          <StateIcon tone="learn" />
-          <span><span className="font-medium text-foreground">Estimate unavailable.</span> {history.estimate.reason} No projection or shortfall is shown until there is one.</span>
-        </div>
+        <ForecastCaption line={line} onlyReporting={onlyReporting} />
       </div>
-      <CapacityChart line={line} from={history.from} to={history.to} color={color} facts={facts} lab={name} />
+      <CapacityChart line={line} from={history.from} to={history.to} now={history.to} color={color} facts={facts} lab={name} />
       <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
         <Legend color={color} facts={facts} line={line} />
-        <Daily line={line} to={history.to} />
+        <Daily line={line} from={history.from} to={history.to} />
       </div>
     </article>
   );
 }
 
+function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyReporting: boolean }) {
+  const forecast = line.forecast;
+  const weekly = line.windowSeconds === 604_800;
+  const ordinary = forecast?.ordinary;
+  const busy = forecast?.busy;
+  const candidate = ordinary?.candidate ?? busy?.candidate ?? null;
+  const unit = line.unit.label;
+  let body: string;
+  if (!forecast || forecast.status === "learning") {
+    const weeks = forecast?.history.completedWeeks ?? 0;
+    const reasons = forecast ? forecastReasons(forecast.reasons) : [];
+    body = `Learning from ${weeks} completed ${weeks === 1 ? "week" : "weeks"}${reasons.length ? `: ${reasons.join("; ")}` : ""}. Forecasts start after 2 weeks; account advice starts after 4.`;
+  } else if (forecast.status === "unavailable") {
+    body = `Forecast unavailable${forecast.reasons.length ? `: ${forecastReasons(forecast.reasons).join("; ")}` : ""}. No account count is available.`;
+  } else if ((ordinary?.amount ?? 0) <= 0 && (busy?.amount ?? 0) <= 0) {
+    const lowest = forecast.points.reduce((best, point) => !best || point.median < best.median ? point : best, undefined as (typeof forecast.points)[number] | undefined);
+    body = `No projected shortfall in the next 72 hours${lowest ? `. Lowest ${amount(lowest.median)} ${unit} near ${whenLabel(lowest.at)}` : ""}.`;
+  } else {
+    const medianShort = ordinary?.amount ?? 0;
+    const busyShort = Math.max(medianShort, busy?.amount ?? 0);
+    const stretches = medianShort > 0 ? ordinary?.stretches ?? [] : busy?.stretches ?? [];
+    const worstStretch = stretches.reduce<(typeof stretches)[number] | undefined>((worst, next) => !worst || next.depth > worst.depth ? next : worst, undefined);
+    const where = weekly
+      ? stretches.length > 1 ? ` across ${stretches.length} dry stretches` : worstStretch ? ` from ~${whenLabel(worstStretch.from)}` : ""
+      : worstStretch ? ` at ~${whenLabel(worstStretch.from)}` : "";
+    const amountText = medianShort > 0
+      ? `Projected short ≈${amount(medianShort)} ${unit}${where}`
+      : `No shortfall on the median path`;
+    const busyText = busyShort > medianShort ? `, ≈${amount(busyShort)} on the busy path` : "";
+    body = `${amountText}${busyText}.`;
+
+  }
+  const ordinaryAccounts = ordinary?.accounts;
+  const busyAccounts = busy?.accounts;
+  const sizingBasis = ordinary?.accountBasis === "sustained-trend" ? "the sustained rise in demand" : "recurring demand peaks";
+  const weight = candidate ? candidate.source === "unit" ? `1 ${candidate.label} = 1 ${unit}`
+    : `${candidate.label}, ${candidate.source} weight ${amount(candidate.capacity)} ${unit}` : "";
+  const advice = forecast?.status !== "estimated" ? null
+    : candidate && ordinaryAccounts != null && busyAccounts != null
+      ? `Sizing for ${sizingBasis}: ${ordinaryAccounts === 0 ? "no extra accounts" : `≈${ordinaryAccounts} more ${candidate.label} ${ordinaryAccounts === 1 ? "account" : "accounts"}`}, ${busyAccounts} on its busy path (${weight}).`
+      : forecast.history.completedWeeks < 4 ? "Account advice starts after 4 completed weeks."
+        : candidate ? "Account count unavailable because the forecast evidence is insufficient."
+          : "No verified candidate weight is available for an account count.";
+  const exclusions = [...new Set([...(ordinary?.exclusions ?? []), ...(busy?.exclusions ?? [])])];
+  const notes = [
+    advice,
+    forecast?.status === "estimated" && forecast.reasons.length ? `Forecast limits: ${forecastReasons(forecast.reasons).join("; ")}` : null,
+    forecast?.classification === "above" ? "This week is above its usual pattern; one unusual week does not set the account count." : null,
+    forecast?.classification === "trend" ? `Demand has remained above its baseline for ${forecast.streak} consecutive weeks.` : null,
+    forecast?.status === "estimated" ? `Banked resets remain unspent${forecast.bankedAvailable === null ? "" : ` (${forecast.bankedAvailable} available)`}.${weekly ? " Recorded use appears as a refill." : ""}` : null,
+    onlyReporting ? "Only accounts reporting a five-hour window are included." : null,
+    forecast?.status === "estimated" ? `Based on ${forecast.history.completedWeeks} completed weeks, ${Math.round(forecast.history.coverage * 100)}% observed exposure.` : null,
+    forecast?.status === "estimated" && forecast.backtest ? `Backtest: ${forecast.backtest.heldOutWeeks} held-out weeks${forecast.backtest.seasonalMae === null ? "; calibration still learning" : `, mean absolute error ${amount(forecast.backtest.seasonalMae)} ${unit} per hour`}. ${forecast.backtest.beatsSeasonalNaive ? "Beats the previous-week baseline." : "Account advice waits for a passing backtest."}` : null,
+    forecast?.status === "estimated" && forecast.residualCalibration ? `Likely range calibrated from ${forecast.residualCalibration.residualHours} held-out hours across ${forecast.residualCalibration.heldOutWeeks} weeks.` : null,
+    forecast?.status === "estimated" && exclusions.length ? `${exclusions.join(", ")} not used to count accounts.` : null,
+  ].filter((value): value is string => value !== null);
+  return (
+    <div className="col-start-2 col-end-[-1] mt-2.5 grid gap-1 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+      <span className="flex items-start gap-1.5"><StateIcon tone={forecast?.status === "estimated" && ((ordinary?.amount ?? 0) > 0 || (busy?.amount ?? 0) > 0) ? "warn" : "learn"} />{body}</span>
+      {notes.map((note) => <span key={note}>{note}</span>)}
+    </div>
+  );
+}
+
 function Legend({ color, facts, line }: { color: string; facts: LineFacts; line: CapacityLine }) {
+  const forecast = line.forecast;
+  const weekly = line.windowSeconds === 604_800;
   return (
     <div className="mt-2.5 flex flex-wrap gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3.5 rounded-[1px]" style={{ background: color }} />Lowest left each hour, measured</span>
-      <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dotted border-muted-foreground" />Full: every window fresh (reference, not available)</span>
+      <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dotted border-muted-foreground" />Nominal: every window fresh (reference, not available)</span>
+      {forecast?.status === "estimated" && <>
+        <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dashed" style={{ borderColor: color }} />Projected median</span>
+        <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px]" style={{ background: color, opacity: 0.22 }} />Likely range</span>
+        {forecast.points.some((point) => point.low < 0 || point.median < 0 || point.busy < 0) && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-destructive/20 outline outline-1 outline-destructive/40" />Below zero: unserved demand</span>}
+        {weekly && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 border border-dashed border-muted-foreground" />Refill, expected</span>}
+      </>}
+      {!weekly && <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dashed border-foreground/50" />Usable 5-hour allowance</span>}
+      {weekly && line.refills.some((event) => event.kind === "observed") && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 border border-muted-foreground" />Refill, observed</span>}
+      {weekly && line.refills.some((event) => event.kind === "banked") && <span className="inline-flex items-center gap-1.5"><i className="size-3 rounded-full border border-muted-foreground" />Banked reset used (recorded)</span>}
       {facts.outHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-destructive/15 shadow-[inset_0_-2px_0_var(--destructive)]" />All accounts out</span>}
       {facts.gapHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-accent outline outline-1 outline-input" />No readings ({facts.gapHours}h)</span>}
       <span className="sr-only">Unit: {line.unit.label}.</span>
@@ -164,15 +235,17 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   );
 }
 
-function Daily({ line, to }: { line: CapacityLine; to: number }) {
+function Daily({ line, from, to }: { line: CapacityLine; from: number; to: number }) {
   const [open, setOpen] = useState(false);
+  const end = Math.max(to, ...(line.forecast?.points.map((point) => point.at + 3_600_000) ?? []));
+  const refills = line.refills.filter((event) => event.at >= from && event.at <= end);
   return (
-    <details className="group mt-2" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details className="group mt-2 w-full min-w-0 overflow-x-auto" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground hover:text-foreground group-open:text-foreground [&::-webkit-details-marker]:hidden">
         <svg className="size-3.5 transition-transform duration-150 group-open:rotate-90" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="m6 3.5 4.5 4.5L6 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        Daily table
+        Measured and projected data
       </summary>
       {open && (
         <table className="mt-2 w-full border-collapse text-[13px]">
@@ -197,6 +270,22 @@ function Daily({ line, to }: { line: CapacityLine; to: number }) {
           </tbody>
         </table>
       )}
+      {open && line.forecast?.status === "estimated" && <div className="mt-4 overflow-x-auto">
+        <table className="w-full border-collapse text-xs tabular-nums">
+          <caption className="text-left text-muted-foreground">Projected hourly balance in {line.unit.label}. Negative values are unserved demand.</caption>
+          <thead><tr>{["Hour (UTC)", "Median", "Likely range", "Busy", "Usable allowance"].map((label) => <th key={label} scope="col" className="border-b border-border p-2 text-left font-medium">{label}</th>)}</tr></thead>
+          <tbody>{line.forecast.points.map((point) => <tr key={point.at}>
+            <th scope="row" className="border-b border-border p-2 text-left font-normal">{new Date(point.at).toUTCString()}</th>
+            <td className="border-b border-border p-2">{amount(point.median)}</td>
+            <td className="border-b border-border p-2">{amount(point.low)} to {amount(point.high)}</td>
+            <td className="border-b border-border p-2">{amount(point.busy)}</td>
+            <td className="border-b border-border p-2">{point.usable == null ? "Unknown" : amount(point.usable)}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+      {open && refills.length > 0 && <ul className="mt-3 pl-4 text-xs text-muted-foreground" aria-label="Refill events">
+        {refills.map((event, index) => <li key={`${event.at}-${event.kind}-${index}`}>{new Date(event.at).toUTCString()}: {event.kind === "banked" ? "recorded banked reset" : `${event.kind} refill`}, {event.amountIsLowerBound ? "at least " : ""}{amount(event.amount)} {line.unit.label} restored.</li>)}
+      </ul>}
     </details>
   );
 }

@@ -100,15 +100,15 @@ test("a heavy current week is classified as temporary and a three-week rise is c
   assert.equal(trend.estimate?.streak, 3);
 });
 
-test("thin history is labelled, while less than two observed days stays unavailable", () => {
+test("two completed weeks start a seasonal forecast without current-rate fallback", () => {
   const now = MONDAY;
-  const historyFrom = now - 9 * 24 * HOUR;
-  const nineDays = Array.from({ length: 9 * 24 }, (_, index) => ({ at: historyFrom + index * HOUR, demand: 0.62 / WEEK_HOURS }));
-  const estimate = forecastCapacity(inputFromHours(now, historyFrom, nineDays));
+  const historyFrom = now - 2 * WEEK;
+  const twoWeeks = Array.from({ length: 2 * WEEK_HOURS }, (_, index) => ({ at: historyFrom + index * HOUR, demand: 0.62 / WEEK_HOURS }));
+  const estimate = forecastCapacity(inputFromHours(now, historyFrom, twoWeeks));
   assert.equal(estimate.status, "estimated");
-  assert.equal(estimate.estimate?.basis, "current-rate");
+  assert.equal(estimate.estimate?.basis, "seasonal-weekday-hour");
   assert.equal(estimate.estimate?.label, "estimate");
-  assert.equal(estimate.estimate?.basedOnDays, 9);
+  assert.equal(estimate.measuredWeeks.length, 2);
   assert.equal(estimate.accountAdvice, null);
 
   const shortFrom = now - 30 * HOUR;
@@ -117,6 +117,44 @@ test("thin history is labelled, while less than two observed days stays unavaila
   assert.equal(unavailable.status, "unavailable");
   assert.equal(unavailable.estimate, null);
   assert.ok(unavailable.reasons.includes("insufficient-history"));
+});
+
+test("rolling projection stays unavailable when net quota changes lack an empty-window anchor", () => {
+  const unanchored = forecastCapacity(inputForWeeks([2.3, 2.4], {
+    mode: "rolling",
+    windowSeconds: 18_000,
+    accounts: [{
+      id: "private-unanchored",
+      capacity: 100,
+      knownWeight: true,
+      remaining: 45,
+      resetAt: null,
+      windowSeconds: 18_000,
+      usable: true,
+      share: 1,
+      // A five-unit net decrease from an unknown prior balance cannot seed expiry timing.
+      rollingUse: [{ at: MONDAY - HOUR, amount: 5 }],
+      rollingHistoryComplete: false,
+      weeklyUsabilityComplete: true,
+    }],
+  }));
+
+  assert.equal(unanchored.status, "estimated");
+  assert.equal(unanchored.projection, null);
+  assert.ok(unanchored.reasons.includes("rolling-expiry-history-unavailable"));
+});
+
+test("four completed weeks with a passing held-out backtest enable a known-plan account count", () => {
+  const historyFrom = MONDAY - 4 * WEEK;
+  const unusual = Array.from({ length: WEEK_HOURS }, (_, index) => index === 2 * 24 + 12 ? 1 : 0);
+  const weekly = [weekAt(2.4), weekAt(2.4, unusual), weekAt(2.4), weekAt(2.4)];
+  const demand = weekly.flatMap((week) => week).map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
+  const input = inputFromHours(MONDAY, historyFrom, demand, accounts(MONDAY, [0.5]));
+  const result = forecastCapacity({ ...input, candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" } });
+  assert.equal(result.measuredWeeks.length, 4);
+  assert.equal(result.backtest?.heldOutWeeks, 2);
+  assert.equal(result.backtest?.beatsSeasonalNaive, true);
+  assert.equal(result.accountAdvice?.candidate.label, "Pro-eq");
 });
 
 test("missing hourly observations break completed weeks and suppress account advice", () => {
@@ -144,10 +182,10 @@ test("only a known candidate plus complete coverage and a passing seasonal backt
   const result = forecastCapacity({ ...input, candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" } });
   assert.equal(result.history.coverage, 1);
   assert.equal(result.estimate?.backtest.beatsSeasonalNaive, true);
-  assert.deepEqual(result.accountAdvice, {
-    candidate: { label: "Pro-eq", capacity: 1, source: "unit" },
-    additionalAccounts: 3,
-  });
+  assert.equal(result.accountAdvice?.candidate.label, "Pro-eq");
+  assert.equal(result.accountAdvice?.additionalAccounts, 1);
+  assert.equal(result.accountAdvice?.busyAccounts, 1);
+  assert.equal(result.accountAdvice?.exclusions?.length, 0);
 
   const withoutCandidate = forecastCapacity(input);
   assert.equal(withoutCandidate.accountAdvice, null);
