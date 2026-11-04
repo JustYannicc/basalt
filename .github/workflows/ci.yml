@@ -400,7 +400,7 @@ jobs:
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs' --workers 1
+        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs|^Hosted saved sign-in completion retries' --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -443,6 +443,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_PREBOOT_BINDING: "alternate"
         run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
@@ -948,6 +949,8 @@ jobs:
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
+            .generated/pool-reset-checks/**/runtime-cloud.log
+            .generated/pool-reset-checks/**/runtime-diagnostics.json
             .generated/pool-reset-ui/**/report.json
             .generated/pool-reset-ui/**/failure.json
             .generated/pool-reset-ui/**/*.png
@@ -1166,6 +1169,10 @@ jobs:
           npm run architecture:model
           npm run architecture:typecheck
       - run: npm run check
+      - name: Check app source snapshots against their separate repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/catalog-sources.ts --check
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries
@@ -1182,7 +1189,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"
