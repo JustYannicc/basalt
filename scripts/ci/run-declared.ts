@@ -17,7 +17,7 @@ if (entry.fixture === "google-routes") {
   const directory = join(root, ".generated/ci");
   const path = join(directory, "maps-source.json");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const origin = "https://routes-fixture.invalid";
+  const origin = "http://localhost";
   const addition = googleMapsAddition(origin);
   writeFileSync(path, JSON.stringify({ origin, entry: addition.entry, source: addition.source }), {
     mode: 0o600,
