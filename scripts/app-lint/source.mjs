@@ -27,7 +27,7 @@ export function directoryFiles(root) {
 }
 
 /** Every app directory and catalog source document participates, without an app-name list. */
-export function discoverApps(root) {
+export function discoverApps(root, mapCatalogSource = (text) => text) {
   const apps = [];
   function walk(directory, catalog) {
     if (!existsSync(directory)) return;
@@ -46,13 +46,14 @@ export function discoverApps(root) {
       else if (catalog && entry.name.endsWith(".json")) {
         // Published baselines prove the carried diff; they are outside the deployed source set.
         if (entry.name.endsWith(".published.json")) continue;
-        const document = JSON.parse(readFileSync(path, "utf8"));
+        let document = JSON.parse(readFileSync(path, "utf8"));
         if (!Object.hasOwn(document, "files")) continue;
         if (!Array.isArray(document.files)) {
           if (Object.hasOwn(document, "package"))
             throw new Error(`Invalid source document: ${path}`);
           continue;
         }
+        document = servedCatalogDocument(document, mapCatalogSource);
         apps.push({
           name: relative(root, path),
           files: document.files.map((file) => {
@@ -88,11 +89,29 @@ export function discoverApps(root) {
   return apps;
 }
 
+// Match the SemVer grammar in pinned upstream scripts/check-exact-versions.ts.
+const number = String.raw`(?:0|[1-9]\d*)`;
+const prereleaseIdentifier = String.raw`(?:${number}|\d*[A-Za-z-][0-9A-Za-z-]*)`;
+const version = String.raw`${number}\.${number}\.${number}(?:-${prereleaseIdentifier}(?:\.${prereleaseIdentifier})*)?`;
+const build = String.raw`\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*`;
+const exact = new RegExp(`^${version}(?:${build})?$`, "u");
+
 export function exactVersion(version) {
-  return (
-    typeof version === "string" &&
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
-      version,
-    )
+  return typeof version === "string" && version === version.trim() && exact.test(version);
+}
+
+// Frozen source repositories keep their own release; the catalog maps it before apps build.
+function servedCatalogDocument(document, mapCatalogSource) {
+  const manifest = document.files.find(
+    (file) => file.path === "package.json" && typeof file.content === "string",
   );
+  if (manifest === undefined) return document;
+  let pin;
+  try {
+    pin = JSON.parse(manifest.content)?.dependencies?.apps;
+  } catch {
+    return document;
+  }
+  // A missing or ranged source pin must still fail the manifest check.
+  return exactVersion(pin) ? JSON.parse(mapCatalogSource(JSON.stringify(document))) : document;
 }

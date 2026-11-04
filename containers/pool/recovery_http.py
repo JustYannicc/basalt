@@ -76,6 +76,8 @@ def request_with_deadline(
             if not chunk:
                 break
             chunks.append(chunk)
+        if response.length not in (None, 0):
+            raise ValueError("incomplete fixed-length response")
         data = b"".join(chunks)
         payload = json.loads(data) if data else {}
         remaining()

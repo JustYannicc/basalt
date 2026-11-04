@@ -738,16 +738,23 @@ jobs:
       - name: Install the scenarios' browser engine
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
-      - name: Verify a compiler deadline retains its phase trail
-        timeout-minutes: 5
+      - name: Prepare the production compiler's released framework assets
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud deploys fail promptly when the compiler does not answer' --workers 1
+        run: node scripts/build-basalt-framework.ts
+      - name: Verify compiler deadlines, production reuse and test-stage bypass
+        timeout-minutes: 7
+        working-directory: .upstream
+        env:
+          BASALT_E2E_COMPILER_CACHE_INHERITED: "1"
+        run: bun run e2e:cloud --test-name '^(Cloud deploys fail promptly when the compiler does not answer|Production compiler cache reuses only intact output from the same release|Cloud test stages bypass inherited production compiler cache settings)$' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: compiler-diagnostics-e2e
           include-hidden-files: true
           path: |
+            .upstream/.local/e2e/**/compiler-cache-host.log
+            .upstream/.local/e2e/**/compiler-cache-production.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -1184,7 +1191,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"

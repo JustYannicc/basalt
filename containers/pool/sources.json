@@ -23,6 +23,15 @@
             "mode": "manual",
             "requires": "Carry 0169 adapts Home upstream PR 168. Retire after the pinned Home returns atomically saved credential IDs from v8 OAuth completion, including the first plugin success poll, and passes the real Claude exchange, cross-handler receipt, cancellation, forced failure rollback, pending-secret purge, expiry and legacy-response regressions. No Executor storage or protocol change is required."
           }
+        },
+        {
+          "identity": "cliproxy-home-single-line-log-records",
+          "file": "cliproxy-home-v1.1.6-single-line-records.patch",
+          "sha256": "172b8fc69e2f353e1caf42e5f6996e6fd7bca378d613023dd101e908b801db3d",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home escapes embedded CR and LF after formatting all log fields, emits exactly one physical line per record, and passes formatter and real-child snapshot/exit-receipt injection regressions without changing request handling."
+          }
         }
       ]
     },
