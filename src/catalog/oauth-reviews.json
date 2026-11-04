@@ -1488,6 +1488,19 @@
       }
     },
     {
+      "entry": "elevenlabs",
+      "package": "@executor.sh/elevenlabs",
+      "sourceSha256": "522daaa0a4aabb8111eeb7fd4306e06d5525954c5016fbf72be111e34faf9b7d",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://api.us.elevenlabs.io/.well-known/oauth-authorization-server",
+          "metadataSha256": "2a74d8ace0c536cbe0af7f7dd67b7b9e6e529803b57d868c44e3e21c7d8f5f76"
+        }
+      }
+    },
+    {
       "entry": "emailable",
       "package": "@executor.sh/emailable",
       "methods": {

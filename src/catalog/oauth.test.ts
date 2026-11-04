@@ -16,7 +16,7 @@ const sha = "a".repeat(64);
 
 test("reviewed carried sources match the packages the catalog serves", async () => {
   const reviews = oauthReviews(reviewData);
-  for (const id of ["atlassian", "aws", "gitlab", "gitlab-mcp", "miro", "slack", "vercel"]) {
+  for (const id of ["atlassian", "aws", "elevenlabs", "gitlab", "gitlab-mcp", "miro", "slack", "vercel"]) {
     const response = await handleCatalog(
       new Request(`https://${brand.host}/catalog/apps/${id}.json`),
       async () => {
