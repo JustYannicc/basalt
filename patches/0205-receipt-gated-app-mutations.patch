@@ -108,20 +108,23 @@ diff --git a/e2e/support/app-call-effects-sdk-source.ts b/e2e/support/app-call-e
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-call-effects-sdk-source.ts
-@@ -0,0 +1,82 @@
-+/** Real retained SDK host; synthetic mail effects cross a separate HTTP delivery boundary. */
+@@ -0,0 +1,143 @@
 +export const appCallEffectsSdkSource = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
 +import * as Runtime from "@effect/platform-node/NodeRuntime";
 +import { nativeRepositories } from "@executor-js/app-source/node";
 +import { createExecutor, makeExecutorStorage, OwnerId, AppId, AccountId, CurrentActor, WorkflowHost,
-+  ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, type Executor } from "@executor-js/sdk/core";
++  ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, ExecutorApi, executorHandlers, type Executor } from "@executor-js/sdk/core";
 +import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 +import { memoryRegistry } from "@executor-js/sdk/testing";
 +import { WorkflowRunId, AppCallFailed, AppCallCommand } from "apps/contracts";
 +import { Clock, Console, Deferred, Effect, FileSystem, Layer, Path, Redacted, Schema } from "effect";
-+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse, HttpClient, HttpClientRequest } from "effect/http";
++import {HttpApiBuilder} from "effect/http-api";
++import {makeMcp,defaultMcpLimits,type McpBackend} from "@executor-js/mcp";
++import {Client} from "@modelcontextprotocol/sdk/client/index.js";
++import {StreamableHTTPClientTransport} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 +import { pgliteLayer } from "fumadb-effect/pglite";
 +import { createServer } from "node:http";
 +const input = INPUT;
@@ -143,8 +146,17 @@ new file mode 100644
 +  const runtime = yield* workerdApps({directory:path.join(input.directory,"workerd"),blobs,
 +    executor:Deferred.await(ready),npmRegistry:input.npmRegistry,encryptionKey:secret,allowPrivateAppFetch:true});
 +  const owner = OwnerId.make("effects-owner");
++  let configurationReads = 0;
++  const Settings = Schema.Struct({revision:Schema.NonEmptyString,deliveryEnabled:Schema.Boolean,current:Schema.Boolean});
 +  const hooks = workflowApprovalHooks({
-+    configuration: () => Effect.succeed({revision:"owner-r1",enabled:true}),
++    configuration: event => Effect.gen(function* () {
++      const sdk = yield* Deferred.await(ready);
++      const source = "source" in event ? event.source : event;
++      const result = yield* sdk.tools.call({app:source.app,version:source.version,tool:ToolName.make("settings"),kind:"query",input:{}});
++      if(result.status !== "completed" || result.toolError === true || !Schema.is(Settings)(result.value) || !result.value.current) return undefined;
++      configurationReads++;
++      return {revision:result.value.revision,enabled:result.value.deliveryEnabled};
++    }).pipe(Effect.mapError(()=>new StorageError())),
 +    personalEmailAccount: value => Effect.gen(function* () {
 +      const sdk = yield* Deferred.await(ready);
 +      const target = yield* sdk.apps.source({app:AppId.make(value.target)});
@@ -155,26 +167,74 @@ new file mode 100644
 +    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:runtime.runtime,
 +    workflows:runtime.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
 +  yield* Deferred.succeed(ready,executor);
++  const httpClient=yield* HttpClient.HttpClient;
++  let selfOrigin = "";
++  const completedEntries = new Map<string,Deferred.Deferred<void>>();
++  const milestone = (key:string) => Effect.gen(function* () {
++    let deferred=completedEntries.get(key);
++    if(deferred===undefined){deferred=yield* Deferred.make<void>();completedEntries.set(key,deferred);}
++    return deferred;
++  });
++  const backend = {
++    eventDefinitions:i=>executor.events.definitions(i),
++    findEventSubscription:key=>executor.events.find({...key,principal:"effects-owner"}),
++    subscribeEvent:({key,...i})=>executor.events.subscribe({...i,key:{...key,principal:"effects-owner"},subject:"effects-owner"}),
++    unsubscribeEvent:({key})=>executor.events.unsubscribe({...key,principal:"effects-owner"}),
++    listSkills:(i,o)=>executor.skills.list(i,o),readSkill:i=>executor.skills.read(i),authorizeElicitation:()=>Effect.void,
++    listApps:(i={})=>executor.apps.list({...i,owner}),
++    listAccounts:i=>executor.apps.get({app:i.app}).pipe(Effect.flatMap(app=>Object.values(app.requirements.accounts).every(requirement=>requirement.scope!=="user")?Effect.succeed({}):Effect.fail(new Error("Fixture has no user account links")))),
++    listTools:(i,o)=>executor.tools.list(i,o),searchableTools:(i,o)=>executor.tools.searchable(i,o),searchTools:i=>executor.tools.search(i),
++    callTool:(i,o)=>executor.tools.call(i,o).pipe(Effect.provideService(CurrentActor,"effects-owner")),
++    resumeInvocation:(r,response,o)=>executor.tools.resume({requestId:r.requestId,response},o),
++  } satisfies McpBackend<Error>;
++  const mcp=yield* makeMcp({backend,caller:Effect.succeed("effects-owner"),instructions:"Synthetic receipt test",limits:defaultMcpLimits,annotateSkillRead:()=>Effect.void});
++  const Entry = Schema.Struct({entry:Schema.Literals(["sdk","http","mcp"]),app:AppId,slug:Schema.String,target:AppId,payload:Schema.Json,key:Schema.String});
++  const enter=(value:typeof Entry.Type)=>Effect.gen(function* () {
++    const call={app:value.app,tool:ToolName.make("direct"),kind:"mutation" as const,input:{target:value.target,payload:value.payload}};
++    if(value.entry==="sdk") return yield* executor.tools.call(call).pipe(Effect.match({onSuccess:value=>value,onFailure:error=>Schema.is(ToolCallFailed)(error)?{failure:error.failure}:{failed:true}}));
++    if(value.entry==="http") {
++      const request=yield* HttpClientRequest.bodyJson(call)(HttpClientRequest.post(selfOrigin+"/v1/tools/call"));
++      const response=yield* httpClient.execute(request);
++      return {status:response.status,body:yield* response.json};
++    }
++    return yield* Effect.acquireUseRelease(
++      Effect.sync(()=>new Client({name:"Receipt entry test",version:"1"})),
++      client=>Effect.tryPromise(async()=>{
++        const compatible: Omit<StreamableHTTPClientTransport,"sessionId">=new StreamableHTTPClientTransport(new URL(selfOrigin+"/mcp"));
++        await client.connect(compatible);
++        const result=await client.callTool({name:"call",arguments:{calls:{path:\`tools[\${JSON.stringify(value.slug)}].direct\`,input:call.input}}});
++        return result;
++      }),
++      client=>Effect.promise(()=>client.close()),
++    );
++  });
 +  const setup = Effect.gen(function* () {
-+    const targetSource = 'import {defineApp,defineProvider,secrets,mutation,object,string,array,router} from "apps"; const mail=defineProvider({name:"Synthetic receipt mail",auth:{key:secrets({label:"Key",fields:object({token:string()})})}}); const send=mutation({input:object({account:string(),to:array(string()),cc:array(string()),bcc:array(string()),subject:string(),body:string()}),approval:({toolInput})=>toolInput.subject==="native-deny"?"denied":"user-approval"},async(ctx,value)=>{const response=await ctx.fetch('+JSON.stringify(deliveryOrigin+"/send")+', {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(value)});return await response.json();}); export default defineApp({app:{accounts:{mail}}},{tools:router({send})});';
++    const targetSource = 'import {defineApp,defineProvider,secrets,mutation,object,string,array,router} from "apps"; const mail=defineProvider({name:"Synthetic receipt mail",auth:{key:secrets({label:"Key",fields:object({token:string()})})}}); const send=mutation({input:object({account:string(),to:array(string()),cc:array(string()),bcc:array(string()),subject:string(),body:string()}),approval:({toolInput})=>toolInput.subject==="native-deny"?"denied":"user-approval"},async(ctx,value)=>{const response=await ctx.fetch('+JSON.stringify(deliveryOrigin+"/send")+', {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(value)});return await response.json();}); const open=mutation({input:object({account:string(),to:array(string()),cc:array(string()),bcc:array(string()),subject:string(),body:string()})},async(ctx,value)=>{const response=await ctx.fetch('+JSON.stringify(deliveryOrigin+"/send")+',{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(value)});return await response.json();});export default defineApp({app:{accounts:{mail}}},{tools:router({send,open})});';
 +    const target = (yield* executor.apps.deploy({owner,name:"Synthetic receipt mail",files:[{path:"index.ts",content:targetSource},input.files[1]]})).app;
 +    const provider = target.requirements.accounts.mail;
 +    if (provider === undefined) return yield* Effect.die("Missing synthetic mail provider");
 +    const account = yield* executor.managedAccounts.add({owner,provider:provider.provider,method:"key",fields:Redacted.make({token:"synthetic"})});
-+    const sourceText = 'import {defineApp,query,mutation,workflow,object,boolean,string,array,router} from "apps"; const message=object({account:string(),to:array(string()),cc:array(string()),bcc:array(string()),subject:string(),body:string()}); const configure=mutation({input:object({deliveryEnabled:boolean(),deliveryScope:string()}),approval:()=>"user-approval"},async(_ctx,input)=>({revision:"owner-r1",...input})); const invoke=query({input:object({target:string(),payload:message})},async(ctx,input)=>ctx.apps.call({connection:"mail",target:input.target,tool:"send",kind:"mutation",input:input.payload})); const notify=workflow({input:object({target:string(),payload:message,park:boolean()})},async(ctx,input)=>{if(input.park){await ctx.step.sleep("park","1 day");return null;}const value=await ctx.step.do("send",{retries:{limit:0,delay:0}},step=>step.apps.call({connection:"mail",target:input.target,tool:"send",kind:"mutation",input:input.payload}));await ctx.step.do("observed",async step=>{const response=await step.fetch('+JSON.stringify(deliveryOrigin+"/finished")+',{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({subject:input.payload.subject,value})});return await response.json();});return value;}); export default defineApp({dependencies:{mail:{scope:"user",configuration:{tool:"configure",policy:{envelope:"self-email",workflow:"notify",step:"send"}},tools:{send:{kind:"mutation"}}}}},{tools:router({configure,invoke}),workflows:{notify}});';
++    const sourceText = 'import {defineApp,query,mutation,workflow,object,boolean,string,array,router} from "apps"; const message=object({account:string(),to:array(string()),cc:array(string()),bcc:array(string()),subject:string(),body:string()}); const settings=query({input:object({})},async()=>({revision:"owner-r1",deliveryEnabled:true,current:true}));const direct=mutation({input:object({target:string(),payload:message})},async(ctx,input)=>ctx.apps.call({connection:"mail",target:input.target,tool:"open",kind:"mutation",input:input.payload})); const configure=mutation({input:object({deliveryEnabled:boolean(),deliveryScope:string()}),approval:()=>"user-approval"},async(_ctx,input)=>({revision:"owner-r1",...input})); const invoke=query({input:object({target:string(),payload:message})},async(ctx,input)=>ctx.apps.call({connection:"mail",target:input.target,tool:"send",kind:"mutation",input:input.payload})); const notify=workflow({input:object({target:string(),payload:message,park:boolean()})},async(ctx,input)=>{if(input.park){await ctx.step.sleep("park","1 day");return null;}const value=await ctx.step.do("send",{retries:{limit:0,delay:0}},step=>step.apps.call({connection:"mail",target:input.target,tool:"send",kind:"mutation",input:input.payload}));await ctx.step.do("observed",async step=>{const response=await step.fetch('+JSON.stringify(deliveryOrigin+"/finished")+',{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({subject:input.payload.subject,value})});return await response.json();});return value;}); export default defineApp({dependencies:{mail:{scope:"user",configuration:{tool:"configure",policy:{envelope:"self-email",workflow:"notify",step:"send"}},tools:{send:{kind:"mutation"},open:{kind:"mutation"}}}}},{tools:router({configure,invoke,settings,direct}),workflows:{notify}});';
 +    const source = (yield* executor.apps.deploy({owner,name:"Receipt workflow caller",files:[{path:"index.ts",content:sourceText},input.files[1]]})).app;
 +    const connection = yield* executor.appConnections.save({app:source.id,owner,dependency:"mail",scope:"user",target:target.id,revision:0,accounts:{app:{mail:[account.id]}}});
-+    return {source:source.id,target:target.id,account:account.id,connection:connection.id,revision:connection.revision};
++    return {source:source.id,slug:source.slug,target:target.id,account:account.id,connection:connection.id,revision:connection.revision};
 +  });
 +  const Call = Schema.Struct({run:WorkflowRunId,step:Schema.String,stepId:Schema.String,call:Schema.Int,command:AppCallCommand});
-+  const route = <A,I>(name:string,schema:Schema.Codec<A,I>,run:(value:A)=>Effect.Effect<unknown,unknown>) =>
++  const route = <A,I,B,E>(name:string,schema:Schema.Codec<A,I>,run:(value:A)=>Effect.Effect<B,E>) =>
 +    HttpRouter.add("POST",\`/_fixture/\${name}\`,Effect.gen(function* () {
 +      const req = yield* HttpServerRequest.HttpServerRequest;
 +      const value = yield* req.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema)));
 +      return yield* run(value).pipe(Effect.provideService(CurrentActor,"effects-owner"),Effect.provideService(Clock.Clock,clock),Effect.flatMap(value=>HttpServerResponse.json(value)),Effect.catch(error=>HttpServerResponse.json(Schema.is(AppCallFailed)(error)?{reason:error.reason}:Schema.is(ToolCallFailed)(error)?{failure:error.failure}:{failed:true},{status:409})));
 +    }).pipe(Effect.orDie));
 +  const routes = Layer.mergeAll(
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpRouter.add("*","/mcp",mcp.http),
++    route("entry",Entry,enter),
++    // The client loses the response after the real entry has settled, then restarts the host.
++    route("lost-entry",Entry,value=>enter(value).pipe(Effect.exit,Effect.andThen(milestone(value.key)),Effect.flatMap(d=>Deferred.succeed(d,undefined)),Effect.andThen(Effect.never))),
++    route("entry-settled",Schema.String,key=>milestone(key).pipe(Effect.flatMap(Deferred.await),Effect.as(null))),
 +    route("setup",Schema.Null,()=>setup),
++    route("configuration-reads",Schema.Null,()=>Effect.succeed(configurationReads)),
 +    route("advance",Schema.Number,millis=>Effect.gen(function* () {now+=millis;yield* fs.writeFileString(clockFile,String(now));return now;})),
 +    route("configure",Schema.Struct({app:AppId,scope:Schema.String}),value=>executor.tools.call({app:value.app,tool:ToolName.make("configure"),kind:"mutation",input:{deliveryEnabled:true,deliveryScope:value.scope}})),
 +    route("resume",ToolInputs.resume,value=>executor.tools.resume(value)),
@@ -184,9 +244,10 @@ new file mode 100644
 +    route("query",Schema.Struct({app:AppId,target:AppId,payload:Schema.Json}),value=>executor.tools.call({app:value.app,tool:ToolName.make("invoke"),kind:"query",input:{target:value.target,payload:value.payload}})),
 +    route("rebind",Schema.Struct({app:AppId,target:AppId,account:AccountId,revision:Schema.Int}),value=>executor.appConnections.save({app:value.app,owner,dependency:"mail",scope:"user",target:value.target,revision:value.revision,accounts:{app:{mail:[value.account]}}})),
 +  );
-+  const services = yield* Layer.build(HttpRouter.serve(routes,{disableLogger:true,disableListenLog:true}).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer,{host:"127.0.0.1",port:0}))));
++  const services = yield* Layer.build(HttpRouter.serve(Layer.merge(routes,HttpRouter.middleware(effect=>effect.pipe(Effect.provideService(CurrentActor,"effects-owner")),{global:true})),{disableLogger:true,disableListenLog:true}).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer,{host:"127.0.0.1",port:0}))));
 +  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
 +  if (!("port" in server.address)) return yield* Effect.die("Expected TCP");
++  selfOrigin=\`http://127.0.0.1:\${server.address.port}\`;
 +  yield* Console.log(JSON.stringify({port:server.address.port}));
 +  return yield* Effect.never;
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
@@ -227,7 +288,7 @@ diff --git a/e2e/tests/app-call-effects.spec.ts b/e2e/tests/app-call-effects.spe
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-call-effects.spec.ts
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,207 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schema } from "effect";
 +import { appCallDelivery } from "../support/app-call-delivery.ts";
@@ -252,6 +313,7 @@ new file mode 100644
 +        const ids = yield* Schema.decodeUnknownEffect(
 +          Schema.Struct({
 +            source: Schema.String,
++            slug: Schema.String,
 +            target: Schema.String,
 +            account: Schema.String,
 +            revision: Schema.Int,
@@ -310,6 +372,28 @@ new file mode 100644
 +          subject: "native",
 +          sequence: 1,
 +        });
++        expect(yield* delivery.count("native")).toBe(1);
++        expect((yield* sdk.request("configuration-reads", null)).body).toBeGreaterThanOrEqual(2);
++        // Unsupported entry points must refuse before dispatch, even when the response is lost.
++        for (const entry of ["sdk", "http", "mcp"] as const) {
++          const subject = `entry-${entry}`;
++          const input = {
++            entry,
++            app: ids.source,
++            slug: ids.slug,
++            target: ids.target,
++            payload: payload(subject),
++            key: subject,
++          };
++          const lost = yield* sdk.request("lost-entry", input).pipe(Effect.exit, Effect.forkChild);
++          yield* sdk.request("entry-settled", subject);
++          expect(yield* delivery.count(subject)).toBe(0);
++          yield* sdk.restart;
++          yield* Fiber.join(lost);
++          const retry = yield* sdk.request("entry", input);
++          expect(JSON.stringify(retry.body)).toContain("effects_unavailable");
++          expect(yield* delivery.count(subject)).toBe(0);
++        }
 +        expect(yield* delivery.count("native")).toBe(1);
 +        const started = yield* start("parked", true);
 +        const run = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
@@ -1371,6 +1455,37 @@ diff --git a/packages/sdk/src/contracts/workflow-runtime.ts b/packages/sdk/src/c
    ) => Effect.Effect<HostContext & { readonly database: boolean }, WorkflowFailure>;
    readonly invoke: (
      run: WorkflowRunId,
+diff --git a/packages/sdk/src/implementation/app-call-context.ts b/packages/sdk/src/implementation/app-call-context.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-call-context.ts
+@@ -0,0 +1,26 @@
++import { Context, Effect } from "effect";
++import type { AppCallWorkflowIdentity, AppProtectedDispatch } from "../contracts/app-calls.ts";
++import type { AppCallEffectIdentity, makeAppCallEffect } from "./app-call-effects.ts";
++
++export const AppCallWorkflow = Context.Reference<AppCallWorkflowIdentity | undefined>(
++  "executor/AppCallWorkflow",
++  { defaultValue: () => undefined },
++);
++export const AppCallEffectScope = Context.Reference<AppCallEffectIdentity | undefined>(
++  "executor/AppCallEffectScope",
++  { defaultValue: () => undefined },
++);
++export const AppCallProtection = Context.Reference<
++  | (Omit<AppProtectedDispatch, "decodedInput" | "appPolicy"> & {
++      readonly effect?: ReturnType<typeof makeAppCallEffect>;
++    })
++  | undefined
++>("executor/AppCallProtection", { defaultValue: () => undefined });
++
++/** Product policy reads are independent invocations, not continuations of the target effect. */
++export const withoutAppCallContext = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++  effect.pipe(
++    Effect.provideService(AppCallProtection, undefined),
++    Effect.provideService(AppCallEffectScope, undefined),
++    Effect.provideService(AppCallWorkflow, undefined),
++  );
 diff --git a/packages/sdk/src/implementation/app-call-effects.ts b/packages/sdk/src/implementation/app-call-effects.ts
 new file mode 100644
 --- /dev/null
@@ -1493,9 +1608,9 @@ diff --git a/packages/sdk/src/implementation/app-call-protection.ts b/packages/s
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-protection.ts
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,161 @@
 +import { Hex } from "effect/encoding";
-+import { Context, Effect, Schema, type Crypto } from "effect";
++import { Effect, Schema, type Crypto } from "effect";
 +import { AppCallFailed, AppDependency, type AppToolPolicyHost } from "apps/contracts";
 +import { Json } from "../contracts/shared.ts";
 +import type { AppCallHooks, AppProtectedDispatch } from "../contracts/app-calls.ts";
@@ -1504,13 +1619,7 @@ new file mode 100644
 +import { appCallAccountVersions } from "./app-call-accounts.ts";
 +import type { Query } from "./database.ts";
 +import type { makeAppConnections } from "./app-connections.ts";
-+import type { makeAppCallEffect } from "./app-call-effects.ts";
-+export const AppCallProtection = Context.Reference<
-+  | (Omit<AppProtectedDispatch, "decodedInput" | "appPolicy"> & {
-+      readonly effect?: ReturnType<typeof makeAppCallEffect>;
-+    })
-+  | undefined
-+>("executor/AppCallProtection", { defaultValue: () => undefined });
++import { AppCallProtection, withoutAppCallContext } from "./app-call-context.ts";
 +export const sameAppCallAuthority = (left: unknown, right: unknown): boolean => {
 +  if (left === right) return true;
 +  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
@@ -1612,7 +1721,7 @@ new file mode 100644
 +        const check = Effect.gen(function* () {
 +          const decision =
 +            command.decision === "user-approval" && options.policy?.protectedDispatch !== undefined
-+              ? yield* options.policy.protectedDispatch(event)
++              ? yield* withoutAppCallContext(options.policy.protectedDispatch(event))
 +              : command.decision;
 +          if (decision !== "approved" || target.kind !== "mutation") return { decision };
 +          if (effect === undefined)
@@ -1664,13 +1773,10 @@ new file mode 100644
 diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
 --- a/packages/sdk/src/implementation/app-calls.ts
 +++ b/packages/sdk/src/implementation/app-calls.ts
-@@ -1,53 +1,35 @@
+@@ -1,53 +1,23 @@
++import { AppCallWorkflow, AppCallEffectScope, AppCallProtection } from "./app-call-context.ts";
 +import { makeAppCallEffect, type AppCallEffectIdentity } from "./app-call-effects.ts";
-+import {
-+  AppCallProtection,
-+  makeAppCallProtection,
-+  sameAppCallAuthority as same,
-+} from "./app-call-protection.ts";
++import { makeAppCallProtection, sameAppCallAuthority as same } from "./app-call-protection.ts";
  import { appCallAccountVersions } from "./app-call-accounts.ts";
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
  import { Validator } from "@cfworker/json-schema";
@@ -1696,10 +1802,10 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
 +import type { AppCallHooks, AppCallWorkflowIdentity } from "../contracts/app-calls.ts";
  import type { Query } from "./database.ts";
  import type { makeAppConnections } from "./app-connections.ts";
- export const AppCallWorkflow = Context.Reference<AppCallWorkflowIdentity | undefined>(
-   "executor/AppCallWorkflow",
-   { defaultValue: () => undefined },
- );
+-export const AppCallWorkflow = Context.Reference<AppCallWorkflowIdentity | undefined>(
+-  "executor/AppCallWorkflow",
+-  { defaultValue: () => undefined },
+-);
 -const AppCallProtection = Context.Reference<
 -  Omit<AppProtectedDispatch, "decodedInput" | "appPolicy"> | undefined
 ->("executor/AppCallProtection", { defaultValue: () => undefined });
@@ -1722,11 +1828,6 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
 -    a.every(([key, value]) => Object.hasOwn(right, key) && same(value, Reflect.get(right, key)))
 -  );
 -};
-+/** Only a host dispatch can grant effect authority or supply a replay-stable operation identity. */
-+export const AppCallEffectScope = Context.Reference<AppCallEffectIdentity | undefined>(
-+  "executor/AppCallEffectScope",
-+  { defaultValue: () => undefined },
-+);
  export const makeAppCalls = (options: {
    readonly db: Query;
 +  readonly crypto: Crypto.Crypto;
@@ -1735,7 +1836,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
    readonly connections: ReturnType<typeof makeAppConnections>;
    readonly tools: () => Pick<Executor["tools"], "call">;
    readonly hooks?: ResourceLifecycle;
-@@ -59,6 +41,7 @@
+@@ -59,6 +29,7 @@
        readonly build: string;
        readonly caller?: string;
        readonly workflow?: AppCallWorkflowIdentity;
@@ -1743,7 +1844,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
      },
      raw: AppCallCommand,
    ) =>
-@@ -68,8 +51,7 @@
+@@ -68,8 +39,7 @@
        }).pipe(
          Effect.mapError(() => new AppCallFailed({ retryable: false, reason: "invalid_input" })),
        );
@@ -1753,7 +1854,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
          return yield* new AppCallFailed({ retryable: false, reason: "effects_unavailable" });
        const depth = yield* AppCallDepth;
        if (depth >= 8)
-@@ -112,6 +94,16 @@
+@@ -112,6 +82,16 @@
        // A removed target or a target from another owner cannot be replaced by a similar app.
        const target = yield* storedApp(options.db, { app: row.target, owner: app.owner });
        const targetVersion = yield* storedVersion(options.db, target);
@@ -1770,7 +1871,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
        const readVersions = appCallAccountVersions(options.db, target.id, accepted.accounts).pipe(
          Effect.provideService(
            CurrentActor,
-@@ -133,16 +125,19 @@
+@@ -133,16 +113,19 @@
                },
                readVersions,
              );
@@ -1799,7 +1900,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
          .pipe(
            Effect.flatMap((result) =>
              result.status === "completed" && result.toolError !== true
-@@ -159,8 +154,10 @@
+@@ -159,8 +142,10 @@
              row.authorizer === "local" ? undefined : row.authorizer,
            ),
            Effect.provideService(AppCallDepth, depth + 1),
@@ -1810,7 +1911,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
              source: {
                app: app.id,
                version: version.id,
-@@ -182,6 +179,7 @@
+@@ -182,6 +167,7 @@
              },
            }),
          );
@@ -1818,7 +1919,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
        if (options.hooks === undefined) return yield* execute;
        if (options.hooks.appCallAs === undefined)
          return yield* new AppCallFailed({ retryable: false, reason: "denied" });
-@@ -215,100 +213,37 @@
+@@ -215,100 +201,39 @@
      readonly app: string;
      readonly build: string;
      readonly caller?: string;
@@ -1835,7 +1936,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
 +        parent !== undefined
 +          ? JSON.stringify(["nested", parent.invocation, parent.call])
 +          : workflow === undefined
-+            ? crypto.randomUUID()
++            ? undefined
 +            : JSON.stringify(["operation", workflow.run, workflow.stepId]);
 +      let ordinal = 0;
 +      const bound = {
@@ -1844,16 +1945,18 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
 +        ...(identity.caller === undefined ? {} : { caller: identity.caller }),
 +        ...(workflow === undefined ? {} : { workflow }),
 +      };
-+      return (command) =>
-+        dispatchAppCall(
-+          {
-+            ...bound,
-+            ...(identity.allowEffects === true && command.kind === "mutation"
-+              ? { effect: identity.effect ?? { invocation, call: ordinal++ } }
-+              : {}),
-+          },
++      return (command) => {
++        // Entry transports have no durable operation identity. Only a persisted step or its child can write.
++        const effect =
++          identity.allowEffects === true && command.kind === "mutation"
++            ? (identity.effect ??
++              (invocation === undefined ? undefined : { invocation, call: ordinal++ }))
++            : undefined;
++        return dispatchAppCall(
++          { ...bound, ...(effect === undefined ? {} : { effect }) },
 +          command,
 +        ).pipe(Effect.provideContext(services));
++      };
      });
 -  const toolPolicy =
 -    (identity: { readonly app: string; readonly build: string }): AppToolPolicyHost =>
@@ -1946,6 +2049,33 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
 +  const toolPolicy = makeAppCallProtection(options);
    return { dispatchAppCall, forInvocation, toolPolicy };
  };
+diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk/src/implementation/app-confirmations.ts
+--- a/packages/sdk/src/implementation/app-confirmations.ts
++++ b/packages/sdk/src/implementation/app-confirmations.ts
+@@ -1,3 +1,4 @@
++import { withoutAppCallContext } from "./app-call-context.ts";
+ import { appCallAccountVersions } from "./app-call-accounts.ts";
+ import { Effect, Schema } from "effect";
+ import { AppCallFailed, AppDependency } from "apps/contracts";
+@@ -64,11 +65,13 @@
+         });
+       }
+       if (candidates.length === 0) return;
+-      const decision = yield* hooks.configurationApproved({
+-        ...event,
+-        actor,
+-        connections: candidates,
+-      });
++      const decision = yield* withoutAppCallContext(
++        hooks.configurationApproved({
++          ...event,
++          actor,
++          connections: candidates,
++        }),
++      );
+       if (decision.approvedBy !== actor)
+         return yield* new AppCallFailed({ reason: "denied", retryable: false });
+       const ids = new Set<string>();
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
@@ -1968,14 +2098,19 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -1,3 +1,6 @@
+@@ -1,6 +1,10 @@
 +import { type AppCallEffectIdentity } from "./app-call-effects.ts";
 +import { loadStoredWorkerBuild } from "./worker-build-storage.ts";
 +import { BlobStore } from "../contracts/blobs.ts";
  import { composedToolPolicy } from "./tool-policy.ts";
  import { makeAppConfirmations } from "./app-confirmations.ts";
- import { makeAppCalls, AppCallWorkflow } from "./app-calls.ts";
-@@ -180,6 +183,14 @@
+-import { makeAppCalls, AppCallWorkflow } from "./app-calls.ts";
++import { makeAppCalls } from "./app-calls.ts";
++import { AppCallWorkflow } from "./app-call-context.ts";
+ import { makeAppCallReceipts } from "./app-call-receipts.ts";
+ import { AppCallsHost } from "../contracts/app-calls.ts";
+ import { makeAppConnections } from "./app-connections.ts";
+@@ -180,6 +184,14 @@
      const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
      const appCalls = makeAppCalls({
        db,
@@ -1990,7 +2125,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        connections: appConnectionStore,
        tools: () => tools,
        ...(options.appCalls === undefined ? {} : { policy: options.appCalls }),
-@@ -189,6 +200,8 @@
+@@ -189,6 +201,8 @@
        readonly app: string;
        readonly build: string;
        readonly caller?: string;
@@ -1999,7 +2134,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        readonly workflowControls?: import("apps/contracts").WorkflowHostControls;
      }) =>
        Effect.gen(function* () {
-@@ -220,17 +233,29 @@
+@@ -220,17 +234,29 @@
              ...input,
              durableStep: input.replay !== undefined,
            });
@@ -2032,7 +2167,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          }).pipe(Effect.provideService(AppEventSink, sink)),
        workflow: (input) =>
          Effect.gen(function* () {
-@@ -248,7 +273,11 @@
+@@ -248,7 +274,11 @@
                      ...execution,
                      name: seed.name,
                      appCall: (
@@ -2045,7 +2180,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
                        command: import("apps/contracts").AppCallCommand,
                      ) =>
                        appCalls.dispatchAppCall(
-@@ -256,6 +285,10 @@
+@@ -256,6 +286,10 @@
                            app: input.app,
                            build: input.build,
                            ...(input.caller === undefined ? {} : { caller: input.caller }),
@@ -2056,7 +2191,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
                            workflow: {
                              run: seed.runId,
                              name: seed.name,
-@@ -485,7 +518,7 @@
+@@ -485,7 +519,7 @@
        workflowInputs: workflows.inputs,
        [WorkflowHost]: {
          ...workflows.host,
@@ -2065,7 +2200,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
            Effect.gen(function* () {
              const context = yield* workflows.host.context(run);
              const seed = yield* workflows.host.seed(run);
-@@ -498,7 +531,27 @@
+@@ -498,7 +532,27 @@
              return {
                ...context,
                models,
@@ -2094,6 +2229,81 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
              };
            }),
        },
+diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
+--- a/packages/sdk/src/implementation/tool-policy.ts
++++ b/packages/sdk/src/implementation/tool-policy.ts
+@@ -1,4 +1,4 @@
+-import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallWorkflow, withoutAppCallContext } from "./app-call-context.ts";
+ import { Effect, Schema } from "effect";
+ import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
+ import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
+@@ -23,35 +23,37 @@
+   [StandingPolicy]: (command) =>
+     Effect.gen(function* () {
+       const workflow = yield* AppCallWorkflow;
+-      return yield* policy({
+-        app: state.app.id,
+-        owner: state.app.owner,
+-        version: state.version.id,
+-        build: state.version.build,
+-        ...(state.actor === undefined ? {} : { actor: state.actor }),
+-        ...(workflow === undefined ? {} : { workflow }),
+-        accounts: [
+-          ...new Map(
+-            state.selections.flatMap((selection) =>
+-              selection.accounts.map(
+-                (account) =>
+-                  [
+-                    account.id,
+-                    {
+-                      account: account.id,
+-                      owner: account.owner,
+-                      credentialGeneration: account.credentialGeneration,
+-                    },
+-                  ] as const,
++      return yield* withoutAppCallContext(
++        policy({
++          app: state.app.id,
++          owner: state.app.owner,
++          version: state.version.id,
++          build: state.version.build,
++          ...(state.actor === undefined ? {} : { actor: state.actor }),
++          ...(workflow === undefined ? {} : { workflow }),
++          accounts: [
++            ...new Map(
++              state.selections.flatMap((selection) =>
++                selection.accounts.map(
++                  (account) =>
++                    [
++                      account.id,
++                      {
++                        account: account.id,
++                        owner: account.owner,
++                        credentialGeneration: account.credentialGeneration,
++                      },
++                    ] as const,
++                ),
+               ),
+-            ),
+-          ).values(),
+-        ],
+-        tool: command.tool,
+-        kind: command.kind,
+-        input: command.input,
+-        decision: command.decision,
+-      }).pipe(
++            ).values(),
++          ],
++          tool: command.tool,
++          kind: command.kind,
++          input: command.input,
++          decision: command.decision,
++        }),
++      ).pipe(
+         Effect.map((result) => ({ decision: result.decision, matched: result.matched })),
+         Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
+       );
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
@@ -2109,7 +2319,11 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
 diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
 --- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
 +++ b/packages/sdk/src/implementation/worker-workflow-rpc.ts
-@@ -4,7 +4,7 @@
+@@ -1,10 +1,10 @@
+-import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallWorkflow } from "./app-call-context.ts";
+ import {
+   AppCallCommand,
    AppCallReply,
    AppCallFailed,
    AppToolPolicyCommand,
@@ -2173,6 +2387,12 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
 diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
 --- a/packages/sdk/src/implementation/workerd-client.ts
 +++ b/packages/sdk/src/implementation/workerd-client.ts
+@@ -1,4 +1,4 @@
+-import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallWorkflow } from "./app-call-context.ts";
+ import { AppCallReply, AppCallFailed } from "apps/contracts";
+ import { ModelRequestFailed, ModelReply } from "apps/contracts";
+ import { WorkflowInput } from "apps/contracts";
 @@ -162,14 +162,10 @@
              return Redacted.value(context.accounts);
            }
@@ -2195,6 +2415,12 @@ diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/sr
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -1,4 +1,4 @@
+-import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallWorkflow } from "./app-call-context.ts";
+ import { AppCallReply, AppCallFailed } from "apps/contracts";
+ import { ModelCommand } from "apps/contracts";
+ import { WorkflowInput } from "apps/contracts";
 @@ -467,6 +467,7 @@
                  operation: "app-call",
                  run: seed.runId,
