@@ -734,6 +734,14 @@ async function supersedeFailedRelease(
     if (!sameCommit) byCommit.set(failed.sha, original);
   }
   if (!original) return { refusal: "no failed release follows the last success" };
+  if (
+    mixedCommits &&
+    validated.some(({ payload }) => payload.databaseChanged) &&
+    !ownBackup(original.payload)
+  )
+    return {
+      refusal: `deployment ${original.deploymentId} is the oldest failed attempt but has no protected backup from before the chain's database writes`,
+    };
   const newerCommits = new Set([rollForward.candidateGitCommit]);
   const checked = new Set<string>();
   for (const failed of validated) {

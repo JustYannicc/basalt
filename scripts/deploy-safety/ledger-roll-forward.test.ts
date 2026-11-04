@@ -332,6 +332,37 @@ test("mixed-SHA attempts must keep the union of gates at classification and depl
   );
 });
 
+test("a mixed chain with database writes refuses without the oldest attempt's backup, including on deployment recheck", async () => {
+  const report = transition(sha("1"), sha("4"), true, true);
+  const next = releasing([sha("2"), sha("3")], sha("4"));
+  const rows = [
+    {
+      ...failed(undefined, sha("3")),
+      id: 9,
+      payload: releasePayload(sha("1"), sha("3"), true, true),
+    },
+    { ...failed(), payload: releasePayload(sha("1"), sha("2"), true, true) },
+    success(),
+  ];
+  const before = await readDeploymentLedger(environment, fetcherFor(rows), next);
+  assert.equal(keepRollForwardGates(before, report).state, "ready");
+
+  // A's workflow-only payload has no backup; B's and C's backups both follow A.
+  rows[1]!.payload = releasePayload(sha("1"), sha("2"), false, true);
+  const ledger = await readDeploymentLedger(environment, fetcherFor(rows), next);
+  assert.equal(ledger.state, "unresolved");
+  assert.match(
+    ledger.state === "unresolved" ? (ledger.supersedeRefusal ?? "") : "",
+    /deployment 8.*oldest failed attempt.*no protected backup/,
+  );
+  const posted: Array<Record<string, unknown>> = [];
+  await assert.rejects(
+    beginReleaseDeployment(report, environment, fetcherFor(rows, posted), backupOf(report), next),
+    /oldest failed attempt.*no protected backup/,
+  );
+  assert.deepEqual(posted, []);
+});
+
 test("one unfinished record in a mixed-SHA chain still refuses before ancestry checks", async () => {
   for (const history of [
     ["pending"],
