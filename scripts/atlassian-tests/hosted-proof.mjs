@@ -1,3 +1,4 @@
+import { servedFrameworkVersion } from "../../framework-release.ts";
 import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -71,7 +72,7 @@ export const proveHostedAtlassian = ({
     );
     const servedSdkVersion = manifest.dependencies?.apps;
     check(
-      servedSdkVersion === "0.0.1-beta.104-basalt.2",
+      servedSdkVersion === servedFrameworkVersion,
       "Serve the pinned Basalt framework release",
     );
     const frameworkRelease = checked(
