@@ -77,25 +77,27 @@ test("the prepared host manifest supplies the expected framework pin", () =>
 
 test("catalog lint checks the served release without changing pinned source bytes", () =>
   fixture((root, put) => {
-    const original = JSON.stringify({
-      package: "fixture",
-      files: [
-        { path: "index.ts", content: "export default {};" },
-        {
-          path: "package.json",
-          content: JSON.stringify({ type: "module", dependencies: { apps: "0.0.1-pinned" } }),
-        },
-      ],
-    });
-    put("src/catalog/fixture/source.json", original);
-    const [app] = discoverApps(root, onServedFramework);
-    assert.deepEqual(checkManifest(app.files, servedFrameworkVersion), []);
-    const manifest = JSON.parse(app.files.find((file) => file.path === "package.json").bytes);
-    assert.equal(manifest.dependencies.apps, servedFrameworkVersion);
-    assert.equal(readFileSync(join(root, "src/catalog/fixture/source.json"), "utf8"), original);
+    for (const pin of ["0.0.1-pinned", "1.0.0-0.alpha-1+build.01", "1.0.0+01"]) {
+      const original = JSON.stringify({
+        package: "fixture",
+        files: [
+          { path: "index.ts", content: "export default {};" },
+          {
+            path: "package.json",
+            content: JSON.stringify({ type: "module", dependencies: { apps: pin } }),
+          },
+        ],
+      });
+      put("src/catalog/fixture/source.json", original);
+      const [app] = discoverApps(root, onServedFramework);
+      assert.deepEqual(checkManifest(app.files, servedFrameworkVersion), []);
+      const manifest = JSON.parse(app.files.find((file) => file.path === "package.json").bytes);
+      assert.equal(manifest.dependencies.apps, servedFrameworkVersion);
+      assert.equal(readFileSync(join(root, "src/catalog/fixture/source.json"), "utf8"), original);
+    }
   }));
 
-test("catalog mapping never admits missing or ranged source pins, or non-catalog release mismatches", () =>
+test("catalog mapping never admits missing, ranged or malformed source pins, or non-catalog release mismatches", () =>
   fixture((root, put) => {
     const source = (pin) =>
       JSON.stringify({
@@ -108,7 +110,19 @@ test("catalog mapping never admits missing or ranged source pins, or non-catalog
           },
         ],
       });
-    for (const pin of [undefined, "latest", "^1.0.0"]) {
+    for (const pin of [
+      undefined,
+      "latest",
+      "^1.0.0",
+      "1.0.0-01",
+      "1.0.0-alpha..1",
+      "1.0.0+.",
+      "1.0.0-",
+      "1.0.0+",
+      "1.0.0-alpha.01",
+      "1.0.0+build..1",
+      "1.0.0\n",
+    ]) {
       put("src/catalog/fixture/source.json", source(pin));
       const [app] = discoverApps(root, onServedFramework);
       assert.match(

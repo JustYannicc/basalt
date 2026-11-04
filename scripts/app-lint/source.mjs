@@ -89,13 +89,15 @@ export function discoverApps(root, mapCatalogSource = (text) => text) {
   return apps;
 }
 
+// Match the SemVer grammar in pinned upstream scripts/check-exact-versions.ts.
+const number = String.raw`(?:0|[1-9]\d*)`;
+const prereleaseIdentifier = String.raw`(?:${number}|\d*[A-Za-z-][0-9A-Za-z-]*)`;
+const version = String.raw`${number}\.${number}\.${number}(?:-${prereleaseIdentifier}(?:\.${prereleaseIdentifier})*)?`;
+const build = String.raw`\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*`;
+const exact = new RegExp(`^${version}(?:${build})?$`, "u");
+
 export function exactVersion(version) {
-  return (
-    typeof version === "string" &&
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
-      version,
-    )
-  );
+  return typeof version === "string" && version === version.trim() && exact.test(version);
 }
 
 // Frozen source repositories keep their own release; the catalog maps it before apps build.
