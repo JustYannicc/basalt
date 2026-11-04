@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "apps": [
+    {
+      "package": "aws",
+      "repository": "JustYannicc/signalbox-app-aws",
+      "commit": "51ea8a49c22110d4ba91bf83b231ac58f2d173c4",
+      "files": [
+        "README.md",
+        "index.ts",
+        "provider.ts",
+        "icon.ts",
+        "package.json"
+      ]
+    },
+    {
+      "package": "atlassian",
+      "repository": "JustYannicc/signalbox-app-atlassian",
+      "commit": "9e9ecd87a2bcb78dc7a2a1d9d1896476e5802dea",
+      "files": [
+        "index.ts",
+        "package.json",
+        "provider.ts",
+        "queries.ts",
+        "configuration.ts",
+        "openapi.ts",
+        "transport.ts",
+        "specifications.ts",
+        "api-coverage.json",
+        "README.md"
+      ]
+    },
+    {
+      "package": "zendesk",
+      "repository": "JustYannicc/signalbox-app-zendesk",
+      "commit": "627d9e7b57ff76e1e4d7cf424d31a3410f0bd521",
+      "files": [
+        "README.md",
+        "configuration.ts",
+        "icon.ts",
+        "index.ts",
+        "openapi.ts",
+        "package.json"
+      ]
+    }
+  ]
+}

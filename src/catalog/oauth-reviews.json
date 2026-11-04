@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "56310c50e03e83cbe12d5ca4e1589a10552287ddf7c0e2bae3d5db304695e9f8",
+      "sourceSha256": "76627b5999e996b4ca27a702b61a7ccc7356373172c33c14a1db0518241dad53",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -367,7 +367,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "af80e03e27d0d2a0fe41328436208850ebd60b03f75c7ab5e121a577b71c33da",
+      "sourceSha256": "f86b92f5ea746f8b520eec5a66c99178c305ae68a88ae1fa13b987fa9c53d6c2",
       "methods": {
         "oauth": {
           "kind": "automatic",

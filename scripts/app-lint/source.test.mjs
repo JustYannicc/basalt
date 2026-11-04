@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { discoverApps } from "./source.mjs";
 import { hostVersion } from "./host.mjs";
+import { checkManifest } from "./manifest.mjs";
+import { servedFrameworkVersion } from "../../framework-release.ts";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 
 function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), "app-discovery-"));
@@ -70,4 +73,57 @@ test("the prepared host manifest supplies the expected framework pin", () =>
       '{"name":"apps","version":"0.0.1-beta.104-basalt.1"}',
     );
     assert.equal(hostVersion(root), "0.0.1-beta.104-basalt.1");
+  }));
+
+test("catalog lint checks the served release without changing pinned source bytes", () =>
+  fixture((root, put) => {
+    const original = JSON.stringify({
+      package: "fixture",
+      files: [
+        { path: "index.ts", content: "export default {};" },
+        {
+          path: "package.json",
+          content: JSON.stringify({ type: "module", dependencies: { apps: "0.0.1-pinned" } }),
+        },
+      ],
+    });
+    put("src/catalog/fixture/source.json", original);
+    const [app] = discoverApps(root, onServedFramework);
+    assert.deepEqual(checkManifest(app.files, servedFrameworkVersion), []);
+    const manifest = JSON.parse(app.files.find((file) => file.path === "package.json").bytes);
+    assert.equal(manifest.dependencies.apps, servedFrameworkVersion);
+    assert.equal(readFileSync(join(root, "src/catalog/fixture/source.json"), "utf8"), original);
+  }));
+
+test("catalog mapping never admits missing or ranged source pins, or non-catalog release mismatches", () =>
+  fixture((root, put) => {
+    const source = (pin) =>
+      JSON.stringify({
+        package: "fixture",
+        files: [
+          { path: "index.ts", content: "export default {};" },
+          {
+            path: "package.json",
+            content: JSON.stringify({ type: "module", dependencies: { apps: pin } }),
+          },
+        ],
+      });
+    for (const pin of [undefined, "latest", "^1.0.0"]) {
+      put("src/catalog/fixture/source.json", source(pin));
+      const [app] = discoverApps(root, onServedFramework);
+      assert.match(
+        checkManifest(app.files, servedFrameworkVersion).join("\n"),
+        /framework-pin: dependencies.apps must be an exact version/,
+      );
+    }
+    put("apps/fixture/index.ts", "export default {};");
+    put(
+      "apps/fixture/package.json",
+      JSON.stringify({ type: "module", dependencies: { apps: "0.0.1-pinned" } }),
+    );
+    const app = discoverApps(root, onServedFramework).find((app) => app.name === "apps/fixture");
+    assert.match(
+      checkManifest(app.files, servedFrameworkVersion).join("\n"),
+      /framework-pin: expected prepared host/,
+    );
   }));

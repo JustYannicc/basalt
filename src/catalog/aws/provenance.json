@@ -1,9 +1,9 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "7021ba800d0491890618067889e6ae3c08403dc1b33f98d12bca6f34e4268144",
+  "sourceSha256": "c40f30b7a1609fb403ec7efc749f1c2b245a08192d5f9677a72c38bd77e557ea",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.9",
+    "apps": "0.0.1-beta.104-basalt.8",
     "@modelcontextprotocol/sdk": "1.32.1"
   },
   "transport": {
@@ -22,5 +22,17 @@
     "mimeType": "image/png",
     "bytes": 17053,
     "sha256": "bf572d19f9062f2d23e5eed63309003e877d2de200c61589372a0903536a4a56"
+  },
+  "catalogSource": {
+    "repository": "https://github.com/JustYannicc/signalbox-app-aws",
+    "commit": "51ea8a49c22110d4ba91bf83b231ac58f2d173c4",
+    "fileSha256": {
+      "README.md": "6f5f697b3678e7740f81603fb5d1687400328f9df08cba19f641a46a1f3bf2b5",
+      "icon.ts": "974058d5567c75f3f136da53b81b3e3eb5faaffc9eb12f9c990a99e3ed423943",
+      "index.ts": "97dcc41d692cf6aee69a359dfef15f3cafa4a0416e055ea454ea315cb405ddee",
+      "package.json": "3d9cb1833ed15523c367cd96a253af8300bc63b6e05ec1440f7501e53c993500",
+      "provider.ts": "ea4b956f70c95b7475d4760aa802d6b94c475925c79ce2356a075da7f0f84692"
+    },
+    "snapshotSha256": "c40f30b7a1609fb403ec7efc749f1c2b245a08192d5f9677a72c38bd77e557ea"
   }
 }
