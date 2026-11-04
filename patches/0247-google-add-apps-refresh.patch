@@ -1,0 +1,307 @@
+diff --git a/apps/hosted/web/src/contracts/identity-consent.ts b/apps/hosted/web/src/contracts/identity-consent.ts
+index 85a7440..a454f12 100644
+--- a/apps/hosted/web/src/contracts/identity-consent.ts
++++ b/apps/hosted/web/src/contracts/identity-consent.ts
+@@ -1,11 +1,14 @@
+ /** Hosted commands keep each request's product authorization and reviewed account destination. */
+-import { Effect } from "effect";
++import { Effect, Option } from "effect";
+ import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+ import { identityRequests } from "@executor-js/ui/contracts/identity-requests";
+ import { HostedClient } from "./api.ts";
+-import { refreshResourceDirectory } from "./resource-access.ts";
++import { refreshResourceDirectory, resourceDirectoryAtom } from "./resource-access.ts";
++import { inventoryAtom } from "./organization.ts";
++import { savedAccountRowsAtom } from "./account-projection.ts";
++import { refreshAppDiscovery } from "./app-discovery.ts";
+ import { refreshAppLinks } from "./app-accounts.ts";
+ 
+ export const identityConsentAtoms = (key: {
+@@ -56,7 +59,31 @@ export const identityConsentAtoms = (key: {
+           });
+           if (result.status === "completed") {
+             refreshResourceDirectory(get, key.organization);
+-            refreshAppLinks(get, { organization: key.organization, app: key.app });
++            // The mutation is committed. Failed reads remain query errors, never a failed save.
++            const directory = yield* get
++              .result(resourceDirectoryAtom(key.organization), { suspendOnWaiting: true })
++              .pipe(Effect.option);
++            for (const target of [key, ...(input.additionalTargets ?? [])]) {
++              const app = Option.isSome(directory)
++                ? directory.value.apps.find((entry) => entry.app.id === target.app)?.app
++                : undefined;
++              refreshAppLinks(get, {
++                organization: key.organization,
++                app: target.app,
++                requirements: app?.requirements.accounts,
++              });
++              refreshAppDiscovery(get, {
++                organization: key.organization,
++                app: target.app,
++                version: app?.activeVersion ?? null,
++              });
++            }
++            yield* Effect.all([
++              get.result(inventoryAtom(key.organization), { suspendOnWaiting: true }),
++              get.result(savedAccountRowsAtom({ organization: key.organization }), {
++                suspendOnWaiting: true,
++              }),
++            ]).pipe(Effect.ignore);
+           }
+           return result;
+         }),
+diff --git a/apps/local/web/src/contracts/identity-consent.ts b/apps/local/web/src/contracts/identity-consent.ts
+index b38ed86..2e9cb0e 100644
+--- a/apps/local/web/src/contracts/identity-consent.ts
++++ b/apps/local/web/src/contracts/identity-consent.ts
+@@ -1,10 +1,11 @@
+ /** Local browser commands preserve app scopes and reuse the existing OAuth return path. */
+-import { Effect } from "effect";
++import { Effect, Option } from "effect";
+ import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+ import { identityRequests } from "@executor-js/ui/contracts/identity-requests";
+ import { DashboardClient, overviewAtom } from "./api.ts";
+ import { accountCredentialsChanged } from "./accounts.ts";
++import { refreshAppDiscovery } from "./app-discovery.ts";
+ import { refreshAppLinks } from "./app-accounts.ts";
+ 
+ export const identityConsentAtoms = (target: {
+@@ -40,8 +41,16 @@ export const identityConsentAtoms = (target: {
+           });
+           if (result.status === "completed") {
+             accountCredentialsChanged(get, result.account);
+-            refreshAppLinks(get, target.app, target.requirement);
+-            get.refresh(overviewAtom);
++            const inventory = yield* get
++              .result(overviewAtom, { suspendOnWaiting: true })
++              .pipe(Effect.option);
++            for (const app of [target, ...(input.additionalTargets ?? [])]) {
++              refreshAppLinks(get, app.app, app.requirement);
++              const saved = Option.isSome(inventory)
++                ? inventory.value.apps.find((entry) => entry.id === app.app)
++                : undefined;
++              refreshAppDiscovery(get, { app: app.app, version: saved?.activeVersion ?? null });
++            }
+           }
+           return result;
+         }),
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 788ece8..b1fe43d 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -167,6 +167,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+           },
+         );
+         const later = yield* product.deploy(issuer.origin, "Later app", ["write"]);
++        const additional = yield* product.deploy(issuer.origin, "Another later app", ["write"]);
+         // Retained sign-ins predate verified identity metadata; their grants and app links survive.
+         yield* legacyStorage([
+           {
+@@ -303,13 +304,58 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.use("The existing grant covers the app", (page) =>
+           page.getByRole("button", { name: "Add app", exact: true }).waitFor(),
+         );
++        yield* browser.use("Include a second app in the same connection", (page) =>
++          page.getByRole("checkbox", { name: "Another later app", exact: true }).check(),
++        );
+         yield* browser.checkpoint("A covering sign-in needs no provider consent");
++        yield* browser.use("Use phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
+         yield* browser.use("Connect the covered app", (page) =>
++          page.getByRole("button", { name: "Add apps", exact: true }).click(),
++        );
++        yield* browser.use("Show confirmed completion", (page) =>
++          page
++            .getByRole("status")
++            .filter({ hasText: "Apps connected" })
++            .filter({ hasText: "Later app" })
++            .filter({ hasText: "Another later app" })
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use("The completed form fits a phone", (page) =>
++            page
++              .getByRole("dialog")
++              .evaluate((element) => element.scrollWidth <= element.clientWidth),
++          ),
++        ).toBe(true);
++        expect(
++          yield* browser.use("Success cannot submit the mutation again", (page) =>
++            page
++              .getByRole("dialog")
++              .getByRole("button", { name: /^Add apps?$/ })
++              .count(),
++          ),
++        ).toBe(0);
++        yield* browser.use(
++          "The refreshed account shows the new app before dismissing success",
++          (page) =>
++            page
++              .locator(".inventory-row")
++              .filter({ hasText: "same@example.test" })
++              .getByRole("link", { name: "Later app" })
++              .waitFor(),
++        );
++        yield* browser.checkpoint("The covered app is connected at phone width");
++        yield* browser.use("Finish the confirmed connection", (page) =>
+           page
+-            .getByRole("button", { name: "Add app", exact: true })
++            .getByRole("button", { name: "Done", exact: true })
+             .click()
+             .then(() => dismissAccountName(page)),
+         );
++        yield* browser.use("Return to desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
+         yield* browser.use("The added app appears on the same identity row", (page) =>
+           page
+             .locator(".inventory-row")
+@@ -319,7 +365,15 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         );
+         expect((yield* issuer.metrics).authorizations).toBe(5);
+         expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
++        yield* browser.use("Both selected apps refresh on the same row", (page) =>
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("link", { name: "Another later app", exact: true })
++            .waitFor(),
++        );
+         expect((yield* product.read(later)).status).toBe(200);
++        expect((yield* product.read(additional)).status).toBe(200);
+         for (const retainedBinding of retained) {
+           expect((yield* product.read(retainedBinding.app)).status).toBe(200);
+           expect(
+diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+index 7b6a676..104f831 100644
+--- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+@@ -37,7 +37,8 @@ export function IdentityAppPicker({
+   const [selected, setSelected] = useState("");
+   const [busy, setBusy] = useState(false);
+   if (identity === undefined || account === undefined) return null;
+-  const choices = identityAppTargets(inventory, identity.issuer).filter(
++  const targets = identityAppTargets(inventory, identity.issuer);
++  const choices = targets.filter(
+     (entry) =>
+       !inventory.links.some(
+         (link) =>
+@@ -47,7 +48,7 @@ export function IdentityAppPicker({
+           ),
+       ),
+   );
+-  const chosen = choices.find((entry) => `${entry.app.id}:${entry.requirement}` === selected);
++  const chosen = targets.find((entry) => `${entry.app.id}:${entry.requirement}` === selected);
+   return (
+     <>
+       <Button
+@@ -67,10 +68,10 @@ export function IdentityAppPicker({
+           if (!busy) setOpen(value);
+         }}
+       >
+-        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-[560px]">
++        <DialogContent className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]">
+           <DialogTitle>Add {identity.name} app</DialogTitle>
+           <DialogDescription>Use {identity.label} with another app.</DialogDescription>
+-          {choices.length === 0 ? (
++          {choices.length === 0 && chosen === undefined ? (
+             <p className="text-sm text-muted-foreground">
+               Every installed app for this account is connected. Install another app, then return
+               here.
+diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+index cfe806d..799f592 100644
+--- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+@@ -119,10 +119,14 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+     setPlanningResult({ group, method: props.method, targets: additionalTargets, value });
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const [pending, setPending] = useState(false);
++  const [completed, setCompleted] = useState<{
++    readonly account: Account;
++    readonly apps: readonly string[];
++  }>();
+   const { plan, method } = props;
+   useEffect(() => {
+     let current = true;
+-    if (group === undefined) return;
++    if (group === undefined || pending || completed !== undefined) return;
+     // An Atom command has one result; overlapping writes would cancel or misassociate plans.
+     void (async () => {
+       const ready: { source: AccountId; plan: OAuthConnectionPlan }[] = [];
+@@ -146,7 +150,7 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+     return () => {
+       current = false;
+     };
+-  }, [group, method, plan, additionalTargets]);
++  }, [group, method, plan, additionalTargets, pending, completed]);
+   const selection = {
+     sourceAccount: group === undefined ? null : (planned?.source ?? group.account.id),
+     additionalTargets,
+@@ -156,8 +160,20 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+     setChoice(value);
+     setError(undefined);
+   };
++  if (completed !== undefined)
++    return (
++      <div className="min-w-0 space-y-4 wrap-anywhere">
++        <div role="status" className="space-y-2">
++          <p className="font-medium">Apps connected</p>
++          <p className="text-sm text-muted-foreground">
++            {completed.apps.join(", ")} can now use {completed.account.identity?.label ?? family}.
++          </p>
++        </div>
++        <Button onClick={() => props.onSaved(completed.account)}>Done</Button>
++      </div>
++    );
+   return (
+-    <div className="space-y-4">
++    <div className="min-w-0 space-y-4 wrap-anywhere">
+       {groups.length > 0 && (
+         <div className="space-y-2">
+           <Label htmlFor="saved-identity">{family} account</Label>
+@@ -217,13 +233,15 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+       ) : (
+         <div className="space-y-3">
+           <p className="text-sm text-muted-foreground">
+-            {planning
+-              ? "Checking this account’s permissions…"
+-              : planned?.plan.status === "reuse"
+-                ? "This account already has the access these apps need."
+-                : planned?.plan.status === "incompatible"
+-                  ? "This sign-in cannot be shared with the selected apps. Choose another account or connect the apps separately."
+-                  : "Continue to approve the additional access. Your connected apps keep working."}
++            {pending
++              ? "Connecting apps…"
++              : planning
++                ? "Checking this account’s permissions…"
++                : planned?.plan.status === "reuse"
++                  ? "This account already has the access these apps need."
++                  : planned?.plan.status === "incompatible"
++                    ? "This sign-in cannot be shared with the selected apps. Choose another account or connect the apps separately."
++                    : "Continue to approve the additional access. Your connected apps keep working."}
+           </p>
+           {!planning &&
+             planned?.plan.status === "consent-required" &&
+@@ -247,7 +265,17 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+               if (planned.plan.status === "reuse") {
+                 const result = await props.reuse({ method, ...selected });
+                 if (Exit.isFailure(result)) setError(result.cause);
+-                else if (result.value.status === "completed") props.onSaved(result.value.account);
++                else if (result.value.status === "completed")
++                  setCompleted({
++                    account: result.value.account,
++                    apps: inventory.apps
++                      .filter(
++                        (app) =>
++                          app.id === props.app ||
++                          additionalTargets.some((target) => target.app === app.id),
++                      )
++                      .map((app) => app.name),
++                  });
+                 else
+                   setPlanned({
+                     source: planned.source,
