@@ -101,51 +101,89 @@ diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-co
 diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
 --- a/e2e/support/production-ops-database-fixture.ts
 +++ b/e2e/support/production-ops-database-fixture.ts
-@@ -105,15 +105,15 @@
+@@ -105,40 +105,49 @@
            ),
          );
        });
--    const target = Effect.scoped(
 +    const provisioning = (pools = false) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const provisioningProcess = yield* processes.spawn(
++            ChildProcess.make(
++              "node",
++              [
++                "apps/hosted/testing/production-ops-provisioning-fixture.ts",
++                `${input.directory}/sso-database.json`,
++                ...(pools ? ["--pools"] : []),
++              ],
++              {
++                env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
++                extendEnv: false,
++                stderr: "inherit",
++              },
++            ),
++          );
++          const completed = yield* provisioningProcess.stdout.pipe(
++            Stream.decodeText(),
++            Stream.mkString,
++          );
++          yield* checked(provisioningProcess.exitCode);
++          yield* Schema.decodeUnknownEffect(
++            Schema.fromJsonString(
++              Schema.Struct({
++                pending: Schema.Literal(0),
++                failed: Schema.Literal(0),
++                completed: Schema.Number,
++                observedPending: Schema.Number,
++              }),
++            ),
++          )(completed);
++          yield* fs.writeFileString(
++            `${input.directory}/physical-provisioning-completed.json`,
++            completed,
++            { mode: 0o600 },
++          );
++        }),
++      );
+     const target = Effect.scoped(
        Effect.gen(function* () {
 -        // A clone must not replay unfinished default-account creation between its state reads.
 -        const provisioning = yield* processes.spawn(
-+        const provisioningProcess = yield* processes.spawn(
-           ChildProcess.make(
-             "node",
-             [
-               "apps/hosted/testing/production-ops-provisioning-fixture.ts",
-               `${input.directory}/sso-database.json`,
-+              ...(pools ? ["--pools"] : []),
-             ],
-             {
-               env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
-@@ -122,8 +122,11 @@
-             },
-           ),
-         );
+-          ChildProcess.make(
+-            "node",
+-            [
+-              "apps/hosted/testing/production-ops-provisioning-fixture.ts",
+-              `${input.directory}/sso-database.json`,
+-            ],
+-            {
+-              env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+-              extendEnv: false,
+-              stderr: "inherit",
+-            },
+-          ),
+-        );
 -        const completed = yield* provisioning.stdout.pipe(Stream.decodeText(), Stream.mkString);
 -        yield* checked(provisioning.exitCode);
-+        const completed = yield* provisioningProcess.stdout.pipe(
-+          Stream.decodeText(),
-+          Stream.mkString,
-+        );
-+        yield* checked(provisioningProcess.exitCode);
-         yield* Schema.decodeUnknownEffect(
-           Schema.fromJsonString(
-             Schema.Struct({
-@@ -139,6 +142,10 @@
-           completed,
-           { mode: 0o600 },
-         );
-+      });
-+    const target = Effect.scoped(
-+      Effect.gen(function* () {
+-        yield* Schema.decodeUnknownEffect(
+-          Schema.fromJsonString(
+-            Schema.Struct({
+-              pending: Schema.Literal(0),
+-              failed: Schema.Literal(0),
+-              completed: Schema.Number,
+-              observedPending: Schema.Number,
+-            }),
+-          ),
+-        )(completed);
+-        yield* fs.writeFileString(
+-          `${input.directory}/physical-provisioning-completed.json`,
+-          completed,
+-          { mode: 0o600 },
+-        );
 +        yield* provisioning();
          // pg_dump and the baseline reads must observe the same account and receipt rows.
          // SHARE permits the dump's reads but blocks every writer until both states are captured.
          const commands = yield* Queue.unbounded<string, Cause.Done>();
-@@ -316,5 +323,5 @@
+@@ -316,5 +325,5 @@
            )
          : Effect.succeed(0),
      );
