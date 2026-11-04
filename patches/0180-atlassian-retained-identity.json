@@ -1,0 +1,9 @@
+{
+  "identity": "executor-atlassian-retained-identity",
+  "file": "0180-atlassian-retained-identity.patch",
+  "content_sha256": "1d148da40c15b4f07c71cf002be8bc9ecb75e8cf6d49a60b3b00dd41e69b97fd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
