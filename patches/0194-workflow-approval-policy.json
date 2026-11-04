@@ -1,7 +1,7 @@
 {
   "identity": "basalt-workflow-approval-policy",
   "file": "0194-workflow-approval-policy.patch",
-  "content_sha256": "8107b1fc7d3b1417386c2dd2478d5815da1408bac0012975cee7d8f1a2a01979",
+  "content_sha256": "6057c607c929cd208bb7e2515bc79fb41a0bd09f4ba12375a5611e34b48f5178",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

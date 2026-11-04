@@ -911,10 +911,10 @@ index a48cea8f..95f479df 100644
  }
 diff --git a/packages/sdk/src/contracts/tool-policy.ts b/packages/sdk/src/contracts/tool-policy.ts
 new file mode 100644
-index 00000000..9b20ff28
+index 00000000..7bf81f50
 --- /dev/null
 +++ b/packages/sdk/src/contracts/tool-policy.ts
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,43 @@
 +import type { Effect } from "effect";
 +import type {
 +  AccountId,
@@ -934,6 +934,12 @@ index 00000000..9b20ff28
 +  readonly version: VersionId;
 +  readonly build: BuildId;
 +  readonly actor?: string;
++  readonly workflow?: {
++    readonly run: string;
++    readonly name: string;
++    readonly step: string;
++    readonly stepId: string;
++  };
 +  readonly accounts: readonly {
 +    readonly account: AccountId;
 +    readonly owner: OwnerId;
@@ -954,10 +960,11 @@ index 00000000..9b20ff28
 +>;
 diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
 new file mode 100644
-index 00000000..46c71fb1
+index 00000000..3a484af8
 --- /dev/null
 +++ b/packages/sdk/src/implementation/tool-policy.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,109 @@
++import { AppCallWorkflow } from "./app-calls.ts";
 +import { Effect } from "effect";
 +import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
 +import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
@@ -980,37 +987,41 @@ index 00000000..46c71fb1
 +): Controls => ({
 +  ...controls,
 +  [StandingPolicy]: (command) =>
-+    policy({
-+      app: state.app.id,
-+      owner: state.app.owner,
-+      version: state.version.id,
-+      build: state.version.build,
-+      ...(state.actor === undefined ? {} : { actor: state.actor }),
-+      accounts: [
-+        ...new Map(
-+          state.selections.flatMap((selection) =>
-+            selection.accounts.map(
-+              (account) =>
-+                [
-+                  account.id,
-+                  {
-+                    account: account.id,
-+                    owner: account.owner,
-+                    credentialGeneration: account.credentialGeneration,
-+                  },
-+                ] as const,
++    Effect.gen(function* () {
++      const workflow = yield* AppCallWorkflow;
++      return yield* policy({
++        app: state.app.id,
++        owner: state.app.owner,
++        version: state.version.id,
++        build: state.version.build,
++        ...(state.actor === undefined ? {} : { actor: state.actor }),
++        ...(workflow === undefined ? {} : { workflow }),
++        accounts: [
++          ...new Map(
++            state.selections.flatMap((selection) =>
++              selection.accounts.map(
++                (account) =>
++                  [
++                    account.id,
++                    {
++                      account: account.id,
++                      owner: account.owner,
++                      credentialGeneration: account.credentialGeneration,
++                    },
++                  ] as const,
++              ),
 +            ),
-+          ),
-+        ).values(),
-+      ],
-+      tool: command.tool,
-+      kind: command.kind,
-+      input: command.input,
-+      decision: command.decision,
-+    }).pipe(
-+      Effect.map((result) => ({ decision: result.decision, matched: result.matched })),
-+      Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
-+    ),
++          ).values(),
++        ],
++        tool: command.tool,
++        kind: command.kind,
++        input: command.input,
++        decision: command.decision,
++      }).pipe(
++        Effect.map((result) => ({ decision: result.decision, matched: result.matched })),
++        Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
++      );
++    }),
 +});
 +
 +/** Compose once at the existing private native-host callback, before workflow-specific consent. */
@@ -1064,10 +1075,10 @@ index 00000000..46c71fb1
 +};
 diff --git a/apps/hosted/server/src/contracts/tool-policies.ts b/apps/hosted/server/src/contracts/tool-policies.ts
 new file mode 100644
-index 00000000..1367aedc
+index 00000000..cc334b7e
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/tool-policies.ts
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,159 @@
 +import {
 +  AccountId,
 +  AppId,
@@ -1105,6 +1116,7 @@ index 00000000..1367aedc
 +export const ToolPolicyValues = Schema.Struct({
 +  target: ToolPolicyTarget,
 +  mode: ToolPolicyMode,
++  workflow: Schema.optionalKey(Schema.NonEmptyString),
 +  inputSchema: Schema.optionalKey(JsonObject),
 +});
 +export type ToolPolicyValues = typeof ToolPolicyValues.Type;
@@ -1323,10 +1335,10 @@ index 00000000..e21c9ee3
 +  );
 diff --git a/apps/hosted/server/src/implementation/tool-policy-evaluation.ts b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
 new file mode 100644
-index 00000000..2ac5917f
+index 00000000..9f511c01
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,85 @@
 +import { Effect, Schema } from "effect";
 +import type { SqlClient } from "effect/sql";
 +import {
@@ -1345,9 +1357,15 @@ index 00000000..2ac5917f
 +const specificity = (rule: ToolPolicy) =>
 +  (rule.target.kind === "tool" ? 4 : 0) +
 +  (rule.target.kind !== "account" ? 2 : 0) +
-+  (rule.target.account !== undefined ? 1 : 0);
++  (rule.target.account !== undefined ? 1 : 0) +
++  (rule.workflow !== undefined ? 8 : 0);
 +const matches = (rule: ToolPolicy, event: ToolPolicyEvent) =>
 +  !rule.revoked &&
++  (rule.workflow === undefined ||
++    (event.workflow !== undefined &&
++      event.workflow.run.length > 0 &&
++      event.workflow.stepId.length > 0 &&
++      event.workflow.name === rule.workflow)) &&
 +  (rule.target.kind === "account" || rule.target.app === event.app) &&
 +  (rule.target.kind !== "tool" || rule.target.tool === event.tool) &&
 +  (rule.target.account === undefined ||
@@ -1408,10 +1426,10 @@ index 00000000..2ac5917f
 +    );
 diff --git a/apps/hosted/server/src/implementation/tool-policies.ts b/apps/hosted/server/src/implementation/tool-policies.ts
 new file mode 100644
-index 00000000..e7d2f97e
+index 00000000..d4afd8c6
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/tool-policies.ts
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,180 @@
 +import { Clock, Effect, Schema } from "effect";
 +import { StorageError, validToolPolicyConstraint } from "@executor-js/sdk/core";
 +import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
@@ -1448,8 +1466,11 @@ index 00000000..e7d2f97e
 +/** App management never grants management of somebody else's personal account. */
 +export const manageToolPolicy = (target: ToolPolicyTarget, actor: ResourceAuthority) =>
 +  Effect.gen(function* () {
-+    if (target.kind !== "account" && !(yield* applicationAccess(target.app, actor)).canManage)
-+      return yield* new OrganizationForbidden();
++    if (target.kind !== "account") {
++      const app = yield* applicationAccess(target.app, actor);
++      if (target.account === undefined ? !app.canManage : !app.canUse)
++        return yield* new OrganizationForbidden();
++    }
 +    if (target.account !== undefined && !(yield* accountAccess(target.account, actor)).canManage)
 +      return yield* new OrganizationForbidden();
 +  });
@@ -1510,6 +1531,7 @@ index 00000000..e7d2f97e
 +          id: old?.id ?? crypto.randomUUID(),
 +          target: input.target,
 +          mode: input.mode,
++          ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
 +          ...(input.inputSchema === undefined ? {} : { inputSchema: input.inputSchema }),
 +          revision: (old?.revision ?? 0) + 1,
 +          revoked: false,
@@ -2146,10 +2168,10 @@ index 00000000..fe6037fc
 +);
 diff --git a/apps/hosted/web/src/implementation/pages/tool-policies.tsx b/apps/hosted/web/src/implementation/pages/tool-policies.tsx
 new file mode 100644
-index 00000000..c806a495
+index 00000000..c9e74e10
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/tool-policies.tsx
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,204 @@
 +import { useState } from "react";
 +import { useAtomSet } from "@effect/atom-react";
 +import { Exit } from "effect";
@@ -2216,7 +2238,17 @@ index 00000000..c806a495
 +                      <ToolPolicyEditor
 +                        key={editing === "new" ? "new" : editing.id}
 +                        {...(editing === "new" ? {} : { policy: editing })}
-+                        directory={managed}
++                        directory={{
++                          ...managed,
++                          apps: [
++                            ...new Map(
++                              [...directory.apps, ...managed.apps].map((entry) => [
++                                entry.app.id,
++                                entry,
++                              ]),
++                            ).values(),
++                          ],
++                        }}
 +                        onDone={() => setEditing(undefined)}
 +                      />
 +                    )}
@@ -2289,6 +2321,7 @@ index 00000000..c806a495
 +          <h3 className="break-words text-sm font-medium">{label}</h3>
 +          <p className="mt-1 text-sm text-muted-foreground">
 +            {rule.revoked ? "Revoked" : approvalModes[rule.mode]}
++            {rule.workflow === undefined ? "" : ` · Workflow: ${rule.workflow}`}
 +            {rule.inputSchema === undefined ? "" : " · Matching input only"}
 +          </p>
 +        </div>
@@ -2345,10 +2378,10 @@ index 00000000..c806a495
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx b/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx
 new file mode 100644
-index 00000000..ab1fa475
+index 00000000..46e1e7b1
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,284 @@
 +import { useState } from "react";
 +import { useAtomSet } from "@effect/atom-react";
 +import { Exit, Schema } from "effect";
@@ -2400,10 +2433,12 @@ index 00000000..ab1fa475
 +  const [constraint, setConstraint] = useState(
 +    policy?.inputSchema === undefined ? "" : JSON.stringify(policy.inputSchema, null, 2),
 +  );
++  const [workflow, setWorkflow] = useState(policy?.workflow ?? "");
 +  const [pending, setPending] = useState(false);
 +  const [error, setError] = useState<string>();
 +  const reset = () => {
 +    setBase(policy);
++    setWorkflow(policy?.workflow ?? "");
 +    setScope(policy?.target.kind ?? "app");
 +    setApp(policy?.target.kind === "account" ? undefined : policy?.target.app);
 +    setAccount(policy?.target.account);
@@ -2414,7 +2449,7 @@ index 00000000..ab1fa475
 +    );
 +    setError(undefined);
 +  };
-+  const apps = directory.apps.filter((entry) => entry.access.canManage);
++  const apps = directory.apps.filter((entry) => entry.access.canManage || entry.access.canUse);
 +  const accounts = directory.accounts.filter((entry) => entry.access.canManage);
 +  return (
 +    <form
@@ -2451,10 +2486,21 @@ index 00000000..ab1fa475
 +              ? { kind: "tool", app, tool: tool.trim(), ...narrowed }
 +              : { kind: "app", app, ...narrowed };
 +        }
++        if (
++          scope !== "account" &&
++          account === undefined &&
++          !apps.find((entry) => entry.app.id === app)?.access.canManage
++        ) {
++          setError(
++            "Choose one of your accounts to restrict this rule, or choose an app you manage.",
++          );
++          return;
++        }
 +        setPending(true);
 +        const result = await save({
 +          target,
 +          mode,
++          ...(workflow.trim() === "" ? {} : { workflow: workflow.trim() }),
 +          ...(inputSchema === undefined ? {} : { inputSchema }),
 +          ...(base === undefined ? {} : { id: base.id, revision: base.revision }),
 +        });
@@ -2568,6 +2614,18 @@ index 00000000..ab1fa475
 +          </Select>
 +        </label>
 +      </div>
++      <label className="grid gap-1 text-sm">
++        Workflow restriction
++        <Input
++          value={workflow}
++          onChange={(event) => setWorkflow(event.target.value)}
++          disabled={pending}
++          placeholder="All workflows and ordinary calls"
++        />
++        <span className="text-xs text-muted-foreground">
++          Optional exact workflow name. Restricted rules do not apply to ordinary calls.
++        </span>
++      </label>
 +      <details>
 +        <summary className="cursor-pointer text-sm">Input constraint</summary>
 +        <div className="mt-2 grid gap-2">
@@ -2852,10 +2910,10 @@ index 00000000..a74ca976
 +}
 diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
 new file mode 100644
-index 00000000..bdbdbbb9
+index 00000000..12391ff7
 --- /dev/null
 +++ b/e2e/tests/tool-policies.spec.ts
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,354 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema, Schedule } from "effect";
 +import { connectionsPath } from "../support/app-accounts.ts";
@@ -2886,7 +2944,7 @@ index 00000000..bdbdbbb9
 +const denied=mutation({input,approval:()=>"denied"},async()=>({ran:true}));
 +const failed=mutation({input,approval:()=>{throw new Error("policy failure");}},async()=>({ran:true}));
 +const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("read",read,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
-+export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe}});`;
++export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe,other:probe}});`;
 +
 +layer(RuntimeLive, { excludeTestServices: true })("General approval policies", (it) => {
 +  it.effect(scenarios.hostedAccountToolPolicies.title, (context) =>
@@ -2977,6 +3035,34 @@ index 00000000..bdbdbbb9
 +            mode: "never-ask",
 +          })).status,
 +        ).toBe(403);
++        const limitedReply = yield* api.request(actors.member, "POST", path, {
++          target: { kind: "tool", app: app.id, tool: "write", account: memberAccount },
++          mode: "never-ask",
++        });
++        expect(limitedReply.status, JSON.stringify(limitedReply.body)).toBe(200);
++        const limited = yield* body(Policy, limitedReply);
++        expect((yield* call(actors.member, "write", ownerAccount)).body).toEqual({ wrote: true });
++        expect(
++          (yield* api.request(actors.member, "POST", path, {
++            target: { kind: "tool", app: app.id, tool: "write" },
++            mode: "never-ask",
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.member, "PUT", `${path}/${limited.id}`, {
++            target: { kind: "tool", app: app.id, tool: "write", account: memberAccount },
++            mode: "always-ask",
++            revision: limited.revision,
++          })).status,
++        ).toBe(200);
++        expect((yield* call(actors.member, "write", ownerAccount)).status).toBe(409);
++        expect(
++          (yield* api.request(
++            actors.member,
++            "DELETE",
++            `${path}/${limited.id}?revision=${limited.revision + 1}`,
++          )).status,
++        ).toBe(200);
 +        const ownRule = yield* api.request(actors.member, "POST", path, {
 +          target: { kind: "account", account: memberAccount },
 +          mode: "always-ask",
@@ -3027,34 +3113,35 @@ index 00000000..bdbdbbb9
 +            policy === undefined ? path : `${path}/${policy.id}`,
 +            { target, mode, ...(policy === undefined ? {} : { revision: policy.revision }) },
 +          );
-+        const workflowProbe = Effect.gen(function* () {
-+          const started = yield* api.request(
-+            actors.owner,
-+            "POST",
-+            `${prefix}/apps/${app.id}/workflow-runs`,
-+            { workflow: "probe", input: { title: "safe" } },
-+          );
-+          expect(started.status, JSON.stringify(started.body)).toBe(200);
-+          const run = yield* body(Resource, started);
-+          const result = yield* Effect.gen(function* () {
-+            return yield* body(
-+              Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) }),
-+              yield* api.request(
-+                actors.owner,
-+                "GET",
-+                `${prefix}/apps/${app.id}/workflow-runs/${run.id}`,
-+              ),
++        const workflowProbe = (workflow = "probe") =>
++          Effect.gen(function* () {
++            const started = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${app.id}/workflow-runs`,
++              { workflow, input: { title: "safe" } },
 +            );
-+          }).pipe(
-+            Effect.repeat({
-+              while: (result) => result.status === "queued" || result.status === "running",
-+              schedule: Schedule.spaced("100 millis"),
-+            }),
-+            Effect.timeout("30 seconds"),
-+          );
-+          expect(result.status, JSON.stringify(result)).toBe("complete");
-+          return result.output;
-+        });
++            expect(started.status, JSON.stringify(started.body)).toBe(200);
++            const run = yield* body(Resource, started);
++            const result = yield* Effect.gen(function* () {
++              return yield* body(
++                Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) }),
++                yield* api.request(
++                  actors.owner,
++                  "GET",
++                  `${prefix}/apps/${app.id}/workflow-runs/${run.id}`,
++                ),
++              );
++            }).pipe(
++              Effect.repeat({
++                while: (result) => result.status === "queued" || result.status === "running",
++                schedule: Schedule.spaced("100 millis"),
++              }),
++              Effect.timeout("30 seconds"),
++            );
++            expect(result.status, JSON.stringify(result)).toBe("complete");
++            return result.output;
++          });
 +        expect((yield* call("read")).body).toEqual({ read: "safe" });
 +        expect((yield* call("write")).status).toBe(409);
 +        const first = yield* save("always-ask");
@@ -3063,6 +3150,30 @@ index 00000000..bdbdbbb9
 +        // This query has no app approval callback. The host must still ask.
 +        expect((yield* call("read")).status).toBe(409);
 +        expect((yield* call("write")).status).toBe(409);
++        const scopedReply = yield* api.request(actors.owner, "POST", path, {
++          target: { kind: "tool", app: app.id, tool: "read" },
++          mode: "never-ask",
++          workflow: "probe",
++        });
++        expect(scopedReply.status, JSON.stringify(scopedReply.body)).toBe(200);
++        const scoped = yield* body(Policy, scopedReply);
++        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
++        expect(yield* workflowProbe("other")).toEqual({ blocked: true });
++        expect((yield* call("read")).status).toBe(409);
++        const scopeHistory = yield* api.request(
++          actors.owner,
++          "GET",
++          `${path}/${scoped.id}/history`,
++        );
++        expect(scopeHistory.body).toMatchObject({ items: [{ snapshot: { workflow: "probe" } }] });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${path}/${scoped.id}?revision=${scoped.revision}`,
++          )).status,
++        ).toBe(200);
++        expect(yield* workflowProbe()).toEqual({ blocked: true });
 +        expect(
 +          (yield* api.request(actors.member, "PUT", `${path}/${always.id}`, {
 +            target,
@@ -3082,7 +3193,7 @@ index 00000000..bdbdbbb9
 +        const never = yield* body(Policy, neverReply);
 +        expect((yield* call("read")).body).toEqual({ read: "safe" });
 +        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
-+        expect(yield* workflowProbe).toEqual({ result: { read: "safe" } });
++        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
 +        expect((yield* call("denied")).status).not.toBe(200);
 +        expect((yield* call("failed")).status).not.toBe(200);
 +        const writesReply = yield* save("ask-writes", never);
