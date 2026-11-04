@@ -12,8 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY --from=source-fetch /source /source
 COPY native /source/node/internal/nativeapi
 COPY home_websocket_continuation_test.go.tmpl /source/node/sdk/api/handlers/openai/basalt_home_websocket_continuation_test.go
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/cluster/management ./internal/managementhttp ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes' -count=1 && \
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/cluster/management ./internal/logging ./internal/managementhttp ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes' -count=1 && \
     cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging ./sdk/api/handlers/openai -run 'MetadataOnly|TestBasaltHomeOnlyModelContinuation' -count=1
+COPY home_log_framing.go.tmpl /source/home/cmd/basalt-log-framing/main.go
+RUN mkdir -p /out && cd /source/home && go build -p=2 -mod=readonly -buildvcs=false \
+    -o /out/home-log-framing ./cmd/basalt-log-framing && rm -rf cmd/basalt-log-framing
 RUN mkdir -p /out/home /out/node && \
     cd /source/home && \
     CGO_ENABLED=1 GOOS=linux GOARCH="$TARGETARCH" go build -p=2 -mod=readonly -buildvcs=false \
@@ -77,6 +80,7 @@ COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
 COPY recovery.py recovery_deadline.py recovery_http.py recovery_signals.py /opt/pool/
 COPY child_signals.py /opt/pool/child_signals.py
+COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY readiness.py /opt/pool/readiness.py
@@ -91,6 +95,11 @@ HEALTHCHECK --interval=10s --timeout=4s --start-period=180s --retries=3 \
   CMD ["python3", "-m", "pool.healthcheck"]
 USER pool
 ENTRYPOINT ["python3", "-m", "pool.supervisor"]
+
+RUN --mount=from=source-build,source=/out/home-log-framing,target=/tmp/home-log-framing \
+    --mount=type=bind,source=test_output_privacy.py,target=/opt/pool/test_output_privacy.py,readonly \
+    POOL_HOME_LOG_FIXTURE=/tmp/home-log-framing \
+    python3 -m unittest pool.test_output_privacy.OutputPrivacyTests.test_real_home_formatter_records_are_single_physical_lines
 
 FROM runtime-base AS runtime
 LABEL io.signalbox.pool.oauth-completion-receipts="1"
