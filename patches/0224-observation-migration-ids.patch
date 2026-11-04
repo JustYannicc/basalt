@@ -1,0 +1,82 @@
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index 13b70386a..832905e3e 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, Schema } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { observationFixture } from "../support/account-observation-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+@@ -22,11 +22,23 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         expect(health.status).toBe(200);
+         expect((yield* f.refresh()).status).toBe(200);
+         const retained = (yield* f.read()).body;
+-        const [currentVersion] = yield* legacyStorage([
++        // Derive expected IDs from the current journal so later carries can append migrations.
++        const [currentVersion, registeredSteps] = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++          {
++            sql: "SELECT migration_id, name FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
+           ...beforeAccountAcquisition(),
+           { sql: "UPDATE private_executor_settings SET value = '4.0.19' WHERE key = 'version'" },
+         ]);
++        expect(registeredSteps?.map((step) => step.name)).toEqual(
++          expect.arrayContaining([
++            "account_observations",
++            "contributed_departures",
++            "account_identity_index",
++            "contributed_departure_observability",
++          ]),
++        );
+         yield* serverControl("start");
+         expect((yield* f.read()).body).toEqual(retained);
+         expect((yield* f.detail()).body).toMatchObject({
+@@ -62,7 +74,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_acquisitions', 'executor_account_driver_checks', 'executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
+           },
+           {
+-            sql: "SELECT migration_id FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++            sql: "SELECT migration_id, name, created_at FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
+           },
+           {
+             sql: "SELECT column_name FROM information_schema.columns WHERE table_name = 'hosted_contributed_departure_jobs' AND column_name IN ('queued_at', 'last_error') ORDER BY column_name",
+@@ -77,14 +89,13 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           { table_name: "executor_account_observations" },
+           { table_name: "hosted_account_observation_access" },
+         ]);
+-        expect(hostedSteps).toEqual([
+-          { migration_id: 10 },
+-          { migration_id: 11 },
+-          { migration_id: 12 },
+-          { migration_id: 13 },
+-          { migration_id: 14 },
+-          { migration_id: 15 },
+-        ]);
++        const migrationIds = Schema.decodeUnknownSync(Schema.Array(Schema.Number))(
++          hostedSteps?.map((step) => step.migration_id),
++        );
++        expect(migrationIds).toEqual(registeredSteps?.map((step) => step.migration_id));
++        for (const [index, id] of migrationIds.entries()) {
++          if (index > 0) expect(id).toBeGreaterThan(migrationIds[index - 1]!);
++        }
+         expect(diagnostics).toEqual([{ column_name: "last_error" }, { column_name: "queued_at" }]);
+         yield* evidence.json("upgraded-observation-and-departure-layout.json", {
+           hostedSteps,
+@@ -98,6 +109,14 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           (yield* f.api.request(f.actors.owner, "GET", `${f.appPath}/accounts/departures`)).status,
+         ).toBe(200);
+         expect((yield* f.refresh()).status).toBe(200);
++        // Receipt timestamps must also survive: rewriting the same IDs is not a safe repeat.
++        const [repeatedSteps] = yield* legacyStorage([
++          {
++            sql: "SELECT migration_id, name, created_at FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
++        ]);
++        expect(repeatedSteps).toEqual(hostedSteps);
++        yield* evidence.json("repeated-observation-migration-steps.json", repeatedSteps);
+       }),
+     ),
+   );
