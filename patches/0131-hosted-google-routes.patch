@@ -1319,7 +1319,7 @@ index 70eb890..7d41e42 100644
  
  /**
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 3643ce7..c54c079 100644
+index 3643ce7..06d8267 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
@@ -1389,22 +1389,21 @@ index 3643ce7..c54c079 100644
          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
          : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
-@@ -336,7 +371,13 @@ export const startCloudEnvironment = (input: {
-       CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
+@@ -337,6 +372,13 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
--      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
-+      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(routesFixture).services),
+       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
 +      ...(mapsRoutes === undefined
 +        ? {}
 +        : {
++            EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(routesFixture).services),
 +            GOOGLE_MAPS_ROUTES_API_KEY: "synthetic-e2e-routes-key",
 +            EXECUTOR_CATALOG_URL: `${mapsRoutes.baseUrl}/catalog/index.json`,
 +          }),
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
-@@ -685,6 +726,6 @@ export const startCloudEnvironment = (input: {
+@@ -685,6 +727,6 @@ export const startCloudEnvironment = (input: {
        emulators,
        fixtures: controls,
        origin: input.origin,
