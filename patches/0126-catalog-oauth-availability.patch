@@ -141,7 +141,7 @@ index 28e67e8..c2a89c0 100644
        start={(input) =>
          account !== undefined ||
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index e3a9356..0071f18 100644
+index e3a9356..2a5e4eb 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -20,7 +20,8 @@ import { Link } from "@tanstack/react-router";
@@ -154,29 +154,16 @@ index e3a9356..0071f18 100644
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { AccountForm } from "@executor-js/ui/dashboard/account-form";
  import {
-@@ -64,12 +65,14 @@ export function ConnectionFields({
-   onSaved,
-   initialMethod,
-   manualClient,
-+  oauthDeferrals,
-   onPendingChange,
- }: {
-   readonly connection: HostedAccountConnection;
-   readonly onSaved: (account: Account) => void;
-   readonly initialMethod?: string | undefined;
-   readonly manualClient?: boolean | undefined;
-+  readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
-   readonly onPendingChange?: (pending: boolean) => void;
- }) {
-   const { organization, slug: organizationSlug } = useOrganizationRoute();
-@@ -120,6 +123,7 @@ export function ConnectionFields({
-       redirectUri={connection.redirectUri}
-       initialMethod={initialMethod}
-       manualClient={manualClient}
-+      oauthDeferrals={oauthDeferrals}
-       setupQuery={(method) =>
-         connectionOAuthSetupAtom({ organization, connection: connection.id, method })
-       }
+@@ -46,6 +47,9 @@ import {
+ import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+ import { RegisterServiceClient } from "./oauth-clients.tsx";
+ 
++// The dialog owns catalog guidance; both normal and loopback forms read the same value.
++export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(undefined);
++
+ /**
+  * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
+  * the callback returns. Without it the callback opens the app's Accounts view.
 @@ -177,7 +181,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    app,
    interactive,
@@ -188,26 +175,70 @@ index e3a9356..0071f18 100644
    /** The host's reason a method can't be connected here; such methods show greyed out. */
    readonly unavailable?: ((method: string) => string | undefined) | undefined;
    /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
-@@ -312,6 +319,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -204,6 +211,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization } = useOrganizationRoute();
++  const inheritedDeferrals = useContext(OAuthDeferralsContext);
+   const requestName = useAtomSet(accountToNameAtom);
+   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
+   // Only administrators register clients, so members are told to enter their own details.
+@@ -312,6 +320,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                access={access}
                disabled={disabled}
                manualClient={manualClient}
-+              deferral={oauthDeferral(oauthDeferrals, method)}
++              deferral={oauthDeferral(oauthDeferrals ?? inheritedDeferrals, method)}
                {...(account ? { account } : {})}
                redirectUri={redirectUri}
                onPendingChange={onPendingChange}
 diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
-index c064042..65456f6 100644
+index c064042..d6475f3 100644
 --- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
-@@ -208,6 +208,7 @@ function ResumedConnectionDetails({
-           <ConnectionFields
-             connection={connection}
-             manualClient={client === "change"}
-+            oauthDeferrals={catalogEntry?.oauthDeferrals}
-             onPendingChange={onPendingChange}
-             onSaved={() => {
-               void navigate({
+@@ -19,7 +19,7 @@ import { appAtom, connectionAtom } from "../../contracts/apps.ts";
+ import { catalogAtom } from "../../contracts/api.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+-import { ConnectionFields } from "./connect-account.tsx";
++import { ConnectionFields, OAuthDeferralsContext } from "./connect-account.tsx";
+ 
+ /** All connection entry points share the same modal size and submission dismissal guard. */
+ export function ConnectionModal({
+@@ -205,19 +205,21 @@ function ResumedConnectionDetails({
+             provider={connection.provider}
+             notices={catalogEntry?.connectionNotices ?? []}
+           />
+-          <ConnectionFields
+-            connection={connection}
+-            manualClient={client === "change"}
+-            onPendingChange={onPendingChange}
+-            onSaved={() => {
+-              void navigate({
+-                to: "/org/$organizationSlug/apps/$appId",
+-                params: { organizationSlug, appId: connection.target.app },
+-                search: { view: "accounts" },
+-                replace: true,
+-              });
+-            }}
+-          />
++          <OAuthDeferralsContext.Provider value={catalogEntry?.oauthDeferrals}>
++            <ConnectionFields
++              connection={connection}
++              manualClient={client === "change"}
++              onPendingChange={onPendingChange}
++              onSaved={() => {
++                void navigate({
++                  to: "/org/$organizationSlug/apps/$appId",
++                  params: { organizationSlug, appId: connection.target.app },
++                  search: { view: "accounts" },
++                  replace: true,
++                });
++              }}
++            />
++          </OAuthDeferralsContext.Provider>
+         </>
+       )}
+     </>
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx

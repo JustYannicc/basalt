@@ -365,6 +365,19 @@
       }
     },
     {
+      "entry": "aws",
+      "package": "aws",
+      "sourceSha256": "952bdf3082eb9b170e479883a381e815903f9975b73ba16295dca0bbf20b61dc",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "dcr",
+          "metadata": "https://us-east-1.oauth.signin.aws/.well-known/oauth-authorization-server",
+          "metadataSha256": "608120a97f05525e4ee05dbfcb3da4b8e20f5685c1a546b45c3a7baa73bfa11e"
+        }
+      }
+    },
+    {
       "entry": "axiom",
       "package": "@executor.sh/axiom",
       "methods": {
