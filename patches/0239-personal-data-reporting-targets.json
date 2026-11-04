@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-personal-data-reporting-targets",
+  "file": "0239-personal-data-reporting-targets.patch",
+  "content_sha256": "0ea82621e8d63e5852086ac4ae07acec394e39844d1805a0d2506a40acfad5ba",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
