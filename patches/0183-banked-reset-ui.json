@@ -1,7 +1,7 @@
 {
   "identity": "basalt-banked-reset-ui",
   "file": "0183-banked-reset-ui.patch",
-  "content_sha256": "7c45c2db2a5973a6541adfe57e9bcf22419604f8a18b14e324a50bbec6763218",
+  "content_sha256": "71f54385fd1a8b00df8364faf65d165d4a428cf7fa9f3971792ff3329d17a131",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

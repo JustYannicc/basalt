@@ -1,16 +1,16 @@
 diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
-index ef50bd1..fb640e3 100644
+index af69864..b016d13 100644
 --- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 @@ -1,7 +1,8 @@
  /** Hosted account rows show usage under the policy the server enforces on every read. */
 -import { useAtomSet } from "@effect/atom-react";
 -import { Exit } from "effect";
--import { useState } from "react";
+-import { useState, type ComponentProps } from "react";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { Exit, Option } from "effect";
 +import { AsyncResult } from "effect/reactivity";
-+import { useState, type ReactNode } from "react";
++import { useState, type ComponentProps, type ReactNode } from "react";
  import type { AccountId, App } from "@executor-js/sdk";
  import type { Group } from "@executor-js/hosted-server/groups";
  import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
@@ -46,7 +46,7 @@ index ef50bd1..fb640e3 100644
   */
  export function HostedAccountObservations({
    account,
-@@ -49,7 +55,13 @@ export function HostedAccountObservations({
+@@ -52,7 +58,13 @@ export function HostedAccountObservations({
      app === undefined ? checkAccountAtom(key) : checkAppAccountAtom({ ...key, app: app.id }),
      { mode: "promiseExit" },
    );
@@ -61,7 +61,7 @@ index ef50bd1..fb640e3 100644
      <AccountObservations<HostedError>
        account={account}
        query={accountObservationsAtom(key)}
-@@ -65,9 +77,26 @@ export function HostedAccountObservations({
+@@ -69,9 +81,26 @@ export function HostedAccountObservations({
                },
              }
          : { health: { apps: [app], check: () => check(), showStatus: false } })}
@@ -179,22 +179,24 @@ index 0000000..3d4a799
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-index 788a925..e03c85c 100644
+index 0236ffa..b067793 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-@@ -1,30 +1,38 @@
- import type { AccountObservationRecord } from "@executor-js/sdk";
-+import type { ReactNode } from "react";
+@@ -2,35 +2,42 @@ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
  import type { DisplayFormat } from "../../contracts/display.ts";
  import { bankedResets, resetWindow } from "./account-observation-format.ts";
 +import { useResetControl, type AccountResetActions } from "./account-reset-control.tsx";
  import { UsageCell } from "./account-usage-cell.tsx";
+ 
+ type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
  
  /**
   * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
 - * not limits, so they get no cell; balances and their expiry live in the account's details.
 + * not limits, so they get no cell; balances and their expiry live in the account's details. With
 + * `resetActions`, the banked reset count becomes the control and its state shows under the cells.
+  * `tokens` gives a window's footer count, where a gateway counted one.
   */
  export function ObservationReadings({
    record,
@@ -203,6 +205,7 @@ index 788a925..e03c85c 100644
 +  resetActions,
    now,
    format,
+   tokens,
  }: {
    readonly record: AccountObservationRecord;
    readonly source?: string;
@@ -210,6 +213,7 @@ index 788a925..e03c85c 100644
 +  readonly resetActions?: AccountResetActions | undefined;
    readonly now: number;
    readonly format: DisplayFormat;
+   readonly tokens?: ((entry: Window) => ReactNode) | undefined;
  }) {
 -  const observation = record.result?.observation;
 +  const result = record.result;
@@ -225,7 +229,7 @@ index 788a925..e03c85c 100644
      <div
        {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
        data-observation-source={record.source.id}
-@@ -36,11 +44,48 @@ export function ObservationReadings({
+@@ -42,7 +49,13 @@ export function ObservationReadings({
            key={entry.id}
            entry={entry}
            stale={stale}
@@ -239,7 +243,8 @@ index 788a925..e03c85c 100644
 +          }
            now={now}
            format={format}
-         />
+           tokens={tokens?.(entry)}
+@@ -50,4 +63,35 @@ export function ObservationReadings({
        ))}
      </div>
    );
@@ -276,10 +281,10 @@ index 788a925..e03c85c 100644
 +  );
  }
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index 7f0bed0..4efb67d 100644
+index 489007e..54ee719 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
-@@ -21,6 +21,7 @@ import {
+@@ -22,6 +22,7 @@ import {
    refreshBlocked,
  } from "./account-observation-format.ts";
  import { ObservationReadings } from "./account-observation-readings.tsx";
@@ -287,24 +292,24 @@ index 7f0bed0..4efb67d 100644
  import { useQuery } from "./context.tsx";
  import { useAccountRow } from "./account-row.tsx";
  
-@@ -56,6 +57,7 @@ export function AccountObservations<E>({
-   query,
+@@ -50,6 +51,7 @@ export function AccountObservations<E>({
    refresh,
    health,
+   windowTokens,
 +  resets,
    Failure,
  }: {
    readonly account: AccountSummary;
-@@ -69,6 +71,8 @@ export function AccountObservations<E>({
-     readonly showStatus?: boolean;
-     readonly canReconnect?: (app: App) => boolean;
+@@ -65,6 +67,8 @@ export function AccountObservations<E>({
    };
+   /** A window's footer count, such as the tokens the account's pool counted in it. */
+   readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
 +  /** Only for a caller who may spend this account's banked resets; each spend asks first. */
 +  readonly resets?: AccountResetActions | undefined;
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
  }) {
    const { result, refresh: reload } = useQuery(query);
-@@ -171,6 +175,8 @@ export function AccountObservations<E>({
+@@ -167,6 +171,8 @@ export function AccountObservations<E>({
                key={report.source.id}
                record={report}
                {...(inspected.reports.length > 1 ? { source: report.source.label } : {})}
@@ -312,8 +317,8 @@ index 7f0bed0..4efb67d 100644
 +              resetActions={resets}
                now={now}
                format={format}
-             />
-@@ -246,6 +252,15 @@ export function AccountObservations<E>({
+               tokens={windowTokens}
+@@ -243,6 +249,15 @@ export function AccountObservations<E>({
              now={now}
              format={format}
            />
@@ -921,26 +926,22 @@ index 0000000..ef87cf8
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-index 73a739e..50bc98a 100644
+index 5031d12..72c1023 100644
 --- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-@@ -1,4 +1,5 @@
- import type { AccountObservationRecord } from "@executor-js/sdk";
-+import type { ReactNode } from "react";
- import type { DisplayFormat } from "../../contracts/display.ts";
- import { cn } from "../lib/utils.ts";
- import { age, windowView, type ObservationMeterState } from "./account-observation-format.ts";
-@@ -22,7 +23,8 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+@@ -23,8 +23,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
  /**
   * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
   * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
-- * reset count for the window they refill; it is a count only, never a control.
+- * reset count for the window they refill; it is a count only, never a control. `tokens` is what a
+- * gateway counted in the window, at the left of the footer.
 + * reset count for the window they refill; it becomes the reset control only when the product
-+ * passes one for a caller who may spend.
++ * passes one for a caller who may spend. `tokens` is what a gateway counted in the window, at the
++ * left of the footer.
   */
  export function UsageCell({
    entry,
-@@ -33,7 +35,9 @@ export function UsageCell({
+@@ -36,7 +37,9 @@ export function UsageCell({
  }: {
    readonly entry: Window;
    readonly stale: boolean;
@@ -950,8 +951,8 @@ index 73a739e..50bc98a 100644
 +    | undefined;
    readonly now: number;
    readonly format: DisplayFormat;
- }) {
-@@ -62,17 +66,19 @@ export function UsageCell({
+   readonly tokens?: ReactNode;
+@@ -66,17 +69,19 @@ export function UsageCell({
          <span className="flex-1" />
          {resets !== undefined && (
            <>
