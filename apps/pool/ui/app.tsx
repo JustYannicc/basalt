@@ -123,7 +123,7 @@ export function App({ api }: { api: PoolApi }) {
         <Usage
           load={api.usage}
           poll={api.poll}
-          providers={view?.providers ?? []}
+          providers={view?.providers}
           now={now}
           shareHref={shareHref}
         />

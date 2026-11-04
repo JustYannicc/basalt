@@ -134,6 +134,8 @@ function instrument() {
   // What the page showed when each fresh view request left, to prove the retained view committed first.
   const followUps = [];
   const queries = [];
+  const completed = [];
+  Reflect.set(window, "completedQueries", completed);
   Reflect.set(window, "queries", queries);
   Reflect.set(window, "followUps", followUps);
   const send = window.fetch.bind(window);
@@ -146,12 +148,17 @@ function instrument() {
         : body instanceof Uint8Array || body instanceof ArrayBuffer
           ? new TextDecoder().decode(body)
           : null;
+    let name;
     try {
       const operation = text === null ? null : JSON.parse(text);
+      name = operation?.name;
       if (operation?.name) queries.push(operation.name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
     } catch {}
-    return send(input, init);
+    return send(input, init).then((response) => {
+      if (name) completed.push(name);
+      return response;
+    });
   };
 }
 
@@ -295,6 +302,7 @@ test(
     let freshResult;
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
+    let usageResult = emptyUsage;
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -321,7 +329,7 @@ test(
           response.end(
             JSON.stringify(
               name === "usage"
-                ? emptyUsage
+                ? usageResult
                 : name === "computerContext"
                   ? {
                       ok: true,
@@ -395,7 +403,8 @@ test(
       });
       if (name === "snapshot-updating") evidenceVideo = page.video();
     };
-    const session = async (work, width = 1100) => {
+    const session = async (work, width = 1100, usage = emptyUsage) => {
+      usageResult = usage;
       held = [];
       views = [];
       freshResult = undefined;
@@ -445,28 +454,69 @@ test(
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {
-        viewResult = { ok: true, value: empty };
-        await session(async ({ page, frame, accepted, settled }) => {
-          await settled();
-          await capture(page, `usage-before-capacity-${width}`);
-          const queries = await frame.evaluate(() => Reflect.get(window, "queries"));
-          assert.ok(
-            queries.includes("usage"),
-            "Usage must start before the held capacity read answers",
-          );
-          await frame.getByText("No requests through this pool yet.", { exact: false }).waitFor();
-          assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
-          const usageReads = queries.filter((name) => name === "usage").length;
-          release();
-          await frame.getByText("Connect your first account", { exact: true }).waitFor();
-          await settled();
-          const after = await frame.evaluate(() => Reflect.get(window, "queries"));
-          assert.equal(
-            after.filter((name) => name === "usage").length,
-            usageReads,
-            "Receiving capacity must not fetch usage again",
-          );
-        }, width);
+        viewResult = { ok: true, value: { ...empty, providers } };
+        const total = {
+          ...emptyUsage.value.total,
+          requests: 1,
+          cost: 0.02,
+          tokens: { ...emptyUsage.value.total.tokens, input: 100, output: 28, total: 128 },
+        };
+        const populatedUsage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total,
+            models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+            accountsNeeded: [
+              {
+                provider: "codex",
+                advice: "enough",
+                accounts: 1,
+                limitHits: 0,
+                exhausted: 0,
+                hoursRead: 24,
+              },
+            ],
+          },
+        };
+        await session(
+          async ({ page, frame, accepted, settled }) => {
+            await settled();
+            await capture(page, `usage-before-capacity-${width}`);
+            const queries = await frame.evaluate(() => Reflect.get(window, "queries"));
+            assert.ok(
+              queries.includes("usage"),
+              "Usage must start before the held capacity read answers",
+            );
+            await frame.waitForFunction(
+              () =>
+                Reflect.get(window, "completedQueries").filter((name) => name === "usage").length >=
+                2,
+            );
+            await settled();
+            await capture(page, `usage-awaits-provider-names-${width}`);
+            assert.equal(
+              await frame.getByText("codex", { exact: true }).count(),
+              0,
+              "Provider IDs must not flash before capacity supplies their names",
+            );
+            assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
+            const usageReads = queries.filter((name) => name === "usage").length;
+            release();
+            await frame.getByText("Connect your first account", { exact: true }).waitFor();
+            await frame.getByText("Codex", { exact: true }).waitFor();
+            await capture(page, `usage-ready-${width}`);
+            await settled();
+            const after = await frame.evaluate(() => Reflect.get(window, "queries"));
+            assert.equal(
+              after.filter((name) => name === "usage").length,
+              usageReads,
+              "Receiving capacity must not fetch usage again",
+            );
+          },
+          width,
+          populatedUsage,
+        );
       });
 
     for (const { populated, recovery, sourced } of sourceRef
