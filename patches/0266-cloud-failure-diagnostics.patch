@@ -288,7 +288,7 @@ diff --git a/e2e/tests/emulator-failures.spec.ts b/e2e/tests/emulator-failures.s
        const answer = responses[name] ?? { status: 404, headers: {}, body: "" };
        response.writeHead(answer.status, answer.headers).end(answer.body);
      });
-@@ -206,6 +210,46 @@
+@@ -206,6 +210,48 @@
      }),
    );
  
@@ -312,16 +312,18 @@ diff --git a/e2e/tests/emulator-failures.spec.ts b/e2e/tests/emulator-failures.s
 +        Effect.gen(function* () {
 +          const { tracer, exported } = recording();
 +          const error = yield* failingCall("https://google.emulators.dev", "tainted", tracer).pipe(
-+            Effect.provideService(FetchHttpClient.Fetch, async () => {
-+              throw Object.assign(new Error(token), {
-+                code: token,
-+                errno: 1_000_000,
-+                cause: Object.assign(new Error(email), {
-+                  code: known ? "ECONNRESET" : email,
-+                  errno: known ? -54 : Infinity,
++            Effect.provideService(FetchHttpClient.Fetch, () =>
++              Promise.reject(
++                Object.assign(new Error(token), {
++                  code: token,
++                  errno: 1_000_000,
++                  cause: Object.assign(new Error(email), {
++                    code: known ? "ECONNRESET" : email,
++                    errno: known ? -54 : Infinity,
++                  }),
 +                }),
-+              });
-+            }),
++              ),
++            ),
 +          );
 +          expect(error.code).toBe(known ? "ECONNRESET" : "UNKNOWN");
 +          expect(error.errno).toBe(known ? -54 : undefined);
