@@ -1,0 +1,66 @@
+diff --git a/e2e/tests/dashboard-loading.spec.ts b/e2e/tests/dashboard-loading.spec.ts
+--- a/e2e/tests/dashboard-loading.spec.ts
++++ b/e2e/tests/dashboard-loading.spec.ts
+@@ -2,6 +2,7 @@
+ import { openInApp } from "../support/in-app-navigation.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
++import type { Page } from "playwright";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -10,6 +11,36 @@
+ import { Inventory } from "../support/contracts.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { seedOrganization } from "../sdk/index.ts";
++
++/** Lazy fallbacks replace heading nodes; query and measure in one browser task, without a retained handle. */
++const headingBounds = (page: Page, title: "Apps" | "Accounts") =>
++  page
++    .evaluate(() => {
++      const headings = [...document.querySelectorAll("h1")].flatMap((heading) => {
++        const box = heading.getBoundingClientRect();
++        if (
++          box.width === 0 ||
++          box.height === 0 ||
++          getComputedStyle(heading).visibility === "hidden" ||
++          heading.closest('[aria-hidden="true"]') !== null
++        )
++          return [];
++        return [
++          {
++            text: heading.textContent?.trim() ?? "",
++            box: { x: box.x, y: box.y, width: box.width, height: box.height },
++          },
++        ];
++      });
++      return { count: headings.length, heading: headings[0] ?? null };
++    })
++    .then(({ count, heading }) => {
++      expect(count, "Exactly one page heading is visible at the measurement").toBe(1);
++      expect(heading?.text, "The visible heading names the destination").toMatch(
++        title === "Apps" ? /^Apps(?:\s*\d+)?$/ : /^Accounts(?:\s*\d+)?$/,
++      );
++      return heading?.box ?? null;
++    });
+
+ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
+   it.effect(scenarios.dashboardLoading.title, (context) =>
+@@ -86,7 +117,7 @@
+                   ),
+                 ).toBe(0);
+                 const before = yield* browser.use("Record the page heading position", (page) =>
+-                  page.getByRole("heading", { level: 1 }).boundingBox(),
++                  headingBounds(page, section === "apps" ? "Apps" : "Accounts"),
+                 );
+                 yield* browser.checkpoint(
+                   `${viewport.name} ${section}: content skeleton inside the shell`,
+@@ -139,7 +170,7 @@
+                     .waitFor({ state: "hidden" }),
+                 );
+                 const after = yield* browser.use("The page heading keeps its position", (page) =>
+-                  page.getByRole("heading", { level: 1 }).boundingBox(),
++                  headingBounds(page, section === "apps" ? "Apps" : "Accounts"),
+                 );
+                 expect(before).not.toBeNull();
+                 expect(after).not.toBeNull();
