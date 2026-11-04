@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { mergeFeed, type Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
+import { elevenlabsSource } from "./elevenlabs.ts";
 import { gitlabSource } from "./gitlab.ts";
 import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
 import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
@@ -88,7 +89,7 @@ test("our connectors list like every other app, with no notice beside their desc
       { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
       { method: "token", kind: "secrets", label: "Personal access token" },
     ]);
-    else if (source && entry.id !== "slack" && entry.id !== "miro") assert.deepEqual(entry.auth, source.auth);
+    else if (source && entry.id !== "slack" && entry.id !== "miro" && entry.id !== "elevenlabs") assert.deepEqual(entry.auth, source.auth);
   }
 });
 
@@ -129,15 +130,16 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
   }
 });
 
-test("ElevenLabs uses its official personal API-key app", async () => {
+test("ElevenLabs offers sign-in in its existing personal API-key app", async () => {
   const entry = { ...official.apps[0]!, id: "elevenlabs", package: "@executor.sh/elevenlabs", name: "ElevenLabs",
     auth: [{ method: "apiKey", kind: "secrets", label: "API key" }] };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json({ version: 1, apps: [entry] }));
   const result = (await response.json() as Feed).apps[0]!;
-  assert.deepEqual(result.auth, entry.auth);
+  assert.deepEqual(result.auth, [{ method: "oauth", kind: "oauth2", label: "Sign in with ElevenLabs" }, ...entry.auth]);
+  assert.deepEqual(result.service?.mcp, ["https://api.elevenlabs.io/v1/mcp"]);
   assert.equal(result.source, "apps/elevenlabs.json");
-  const source = '{"package":"@executor.sh/elevenlabs","files":[]}';
-  assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"), async () => new Response(source))).text(), source);
+  const source = await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"));
+  assert.deepEqual(await source.json(), elevenlabsSource);
 });
 
 test("Zendesk source snapshot matches its provenance digests", () => {

@@ -1,0 +1,95 @@
+--- a/README.md
++++ b/README.md
+@@ -4,8 +4,8 @@
+ 
+ **Interface:** OpenAPI, ElevenLabs' official document at https://api.elevenlabs.io/openapi.json (413 tools). The document declares no security scheme (each operation takes an optional `xi-api-key` header parameter), so `openapi.ts` patches in a global `xi-api-key` apiKey scheme and the account's key is sent on every call. Requests go to `api.elevenlabs.io` only.
+ 
+-**Auth:** API key (`apiKey`). Create one under Settings > API Keys at https://elevenlabs.io/app/settings/api-keys; keys can be scoped to specific endpoints, and a restricted key only works for the tools its scopes cover. ElevenLabs offers no OAuth for third-party apps.
++**Auth:** API key (`apiKey`). Create one under Settings > API Keys at https://elevenlabs.io/app/settings/api-keys; keys can be scoped to specific endpoints, and a restricted key only works for the tools its scopes cover. The optional sign-in account uses ElevenLabs' official remote MCP server at https://api.elevenlabs.io/v1/mcp through automatic OAuth discovery; it does not need a developer-created client. Saved API keys keep the full REST API.
+ 
+-**Approvals:** every mutation (POST/PUT/PATCH/DELETE, including audio generation, which consumes credits) requires approval.
++**Approvals:** every REST mutation (POST/PUT/PATCH/DELETE, including audio generation, which consumes credits) requires approval. MCP tools require approval unless ElevenLabs marks them read-only, so generation and writes keep an approval step.
+ 
+ **Known gaps:** `POST /v1/music/detailed/stream` (`compose_detailed_stream`) responds with `text/event-stream`, which a tool cannot return, so the framework leaves it out (it is not counted in the skipped list); `POST /v1/music/detailed` covers the same generation without streaming. Binary audio endpoints return raw bytes as the framework allows. Websocket endpoints (realtime TTS/STT, agent conversations) are not in the OpenAPI document and are not covered. `GET /docs`, a redirect to the documentation website, is removed. The per-operation `xi-api-key` header parameter is removed from every operation (`header-patches.json`, regenerated from the live document: each affected operation's parameter list without that header), so the account's key is the only one sent; if the document adds new operations they keep the optional header until the file is regenerated. Data-residency hosts (`api.us.elevenlabs.io`, `api.eu.residency.elevenlabs.io`, `api.in.residency.elevenlabs.io`) are not supported; only `api.elevenlabs.io` receives credentials. The health check calls `GET /v1/user`, which needs the key's user read scope.
+--- a/index.ts
++++ b/index.ts
+@@ -13,6 +13,7 @@
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { elevenlabsSignIn, signedInRouter } from "./mcp.js";
+ 
+ const elevenlabs = defineProvider({
+   name: "ElevenLabs",
+@@ -33,15 +34,24 @@
+ });
+ 
+ export default defineApp(
+-  { user: { accounts: { elevenlabs: elevenlabs.many() } }, icons },
++  { user: { accounts: { elevenlabs: elevenlabs.many(), signIn: elevenlabsSignIn.many() } }, icons },
+   async ({ user, cache, fetch, signal }) => ({
+     tools: router(
+       await accountRouter(
+-        user?.accounts.elevenlabs ?? [],
+-        (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
+-          ),
++        [
++          ...(user?.accounts.elevenlabs ?? []).map((account) => ({
++            id: account.id,
++            discover: () =>
++              withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
++                tool.kind === "mutation" ? always() : undefined,
++              ),
++          })),
++          ...(user?.accounts.signIn ?? []).map((account) => ({
++            id: account.id,
++            discover: () => signedInRouter(account, { cache, signal }),
++          })),
++        ],
++        (account) => account.discover(),
+         { signal },
+       ),
+       {
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,8 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.2",
++    "@modelcontextprotocol/sdk": "1.32.1"
+   },
+   "executor": {
+     "title": "ElevenLabs"
+--- /dev/null
++++ b/mcp.ts
+@@ -0,0 +1,26 @@
++import { defineProvider, oauth2, withApprovals, type AccountOf, type AppCache } from "apps";
++import { mcpHealth, mcpRouter } from "apps/mcp";
++import { always } from "apps/operations/approval";
++
++const url = "https://api.elevenlabs.io/v1/mcp";
++const headers = (account: { fields: { access_token: string } }) => ({
++  Authorization: `Bearer ${account.fields.access_token}`,
++});
++
++// A separate requirement preserves saved API-key accounts and their REST credentials.
++export const elevenlabsSignIn = defineProvider({
++  name: "ElevenLabs",
++  hosts: ["api.elevenlabs.io"],
++  auth: { oauth: oauth2({ discover: url }) },
++  health: (check) => mcpHealth(check, { url, headers: headers(check.account) }),
++});
++
++export const signedInRouter = async (
++  account: AccountOf<typeof elevenlabsSignIn>,
++  context: { cache: AppCache; signal: AbortSignal },
++) =>
++  withApprovals(
++    await mcpRouter({ url, account, headers: headers(account), ...context }),
++    // Generating audio can spend credits even when a tool is not destructive.
++    (tool) => (tool.kind === "query" ? undefined : always()),
++  );
