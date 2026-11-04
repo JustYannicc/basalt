@@ -475,12 +475,12 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: bun run e2e:cloud --test-name '^Cloud production operations bind' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations bind' --workers 1
       - name: Verify encrypted production operation reads and backup refusal boundaries
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: bun run e2e:cloud --test-name '^Cloud production operations (encrypt|scope)' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations (encrypt|scope)' --workers 1
       - name: Verify native provider links through the Cloud hosted API
         working-directory: .upstream
         env:
@@ -495,6 +495,7 @@ jobs:
           name: production-ops-e2e
           include-hidden-files: true
           path: |
+            .generated/ci-flakes/**
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud.log
@@ -580,13 +581,14 @@ jobs:
         timeout-minutes: 22
         env:
           BASALT_SCOPE_PROOF_PATTERN: '^Cloud production operations enforce ${{ matrix.scenario }}$'
-        run: node scripts/production-ops/prove-scope.ts
+        run: node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: production-ops-identity-${{ matrix.scope }}-e2e
           include-hidden-files: true
           path: |
+            .generated/ci-flakes/**
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud.log
