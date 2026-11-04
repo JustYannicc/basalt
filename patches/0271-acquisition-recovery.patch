@@ -383,7 +383,7 @@ diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/
        if (
          previous?.instructions?.expiresAt !== undefined &&
          previous.instructions.expiresAt <= (yield* Clock.currentTimeMillis)
-@@ -173,7 +180,37 @@
+@@ -173,7 +180,40 @@
        const invoke = yield* prepareContext(input, claimed.row, claimed.session, command);
        const result = yield* invoke(command).pipe(
          Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),
@@ -401,7 +401,10 @@ diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/
 +                  retryable: true,
 +                };
 +          if (receipt?.retryable) {
-+            if (step === "status") return Effect.succeed({ state: "waiting" as const });
++            if (step === "status")
++              return Effect.logWarning("INTERACTIVE_ACQUISITION_RETRY", receipt).pipe(
++                Effect.as({ state: "waiting" as const }),
++              );
 +            return transaction(db, (tx) =>
 +              Effect.gen(function* () {
 +                const row = yield* current(tx, input, claimed);
@@ -422,7 +425,7 @@ diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/
        );
        const persist = transaction(db, (tx) =>
          Effect.gen(function* () {
-@@ -342,7 +379,13 @@
+@@ -342,7 +382,13 @@
              input: { method: input.method },
            }).pipe(
              Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStart)),
@@ -453,7 +456,7 @@ diff --git a/packages/sdk/src/implementation/interactive-state.ts b/packages/sdk
      transaction(db, (tx) =>
        Effect.gen(function* () {
          const row = yield* lockConnection(tx, input, crypto);
-@@ -190,7 +194,11 @@
+@@ -190,10 +194,19 @@
            return;
          yield* writeInteractive(tx, row, {
            ...settled(claimed.session),
@@ -466,3 +469,11 @@ diff --git a/packages/sdk/src/implementation/interactive-state.ts b/packages/sdk
          });
        }),
      ).pipe(
++      Effect.tap(() =>
++        receipt === undefined
++          ? Effect.void
++          : Effect.logWarning("INTERACTIVE_ACQUISITION_FAILURE", receipt),
++      ),
+       Effect.catch(() => Effect.logWarning("Interactive sign-in failure could not be recorded")),
+     );
+   return { claim, current, recordFailure, settled };

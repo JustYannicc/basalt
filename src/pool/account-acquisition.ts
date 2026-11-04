@@ -85,8 +85,7 @@ export class HomeAccountAcquisitions {
           if (entry.settled && entry.expires <= this.now()) delete attempts[id];
         if (Object.keys(attempts).length >= 200 || Object.values(attempts).filter((entry) => !entry.result || !entry.settled).length >= 16) return unavailable();
         const session = crypto.randomUUID();
-        const before = rows((await acquisitionStep("credentials", () => this.home.data("/credentials", { signal: request.signal }))).files)
-          .flatMap((row) => text(row.id) ?? []);
+        const before = (await this.credentials(request.signal)).flatMap((row) => text(row.id) ?? []);
         const attempt: Attempt = {
           owner, provider, operation: String(value.operation), expires: this.now() + ttl,
           marker: await acquisitionStep("attribution", () => this.attribution.begin()), before,
@@ -96,8 +95,11 @@ export class HomeAccountAcquisitions {
         // An uncertain start is retained and refused; repeating it could create another credential.
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         await this.arm();
-        const started = await acquisitionStep("oauth_start", () => this.home.data(`/oauth/auth-url?provider=${encodeURIComponent(provider)}`, { signal: request.signal }));
-        if (!text(started.state) || !text(started.url)) return unavailable();
+        const started = await acquisitionStep("oauth_start", async () => {
+          const started = await this.home.data(`/oauth/auth-url?provider=${encodeURIComponent(provider)}`, { signal: request.signal });
+          if (!text(started.state) || !text(started.url)) return unavailable();
+          return started;
+        });
         attempt.state = String(started.state);
         const callback = started.flow === "device" ? false
           : started.flow === "browser" || started.flow === "callback" || callbackOrigin(String(started.url)) !== null;
@@ -168,7 +170,11 @@ export class HomeAccountAcquisitions {
     if (Object.values(attempts).some((entry) => !entry.result || !entry.settled)) await this.arm();
   }
 
-  private async progress(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+  private progress(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+    return acquisitionStep("oauth_status", () => this.advance(attempt, attempts, signal));
+  }
+
+  private async advance(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
     if (attempt.result) return this.finish(attempt, attempts, signal);
     const state = attempt.state;
     if (attempt.expires <= this.now()) {
@@ -196,8 +202,10 @@ export class HomeAccountAcquisitions {
           attempt.result = { state: "failed", message: "This sign-in returned an existing account. Select its saved account instead." };
           return this.finish(attempt, attempts, signal);
         }
-        const credentials = rows((await acquisitionStep("credentials", () => this.home.data("/credentials", { signal }))).files);
-        if (!ids.every((id) => credentials.some((row) => row.id === id && (text(row.provider) ?? text(row.type)) === attempt.provider))) return unavailable();
+        const credentials = await this.credentials(signal);
+        await acquisitionStep("credentials", async () => {
+          if (!ids.every((id) => credentials.some((row) => row.id === id && (text(row.provider) ?? text(row.type)) === attempt.provider))) return unavailable();
+        });
         attempt.result = { state: "connected", ref: homeReference(ids) };
       } else return unavailable();
     }
@@ -217,8 +225,12 @@ export class HomeAccountAcquisitions {
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
   }
 
+  private credentials(signal?: AbortSignal) {
+    return acquisitionStep("credentials", async () => rows((await this.home.data("/credentials", { signal })).files));
+  }
+
   private async currentProviderIds(provider: string, signal?: AbortSignal): Promise<string[]> {
-    return rows((await acquisitionStep("credentials", () => this.home.data("/credentials", { signal }))).files).flatMap((row) => {
+    return (await this.credentials(signal)).flatMap((row) => {
       const id = text(row.id);
       return id && (text(row.provider) ?? text(row.type)) === provider ? [id] : [];
     });
@@ -226,8 +238,8 @@ export class HomeAccountAcquisitions {
 
   private async arm(): Promise<void> {
     const next = this.now() + 30_000;
-    const alarm = await this.storage.getAlarm();
-    if (alarm === null || alarm > next) await this.storage.setAlarm(next);
+    const alarm = await acquisitionStep("state", () => this.storage.getAlarm());
+    if (alarm === null || alarm > next) await acquisitionStep("state", () => this.storage.setAlarm(next));
   }
 
   private async remove(ref: string, signal?: AbortSignal): Promise<void> {
