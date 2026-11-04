@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-physical-target-preboot",
+  "file": "0265-physical-target-preboot.patch",
+  "content_sha256": "858f929e7fb2744e85e2396d7d2360fe29b035b971b65ca04c2b3ed772778c65",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
