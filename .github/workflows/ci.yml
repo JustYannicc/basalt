@@ -31,8 +31,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Temporary same-repository proof; remove after the measured PR run.
-          BOAT_JOBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/boat-suite-runtime') && 'production-ops,production-ops-migrations,production-ops-identity,host-managed-accounts,contributed-accounts,oauth-account-regressions,account-acquisition,pool-account-recovery,compiler-diagnostics' || vars.BASALT_CI_BOAT_JOBS }}
+          BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-update') }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
