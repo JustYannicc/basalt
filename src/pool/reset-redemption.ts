@@ -1,4 +1,4 @@
-import type { ResetResult } from "../../apps/pool/action-contract.ts";
+import type { ResetAttempt, ResetResult } from "../../apps/pool/action-contract.ts";
 import type { HomeClient } from "./control.ts";
 import { digest } from "./backend-users.ts";
 import { fail, post } from "./json.ts";
@@ -25,6 +25,23 @@ export class ResetRedemption {
   private now: () => number;
   constructor(storage: ActionStorage, client: HomeClient, now: () => number) {
     this.storage = storage; this.client = client; this.now = now;
+  }
+
+  async read(id: string): Promise<ResetAttempt | null> {
+    const accountKey = `reset-use-v1:${await digest(id)}`;
+    const requestId = await this.storage.get<string>(accountKey);
+    if (requestId === undefined) return null;
+    const attempt = await this.storage.get<Attempt>(`${accountKey}:${requestId}`);
+    if (attempt === undefined) return null;
+    const retryUntil = attempt.startedAt + 10 * 60_000;
+    return {
+      ...attempt.result,
+      provider: attempt.provider,
+      creditId: attempt.creditId,
+      startedAt: new Date(attempt.startedAt).toISOString(),
+      retryUntil: new Date(retryUntil).toISOString(),
+      canRetryProvider: attempt.result.outcome === "unknown" && this.now() < retryUntil,
+    };
   }
 
   async use(provider: ProviderResets, requestId: string, creditId: string, signal: AbortSignal, stillMember: () => Promise<void>): Promise<ResetResult> {

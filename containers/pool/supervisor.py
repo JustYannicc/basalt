@@ -40,6 +40,7 @@ from .runtime_signals import (
     StartupPhase,
     install_error_handlers,
     report_failure,
+    report_child_exit,
     startup_phase,
     try_monotonic_ns,
 )
@@ -116,6 +117,7 @@ def wait_for_home(
             child._reader.join(timeout=0.2)
             if home_boot_requires_import(exit_code, child.config_empty.is_set()):
                 return "empty"
+            report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
             raise StartupError(f"Home exited before readiness (exit {exit_code})")
         if management_ready(management_key):
             return "ready"
@@ -147,6 +149,7 @@ def import_initial_config(
     finally:
         seed_path.unlink(missing_ok=True)
     if result.returncode != 0:
+        report_child_exit("home_import", result.returncode, FailureCategory.HOME_STARTUP)
         raise StartupError("Home initial configuration import failed")
 
 
@@ -253,6 +256,7 @@ def main() -> int:
                 for child in children:
                     exit_code = child.process.poll()
                     if exit_code is not None:
+                        report_child_exit(child.name, exit_code, category)
                         raise StartupError(
                             f"{child.name} exited before the pool was healthy (exit {exit_code})"
                         )
@@ -272,6 +276,7 @@ def main() -> int:
                 exit_code = child.process.poll()
                 if exit_code is not None:
                     readiness.set_ready(False)
+                    report_child_exit(child.name, exit_code, category)
                     raise StartupError(
                         f"{child.name} exited unexpectedly (exit {exit_code})"
                     )

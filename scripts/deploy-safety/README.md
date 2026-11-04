@@ -49,11 +49,13 @@ Check runs can finish out of order. Before anything else, Deploy's job looks for
 
 Releases run one at a time in the `deploy-production` concurrency group, set on Deploy's job, so a Deploy run that skips everything doesn't take a place in the queue. GitHub keeps one pending run per group, and a new one replaces it whatever commit either carries. So `Manual release of main` releases the newest `main` commit that contains `candidate`, passed its own push Check and isn't a `release-updates/` head, falling back to `candidate` when none newer qualifies. Without `candidate`, it releases the current `main` head. It also stops with success before the backup when production already contains that commit. Its deploy job then only needs `main` to still contain the backed-up commit, since the backup is for that commit's transition, and runs the same trusted `main` commit as the backup job.
 
-Automatic mode validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
+Automatic mode validates deployment configuration before creating a deployment record, deploys, verifies the pool image, runs the public smoke check, and marks the record successful. Capture reads the immutable image's manifest and config with pull-only registry credentials, hashes both against their descriptors, and verifies the actual platform and OAuth completion capability label. Image verification binds the candidate's publication digest to the application and every active instance, and checks the live Worker's input fingerprint. Rollout observation shares the existing pool startup budget. The workflow log retains the candidate, platform, input fingerprint, capability label and immutable manifest/config digests before verification, including on failure.
 
 The deploy step retries one failure, in both modes: when Cloudflare rejects a Worker upload with `ScriptStartupError` because script startup exceeded the CPU time limit, the runner logs a warning and runs the deploy command once more under the same deployment record. Startup CPU time varies between uploads. The retry runs the whole deploy again, so the steps that always run, such as Migrations, PoolDatabase and AppSourceNamespace, run a second time. It needs both the error name and that message in the failed command's output, and it needs the first attempt to have finished: when something the deploy started still holds its output two seconds after it exits, the runner logs why and doesn't retry, so the two can't overlap. No other failure, including another `ScriptStartupError`, is retried, and a second rejection fails the step. Rollback deploys retry the same way.
 
-If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. Release subprocesses run quietly. Actions logs are public, so a failed command prints the last 60 lines of its stdout and stderr separately, starting at a whole line, after removing credential-named environment values, URL userinfo, bearer and basic credentials, key-value pairs whose key ends in password, secret, token or api key, and long runs mixing letters and digits. The runner settles when the command exits, so a leftover descendant holding its output cannot keep the release open. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
+Missing publication evidence, unresolved image drift or failed pool readiness marks the attempt failed and stops without automatic rollback, including after a partial deployment. Retain the logged publication evidence and review the exact image before manual recovery. A manual rollback also needs publication evidence before it can report success; a source that predates receipt capture cannot satisfy that guard.
+
+If deployment or smoke starts and fails for a safe release whose pool image still verifies, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. Release subprocesses run quietly. Actions logs are public, so a failed command prints the last 60 lines of its stdout and stderr separately, starting at a whole line, after removing credential-named environment values, URL userinfo, bearer and basic credentials, key-value pairs whose key ends in password, secret, token or api key, and long runs mixing letters and digits. The runner settles when the command exits, so a leftover descendant holding its output cannot keep the release open. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
 
 ### Rolling forward over a failed release
 
@@ -189,6 +191,45 @@ Matching is exact:
 - `rollback-target` and `manual-rollback` use the backup the release recorded in GitHub Deployments and look only on the branch it names, so a later resize or a restore that moved production doesn't hide it.
 
 Exactly one backup must match. Other backups, such as PlanetScale's own, are ignored. A malformed `basalt-release-` name, a digest mismatch, missing or orphaned payload metadata, or more than one match stops the release. The earlier `basalt-release-v1-` format embedded compressed metadata in the name. Those names can still be read and count only when the release recorded them; new backups always use v2.
+
+### Backup retention report
+
+New release backups request 30 days of retention at creation. The deployment gate still waits for completion, protects the backup and reads it back. Protection prevents automatic expiry, so this change does not retire existing or new protected backups by itself.
+
+Use the read-only report to review backups that might be retired. It needs the PlanetScale service-token environment above and GitHub `deployments: read` access:
+
+```sh
+node scripts/deploy-safety/backup-retirement.ts > /private/path/backup-report.json
+node scripts/deploy-safety/backup-retirement.ts \
+  --keep-review /private/path/keep-review.json > /private/path/reviewed-backup-report.json
+```
+
+The first run keeps everything. Review its inventory and ledger digests, then supply a private keep-review file. For every production branch, name the latest production migration's recovery backup and list explicit pins and restore-dependent backups. Those references can exist outside the release ledger, so the report cannot infer their absence. Empty pin and restore lists mean the operator verified there are none. Record the SHA-256 of the private evidence checked for each external decision. Copy the inventory and ledger digests from the first report; changed inventory or history invalidates the review. The output's `keepReviewDigest` binds the exact review, including its evidence digests. The operator remains responsible for checking those external sources; a hash records which evidence was reviewed.
+
+```json
+{
+  "schemaVersion": 1,
+  "scope": { "organization": "YOUR_ORGANIZATION", "database": "basalt" },
+  "inventoryDigest": "DIGEST_FROM_REPORT",
+  "ledgerDigest": "DIGEST_FROM_REPORT",
+  "reviewedAt": "UTC_REVIEW_TIMESTAMP",
+  "branches": [{
+    "branch": "main",
+    "latestMigrationRecoveryBackupId": "EXACT_BACKUP_ID",
+    "pinnedBackupIds": [],
+    "restoreDependentBackupIds": [],
+    "evidenceDigests": {
+      "latestMigration": "SHA256_OF_PRIVATE_MIGRATION_EVIDENCE",
+      "pins": "SHA256_OF_PRIVATE_PIN_INVENTORY",
+      "restoreDependencies": "SHA256_OF_PRIVATE_RESTORE_EVIDENCE"
+    }
+  }]
+}
+```
+
+A candidate must be older than 30 days and outside the newest ten completed release backups on its production branch, ordered by creation time. The report preserves the current `releaseBackup` selection, including the failed release's backup after a roll-forward, the latest successful database release's recovery point, reviewed migration recovery points and pins, unresolved release references and restore dependencies. Missing ownership, restore metadata, keep evidence or ledger verification keeps backups. Scheduled and required backups remain under provider policy.
+
+The report lists exact IDs, names, ages, ranks, compressed sizes and keep reasons. It makes only GET requests and provides no unprotect or delete command. Retirement needs a separate exact-ID list, dry run, fresh provider and ledger checks, and coordinator GO. Keep the report and review file private.
 
 ## Provider contracts
 
