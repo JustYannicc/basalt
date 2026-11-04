@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import type { PoolView, Provider } from "../contract.ts";
+import type { Result } from "../index.ts";
+import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import { providerName } from "./accounts.tsx";
 import { capacityLabs, gaps, hourMs, planChips } from "./capacity-model.ts";
 import { CapacitySection, labSummaries, toneText, type LabSummary, type Tone } from "./capacity-view.tsx";
 import { StateIcon } from "./controls.tsx";
 import { LabMark } from "./lab.tsx";
-import type { Overview, RangeDays } from "./overview-data.ts";
+import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
 import { accountProblems, bankedResetCount } from "./overview-attention.ts";
@@ -21,15 +23,41 @@ export function ManagerOverview({ data, days, providers, view, accountsHref, onR
   data: Overview; days: RangeDays; providers: readonly Provider[]; view: PoolView; accountsHref?: string; onRetry: () => void;
 }) {
   const name = (id: string) => providerName(providers, id);
-  const labs = data.capacity?.ok ? labSummaries(data.capacity.value, days) : [];
+  const labs = data.coherent === true && data.capacity?.ok ? labSummaries(data.capacity.value, days) : [];
   return (
     <>
       {data.coherent === false && <p role="status" className="mb-4 text-sm text-muted-foreground">This read is incomplete. Totals below keep their coverage notes; no complete capacity verdict is claimed. <button type="button" onClick={onRetry} className="underline underline-offset-2">Read again</button></p>}
       <Answers data={data} labs={labs} days={days} name={name} view={view} />
-      <CapacitySection result={data.capacity} providers={providers} days={days} onRetry={onRetry} />
+      <CapacitySection result={data.capacity} providers={providers} days={days} coherent={data.coherent === true} onRetry={onRetry} />
       <WhoUses overview={data.usage?.ok ? data.usage.value : undefined} people={data.people} models={data.models} days={days} name={name} onRetry={onRetry} />
       <Money overview={data.usage?.ok ? data.usage.value : undefined} people={data.people} days={days} name={name} />
       <Attention data={data} name={name} days={days} view={view} accountsHref={accountsHref} />
+    </>
+  );
+}
+
+export function PersonalOverview({ data, days, providers, onRetry }: {
+  data: Result<PoolPersonalOverviewResult> | undefined; days: RangeDays; providers: readonly Provider[]; onRetry: () => void;
+}) {
+  const name = (id: string) => providerName(providers, id);
+  if (!data?.ok) return (
+    <section className="grid gap-4 pt-12">
+      {data ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 px-4 py-3">
+          <span className="text-sm text-destructive">{data.message}</span>
+          <button type="button" onClick={onRetry} className="text-sm underline underline-offset-2">Try again</button>
+        </div>
+      ) : (
+        <div aria-hidden="true" className="h-40 animate-pulse rounded-md bg-accent" />
+      )}
+    </section>
+  );
+  const read = { ok: true as const, value: seriesRead(data.value.series, data.value.partial || data.value.series.next !== null) };
+  return (
+    <>
+      {data.value.partial && <p role="status" className="mb-4 text-sm text-muted-foreground">This read is incomplete. Your request totals keep their coverage notes; retry for a complete range.</p>}
+      <WhoUses overview={undefined} personal={data.value} people={read} models={read} days={days} name={name} onRetry={onRetry} />
+      <Money overview={undefined} personal={data.value} people={read} days={days} name={name} />
     </>
   );
 }

@@ -79,8 +79,12 @@ export function capacityLabs(history: PoolCapacityHistory): CapacityLab[] {
 export const share = (aggregate: Pick<CapacityAggregate, "remaining" | "full">) =>
   aggregate.full > 0 ? Math.max(0, Math.min(1, aggregate.remaining / aggregate.full)) : null;
 
+export function isMeasuredCapacityPoint(point: CapacityHistoryPoint): boolean {
+  return point.windowSeconds !== 18_000 || point.raw !== undefined && point.usable !== null && point.usable !== undefined;
+}
+
 export const isOut = (point: CapacityHistoryPoint) =>
-  point.minimum.full > 0 && point.minimum.remaining <= point.minimum.full * outShare;
+  isMeasuredCapacityPoint(point) && point.minimum.full > 0 && point.minimum.remaining <= point.minimum.full * outShare;
 
 export interface Span {
   readonly from: number;
@@ -136,28 +140,29 @@ export interface LineFacts {
 }
 
 export function lineFacts(line: CapacityLine, to: number): LineFacts {
-  const spans = outSpans(line.points);
+  const points = line.points.filter(isMeasuredCapacityPoint);
+  const spans = outSpans(points);
   const lengths = spans.map((span) => (span.to - span.from) / hourMs);
   let lowest: CapacityHistoryPoint | null = null;
-  for (const point of line.points) {
+  for (const point of points) {
     if (!lowest || point.minimum.remaining < lowest.minimum.remaining) lowest = point;
   }
   const lows = new Map<number, CapacityHistoryPoint>();
-  if (line.windowSeconds === 604_800) for (const point of line.points) {
+  if (line.windowSeconds === 604_800) for (const point of points) {
     const week = Math.floor((point.hour + 3 * dayMs) / (7 * dayMs));
     const known = lows.get(week);
     if (!known || point.minimum.remaining < known.minimum.remaining) lows.set(week, point);
   }
   return {
     asOf: to,
-    latest: line.points.at(-1) ?? null,
+    latest: points.at(-1) ?? null,
     lowest,
     weeklyLows: [...lows.values()],
     outHours: lengths.reduce((sum, hours) => sum + hours, 0),
     episodes: spans.length,
     longestHours: Math.max(0, ...lengths),
-    gapHours: gaps(line.points, to).reduce((sum, span) => sum + (span.to - span.from) / hourMs, 0),
-    measuredHours: line.points.length,
+    gapHours: gaps(points, to).reduce((sum, span) => sum + (span.to - span.from) / hourMs, 0),
+    measuredHours: points.length,
   };
 }
 
@@ -170,7 +175,7 @@ export function pressing(lab: CapacityLab, asOf = lab.readAt): { readonly key: s
   const fallback = lab.lines[0];
   if (!weekly || !five) return { key: fallback?.key ?? "", text: null };
   const exhaustedNow = (line: CapacityLine) => {
-    const latest = line.points.at(-1);
+    const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
     const now = asOf;
     const fresh = latest && now !== null && now >= latest.last.observedAt.to && now - latest.last.observedAt.from <= 6 * 60_000;
     return Boolean(fresh && latest!.last.full > 0 && latest!.last.remaining <= latest!.last.full * outShare);
@@ -213,6 +218,13 @@ export function verdict(line: CapacityLine | undefined, facts: LineFacts | undef
   readonly detail: string | null;
 } {
   const forecast = line?.forecast;
+  if (line?.windowSeconds === 18_000 && line.points.length > 0 && !line.points.some(isMeasuredCapacityPoint)) {
+    return {
+      tone: "learn", short: "Weekly balance unavailable",
+      text: "Five-hour readings cannot be treated as usable without matching weekly balances for the same accounts.",
+      detail: null,
+    };
+  }
   if (!line || !facts?.latest || !forecast || forecast.status === "learning") {
     const weeks = forecast?.history.completedWeeks ?? 0;
     return {
@@ -271,11 +283,12 @@ export interface DailyRow {
 
 /** One row per UTC day from the first reading to `to`, newest first: the chart's table fallback. */
 export function dailyRows(points: readonly CapacityHistoryPoint[], to: number): DailyRow[] {
-  const first = points[0];
+  const measured = points.filter(isMeasuredCapacityPoint);
+  const first = measured[0];
   if (!first) return [];
   const days = new Map<number, { lowest: CapacityAggregate | null; out: number; measured: number }>();
   for (let day = Math.floor(first.hour / dayMs) * dayMs; day < to; day += dayMs) days.set(day, { lowest: null, out: 0, measured: 0 });
-  for (const point of points) {
+  for (const point of measured) {
     const row = days.get(Math.floor(point.hour / dayMs) * dayMs);
     if (!row) continue;
     row.measured++;

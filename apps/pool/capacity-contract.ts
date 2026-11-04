@@ -21,6 +21,12 @@ export interface CapacityPlanHistory {
   readonly last: CapacityAggregate | null;
 }
 
+export interface CapacityRawHistory {
+  readonly minimum: CapacityAggregate;
+  readonly last: CapacityAggregate;
+  readonly plans: readonly CapacityPlanHistory[];
+}
+
 export interface CapacityHistoryPoint {
   readonly provider: string;
   readonly windowSeconds: number;
@@ -28,10 +34,12 @@ export interface CapacityHistoryPoint {
   readonly unit: { readonly id: string; readonly label: string };
   /** UTC hour start. Empty hours are omitted, so missing observations remain gaps. */
   readonly hour: number;
-  /** Lowest weighted remaining total in this hour, with its paired full total. */
+  /** Lowest usable remaining total in this hour, with its paired full total. */
   readonly minimum: CapacityAggregate;
   readonly last: CapacityAggregate;
   readonly plans: readonly CapacityPlanHistory[];
+  /** Provider-reported five-hour quota before the same account's weekly limit is applied. */
+  readonly raw?: CapacityRawHistory;
   /** Usable five-hour allowance, after excluding accounts whose weekly allowance is exhausted. */
   readonly usable?: CapacityAggregate | null;
   /** Joined from the hourly request series by the owner of that source, when available. */

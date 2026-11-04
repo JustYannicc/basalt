@@ -1,11 +1,13 @@
-import type { CapacityAggregate, CapacityPlanHistory, CapacityHistoryPoint } from "../../../apps/pool/capacity-contract.ts";
-export type { CapacityAggregate, CapacityPlanHistory, CapacityHistoryPoint } from "../../../apps/pool/capacity-contract.ts";
+import type { CapacityAggregate, CapacityHistoryPoint, CapacityPlanHistory, CapacityRawHistory } from "../../../apps/pool/capacity-contract.ts";
+export type { CapacityAggregate, CapacityHistoryPoint, CapacityPlanHistory, CapacityRawHistory } from "../../../apps/pool/capacity-contract.ts";
 import { digest } from "../backend-users.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "../usage-storage.ts";
 import type { CapacityReading } from "./normalize.ts";
 
 const hourMs = 3_600_000;
 const dayMs = 24 * hourMs;
+const weekHours = 7 * 24;
+const maxDemandSampleGap = 15 * 60_000;
 const retainedHours = 400 * 24;
 const maxGroups = 64;
 const maxPlansPerGroup = 32;
@@ -238,57 +240,101 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
   };
 }
 
-function pointFor(group: PreparedGroup, at: number, key: string): StoredPoint {
-  const readings = [...group.readings.values()];
+function plansFor(readings: readonly CapacityReading[], at: number): CapacityPlanHistory[] {
   const byPlan = new Map<string, CapacityReading[]>();
   for (const reading of readings) {
     const key = JSON.stringify(reading.plan);
     byPlan.set(key, [...(byPlan.get(key) ?? []), reading]);
   }
-  const plans = [...byPlan.values()].map((rows) => ({
+  return [...byPlan.values()].map((rows) => ({
     plan: rows[0]!.plan, minimum: aggregate(rows, at), last: aggregate(rows, at),
   })).sort((a, b) => (a.plan ?? "").localeCompare(b.plan ?? ""));
+}
+
+function pointFor(group: PreparedGroup, at: number, key: string): StoredPoint {
+  const readings = [...group.readings.values()];
   const usableValues = group.windowSeconds === 18_000 ? readings.map((reading) => group.weeklyUsability?.get(reading.account)) : undefined;
-  const usable = usableValues && usableValues.every((value): value is boolean => value !== null && value !== undefined)
+  const weeklyGateComplete = usableValues?.every((value): value is boolean => value !== null && value !== undefined) ?? false;
+  const gatedReadings = group.windowSeconds === 18_000 && weeklyGateComplete
+    ? readings.map((reading) => group.weeklyUsability!.get(reading.account) ? reading : { ...reading, remaining: 0 })
+    : readings;
+  const raw = group.windowSeconds === 18_000 ? {
+    minimum: aggregate(readings, at), last: aggregate(readings, at), plans: plansFor(readings, at),
+  } satisfies CapacityRawHistory : undefined;
+  const usable = weeklyGateComplete
     ? { ...aggregate(readings, at), remaining: readings.reduce((total, reading) =>
       total + (group.weeklyUsability!.get(reading.account) ? reading.full : 0), 0) }
     : undefined;
   return {
     key, provider: group.provider, windowSeconds: group.windowSeconds, mode: group.mode, unit: group.unit, hour: hourOf(at),
-    minimum: aggregate(readings, at), last: aggregate(readings, at), plans,
+    minimum: aggregate(gatedReadings, at), last: aggregate(gatedReadings, at), plans: plansFor(gatedReadings, at),
+    ...(raw ? { raw } : {}),
     ...(group.windowSeconds === 18_000 ? { usable: usable ?? null } : {}),
   };
 }
 
-function updatePoint(old: StoredPoint | undefined, current: StoredPoint): StoredPoint {
-  if (!old) return current;
-  const lowest = current.minimum.remaining < old.minimum.remaining ? current : old;
-  const usable = current.usable === null ? null : old.usable === null || old.usable === undefined ? current.usable
-    : current.usable && current.usable.remaining < old.usable.remaining ? current.usable : old.usable;
-  const currentPlans = new Map(current.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
-  const minimumPlans = new Map(lowest.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
+function mergePlans(
+  old: readonly CapacityPlanHistory[],
+  current: readonly CapacityPlanHistory[],
+  minimum: readonly CapacityPlanHistory[],
+  minimumAggregate: CapacityAggregate,
+): CapacityPlanHistory[] {
+  const currentByPlan = new Map(current.map((entry) => [JSON.stringify(entry.plan), entry]));
+  const minimumByPlan = new Map(minimum.map((entry) => [JSON.stringify(entry.plan), entry]));
   const plans = new Map<string, CapacityPlanHistory>();
-  for (const entry of [...old.plans, ...current.plans]) {
+  for (const entry of [...old, ...current]) {
     const key = JSON.stringify(entry.plan);
     plans.set(key, {
       plan: entry.plan,
-      minimum: minimumPlans.get(key)?.minimum ?? {
-        ...lowest.minimum, remaining: 0, full: 0, accountCount: 0,
+      minimum: minimumByPlan.get(key)?.minimum ?? {
+        ...minimumAggregate, remaining: 0, full: 0, accountCount: 0,
         knownWeightCount: 0, unknownWeightCount: 0, weights: [],
       },
-      last: currentPlans.get(key)?.last ?? null,
+      last: currentByPlan.get(key)?.last ?? null,
     });
   }
-  return { ...current, minimum: lowest.minimum, ...(current.windowSeconds === 18_000 ? { usable: usable ?? null } : {}),
-    plans: [...plans.values()].sort((a, b) => (a.plan ?? "").localeCompare(b.plan ?? "")),
-  };
+  return [...plans.values()].sort((a, b) => (a.plan ?? "").localeCompare(b.plan ?? ""));
+}
+
+function updatePoint(old: StoredPoint | undefined, current: StoredPoint): StoredPoint {
+  if (!old) return current;
+  if (current.windowSeconds === 18_000) {
+    const oldRaw = old.raw ?? { minimum: old.minimum, last: old.last, plans: old.plans };
+    const currentRaw = current.raw ?? { minimum: current.minimum, last: current.last, plans: current.plans };
+    const rawMinimumPoint = currentRaw.minimum.remaining < oldRaw.minimum.remaining ? currentRaw : oldRaw;
+    const rawMinimum = rawMinimumPoint.minimum;
+    const rawPlans = mergePlans(oldRaw.plans, currentRaw.plans, rawMinimumPoint.plans, rawMinimum);
+    const oldGateComplete = old.raw !== undefined && old.usable !== null;
+    const currentGateComplete = current.raw !== undefined && current.usable !== null;
+    const gatesComparable = oldGateComplete && currentGateComplete;
+    const minimumPoint = gatesComparable && old.minimum.remaining < current.minimum.remaining ? old : current;
+    const minimum = gatesComparable ? minimumPoint.minimum : rawMinimum;
+    const plans = gatesComparable ? mergePlans(old.plans, current.plans, minimumPoint.plans, minimum) : rawPlans;
+    const usable = gatesComparable
+      ? old.usable!.remaining < current.usable!.remaining ? old.usable : current.usable
+      : null;
+    return {
+      ...current,
+      minimum,
+      last: gatesComparable ? current.last : currentRaw.last,
+      plans,
+      raw: { minimum: rawMinimum, last: currentRaw.last, plans: rawPlans },
+      usable,
+    };
+  }
+  const lowest = current.minimum.remaining < old.minimum.remaining ? current : old;
+  const plans = mergePlans(old.plans, current.plans, lowest.plans, lowest.minimum);
+  return { ...current, minimum: lowest.minimum, plans };
 }
 
 function fingerprint(point: StoredPoint): Promise<string> {
-  const { key: _key, hour: _hour, minimum, last, plans, ...derived } = point;
+  const { key: _key, hour: _hour, minimum, last, plans, raw, ...derived } = point;
   const value = (aggregate: CapacityAggregate) => { const { at: _at, ...source } = aggregate; return source; };
   return digest(JSON.stringify({ ...derived, minimum: value(minimum), last: value(last),
-    plans: plans.map((plan) => ({ plan: plan.plan, minimum: value(plan.minimum), last: plan.last && value(plan.last) })) }));
+    plans: plans.map((plan) => ({ plan: plan.plan, minimum: value(plan.minimum), last: plan.last && value(plan.last) })),
+    ...(raw ? { raw: { minimum: value(raw.minimum), last: value(raw.last),
+      plans: raw.plans.map((plan) => ({ plan: plan.plan, minimum: value(plan.minimum), last: plan.last && value(plan.last) })) } } : {}),
+  }));
 }
 
 /** Stores hashed account slots with bounded history; product reads never return account identifiers. */
@@ -372,7 +418,7 @@ export class CapacityHistory {
       const dayWrites = new Map<string, DayHistory>();
       const writes = new Map<string, unknown>();
       const deletes: string[] = [];
-      const demandFrom = hourOf(snapshot.at) - (13 * WEEK_HOURS - 1) * hourMs;
+      const demandFrom = hourOf(snapshot.at) - (13 * weekHours - 1) * hourMs;
       const oldDemandFrom = index.demandFrom ?? index.fromHour;
       if (dayOf(demandFrom) > dayOf(oldDemandFrom)) {
         const expiredDays = index.days.filter((day) => day >= dayOf(oldDemandFrom) && day < dayOf(demandFrom));
@@ -394,9 +440,10 @@ export class CapacityHistory {
         if (kept.length) accounts[account] = kept;
         else delete accounts[account];
       }
-      for (const accounts of Object.values(rollingUse)) for (const [account, uses] of Object.entries(accounts)) {
+      for (const [group, accounts] of Object.entries(rollingUse)) for (const [account, uses] of Object.entries(accounts)) {
         const kept = uses.filter((entry) => entry.at > rollingCutoff);
         if (kept.length) accounts[account] = kept;
+        else if (rollingChain[group]?.[account]?.complete) accounts[account] = [];
         else delete accounts[account];
       }
       const previous = index.previous ?? [];
@@ -607,7 +654,9 @@ export class CapacityHistory {
         const previousSample = previous.find((reading) => cohortGroup(reading) === group);
         const unit = currentSample?.unit ?? previousSample?.unit;
         if (!expectedAccounts || !unit || index.lastAt === null) continue;
-        const from = Math.max(index.lastAt, firstRetainedHour);
+        // A stale sampler gap has no measured exposure to add to the forecast history.
+        const demandStart = snapshot.at - index.lastAt > maxDemandSampleGap ? snapshot.at : index.lastAt;
+        const from = Math.max(demandStart, firstRetainedHour, demandFrom);
         for (let hour = hourOf(from); hour < snapshot.at; hour += hourMs) {
           const overlap = Math.max(0, Math.min(snapshot.at, hour + hourMs) - Math.max(from, hour));
           if (overlap) await addDemand({ provider: providerWindow[0], windowSeconds: providerWindow[1], mode: providerWindow[2], unit,

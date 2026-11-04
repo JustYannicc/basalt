@@ -36,6 +36,16 @@ export const pool = {
       return { ok: true, value: await response.json() };
     } catch { return { ok: false, error: "backend_unavailable", message: "Overview could not be read. Try again." }; }
   },
+  personalOverview: async (input: import("../overview-contract.ts").PoolOverviewInput): Promise<Result<import("../overview-contract.ts").PoolPersonalOverviewResult>> => {
+    try {
+      const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
+      const response = await fetch("/_executor/api/pool-usage/personal-overview", { method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+      });
+      if (!response.ok) return { ok: false, error: response.status === 403 ? "unauthorized" : "backend_unavailable", message: response.status === 403 ? "Your usage isn't available for this pool." : "Your usage could not be read. Reload and try again." };
+      return { ok: true, value: await response.json() };
+    } catch { return { ok: false, error: "backend_unavailable", message: "Your usage could not be read. Try again." }; }
+  },
   series: async (input: Omit<import("../usage-series-contract.ts").PoolUsageSeriesInput, "pool">): Promise<Result<import("../usage-series-contract.ts").PoolUsageSeriesResult>> => {
     try {
       const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");

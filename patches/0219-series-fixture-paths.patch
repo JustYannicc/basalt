@@ -1,39 +1,26 @@
 diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
-index 1d029e2d8..964677770 100644
+index a746084..ad6654b 100644
 --- a/e2e/support/pool-usage-series-backend.ts
 +++ b/e2e/support/pool-usage-series-backend.ts
-@@ -40,6 +40,13 @@ const Assertion = Schema.Struct({
-   authority: Schema.optionalKey(NativeAuthority),
+@@ -17,6 +17,12 @@ const Assertion = Schema.Struct({
+   }),
  });
  
-+// Public paths are shared by the signed native series, last-success and overview reads.
++// Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
 +const assertionPaths = {
 +  poolUsageSeries: "/pool/v1/usage/series",
 +  lastSuccessAt: "/pool/v1/usage/last-success",
-+  poolOverview: "/pool/v1/usage/overview",
 +} as const;
 +
  /** The hosted server is real; this loopback peer implements only the external pool protocol. */
  export const poolUsageSeriesBackend = Effect.gen(function* () {
    const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
-@@ -66,11 +73,6 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
-       Buffer.from(encoded, "base64url").toString(),
-     );
-     const now = yield* Clock.currentTimeMillis;
--    const expectedPath = assertion.action === "poolUsageSeries"
--      ? "/pool/v1/usage/series"
--      : assertion.action === "lastSuccessAt"
--        ? "/pool/v1/usage/last-success"
--        : "/pool/v1/usage/overview";
-     const authority = assertion.action === "poolOverview"
-       ? yield* Schema.decodeUnknownEffect(PoolOverviewAssertion)(assertion.input).pipe(
-           Effect.map((value) => value.authority),
-@@ -81,7 +83,7 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+@@ -46,7 +52,7 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
      if (
        assertion.expiresAt <= now ||
        assertion.expiresAt > now + 30_000 ||
--      new URL(request.url, "http://localhost").pathname !== expectedPath
-+      new URL(request.url, "http://localhost").pathname !== assertionPaths[assertion.action]
+-      !request.url.endsWith(`/${assertion.action}`)
++      !request.url.endsWith(assertionPaths[assertion.action])
      )
        return HttpServerResponse.empty({ status: 401 });
      yield* Ref.update(calls, (values) => [...values, assertion]);

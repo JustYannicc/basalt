@@ -6,11 +6,13 @@ import type {
   PoolOverviewInput,
   PoolOverviewResult,
   PoolOverviewSignedInput,
+  PoolPersonalOverviewResult,
+  PoolPersonalOverviewSignedInput,
 } from "../../../apps/pool/overview-contract.ts";
 import type { SeriesAuthority } from "./series-contract.ts";
 import { digest } from "../backend-users.ts";
 import type { HistoryDatabase } from "./schema.ts";
-import { poolUsageSeries } from "./series.ts";
+import { poolPersonalUsageSeries, poolUsageSeries } from "./series.ts";
 import type { PoolUsageSeriesInput, PoolUsageSeriesResult, SeriesGroup } from "./series-contract.ts";
 import { seriesAuthority, seriesInput } from "./series-input.ts";
 import { requestCount } from "./series-coverage.ts";
@@ -26,6 +28,7 @@ const maxDimensionRows = 500;
 const maxUsageSlices = 500;
 const maxPriceTargets = 100;
 const hourMs = 3_600_000;
+const dayMs = 86_400_000;
 const maxSafeCount = Number.MAX_SAFE_INTEGER;
 const asCount = (value: unknown) => requestCount(value);
 const asText = (value: unknown) => {
@@ -115,6 +118,20 @@ function safeDirectory(raw: PoolOverviewDirectoryInput): PoolOverviewDirectoryIn
   return { members, activeCount: raw.activeCount, totalCount: raw.totalCount };
 }
 
+function safePersonalOfferings(raw: unknown): PoolPersonalOverviewSignedInput["offerings"] {
+  if (!Array.isArray(raw) || raw.length > 16_000) throw new HistoryInputError();
+  const allowed = new Set(["subscription", "metered_api", "prepaid", "other", "unknown"]);
+  const seen = new Set<string>();
+  return raw.map((entry) => {
+    const value = historyObject(entry);
+    if (Object.keys(value).some((key) => key !== "history" && key !== "offering")
+      || typeof value.history !== "string" || !/^[a-f0-9]{64}$/.test(value.history)
+      || seen.has(value.history) || !allowed.has(String(value.offering))) throw new HistoryInputError();
+    seen.add(value.history);
+    return { history: value.history, offering: value.offering as PoolPersonalOverviewSignedInput["offerings"][number]["offering"] };
+  });
+}
+
 function directoryActivity(
   directory: PoolOverviewDirectoryInput,
   groups: readonly SeriesGroup[],
@@ -178,19 +195,224 @@ export async function overviewTargets(
   return { targets: result.rows.map((row) => ({ provider: String(row.provider), model: String(row.model) })) };
 }
 
+/** Price targets use only the caller's inspectable history references and own requests. */
+export async function personalOverviewTargets(
+  db: HistoryDatabase,
+  raw: PoolPersonalOverviewSignedInput,
+): Promise<{ readonly targets: OverviewPricesTarget[]; readonly unavailableReason?: string }> {
+  const input = personalInput(raw);
+  const offerings = input.offerings;
+  const refs = [...new Set(offerings.filter((entry) => entry.offering === "subscription" || entry.offering === "metered_api").map((entry) => entry.history))];
+  if (!refs.length) return { targets: [] };
+  const pool = (await digest(input.pool)).slice(0, 16);
+  const result = await db.query(`SELECT DISTINCT provider, model FROM basalt_model_requests
+    WHERE pool=$1 AND source=$2 AND account=ANY($3::character(64)[]) AND person=$4
+      AND attribution IS DISTINCT FROM 'import-owner' AND timestamp_exact >= $5 AND timestamp_exact < $6
+      AND provider IS NOT NULL AND model IS NOT NULL
+    ORDER BY provider,model LIMIT ${maxPriceTargets + 1}`, [pool, await digest(homeSource), refs, input.person, timestamp(input.from), timestamp(input.to)]);
+  if (result.rows.length > maxPriceTargets) return {
+    targets: [], unavailableReason: `More than ${maxPriceTargets} provider/model pairs need prices; money estimates are unavailable.`,
+  };
+  return { targets: result.rows.map((row) => ({ provider: String(row.provider), model: String(row.model) })) };
+}
+
+function personalInput(raw: unknown): PoolPersonalOverviewSignedInput {
+  const value = historyObject(raw);
+  const fields = new Set(["pool", "person", "from", "to", "days", "offerings"]);
+  if (Object.keys(value).some((key) => !fields.has(key))
+    || typeof value.pool !== "string" || !value.pool
+    || typeof value.person !== "string" || !/^[a-f0-9]{64}$/.test(value.person)) throw new HistoryInputError();
+  interval(value as unknown as PoolOverviewInput);
+  return {
+    pool: value.pool,
+    person: value.person,
+    from: String(value.from),
+    to: String(value.to),
+    days: value.days as 7 | 30,
+    offerings: safePersonalOfferings(value.offerings),
+  };
+}
+
+function personalMoney(
+  amount: string | null,
+  pricedRequests: number,
+  categoryRequests: number,
+  excluded: OverviewMoneyMetric["excluded"],
+  price: OverviewMoneyMetric["price"],
+  unavailableReason: string,
+): OverviewMoneyMetric {
+  if ((categoryRequests > 0 && pricedRequests === 0)
+    || (categoryRequests === 0 && excluded.unknownKind > 0 && pricedRequests === 0))
+    return unavailableMoney(unavailableReason, excluded);
+  return {
+    status: "available",
+    amount: amount ?? "0.000000000000",
+    currency: "USD",
+    pricedRequests,
+    excluded,
+    price,
+  };
+}
+
+/** One caller's typed usage and price estimates; no directory or pool-wide aggregate is read. */
+export async function poolPersonalOverview(
+  db: HistoryDatabase,
+  raw: unknown,
+  pricesRaw: readonly OverviewApiPrice[],
+  pricesUnavailableReason?: string,
+  transaction: "owned" | "caller" = "owned",
+): Promise<PoolPersonalOverviewResult> {
+  const input = personalInput(raw);
+  const range = interval(input);
+  const poolHash = (await digest(input.pool)).slice(0, 16);
+  const [homeSourceHash, gatewaySourceHash] = await Promise.all([digest(homeSource), digest(gatewaySource)]);
+  const authority: SeriesAuthority = { canManage: false, mappingProven: false, accounts: [] };
+  const sourceInput: PoolUsageSeriesInput = {
+    pool: input.pool, from: range.from, to: range.to, bucket: "day",
+    by: ["person", "provider", "model"], sources: [homeSourceHash, gatewaySourceHash],
+  };
+  if (transaction === "owned") await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  try {
+    await db.query("SET LOCAL statement_timeout = '5s'");
+    const seriesResult = await readSeries(db, sourceInput, authority, input.person);
+    const requestValues = [poolHash, sourceInput.sources, input.person, range.fromExact, range.toExact];
+    const requestWhere = `FROM basalt_model_requests WHERE pool=$1 AND source=ANY($2::character(64)[])
+      AND person=$3 AND attribution IS DISTINCT FROM 'import-owner'
+      AND timestamp_exact >= $4 AND timestamp_exact < $5`;
+    const percentiles = await db.query(`SELECT
+        count(*) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy'))::text AS known,
+        count(*) FILTER (WHERE total_tokens IS NULL OR token_quality NOT IN ('complete','legacy'))::text AS missing,
+        percentile_disc(0.5) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p50,
+        percentile_disc(0.9) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p90,
+        percentile_disc(0.99) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p99
+      ${requestWhere}`, requestValues);
+    const homeRequests = await db.query(`SELECT count(*)::text AS requests FROM basalt_model_requests
+      WHERE pool=$1 AND source=$2 AND person=$3 AND attribution IS DISTINCT FROM 'import-owner'
+        AND timestamp_exact >= $4 AND timestamp_exact < $5`,
+      [poolHash, homeSourceHash, input.person, range.fromExact, range.toExact]);
+    const byModel = await db.query(`SELECT provider,model,
+        count(*) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy'))::text AS known,
+        count(*) FILTER (WHERE total_tokens IS NULL OR token_quality NOT IN ('complete','legacy'))::text AS missing,
+        percentile_disc(0.5) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p50,
+        percentile_disc(0.9) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p90,
+        percentile_disc(0.99) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p99
+      ${requestWhere} GROUP BY provider,model ORDER BY provider,model LIMIT ${maxDimensionRows + 1}`, requestValues);
+    const overall = percentiles.rows[0] ?? {};
+    const requestCount = safeAddCount(asCount(overall.known), asCount(overall.missing));
+    const p50 = safePercentile(overall.p50), p90 = safePercentile(overall.p90), p99 = safePercentile(overall.p99);
+    const hasKnown = asCount(overall.known) > 0;
+    const unsafePercentile = [overall.p50, overall.p90, overall.p99].some((value) => value !== null && safePercentile(value) === null);
+    const dimensionOverflow = byModel.rows.length > maxDimensionRows;
+    const byModelRows = dimensionOverflow ? [] : percentileRows(byModel.rows);
+    const requestTokens: PoolOverviewResult["metrics"]["requestTokens"] = {
+      status: hasKnown && !unsafePercentile ? "available" : "unavailable",
+      ...(!hasKnown || unsafePercentile ? { reason: unsafePercentile ? "Request token percentile exceeds the exact JSON number range." : "No request token totals are available." } : {}),
+      percentiles: p50 === null || p90 === null || p99 === null ? null : { p50, p90, p99 },
+      requests: requestCount,
+      excluded: { missing: asCount(overall.missing), unknownKind: 0 },
+      byPerson: requestCount ? [{ person: input.person, p50, p90, p99, requests: requestCount }] : [],
+      byModel: byModelRows.flatMap((row) => row.provider && row.model
+        ? [{ provider: row.provider, model: row.model, p50: row.p50, p90: row.p90, p99: row.p99, requests: row.requests }] : []),
+      byModelPerson: byModelRows.flatMap((row) => row.provider && row.model
+        ? [{ person: input.person, provider: row.provider, model: row.model, p50: row.p50, p90: row.p90, p99: row.p99, requests: row.requests }] : []),
+    };
+
+    const offerings = input.offerings.map(({ history, offering }) => ({ account: history, history: [history], offering }));
+    const normalizedPrices = safePrices(pricesRaw);
+    const prices = normalizedPrices ?? [];
+    const noPrices = pricesUnavailableReason
+      ?? (normalizedPrices === null ? "Current API price data was invalid and has been excluded." : "No current official USD model prices were available.");
+    const priceRows = prices.map((price) => ({
+      provider: price.provider, model: price.model, currency: price.currency, input: price.input, output: price.output,
+      cache_read: price.cacheRead, cache_write: price.cacheWrite, request: price.request, tier: price.tier,
+      min_input: price.minInput, as_of: price.asOf, source: price.source, version: price.version,
+    }));
+    const values = [poolHash, [homeSourceHash], JSON.stringify(offerings), range.fromExact, range.toExact,
+      [input.person], JSON.stringify(priceRows), homeSourceHash, [input.person]];
+    const cte = priceQuery(true);
+    const totalsQuery = await db.query(`${cte}SELECT
+        count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
+        count(*) FILTER (WHERE offering='subscription')::text AS subscription_requests,
+        count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
+        count(*) FILTER (WHERE offering='unknown')::text AS unknown_kind,
+        count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NULL)::text AS subscription_unpriced,
+        round(sum(api_cost) FILTER (WHERE offering='metered_api'),12)::text AS api_cost,
+        round(sum(api_cost) FILTER (WHERE offering='subscription'),12)::text AS subscription_value,
+        round(sum(api_cost) FILTER (WHERE offering='unknown'),12)::text AS unknown_kind_value
+      FROM priced`, values);
+    const costRows = await db.query(`${cte}SELECT person,provider,model,count(*)::text AS requests,
+        count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
+        count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NULL)::text AS subscription_unpriced,
+        count(*) FILTER (WHERE offering='unknown')::text AS unknown_kind,
+        round(sum(api_cost) FILTER (WHERE offering='unknown'),12)::text AS unknown_kind_value,
+        round(sum(api_cost) FILTER (WHERE offering='metered_api'),12)::text AS api_cost,
+        round(sum(api_cost) FILTER (WHERE offering='subscription'),12)::text AS subscription_value
+      FROM priced WHERE offering IN ('metered_api','subscription','unknown')
+      GROUP BY person,provider,model ORDER BY provider,model LIMIT ${maxUsageSlices + 1}`, values);
+    const totalsRow = totalsQuery.rows[0] ?? {};
+    const homeRequestCount = asCount(homeRequests.rows[0]?.requests ?? "0");
+    const totals = {
+      apiRequests: asCount(totalsRow.api_requests), subscriptionRequests: asCount(totalsRow.subscription_requests),
+      apiPriced: asCount(totalsRow.api_priced), subscriptionPriced: asCount(totalsRow.subscription_priced),
+      unknown: asCount(totalsRow.unknown_kind), apiUnpriced: asCount(totalsRow.api_unpriced),
+      subscriptionUnpriced: asCount(totalsRow.subscription_unpriced),
+      apiAmount: asText(totalsRow.api_cost), subscriptionAmount: asText(totalsRow.subscription_value),
+      unknownValue: asText(totalsRow.unknown_kind_value),
+    };
+    const classified = totals.apiRequests + totals.subscriptionRequests + totals.unknown;
+    const hiddenUnknown = Math.max(0, homeRequestCount - classified);
+    const unknownKind = safeAddCount(totals.unknown, hiddenUnknown);
+    const excluded = (unpriced: number): OverviewMoneyMetric["excluded"] => ({ unknownKind, unknownKindValue: totals.unknownValue, unpriced });
+    const price = priceProvenance(prices);
+    const noKindReason = "Some of your requests could not be classified from inspectable account history, so separate estimates are incomplete.";
+    const apiBilled = personalMoney(totals.apiAmount, totals.apiPriced, totals.apiRequests,
+      excluded(totals.apiUnpriced), price, unknownKind ? noKindReason : noPrices);
+    const subscriptionValue = personalMoney(totals.subscriptionAmount, totals.subscriptionPriced, totals.subscriptionRequests,
+      excluded(totals.subscriptionUnpriced), price, unknownKind ? noKindReason : noPrices);
+    const usageOverflow = costRows.rows.length > maxUsageSlices;
+    const usageSlices: PoolOverviewResult["metrics"]["usageSlices"] = unknownKind > 0 || usageOverflow ? [] : costRows.rows.map((row) => ({
+      person: asText(row.person), provider: asText(row.provider), model: asText(row.model), requests: asCount(row.requests),
+      apiBilled: asText(row.api_cost), apiPricedRequests: asCount(row.api_priced), apiUnpriced: asCount(row.api_unpriced),
+      subscriptionValue: asText(row.subscription_value), subscriptionPricedRequests: asCount(row.subscription_priced),
+      subscriptionUnpriced: asCount(row.subscription_unpriced), unknownKind: asCount(row.unknown_kind),
+      unknownKindValue: asText(row.unknown_kind_value),
+      price: price && (row.api_cost !== null || row.subscription_value !== null) ? price : null,
+    }));
+    const partial = seriesResult.next !== null || dimensionOverflow || usageOverflow;
+    const result: PoolPersonalOverviewResult = {
+      from: range.from, to: range.to, person: input.person, asOf: seriesResult.asOf,
+      consistency: "consistent", series: seriesResult,
+      metrics: { requestTokens, apiBilled, subscriptionValue, usageSlices }, partial,
+    };
+    if (transaction === "owned") await db.query("COMMIT");
+    return result;
+  } catch (error) {
+    if (transaction === "owned") await db.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
+}
+
 async function readSeries(
   db: HistoryDatabase,
   input: PoolUsageSeriesInput,
   authority: SeriesAuthority,
-) {
+  personScope?: string,
+): Promise<PoolUsageSeriesResult> {
   const groups = new Map<string, SeriesGroup>();
   let first: PoolUsageSeriesResult | undefined;
   let next: string | null = null;
   let page = 0;
   do {
-    const result = await poolUsageSeries(db, { ...input, ...(next ? { after: next } : {}) }, authority, "caller");
-    first ??= result;
-    if (result.asOf !== first.asOf) throw new Error("Overview series snapshots differ");
+    const pageInput: PoolUsageSeriesInput = { ...input, ...(next ? { after: next } : {}) };
+    const result: PoolUsageSeriesResult = personScope
+      ? await poolPersonalUsageSeries(db, pageInput, personScope, "caller")
+      : await poolUsageSeries(db, pageInput, authority, "caller");
+    if (first === undefined) first = result;
+    else if (result.asOf !== first.asOf) throw new Error("Overview series snapshots differ");
     for (const group of result.groups) {
       const key = JSON.stringify(group.key);
       const previous = groups.get(key);
@@ -199,8 +421,9 @@ async function readSeries(
     next = result.next;
     page++;
   } while (next && page < maxPages);
-  if (!first) throw new Error("Overview series unavailable");
-  return { ...first, groups: [...groups.values()], next };
+  const firstResult = first;
+  if (!firstResult) throw new Error("Overview series unavailable");
+  return { ...firstResult, groups: [...groups.values()], next };
 }
 
 async function homeCoverage(
@@ -235,6 +458,20 @@ async function homeCoverage(
   return { capturedAt: asText(available.captured_at), incompleteHours: new Set(missing.rows.map((row) => String(row.hour))) };
 }
 
+function completeHomeDays(fromMs: number, toMs: number, incompleteHours: ReadonlySet<string> | null): string[] {
+  if (incompleteHours === null) return [];
+  const days: string[] = [];
+  for (let start = Math.ceil(fromMs / dayMs) * dayMs; start + dayMs <= toMs; start += dayMs) {
+    let complete = true;
+    for (let hour = start; hour < start + dayMs; hour += hourMs) {
+      const key = `${new Date(hour).toISOString().slice(0, 19)}Z`;
+      if (incompleteHours.has(key)) { complete = false; break; }
+    }
+    if (complete) days.push(new Date(start).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
 
 function percentileRows(rows: readonly Record<string, unknown>[]) {
   return rows.slice(0, maxDimensionRows).map((row) => ({
@@ -244,7 +481,10 @@ function percentileRows(rows: readonly Record<string, unknown>[]) {
   }));
 }
 
-function unavailableMoney(reason: string, excluded = { unknownKind: 0, unknownKindValue: null, unpriced: 0 }): OverviewMoneyMetric {
+function unavailableMoney(
+  reason: string,
+  excluded: OverviewMoneyMetric["excluded"] = { unknownKind: 0, unknownKindValue: null, unpriced: 0 },
+): OverviewMoneyMetric {
   return { status: "unavailable", reason, amount: null, currency: "USD", pricedRequests: 0, excluded, price: null };
 }
 
@@ -353,7 +593,11 @@ export async function poolUsageOverview(
         min_input: price.minInput, as_of: price.asOf, source: price.source, version: price.version,
       }));
       const requestSources = [homeSourceHash, await digest(gatewaySource)];
+      const completeDays = providerCoverageProven
+        ? completeHomeDays(range.fromMs, range.toMs, incompleteHours)
+        : [];
       const values = [pool, requestSources, JSON.stringify(entitlements), range.fromExact, range.toExact, hashes, JSON.stringify(priceRows), homeSourceHash];
+      const dailyValues = [...values, completeDays];
       const allPercentiles = await db.query(`${cte}${percentileSql("NULL::text AS person,NULL::text AS provider,NULL::text AS model", "", maxDimensionRows)}`, values);
       const personPercentiles = await db.query(`${cte}${percentileSql("person,NULL::text AS provider,NULL::text AS model", "person", maxDimensionRows)}`, values);
       const modelPercentiles = await db.query(`${cte}${percentileSql("NULL::text AS person,provider,model", "provider,model", maxDimensionRows)}`, values);
@@ -389,14 +633,12 @@ export async function poolUsageOverview(
           FROM priced WHERE person IS NOT NULL GROUP BY person,left(timestamp_exact,10)
         ), complete AS (
           SELECT * FROM daily WHERE subscriptions > 0 AND unpriced = 0
-            AND day::date >= (($4::timestamptz AT TIME ZONE 'UTC')::date
-              + CASE WHEN ($4::timestamptz AT TIME ZONE 'UTC')::time > time '00:00' THEN 1 ELSE 0 END)
-            AND day::date + interval '1 day' <= ($5::timestamptz AT TIME ZONE 'UTC')::date
+            AND day::date = ANY($9::date[])
         ) SELECT count(DISTINCT person)::text AS people,count(DISTINCT day)::text AS days,
           percentile_disc(0.5) WITHIN GROUP (ORDER BY value) AS p50,
           percentile_disc(0.9) WITHIN GROUP (ORDER BY value) AS p90
           FROM complete`,
-          values);
+          dailyValues);
 
       const overall = allPercentiles.rows[0];
       const dimOverflow = [personPercentiles, modelPercentiles, modelPersonPercentiles].some((result) => result.rows.length > maxDimensionRows);
@@ -447,6 +689,10 @@ export async function poolUsageOverview(
         status: "available", p50: asText(daily.p50), p90: asText(daily.p90), currency: "USD",
         activePeople: asCount(daily.people),
         completeDays: asCount(daily.days),
+      };
+      else if (!providerCoverageProven || completeDays.length === 0) perActivePersonPerDay = {
+        status: "unavailable", reason: "No fully captured UTC days are proven for subscription-value percentiles.",
+        p50: null, p90: null, currency: "USD", activePeople: 0, completeDays: 0,
       };
     }
     if (failureP95 !== null) failureShareWorstHourP95 = {

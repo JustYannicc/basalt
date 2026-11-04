@@ -3,7 +3,7 @@ import { test } from "node:test";
 import pg from "pg";
 import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import type { OverviewApiPrice, PoolOverviewSignedInput } from "../../apps/pool/overview-contract.ts";
-import { poolUsageOverview } from "../../src/pool/model-history/overview.ts";
+import { poolPersonalOverview, poolUsageOverview } from "../../src/pool/model-history/overview.ts";
 import { reference, timestamp, type ModelRequest } from "../../src/pool/model-history/record.ts";
 import { homeAccountMappingProven } from "../../src/pool/model-history/series-mapping.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
@@ -87,6 +87,7 @@ test("overview prices protocol aliases from total context, keeps excluded counts
       apiType: "unknown-protocol", totalTokens: "5", inputTokens: "4", outputTokens: "1", tokenQuality: "legacy",
     });
     await addHomeRequest(fixture, fingerprint, 6, subscriptionRef, to);
+    await fixture.client.query(`INSERT INTO usage (id,timestamp,api_key) VALUES (7,$1,$2)`, ["2026-01-02T03:15:00Z", fingerprint]);
     const gateway = await digest(gatewaySourceName);
     await fixture.insert({
       source: gateway, sourceRecord: await digest("gateway-failure"), pool: (await digest(pool)).slice(0, 16),
@@ -110,10 +111,74 @@ test("overview prices protocol aliases from total context, keeps excluded counts
     assert.equal(result.metrics.requestTokens.percentiles?.p50, 120);
     assert.equal(result.metrics.failureShareWorstHourP95.status, "available");
     assert.equal(result.metrics.failureShareWorstHourP95.p95, 50);
-    assert.equal(result.metrics.perActivePersonPerDay.completeDays, 2);
+    assert.equal(result.metrics.perActivePersonPerDay.completeDays, 1);
     assert.equal(result.metrics.perActivePersonPerDay.activePeople, 1);
-    assert.equal(result.homeCapture.completeHours.length, 72);
-    assert.equal(result.partial, false);
+    assert.equal(result.homeCapture.completeHours.length, 71);
+    assert.equal(result.homeCapture.completeHours.includes("2026-01-02T03:00:00.000Z"), false);
+    assert.equal(result.partial, true);
+
+    const personal = await poolPersonalOverview(fixture.db, {
+      pool, person: await digest("member"), from, to, days: 7,
+      offerings: signed.authority.accounts.flatMap((account) => account.account === null ? []
+        : account.history.map((history) => ({ history, offering: account.offering }))),
+    }, [rates("0", "10"), rates("100", "20")]);
+    assert.equal(personal.metrics.requestTokens.requests, 5);
+    assert.equal(personal.metrics.apiBilled.status, "available");
+    assert.equal(personal.metrics.apiBilled.amount, result.metrics.apiBilled.amount);
+    assert.equal(personal.metrics.subscriptionValue.status, "available");
+    assert.equal(personal.metrics.subscriptionValue.amount, result.metrics.subscriptionValue.amount);
+    assert.ok(personal.metrics.usageSlices.length > 0);
+  });
+});
+
+test("personal overview scopes series, percentiles and pricing to the signed caller without a directory or pool totals", async () => {
+  await seriesFixture(async (fixture) => {
+    const [caller, other] = await Promise.all([digest("member-one"), digest("member-two")]);
+    const home = await digest(homeSourceName);
+    const poolId = (await digest(pool)).slice(0, 16);
+    await fixture.insert(
+      { source: home, sourceRecord: await digest("member-one-request"), pool: poolId, person: caller, account: await digest("member-one-account"),
+        timestamp: timestamp("2026-01-01T01:00:00Z"), provider: "provider-one", model: "model-one", inputTokens: "7", outputTokens: "3", totalTokens: "10", tokenQuality: "complete", attribution: "key-at-capture" },
+      { source: home, sourceRecord: await digest("member-two-request"), pool: poolId, person: other, account: await digest("member-two-account"),
+        timestamp: timestamp("2026-01-01T02:00:00Z"), provider: "provider-two", model: "model-secret", inputTokens: "700", outputTokens: "300", totalTokens: "1000", tokenQuality: "complete", attribution: "key-at-capture" },
+    );
+    const result = await poolPersonalOverview(fixture.db, {
+      pool, person: caller, from, to: "2026-01-02T00:00:00Z", days: 7, offerings: [],
+    }, [], "Current API price data is unavailable.");
+    const encoded = JSON.stringify(result);
+    assert.equal(result.metrics.requestTokens.requests, 1);
+    assert.deepEqual(result.metrics.requestTokens.percentiles, { p50: 10, p90: 10, p99: 10 });
+    assert.deepEqual(new Set(result.series.groups.map((group) => group.key.person)), new Set([caller]));
+    assert.equal(result.series.coverage.capturedThrough, null);
+    assert.equal(result.metrics.apiBilled.status, "unavailable");
+    assert.equal(result.metrics.subscriptionValue.status, "unavailable");
+    assert.equal(result.metrics.usageSlices.length, 0);
+    assert.equal(encoded.includes(other), false);
+    assert.equal(encoded.includes("model-secret"), false);
+    assert.equal("directory" in result, false);
+    assert.equal("totalCount" in result, false);
+    assert.equal("activeCount" in result, false);
+
+    const idle = await digest("member-never-used");
+    const empty = await poolPersonalOverview(fixture.db, {
+      pool, person: idle, from, to: "2026-01-02T00:00:00Z", days: 7, offerings: [],
+    }, [], "Current API price data is unavailable.");
+    assert.equal(empty.person, idle);
+    assert.equal(empty.metrics.requestTokens.requests, 0);
+    assert.deepEqual(empty.series.groups, []);
+    assert.equal("directory" in empty, false);
+
+    const gatewayOnly = await digest("member-gateway-only");
+    await fixture.insert({ source: await digest(gatewaySourceName), sourceRecord: await digest("gateway-refusal"), pool: poolId,
+      person: gatewayOnly, account: null, timestamp: timestamp("2026-01-01T03:00:00Z"), provider: null, model: null,
+      failed: true, tokenQuality: "unclassified", totalTokens: null, attribution: "unknown" });
+    const refusal = await poolPersonalOverview(fixture.db, {
+      pool, person: gatewayOnly, from, to: "2026-01-02T00:00:00Z", days: 7, offerings: [],
+    }, [], "Current API price data is unavailable.");
+    assert.equal(refusal.metrics.requestTokens.requests, 1);
+    assert.equal(refusal.metrics.apiBilled.status, "available");
+    assert.equal(refusal.metrics.apiBilled.amount, "0.000000000000");
+    assert.equal(refusal.metrics.apiBilled.excluded.unknownKind, 0);
   });
 });
 

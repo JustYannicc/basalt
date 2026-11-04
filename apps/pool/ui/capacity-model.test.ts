@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CapacityAggregate, CapacityForecast, CapacityHistoryPoint, PoolCapacityHistory } from "../capacity-contract.ts";
-import { capacityLabs, dailyRows, gaps, hourMs, lineFacts, planChips, pressing, segments, verdict } from "./capacity-model.ts";
+import { capacityLabs, dailyRows, gaps, hourMs, isOut, lineFacts, planChips, pressing, segments, verdict } from "./capacity-model.ts";
 
 const start = Date.parse("2026-11-02T00:00:00Z");
 
@@ -14,9 +14,13 @@ function aggregate(remaining: number, full: number, unknown = 0): CapacityAggreg
 
 function point(hour: number, remaining: number, overrides: Partial<CapacityHistoryPoint> = {}): CapacityHistoryPoint {
   const value = aggregate(remaining, 4);
+  const windowSeconds = overrides.windowSeconds ?? 604800;
+  const plans = [{ plan: "Pro", minimum: value, last: value }];
   return {
-    provider: "claude", windowSeconds: 604800, mode: null, unit: { id: "pro-eq", label: "Pro-eq" }, hour: start + hour * hourMs,
-    minimum: value, last: value, plans: [{ plan: "Pro", minimum: value, last: value }], ...overrides,
+    provider: "claude", windowSeconds, mode: null, unit: { id: "pro-eq", label: "Pro-eq" }, hour: start + hour * hourMs,
+    minimum: value, last: value, plans,
+    ...(windowSeconds === 18000 ? { raw: { minimum: value, last: value, plans }, usable: aggregate(4, 4) } : {}),
+    ...overrides,
   };
 }
 
@@ -58,6 +62,17 @@ test("out hours count runs where every account was at its limit", () => {
   assert.equal(facts.longestHours, 2);
 });
 
+test("five-hour all-out detection uses weekly-gated remaining and leaves raw quota visible", () => {
+  const raw = aggregate(2, 4);
+  const gated = point(0, 0, { windowSeconds: 18000, raw: { minimum: raw, last: raw, plans: [{ plan: "Pro", minimum: raw, last: raw }] } });
+  assert.equal(isOut(gated), true);
+  assert.equal(gated.raw?.minimum.remaining, 2);
+
+  const missingGate = point(0, 0, { windowSeconds: 18000, usable: null });
+  assert.equal(isOut(missingGate), false);
+  assert.equal(lineFacts(capacityLabs(history([missingGate]))[0]!.lines[0]!, start).latest, null);
+});
+
 test("the panel opens on an exhausted window before comparing projected run-out", () => {
   const [lab] = capacityLabs(history([point(0, 3), point(0, 0, { windowSeconds: 18000 })]));
   const choice = pressing(lab!);
@@ -73,9 +88,9 @@ test("an old exhausted reading does not make a window out now", () => {
     point(0, 3, { windowSeconds: 18000 }),
   ]))[0]!;
   assert.equal(lab.lines.find((line) => line.key === pressing(lab).key)!.label, "Weekly");
-  assert.match(pressing(lab).text!, /forecast learning/);
+  assert.equal(pressing(lab).text, "Forecast learning; showing Weekly.");
   const onceFresh = capacityLabs(history([point(0, 0), point(0, 3, { windowSeconds: 18000 })]))[0]!;
-  assert.match(pressing(onceFresh, start + hourMs).text!, /forecast learning/);
+  assert.equal(pressing(onceFresh, start + hourMs).text, "Forecast learning; showing Weekly.");
 });
 
 test("the panel opens on whichever projected window runs out first", () => {

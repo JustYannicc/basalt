@@ -1,11 +1,11 @@
 import { Fragment, useState } from "react";
 import type { Result } from "../index.ts";
-import type { PoolOverviewResult, OverviewMoneyMetric, OverviewUsageSlice } from "../overview-contract.ts";
+import type { PoolOverviewResult, PoolPersonalOverviewResult, OverviewMoneyMetric, OverviewUsageSlice } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
 import {
   addDecimal, coverageNotes, decimal, decimalText, money, moneyExact, moneyList, rows, tokensExact, tokensShort,
-  type Grouping, type Row, type SeriesRead, type Totals,
+  personalDirectory, type Grouping, type Row, type SeriesRead, type Totals,
 } from "./series-model.ts";
 
 // Who uses what, and what it cost. Rows come straight from the usage series; a person is the
@@ -105,7 +105,7 @@ const percentiles = (row: Row) => {
 const percentileText = (values: { readonly p50: number; readonly p90: number; readonly p99: number }) =>
   `p50 ${tokensShort(BigInt(values.p50))} · p90 ${tokensShort(BigInt(values.p90))} · p99 ${tokensShort(BigInt(values.p99))}`;
 
-const cells = (row: Row, slices: readonly OverviewUsageSlice[], overview?: PoolOverviewResult) => {
+const cells = (row: Row, slices: readonly OverviewUsageSlice[], overview?: PoolOverviewResult, personal?: PoolPersonalOverviewResult) => {
   const totals = row.totals;
   const moneyRows = rowMoney(row, slices);
   return (
@@ -113,34 +113,40 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], overview?: PoolO
       <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">{totals.requests ? totals.requests.toLocaleString() : dash}</td>
       <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><TokenCell totals={totals} /></td>
       <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden">{percentiles(row)}</td>
-      <td className="w-[16%] py-2.5 pr-2 text-right tabular-nums max-[740px]:w-[32%]"><MoneyCell list={moneyRows.apiBilled} priced={moneyRows.apiCount} excluded={moneyRows.apiExcluded} title={overview?.metrics.apiBilled.status === "unavailable" ? overview.metrics.apiBilled.reason : undefined} />
+      <td className="w-[16%] py-2.5 pr-2 text-right tabular-nums max-[740px]:w-[32%]"><MoneyCell list={moneyRows.apiBilled} priced={moneyRows.apiCount} excluded={moneyRows.apiExcluded} title={personal?.metrics.apiBilled.status === "unavailable" ? personal.metrics.apiBilled.reason : overview?.metrics.apiBilled.status === "unavailable" ? overview.metrics.apiBilled.reason : undefined} />
         <details className="mt-1 hidden text-xs max-[740px]:block">
           <summary className="cursor-pointer text-muted-foreground">Usage details</summary>
           <div className="mt-1 grid gap-1 text-right text-pretty">
             <span>{totals.requests.toLocaleString()} requests</span>
             <span>Tokens: <TokenCell totals={totals} /></span>
             <span>Request p50 / p90 / p99: {percentiles(row)}</span>
-            <span>Subscription value: <MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></span>
+            <span>Subscription value: <MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={personal?.metrics.subscriptionValue.status === "unavailable" ? personal.metrics.subscriptionValue.reason : overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></span>
             <span>Imported API price: <MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} /></span>
           </div>
         </details>
       </td>
-      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></td>
+      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden"><MoneyCell list={moneyRows.subscriptionValue} priced={moneyRows.subscriptionCount} excluded={moneyRows.subscriptionExcluded} title={personal?.metrics.subscriptionValue.status === "unavailable" ? personal.metrics.subscriptionValue.reason : overview?.metrics.subscriptionValue.status === "unavailable" ? overview.metrics.subscriptionValue.reason : undefined} /></td>
       <td className="py-2.5 text-right tabular-nums max-[540px]:hidden"><MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} /></td>
     </>
   );
 };
 
-export function WhoUses({ people, models, days, name, onRetry, overview }: {
+export function WhoUses({ people, models, days, name, onRetry, overview, personal }: {
   people: Result<SeriesRead> | undefined; models: Result<SeriesRead> | undefined; days: number; name: (id: string) => string; onRetry: () => void;
   overview?: PoolOverviewResult;
+  personal?: PoolPersonalOverviewResult;
 }) {
   const [by, setBy] = useState<Grouping>("person");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
-  const source = by === "model" ? models : people;
-  const directory = overview?.directory.members ?? [];
-  const list = source?.ok ? rows(source.value.groups, by, name, directory, overview?.metrics.requestTokens) : [];
-  const slices = overview?.metrics.usageSlices ?? [];
+  const grouping = personal ? "person" : by;
+  const source = grouping === "model" ? models : people;
+  const personalMembers = personal
+    ? personalDirectory(personal.person, personal.metrics.requestTokens.requests > 0)
+    : [];
+  const directory = personal ? personalMembers : overview?.directory.members ?? [];
+  const requestTokens = personal?.metrics.requestTokens ?? overview?.metrics.requestTokens;
+  const list = source?.ok ? rows(source.value.groups, grouping, name, directory, requestTokens) : [];
+  const slices = personal?.metrics.usageSlices ?? overview?.metrics.usageSlices ?? [];
   const max = list.reduce((top, row) => (row.totals.tokens > top ? row.totals.tokens : top), 0n);
   const toggle = (id: string) => setOpen((current) => { const next = new Set(current); if (!next.delete(id)) next.add(id); return next; });
   return (
@@ -149,11 +155,12 @@ export function WhoUses({ people, models, days, name, onRetry, overview }: {
         <div className="grid gap-1">
           <h2 id="who-heading" className="text-lg font-semibold tracking-[-0.02em]">Who uses what</h2>
           <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-            Last {days} days. Bars are tokens by lab. Open a row for its {by === "person" ? "models" : "people"}.
+            {personal ? `Your requests through this pool in the last ${days} days. Nobody else's show here.`
+              : `Last ${days} days. Bars are tokens by lab. Open a row for its ${by === "person" ? "models" : "people"}.`}
           </p>
         </div>
-        <Segmented label="Group by" value={by} onChange={(value) => { setBy(value); setOpen(new Set()); }}
-          options={[{ id: "person", label: "People" }, { id: "provider", label: "Labs" }, { id: "model", label: "Models" }]} />
+        {!personal && <Segmented label="Group by" value={by} onChange={(value) => { setBy(value); setOpen(new Set()); }}
+          options={[{ id: "person", label: "People" }, { id: "provider", label: "Labs" }, { id: "model", label: "Models" }]} />}
       </div>
       {source === undefined ? (
         <div aria-hidden="true" className="h-40 animate-pulse rounded-md bg-accent" />
@@ -199,7 +206,7 @@ export function WhoUses({ people, models, days, name, onRetry, overview }: {
                       )}
                     </th>
                     <td className="py-2.5 pr-2"><Stack row={row} max={max} name={name} /></td>
-                    {cells(row, slices, overview)}
+                    {cells(row, slices, overview, personal)}
                   </tr>
                   {expanded && row.children.map((child) => (
                     <tr key={child.id} className="bg-muted text-xs">
@@ -210,7 +217,7 @@ export function WhoUses({ people, models, days, name, onRetry, overview }: {
                         </span>
                       </th>
                       <td className="py-[7px] pr-2"><Stack row={child} max={max} name={name} /></td>
-                      {cells(child, slices, overview)}
+                      {cells(child, slices, overview, personal)}
                     </tr>
                   ))}
                 </Fragment>
@@ -219,43 +226,47 @@ export function WhoUses({ people, models, days, name, onRetry, overview }: {
           </tbody>
         </table>
       )}
-      {overview?.metrics.requestTokens.percentiles && <p className="text-xs text-muted-foreground">
-        Request tokens across {overview.metrics.requestTokens.requests.toLocaleString()} requests: {percentileText(overview.metrics.requestTokens.percentiles)}.
+      {requestTokens?.percentiles && <p className="text-xs text-muted-foreground">
+        Request tokens across {requestTokens.requests.toLocaleString()} requests: {percentileText(requestTokens.percentiles)}.
       </p>}
-      {overview?.metrics.requestTokens.status === "unavailable" && <p className="text-xs text-muted-foreground">Request token percentiles unavailable: {overview.metrics.requestTokens.reason}</p>}
-      {by === "person" && overview?.directory && <p className="text-xs text-muted-foreground">{overview.directory.activeCount} of {overview.directory.totalCount} people with pool access made a request in these {days} days.</p>}
-      {source?.ok && <Notes read={source.value} />}
+      {requestTokens?.status === "unavailable" && <p className="text-xs text-muted-foreground">Request token percentiles unavailable: {requestTokens.reason}</p>}
+      {!personal && by === "person" && overview?.directory && <p className="text-xs text-muted-foreground">{overview.directory.activeCount} of {overview.directory.totalCount} people with pool access made a request in these {days} days.</p>}
+      {source?.ok && <Notes read={source.value} personal={personal !== undefined} />}
     </section>
   );
 }
 
-function Notes({ read }: { read: SeriesRead }) {
-  const notes = coverageNotes(read);
+function Notes({ read, personal = false }: { read: SeriesRead; personal?: boolean }) {
+  const notes = personal ? [] : coverageNotes(read);
   const asOf = read.asOf ? new Date(read.asOf) : null;
   return (
     <div className="grid gap-0.5 text-xs text-muted-foreground">
       {notes.map((note) => <span key={note} className="flex items-start gap-1.5 text-pretty"><StateIcon tone="info" className="size-3.5" />{note}</span>)}
-      {asOf && !Number.isNaN(asOf.getTime()) && <span>As of {asOf.toUTCString().replace(" GMT", " UTC")}. Imported history keeps its source and is never attributed to a person.</span>}
+      {asOf && !Number.isNaN(asOf.getTime()) && <span>As of {asOf.toUTCString().replace(" GMT", " UTC")}.{personal ? " This view includes only your signed-in requests." : " Imported history keeps its source and is never attributed to a person."}</span>}
     </div>
   );
 }
 
 /** Current API rates keep billed cost and subscription value in USD. */
-export function Money({ people, days, overview, name }: { people: Result<SeriesRead> | undefined; days: number; overview?: PoolOverviewResult; name?: (id: string) => string }) {
+export function Money({ people, days, overview, name, personal }: {
+  people: Result<SeriesRead> | undefined; days: number; overview?: PoolOverviewResult; name?: (id: string) => string;
+  personal?: PoolPersonalOverviewResult;
+}) {
   if (!people?.ok) return null;
-  const metrics = overview?.metrics;
-  const api = metrics?.apiBilled;
-  const subscription = metrics?.subscriptionValue;
-  const slices = metrics?.usageSlices ?? [];
+  const api = personal?.metrics.apiBilled ?? overview?.metrics.apiBilled;
+  const subscription = personal?.metrics.subscriptionValue ?? overview?.metrics.subscriptionValue;
+  const slices = personal?.metrics.usageSlices ?? overview?.metrics.usageSlices ?? [];
   const providers = [...new Set(slices.map((slice) => slice.provider))].sort();
   const unknown = api?.excluded.unknownKind ?? 0;
   const unpriced = (api?.excluded.unpriced ?? 0) + (subscription?.excluded.unpriced ?? 0);
-  const personDay = metrics?.perActivePersonPerDay;
+  const personDay = overview?.metrics.perActivePersonPerDay;
   return (
     <section id="cost" aria-labelledby="cost-heading" className="grid scroll-mt-4 gap-4 pt-12">
       <div className="grid gap-1">
         <h2 id="cost-heading" className="text-lg font-semibold tracking-[-0.02em]">What it cost</h2>
-        <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">Current provider API rates applied to {days} days of pool requests. Home credits and imported prices stay separate.</p>
+        <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">{personal
+          ? `Current provider API rates applied to your ${days} days of pool requests. Home credits and imported prices stay separate.`
+          : `Current provider API rates applied to ${days} days of pool requests. Home credits and imported prices stay separate.`}</p>
       </div>
       <div className="grid grid-cols-2 rounded-lg border border-border max-[540px]:grid-cols-1">
         <Figure label="API cost, estimated billed" value={api?.status === "available" ? overviewAmount(api.amount) : "Unavailable"} days={days}
@@ -266,7 +277,7 @@ export function Money({ people, days, overview, name }: { people: Result<SeriesR
       <div className="grid gap-1.5 text-[13px]">
         {unknown + unpriced > 0 && <span className="flex items-start gap-2 text-muted-foreground text-pretty"><StateIcon tone="info" /><span><b className="font-medium text-foreground tabular-nums">{unknown.toLocaleString()}</b> requests with unknown kind and <b className="font-medium text-foreground tabular-nums">{unpriced.toLocaleString()}</b> unpriced requests are excluded from both totals.</span></span>}
         {personDay?.status === "available" && <span className="text-muted-foreground">Subscription value per active person per day: p50 {overviewAmount(personDay.p50)}, p90 {overviewAmount(personDay.p90)} across {personDay.activePeople} people and {personDay.completeDays} complete days.</span>}
-        {overview?.consistency === "changed" && <span className="text-warning">Usage changed while this overview was read. Reload for a consistent range.</span>}
+        {(personal?.consistency ?? overview?.consistency) === "changed" && <span className="text-warning">Usage changed while this overview was read. Reload for a consistent range.</span>}
       </div>
       {providers.length > 0 && <table className="w-full border-collapse text-[13px]">
         <thead><tr className="text-left text-xs text-muted-foreground"><th scope="col" className="border-b border-border py-2 pr-2 font-medium">Lab</th><th scope="col" className="border-b border-border py-2 pr-2 text-right font-medium">API cost</th><th scope="col" className="border-b border-border py-2 text-right font-medium">Subscription value</th></tr></thead>

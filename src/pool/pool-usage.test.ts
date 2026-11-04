@@ -133,7 +133,7 @@ test("native managers see pool totals with their own cap, and demotion immediate
   assert.deepEqual(manager.total, slice(127, 7));
   assert.equal(manager.cap?.weekly, 5);
   assert.equal(manager.members?.find((person) => person.member === a)?.cap?.weekly, 5);
-  assert.deepEqual(manager.accountsNeeded?.map((advice) => advice.provider), ["fixture"]);
+  assert.equal(Object.hasOwn(manager, "accountsNeeded"), false);
   canManage = false;
   own(await f.summary(a), 34, 8);
   canUse = false;
@@ -164,7 +164,7 @@ test("owning pool B cannot elevate membership on A or include B's records; queri
   assert.deepEqual(ownPool.members!.map((row) => row.member), [a]);
 });
 
-test("owner sees every audience member including zero usage, each cap and pool-only accounts-needed", async () => {
+test("owner sees every audience member including zero usage and each cap, without legacy sizing advice", async () => {
   const f = await fixture(), result = await f.summary(owner);
   assert.equal(result.scope, "pool"); assert.equal(result.cap, null);
   assert.deepEqual(result.total, slice(127, 7));
@@ -184,7 +184,7 @@ test("owner sees every audience member including zero usage, each cap and pool-o
     assert.deepEqual(models, person === owner ? [{ provider: "fixture", model: "model-x", ...slice(1, 1) }] : own!.models);
     assert.deepEqual(days, person === owner ? [{ day: "2026-10-23", ...slice(1, 1), models }] : own!.days);
   }
-  assert.deepEqual(result.accountsNeeded, [{ provider: "fixture", advice: "unknown", accounts: 1, limitHits: 0, exhausted: 0, hoursRead: 0 }]);
+  assert.equal(Object.hasOwn(result, "accountsNeeded"), false);
   assert.deepEqual(f.audienceCalls, ["pool-a"]);
 });
 

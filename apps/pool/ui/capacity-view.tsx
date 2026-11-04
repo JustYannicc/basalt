@@ -36,8 +36,8 @@ export function labSummaries(history: PoolCapacityHistory, days: number): LabSum
   });
 }
 
-export function CapacitySection({ result, providers, days, onRetry }: {
-  result: Result<PoolCapacityHistory> | undefined; providers: readonly Provider[]; days: number; onRetry: () => void;
+export function CapacitySection({ result, providers, days, coherent, onRetry }: {
+  result: Result<PoolCapacityHistory> | undefined; providers: readonly Provider[]; days: number; coherent: boolean; onRetry: () => void;
 }) {
   const labs = result?.ok ? capacityLabs(result.value) : [];
   const [choices, setChoices] = useState<Readonly<Record<string, string>>>({});
@@ -46,7 +46,7 @@ export function CapacitySection({ result, providers, days, onRetry }: {
       <div className="grid gap-1">
         <h2 id="capacity-heading" className="text-lg font-semibold tracking-[-0.02em]">Do we have enough accounts?</h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-          Allowance left across each lab's accounts over the last {days} days and the next 72 hours. Five-hour charts appear only where accounts report that window. Each lab has its own unit; labs never add up.
+          Allowance left across each lab's accounts over the last {days} days and the next 72 hours. Five-hour readings count only while that same account still has weekly allowance. Each lab has its own unit; labs never add up.
         </p>
       </div>
       {result === undefined ? (
@@ -67,7 +67,7 @@ export function CapacitySection({ result, providers, days, onRetry }: {
       ) : (
         <div>
           {labs.map((lab, index) => (
-            <Panel key={lab.provider} lab={lab} history={result.value} name={providerName(providers, lab.provider)} days={days} first={index === 0}
+            <Panel key={lab.provider} lab={lab} history={result.value} name={providerName(providers, lab.provider)} days={days} coherent={coherent} first={index === 0}
               chosen={choices[lab.provider]} onChoose={(key) => setChoices((previous) => ({ ...previous, [lab.provider]: key }))} />
           ))}
         </div>
@@ -76,14 +76,23 @@ export function CapacitySection({ result, providers, days, onRetry }: {
   );
 }
 
-function Panel({ lab, history, name, days, first, chosen, onChoose }: { lab: CapacityLab; history: PoolCapacityHistory; name: string; days: number; first: boolean; chosen?: string; onChoose: (key: string) => void }) {
-  const press = pressing(lab, history.to);
+function Panel({ lab, history, name, days, coherent, first, chosen, onChoose }: { lab: CapacityLab; history: PoolCapacityHistory; name: string; days: number; coherent: boolean; first: boolean; chosen?: string; onChoose: (key: string) => void }) {
+  const press = coherent ? pressing(lab, history.to) : { key: lab.lines[0]?.key ?? "", text: null };
   const line = lab.lines.find((entry) => entry.key === (chosen ?? press.key))
     ?? lab.lines.find((entry) => entry.key === press.key) ?? lab.lines[0]!;
-  const facts = lineFacts(line, history.to);
-  const result = verdict(line, facts, days);
+  const displayLine = coherent ? line : { ...line, forecast: null, refills: line.refills.filter((event) => event.kind !== "expected") };
+  const facts = lineFacts(displayLine, history.to);
+  const result = coherent ? verdict(displayLine, facts, days) : {
+    tone: "learn" as const,
+    short: "Incomplete snapshot",
+    text: "Capacity readings do not form a complete snapshot, so this panel has no forecast or verdict.",
+    detail: null,
+  };
   const chips = planChips(facts.latest);
-  const accounts = facts.latest?.last.accountCount ?? 0;
+  const accounts = facts.latest?.last.accountCount
+    ?? line.points.at(-1)?.raw?.last.accountCount
+    ?? line.points.at(-1)?.last.accountCount
+    ?? 0;
   const color = labColor(lab.provider);
   const weekly = line.windowSeconds === 604_800;
   const onlyReporting = !weekly && lab.fiveHourAccounts < lab.weeklyAccounts;
@@ -137,15 +146,21 @@ function Panel({ lab, history, name, days, first, chosen, onChoose }: { lab: Cap
             ))}
           </ul>
         )}
-        <ForecastCaption line={line} onlyReporting={onlyReporting} />
+        {coherent ? <ForecastCaption line={displayLine} onlyReporting={onlyReporting} /> : <IncompleteCaption />}
       </div>
-      <CapacityChart line={line} from={history.from} to={history.to} now={history.to} color={color} facts={facts} lab={name} />
+      <CapacityChart line={displayLine} from={history.from} to={history.to} now={history.to} color={color} facts={facts} lab={name} />
       <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
-        <Legend color={color} facts={facts} line={line} />
-        <Daily line={line} from={history.from} to={history.to} />
+        <Legend color={color} facts={facts} line={displayLine} />
+        <Daily line={displayLine} from={history.from} to={history.to} />
       </div>
     </article>
   );
+}
+
+function IncompleteCaption() {
+  return <p className="col-start-2 col-end-[-1] mt-2.5 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+    Forecast and verdict withheld until the capacity readings agree. Measured readings remain available below.
+  </p>;
 }
 
 function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyReporting: boolean }) {
@@ -217,7 +232,7 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   const weekly = line.windowSeconds === 604_800;
   return (
     <div className="mt-2.5 flex flex-wrap gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
-      <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3.5 rounded-[1px]" style={{ background: color }} />Lowest left each hour, measured</span>
+      <span className="inline-flex items-center gap-1.5"><i className="h-0.5 w-3.5 rounded-[1px]" style={{ background: color }} />{weekly ? "Lowest left each hour, measured" : "Usable five-hour left after weekly gate"}</span>
       <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dotted border-muted-foreground" />Nominal: every window fresh (reference, not available)</span>
       {forecast?.status === "estimated" && <>
         <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dashed" style={{ borderColor: color }} />Projected median</span>
@@ -225,11 +240,11 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
         {forecast.points.some((point) => point.low < 0 || point.median < 0 || point.busy < 0) && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-destructive/20 outline outline-1 outline-destructive/40" />Below zero: unserved demand</span>}
         {weekly && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 border border-dashed border-muted-foreground" />Refill, expected</span>}
       </>}
-      {!weekly && <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dashed border-foreground/50" />Usable 5-hour allowance</span>}
+      {!weekly && <span className="inline-flex items-center gap-1.5"><i className="w-3.5 border-t border-dashed border-foreground/50" />Potential 5-hour allowance under weekly limit</span>}
       {weekly && line.refills.some((event) => event.kind === "observed") && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 border border-muted-foreground" />Refill, observed</span>}
       {weekly && line.refills.some((event) => event.kind === "banked") && <span className="inline-flex items-center gap-1.5"><i className="size-3 rounded-full border border-muted-foreground" />Banked reset used (recorded)</span>}
-      {facts.outHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-destructive/15 shadow-[inset_0_-2px_0_var(--destructive)]" />All accounts out</span>}
-      {facts.gapHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-accent outline outline-1 outline-input" />No readings ({facts.gapHours}h)</span>}
+      {facts.outHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-destructive/15 shadow-[inset_0_-2px_0_var(--destructive)]" />{weekly ? "All accounts out" : "All accounts out of usable allowance"}</span>}
+      {facts.gapHours > 0 && <span className="inline-flex items-center gap-1.5"><i className="h-2.5 w-3.5 rounded-[2px] bg-accent outline outline-1 outline-input" />{weekly ? "No readings" : "No weekly-gated readings"} ({facts.gapHours}h)</span>}
       <span className="sr-only">Unit: {line.unit.label}.</span>
     </div>
   );

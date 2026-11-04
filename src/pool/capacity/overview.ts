@@ -171,14 +171,17 @@ function shortfall(core: CoreForecast, busy: boolean, candidate: ReturnType<type
   return { amount, stretches, candidate, accounts: count, exclusions, accountBasis: core.accountAdvice?.basis ?? null };
 }
 
+export function publicForecastStatus(core: Pick<CoreForecast, "estimate" | "projection" | "reasons">): PublicForecast["status"] {
+  return core.estimate === null ? "learning"
+    : core.reasons.includes("missing-account-reading") || core.projection === null ? "unavailable" : "estimated";
+}
+
 function publicForecast(core: CoreForecast, data: CapacityDemandData, candidate: ReturnType<typeof candidateFor>): PublicForecast {
-  const stale = core.reasons.includes("missing-account-reading");
-  const status: PublicForecast["status"] = core.estimate === null ? "learning"
-    : stale || core.projection === null ? "unavailable" : "estimated";
+  const status = publicForecastStatus(core);
   const bankedStates = new Map(data.accountStates.filter((state) => state.provider === core.provider && state.windowSeconds === 604_800)
     .map((state) => [state.account, state.bankedAvailable]));
   const bankedAvailable = bankedStates.size && [...bankedStates.values()].every((count) => count !== null)
-    ? [...bankedStates.values()].reduce((total, count) => total + (count ?? 0), 0) : null;
+    ? [...bankedStates.values()].reduce<number>((total, count) => total + (count ?? 0), 0) : null;
   const points = core.projection?.points.map((point) => ({
     at: point.at,
     median: point.balance,

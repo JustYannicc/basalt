@@ -1,164 +1,36 @@
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
-index b09f5682b..dc0d9fb5d 100644
+index 1a2315e..519d015 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
-@@ -61,7 +61,16 @@ const send = <A>(
+@@ -59,7 +59,14 @@ const send = <A>(
        }),
      );
      const client = yield* HttpClient.HttpClient;
 -    const response = yield* client.post(new URL(`/__setup/v1/${action}`, origin).href, {
-+    // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
++    // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
 +    const path =
 +      action === "poolUsageSeries"
 +        ? "/pool/v1/usage/series"
 +        : action === "lastSuccessAt"
 +          ? "/pool/v1/usage/last-success"
-+          : action === "poolOverview"
-+            ? "/pool/v1/usage/overview"
-+            : `/__setup/v1/${action}`;
++          : `/__setup/v1/${action}`;
 +    const response = yield* client.post(new URL(path, origin).href, {
        body: HttpBody.jsonUnsafe({ envelope }),
      });
      if (response.status !== 200) return yield* new PoolUsageUnavailable();
 diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
-index 48b0257f5..1d029e2d8 100644
+index 522174b..a746084 100644
 --- a/e2e/support/pool-usage-series-backend.ts
 +++ b/e2e/support/pool-usage-series-backend.ts
-@@ -4,17 +4,40 @@ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "e
- import { createHmac, timingSafeEqual } from "node:crypto";
- import { createServer } from "node:http";
- 
-+const NativeAuthority = Schema.Struct({
-+  canManage: Schema.Literal(true),
-+  accounts: Schema.Array(Schema.Unknown),
-+});
-+const PoolOverviewDirectory = Schema.Struct({
-+  members: Schema.Array(Schema.Struct({
-+    person: Schema.String,
-+    displayName: Schema.String,
-+    active: Schema.Boolean,
-+  })).check(Schema.isMaxLength(500)),
-+  activeCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-+  totalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-+});
-+const PoolOverviewInput = Schema.Struct({
-+  from: Schema.NonEmptyString,
-+  to: Schema.NonEmptyString,
-+  days: Schema.Literals([7, 30]),
-+  directory: PoolOverviewDirectory,
-+});
-+const PoolOverviewAssertion = Schema.Struct({
-+  authority: Schema.Struct({
-+    canManage: Schema.Literal(true),
-+    accounts: Schema.Array(Schema.Unknown),
-+    mappingProven: Schema.Boolean,
-+  }),
-+});
- const Assertion = Schema.Struct({
--  action: Schema.Literals(["poolUsageSeries", "lastSuccessAt"]),
-+  action: Schema.Literals(["poolUsageSeries", "lastSuccessAt", "poolOverview"]),
-   pool: Schema.String,
-   organization: Schema.String,
-   user: Schema.String,
-   expiresAt: Schema.Number,
-   input: Schema.Unknown,
--  authority: Schema.Struct({
--    canManage: Schema.Literal(true),
--    accounts: Schema.Array(Schema.Unknown),
--  }),
-+  authority: Schema.optionalKey(NativeAuthority),
- });
- 
- /** The hosted server is real; this loopback peer implements only the external pool protocol. */
-@@ -43,16 +66,77 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
-       Buffer.from(encoded, "base64url").toString(),
-     );
-     const now = yield* Clock.currentTimeMillis;
-+    const expectedPath = assertion.action === "poolUsageSeries"
-+      ? "/pool/v1/usage/series"
-+      : assertion.action === "lastSuccessAt"
-+        ? "/pool/v1/usage/last-success"
-+        : "/pool/v1/usage/overview";
-+    const authority = assertion.action === "poolOverview"
-+      ? yield* Schema.decodeUnknownEffect(PoolOverviewAssertion)(assertion.input).pipe(
-+          Effect.map((value) => value.authority),
-+          Effect.catch(() => Effect.succeed(undefined)),
-+        )
-+      : assertion.authority;
-+    if (authority === undefined) return HttpServerResponse.empty({ status: 401 });
-     if (
-       assertion.expiresAt <= now ||
-       assertion.expiresAt > now + 30_000 ||
--      !request.url.endsWith(`/${assertion.action}`)
-+      new URL(request.url, "http://localhost").pathname !== expectedPath
-     )
-       return HttpServerResponse.empty({ status: 401 });
-     yield* Ref.update(calls, (values) => [...values, assertion]);
-     const respond = yield* Ref.get(responder);
-     if (respond !== undefined) return HttpServerResponse.jsonUnsafe(respond(assertion));
-     const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
-+    if (assertion.action === "poolOverview") {
-+      const input = yield* Schema.decodeUnknownEffect(PoolOverviewInput)(assertion.input);
-+      const unavailable = {
-+        status: "unavailable",
-+        reason: "The loopback fixture has no retained overview data.",
-+      };
-+      const series = {
-+        from: input.from,
-+        to: input.to,
-+        bucket: "day",
-+        asOf: null,
-+        coverage: {
-+          sources: [], firstAt: null, lastAt: null, capturedThrough: null,
-+          mapping: { current: true, historicalGenerations: "unknown", proof: "unavailable",
-+            mapped: 0, unmapped: 0, otherAccounts: 0 },
-+          pricing: { homeCharge: 0, importedApiPrice: 0, unpriced: 0, missing: 0,
-+            missingSnapshot: 0, missingVersion: 0, apiEquivalent: unavailable },
-+          priceProjection: unavailable, percentiles: unavailable, seasonalTrainingRange: unavailable,
-+        },
-+        groups: [],
-+        next: null,
-+      };
-+      return HttpServerResponse.jsonUnsafe({
-+        from: input.from,
-+        to: input.to,
-+        asOf: null,
-+        homeCapture: { capturedAt: null, completeHours: [] },
-+        consistency: "consistent",
-+        directory: input.directory,
-+        people: series,
-+        models: series,
-+        requestsByHour: [],
-+        metrics: {
-+          requestTokens: { status: "unavailable", reason: unavailable.reason, percentiles: null,
-+            requests: 0, excluded: { missing: 0, unknownKind: 0 }, byPerson: [], byModel: [], byModelPerson: [] },
-+          apiBilled: { status: "unavailable", reason: unavailable.reason, amount: null, currency: "USD",
-+            pricedRequests: 0, excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 }, price: null },
-+          subscriptionValue: { status: "unavailable", reason: unavailable.reason, amount: null,
-+            currency: "USD", pricedRequests: 0,
-+            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 }, price: null },
-+          perActivePersonPerDay: { status: "unavailable", reason: unavailable.reason, p50: null, p90: null,
-+            currency: "USD", activePeople: 0, completeDays: 0 },
-+          failureShareWorstHourP95: { status: "unavailable", reason: unavailable.reason,
-+            p95: null, unit: "percent", hours: 0 },
-+          usageSlices: [],
-+        },
-+        partial: true,
-+      });
-+    }
-     if (assertion.action === "lastSuccessAt")
-       return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
-     const unavailable = {
-@@ -143,8 +227,10 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+@@ -137,8 +137,9 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
    const services = yield* Layer.build(
      HttpRouter.serve(
        Layer.mergeAll(
 -        HttpRouter.add("POST", "/__setup/v1/poolUsageSeries", handler),
 -        HttpRouter.add("POST", "/__setup/v1/lastSuccessAt", handler),
-+        // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
++        // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
 +        HttpRouter.add("POST", "/pool/v1/usage/series", handler),
 +        HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
-+        HttpRouter.add("POST", "/pool/v1/usage/overview", handler),
        ),
        { disableLogger: true, disableListenLog: true },
      ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),

@@ -1,5 +1,5 @@
 /** Trusted query fragments for current API prices and request-level percentiles. */
-export function priceQuery() {
+export function priceQuery(personScoped = false) {
   return `WITH visible_refs AS (
       SELECT h.history_ref AS account, min(a.offering) AS offering
       FROM jsonb_to_recordset($3::jsonb) AS a(account text, offering text, history text[])
@@ -21,6 +21,7 @@ export function priceQuery() {
       FROM basalt_model_requests r LEFT JOIN visible_refs refs ON refs.account=r.account::text
       WHERE r.pool=$1 AND r.source=ANY($2::character(64)[]) AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5
         AND (r.account IS NULL OR refs.account IS NOT NULL)
+        ${personScoped ? "AND r.person = ANY($9::character(64)[]) AND r.attribution IS DISTINCT FROM 'import-owner'" : ""}
     ), priced AS (
       SELECT s.*,p.price_version,p.price_as_of,
         CASE WHEN p.price_version IS NULL OR s.token_quality NOT IN ('complete','legacy')

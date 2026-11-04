@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 import type { CapacityForecastPoint, CapacityHistoryPoint } from "../capacity-contract.ts";
 import {
   amount, dayLabel, dayLong, dayMs, gaps, hourLabel, hourMs, isOut, outSpans, planName, segments,
-  weightSourceLabel, type CapacityLine, type LineFacts,
+  isMeasuredCapacityPoint, weightSourceLabel, type CapacityLine, type LineFacts,
 } from "./capacity-model.ts";
 
 interface Geometry {
@@ -52,6 +52,7 @@ export function CapacityChart({ line, from, to, now, color, facts, lab }: {
   const { ref, width } = useWidth();
   const [hour, setHour] = useState<number | null>(null);
   const byHour = useMemo(() => new Map(line.points.map((point) => [point.hour, point])), [line.points]);
+  const measuredPoints = useMemo(() => line.points.filter(isMeasuredCapacityPoint), [line.points]);
   const forecast = line.forecast?.status === "estimated" && line.forecast.points.length > 0 ? line.forecast : null;
   const forecastByHour = useMemo(() => new Map(forecast?.points.map((point) => [point.at, point]) ?? []), [forecast]);
   const full = Math.max(0, ...line.points.map((point) => point.minimum.full));
@@ -62,7 +63,7 @@ export function CapacityChart({ line, from, to, now, color, facts, lab }: {
   const end = forecast?.points.length ? forecast.points.at(-1)!.at + hourMs : to;
   const g = geometry(width, from, end, ceiling, lowestProjection, line.windowSeconds === 604_800, candidate?.capacity ?? null);
   const unit = line.unit.label;
-  const first = line.points[0];
+  const first = measuredPoints[0];
   const lastHour = Math.floor((end - 1) / hourMs) * hourMs;
   const clamp = (at: number) => Math.max(Math.floor(from / hourMs) * hourMs, Math.min(lastHour, at));
   const point = hour === null ? undefined : byHour.get(hour);
@@ -90,8 +91,8 @@ export function CapacityChart({ line, from, to, now, color, facts, lab }: {
   };
 
   const y0 = g.y(0);
-  const out = outSpans(line.points);
-  const missing = gaps(line.points, now);
+  const out = outSpans(measuredPoints);
+  const missing = gaps(measuredPoints, now);
   const ticks: number[] = [];
   const pxPerDay = (g.x(from + dayMs) - g.x(from));
   const every = pxPerDay >= 56 ? 1 : pxPerDay >= 28 ? 2 : pxPerDay >= 14 ? 4 : 7;
@@ -162,7 +163,7 @@ export function CapacityChart({ line, from, to, now, color, facts, lab }: {
           <text x={g.left} y={g.y(nominal) - 6} fill="var(--muted-foreground)">{g.small ? `Nominal ${amount(nominal)} · reference` : `Nominal ${amount(nominal)} ${unit} · every window fresh · reference, not available`}</text>
         </>}
         {line.windowSeconds === 18_000 && <UsableLine points={line.points} forecast={forecast?.points ?? []} g={g} />}
-        {segments(line.points).map((run) => {
+        {segments(measuredPoints).map((run) => {
           const points = run.map((entry) => `${g.x(entry.hour + hourMs).toFixed(1)},${g.y(entry.minimum.remaining).toFixed(1)}`);
           const start = g.x(run[0]!.hour).toFixed(1);
           const startY = g.y(run[0]!.minimum.remaining).toFixed(1);
@@ -199,7 +200,7 @@ export function CapacityChart({ line, from, to, now, color, facts, lab }: {
         </g>)}
         {hour !== null && <g>
           <line x1={g.x(hour + hourMs)} x2={g.x(hour + hourMs)} y1={g.top - 4} y2={g.axisY} stroke="var(--foreground)" strokeOpacity={0.35} />
-          {point && <circle cx={g.x(hour + hourMs)} cy={g.y(point.minimum.remaining)} r={4.5} fill={color} stroke="var(--background)" strokeWidth={2} />}
+          {point && isMeasuredCapacityPoint(point) && <circle cx={g.x(hour + hourMs)} cy={g.y(point.minimum.remaining)} r={4.5} fill={color} stroke="var(--background)" strokeWidth={2} />}
           {projected && <circle cx={g.x(hour + hourMs)} cy={g.y(projected.median)} r={4.5} fill={color} stroke="var(--background)" strokeWidth={2} />}
         </g>}
       </svg>
@@ -258,14 +259,24 @@ function RefillLane({ events, max, g, unit }: { events: CapacityLine["refills"];
 
 function describe(hour: number, point: CapacityHistoryPoint | undefined, projected: CapacityForecastPoint | undefined, unit: string, tracked: boolean) {
   const when = `${dayLong(hour)} ${hourLabel(hour)} UTC`;
-  if (projected) return `${when}: projected median ${amount(projected.median)} ${unit}, likely range ${amount(projected.low)} to ${amount(projected.high)}, busy path ${amount(projected.busy)}.${projected.usable === undefined || projected.usable === null ? "" : ` Usable five-hour allowance ${amount(projected.usable)}.`}`;
+  if (projected) return `${when}: projected median ${amount(projected.median)} ${unit}, likely range ${amount(projected.low)} to ${amount(projected.high)}, busy path ${amount(projected.busy)}.${projected.usable === undefined || projected.usable === null ? "" : ` Potential five-hour allowance under the weekly limit ${amount(projected.usable)}.`}`;
   if (!tracked) return `${when}: not tracked yet.`;
   if (!point) return `${when}: no readings.`;
   const requests = point.requests === null || point.requests === undefined ? "request count unavailable" : `${point.requests.toLocaleString()} requests this hour`;
   const coverage = point.coverage === null || point.coverage === undefined ? "coverage unavailable" : `${Math.round(point.coverage * 100)}% request capture coverage`;
   const source = point.sourceAt === null || point.sourceAt === undefined ? "source time unavailable" : `source read ${new Date(point.sourceAt).toISOString().replace("T", " ").slice(0, 16)} UTC`;
-  const usable = point.usable ? ` Usable five-hour allowance ${amount(point.usable.remaining)} of ${amount(point.usable.full)} ${unit}.` : "";
-  return `${when}: lowest ${amount(point.minimum.remaining)} of ${amount(point.minimum.full)} ${unit} left${isOut(point) ? ", every account out" : ""}.${usable} ${requests}; ${coverage}; ${source}.`;
+  const gateKnown = isMeasuredCapacityPoint(point);
+  const raw = point.raw ?? { minimum: point.minimum, last: point.last, plans: point.plans };
+  const remaining = point.windowSeconds === 18_000 && !gateKnown ? raw.minimum.remaining : point.minimum.remaining;
+  const measure = point.windowSeconds === 18_000
+    ? gateKnown ? `usable five-hour remaining after the weekly gate: ${amount(remaining)} of ${amount(point.minimum.full)} ${unit}`
+      : `reported five-hour quota: ${amount(remaining)} of ${amount(raw.minimum.full)} ${unit}; weekly gate unavailable`
+    : `lowest ${amount(remaining)} of ${amount(point.minimum.full)} ${unit} left`;
+  const rawText = point.windowSeconds === 18_000 && gateKnown
+    ? ` Provider-reported raw five-hour quota at the low: ${amount(raw.minimum.remaining)} of ${amount(raw.minimum.full)} ${unit}.`
+    : "";
+  const usable = point.usable ? ` Potential five-hour allowance under the weekly limit ${amount(point.usable.remaining)} of ${amount(point.usable.full)} ${unit}.` : "";
+  return `${when}: ${measure}${isOut(point) ? ", all accounts out of usable allowance" : ""}.${rawText}${usable} ${requests}; ${coverage}; ${source}.`;
 }
 
 function Tip({ hour, point, projected, line, tracked }: { hour: number; point: CapacityHistoryPoint | undefined; projected: CapacityForecastPoint | undefined; line: CapacityLine; tracked: boolean }) {
@@ -277,7 +288,7 @@ function Tip({ hour, point, projected, line, tracked }: { hour: number; point: C
       <span>Projected median: <b className="font-medium text-foreground tabular-nums">{amount(projected.median)} {unit}</b></span>
       <span>Likely range: {amount(projected.low)} to {amount(projected.high)} {unit}</span>
       <span>Busy path (p90 demand): {amount(projected.busy)} {unit}</span>
-      {projected.usable !== undefined && projected.usable !== null && <span>Usable 5-hour allowance: {amount(projected.usable)} {unit}</span>}
+      {projected.usable !== undefined && projected.usable !== null && <span>Potential 5-hour allowance under weekly limit: {amount(projected.usable)} {unit}</span>}
     </div>
     <div className="mt-1 border-t border-border pt-1 text-muted-foreground">Seasonal forecast · banked resets stay unspent</div>
   </>;
@@ -285,7 +296,11 @@ function Tip({ hour, point, projected, line, tracked }: { hour: number; point: C
     {head}<div className="mt-0.5 text-[13px]">{tracked ? "No readings this hour" : "Not tracked yet"}</div>
     {tracked && <div className="text-muted-foreground">Shown as a gap. Nothing is filled in.</div>}
   </>;
-  const plans = point.plans.filter((plan) => plan.minimum.accountCount > 0);
+  const gateKnown = isMeasuredCapacityPoint(point);
+  const raw = point.raw ?? { minimum: point.minimum, last: point.last, plans: point.plans };
+  const planValues = gateKnown ? point.plans : raw.plans;
+  const plans = planValues.filter((plan) => plan.minimum.accountCount > 0);
+  const rawByPlan = new Map(raw.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
   const coverage = point.coverage == null ? "Unavailable" : `${Math.round(point.coverage * 100)}%`;
   const sourceAt = point.sourceAt == null ? "Unavailable" : new Date(point.sourceAt).toISOString().replace("T", " ").slice(0, 16) + " UTC";
   const usable = line.windowSeconds === 18_000
@@ -294,8 +309,9 @@ function Tip({ hour, point, projected, line, tracked }: { hour: number; point: C
   return <>
     {head}
     <div className="mt-0.5 mb-1.5 text-[13px]">
-      {isOut(point) && <span className="text-destructive">All accounts out · </span>}
-      <b className="text-[15px] font-semibold tracking-[-0.015em] tabular-nums">{amount(point.minimum.remaining)}</b> of {amount(point.minimum.full)} {unit} left at the hour's low
+      {isOut(point) && <span className="text-destructive">All accounts out of usable allowance · </span>}
+      <b className="text-[15px] font-semibold tracking-[-0.015em] tabular-nums">{amount(gateKnown ? point.minimum.remaining : raw.minimum.remaining)}</b> of {amount(gateKnown ? point.minimum.full : raw.minimum.full)} {unit} left at the hour's low
+      {line.windowSeconds === 18_000 && <span className="block text-muted-foreground">{gateKnown ? "Usable after the same accounts' weekly limits." : "Provider quota only; weekly gate is unavailable for this reading."}</span>}
     </div>
     <table className="w-full border-collapse"><tbody>{plans.map((plan) => {
       const flagged = plan.minimum.unknownWeightCount > 0;
@@ -303,12 +319,13 @@ function Tip({ hour, point, projected, line, tracked }: { hour: number; point: C
       return <tr key={planName(plan.plan)}>
         <td className="py-0.5 align-top break-words [overflow-wrap:anywhere]">{planName(plan.plan)} ×{plan.minimum.accountCount}
           <span className={`block text-[11px] ${flagged ? "text-warning" : "text-muted-foreground"}`}>{flagged ? "Flagged. " : ""}{sources}</span>
+          {line.windowSeconds === 18_000 && rawByPlan.has(JSON.stringify(plan.plan)) && <span className="block text-[11px] text-muted-foreground">Provider quota: {amount(rawByPlan.get(JSON.stringify(plan.plan))!.minimum.remaining)} / {amount(rawByPlan.get(JSON.stringify(plan.plan))!.minimum.full)}</span>}
         </td>
         <td className="py-0.5 pl-2.5 text-right align-top whitespace-nowrap tabular-nums">{amount(plan.minimum.remaining)} / {amount(plan.minimum.full)}</td>
       </tr>;
-    })}<tr className="font-medium"><td className="border-t border-border pt-1">Total</td><td className="border-t border-border pt-1 text-right tabular-nums">{amount(point.minimum.remaining)} / {amount(point.minimum.full)}</td></tr></tbody></table>
+    })}<tr className="font-medium"><td className="border-t border-border pt-1">Total</td><td className="border-t border-border pt-1 text-right tabular-nums">{amount(gateKnown ? point.minimum.remaining : raw.minimum.remaining)} / {amount(gateKnown ? point.minimum.full : raw.minimum.full)}</td></tr></tbody></table>
     <div className="mt-1.5 grid gap-0.5 border-t border-border pt-1.5 text-muted-foreground">
-      <span>Latest this hour: <b className="font-medium text-foreground tabular-nums">{amount(point.last.remaining)}</b> of {amount(point.last.full)} {unit}</span>
+      <span>{line.windowSeconds === 18_000 ? gateKnown ? "Latest usable this hour:" : "Latest provider quota this hour:" : "Latest this hour:"} <b className="font-medium text-foreground tabular-nums">{amount(gateKnown ? point.last.remaining : raw.last.remaining)}</b> of {amount(gateKnown ? point.last.full : raw.last.full)} {unit}</span>
       <span>{point.minimum.accountCount} {point.minimum.accountCount === 1 ? "account" : "accounts"}{point.minimum.unknownWeightCount > 0 ? ` · ${point.minimum.unknownWeightCount} with flagged weights` : ""}</span>
       <span>Requests: {point.requests == null ? "unavailable" : `${point.requests.toLocaleString()} this hour`} · capture coverage {coverage}</span>
       {usable !== null && <span>Usable five-hour allowance: {usable}</span>}

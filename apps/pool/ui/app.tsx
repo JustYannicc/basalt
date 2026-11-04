@@ -4,10 +4,9 @@ import type { PoolApi } from "./api.ts";
 import { poolOrigin, productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem, Segmented } from "./controls.tsx";
 import { Freshness } from "./freshness.tsx";
-import { ManagerOverview } from "./overview.tsx";
+import { ManagerOverview, PersonalOverview } from "./overview.tsx";
 import { useOverview, type RangeDays } from "./overview-data.ts";
 import { usePool } from "./pool-view.ts";
-import { Usage } from "./usage-view.tsx";
 
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
@@ -57,14 +56,12 @@ export function App({ api }: { api: PoolApi }) {
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
-      <header className="flex h-14 items-center justify-between border-b border-border">
-        <span className="text-sm font-semibold tracking-[-0.01em]">
+      <header className="flex min-h-14 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border py-2 max-[540px]:items-start">
+        <span className="min-w-0 text-sm font-semibold tracking-[-0.01em]">
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
-        <div className="flex items-center gap-2">
-          {!overview.member && (
-            <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
-          )}
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[540px]:w-full">
+          <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
           {accountsHref && (
             <a href={accountsHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
               Accounts <ExternalIcon />
@@ -113,7 +110,7 @@ export function App({ api }: { api: PoolApi }) {
                 <p className="text-sm text-muted-foreground text-pretty">
                   Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them.
                 </p>
-                <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />
+                <PersonalOverview data={overview.personal} days={days} providers={view.providers} onRetry={() => void overview.reload()} />
               </>
             ) : (
               <ManagerOverview data={overview} days={days} providers={view.providers} view={view} accountsHref={accountsHref} onRetry={() => void overview.reload()} />

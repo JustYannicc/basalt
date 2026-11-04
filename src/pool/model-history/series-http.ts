@@ -1,17 +1,19 @@
 import { controlBasePath } from "../../../apps/pool/contract.ts";
 import { fail, failureResponse, json, object, readBody } from "../json.ts";
 import { openEnvelope } from "../token.ts";
+import { digest } from "../backend-users.ts";
 import { withHistoryDatabase } from "./database.ts";
 import { HistoryInputError, historyObject } from "./record.ts";
 import { seriesAuthority } from "./series-input.ts";
 import { poolUsageSeries } from "./series.ts";
-import { overviewTargets, poolUsageOverview } from "./overview.ts";
-import type { OverviewApiPrice, PoolOverviewSignedInput } from "../../../apps/pool/overview-contract.ts";
+import { overviewTargets, personalOverviewTargets, poolPersonalOverview, poolUsageOverview } from "./overview.ts";
+import type { OverviewApiPrice, PoolOverviewSignedInput, PoolPersonalOverviewSignedInput } from "../../../apps/pool/overview-contract.ts";
 import { lastSuccessAt } from "./last-success.ts";
 
 export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
 export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
 export const poolOverviewPath = `${controlBasePath}/usage/overview`;
+export const poolPersonalOverviewPath = `${controlBasePath}/usage/personal-overview`;
 
 /** Native host policy authorizes this exact signed read while holding its organization lock. */
 export async function handleUsageSeries(
@@ -36,7 +38,8 @@ export async function handleUsageSeries(
         : undefined;
     const path = new URL(request.url).pathname;
     const action = path === poolUsageSeriesPath ? "poolUsageSeries"
-      : path === poolOverviewPath ? "poolOverview" : "lastSuccessAt";
+      : path === poolOverviewPath ? "poolOverview"
+        : path === poolPersonalOverviewPath ? "poolPersonalOverview" : "lastSuccessAt";
     if (
       !object(payload) ||
       payload.action !== action ||
@@ -54,6 +57,17 @@ export async function handleUsageSeries(
       !payload.organization
     )
       throw new HistoryInputError();
+    if (action === "poolPersonalOverview") {
+      const allowed = new Set(["action", "pool", "user", "organization", "expiresAt", "input"]);
+      const personalInputFields = new Set(["pool", "person", "from", "to", "days", "offerings"]);
+      if (Object.keys(payload).some((key) => !allowed.has(key)))
+        return fail(401, "unauthorized", "A caller-bound personal usage assertion is required.");
+      if (Object.keys(input).some((key) => !personalInputFields.has(key)))
+        throw new HistoryInputError();
+      if (typeof input.person !== "string" || !/^[a-f0-9]{64}$/.test(input.person)
+        || input.person !== await digest(payload.user))
+        return fail(401, "unauthorized", "A caller-bound personal usage assertion is required.");
+    }
     const result = action === "poolUsageSeries"
       ? await withHistoryDatabase(access.connectionString, (db) =>
           poolUsageSeries(db, input, seriesAuthority(payload.authority)))
@@ -78,8 +92,30 @@ export async function handleUsageSeries(
               throw error;
             }
           })
-        : await withHistoryDatabase(access.connectionString, (db) =>
-            lastSuccessAt(db, input, seriesAuthority(payload.authority)));
+        : action === "poolPersonalOverview"
+          ? await withHistoryDatabase(access.connectionString, async (db) => {
+              const overview = input as unknown as PoolPersonalOverviewSignedInput;
+              await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+              try {
+                await db.query("SET LOCAL statement_timeout = '5s'");
+                const priceTargets = await personalOverviewTargets(db, overview);
+                let prices: readonly OverviewApiPrice[] = [];
+                let pricesUnavailableReason = priceTargets.unavailableReason;
+                if (!pricesUnavailableReason && access.currentPrices) {
+                  try { prices = await access.currentPrices(priceTargets.targets); }
+                  catch { pricesUnavailableReason = "Current API price data could not be read."; }
+                } else if (!pricesUnavailableReason) pricesUnavailableReason = "Current API price data is unavailable.";
+                const result = await poolPersonalOverview(db, overview, prices,
+                  pricesUnavailableReason, "caller");
+                await db.query("COMMIT");
+                return result;
+              } catch (error) {
+                await db.query("ROLLBACK").catch(() => {});
+                throw error;
+              }
+            })
+          : await withHistoryDatabase(access.connectionString, (db) =>
+              lastSuccessAt(db, input, seriesAuthority(payload.authority)));
     return json(result);
   } catch (error) {
     if (error instanceof HistoryInputError || error instanceof SyntaxError)

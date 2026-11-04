@@ -7,6 +7,7 @@ import {
   type ForecastAccount,
   type HourlyDemand,
 } from "./forecast.ts";
+import { publicForecastStatus } from "./overview.ts";
 
 const HOUR = 60 * 60 * 1_000;
 const WEEK_HOURS = 168;
@@ -117,6 +118,18 @@ test("two completed weeks start a seasonal forecast without current-rate fallbac
   assert.equal(unavailable.status, "unavailable");
   assert.equal(unavailable.estimate, null);
   assert.ok(unavailable.reasons.includes("insufficient-history"));
+});
+
+test("fixed-window projection is unavailable when a usable account has no reset time", () => {
+  const input = inputForWeeks([2.3, 2.4], {
+    mode: "fixed",
+    accounts: accounts(MONDAY).map((account) => ({ ...account, resetAt: null })),
+  });
+  const result = forecastCapacity(input);
+  assert.equal(result.projection, null);
+  assert.equal(result.accountAdvice, null);
+  assert.ok(result.reasons.includes("missing-reset-time"));
+  assert.equal(publicForecastStatus(result), "unavailable");
 });
 
 test("rolling projection stays unavailable when net quota changes lack an empty-window anchor", () => {

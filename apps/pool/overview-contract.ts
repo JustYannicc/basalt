@@ -147,6 +147,32 @@ export interface PoolOverviewSignedInput extends PoolOverviewInput {
   readonly authority: PoolOverviewAuthority;
 }
 
+/** The host derives this person hash from the signed-in caller, never from browser input. */
+export interface PoolPersonalOverviewSignedInput extends PoolOverviewInput {
+  readonly pool: string;
+  readonly person: string;
+  /** One entry per inspectable account-history reference; raw account ids and names stay on the host. */
+  readonly offerings: readonly { readonly history: string; readonly offering: OverviewOffering }[];
+}
+
+/** Personal reads carry one person's series and percentiles, without a pool directory or totals. */
+export interface PoolPersonalOverviewResult {
+  readonly from: string;
+  readonly to: string;
+  /** The sole caller hash authorized by this read; it is never a member directory. */
+  readonly person: string;
+  readonly asOf: string | null;
+  readonly consistency: "consistent" | "changed";
+  readonly series: PoolUsageSeriesResult;
+  readonly metrics: {
+    readonly requestTokens: OverviewTokenPercentiles;
+    readonly apiBilled: OverviewMoneyMetric;
+    readonly subscriptionValue: OverviewMoneyMetric;
+    readonly usageSlices: readonly OverviewUsageSlice[];
+  };
+  readonly partial: boolean;
+}
+
 export interface PoolOverviewResult {
   readonly from: string;
   readonly to: string;

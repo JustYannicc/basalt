@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
-import type { PoolOverviewResult } from "../overview-contract.ts";
+import type { PoolOverviewResult, PoolPersonalOverviewResult } from "../overview-contract.ts";
 import type { PoolUsageSeriesResult } from "../usage-series-contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
@@ -20,6 +20,7 @@ export const managersOnly = (result: Result<unknown> | undefined) =>
 export interface Overview {
   readonly capacity?: Result<PoolCapacityHistory>;
   readonly usage?: Result<PoolOverviewResult>;
+  readonly personal?: Result<PoolPersonalOverviewResult>;
   readonly people?: Result<SeriesRead>;
   readonly models?: Result<SeriesRead>;
   readonly coherent?: boolean;
@@ -45,6 +46,13 @@ export function useOverview(api: PoolApi, days: RangeDays) {
       api.overviewUsage({ from: range.from, to: range.to, days }),
     ]);
     if (id !== latest.current) return;
+    if (managersOnly(usage)) {
+      setState({ usage, coherent: false });
+      const personal = await api.personalOverview({ from: range.from, to: range.to, days });
+      if (id !== latest.current) return;
+      setState({ usage, personal, coherent: false });
+      return;
+    }
     if (!usage.ok) {
       setState({ capacity, usage, people: usage, models: usage, coherent: false });
       return;

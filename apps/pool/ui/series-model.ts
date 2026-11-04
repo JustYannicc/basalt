@@ -207,6 +207,11 @@ export interface MemberDirectoryEntry {
   readonly active: boolean;
 }
 
+/** Local label only for the caller hash returned by the personal read. */
+export const personalDirectory = (person: string, active: boolean): MemberDirectoryEntry[] => [
+  { person, displayName: "You", active },
+];
+
 export interface Row {
   readonly id: string;
   readonly label: string;

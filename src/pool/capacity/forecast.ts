@@ -612,7 +612,7 @@ export function forecastCapacity(input: CapacityForecastInput): CapacityForecast
   const rolling = rollingMode;
   const rollingSupported = !rolling || input.windowSeconds === 18_000;
   if (!rollingSupported) reasons.push("rolling-expiry-history-unavailable");
-  const canSimulate = fiveHourModeKnown && rollingSupported;
+  const canSimulate = fiveHourModeKnown && rollingSupported && !reasons.includes("missing-reset-time");
   const projection = canSimulate ? simulate(input.accounts, demandAt, from, input.now, input.windowSeconds, rolling) : null;
   const lowerDemandProjection = canSimulate ? simulate(input.accounts, lowDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
   const busyProjection = canSimulate ? simulate(input.accounts, busyDemandAt!, from, input.now, input.windowSeconds, rolling) : null;
@@ -632,6 +632,7 @@ export function forecastCapacity(input: CapacityForecastInput): CapacityForecast
   const adviceAllowed = patternBasis && candidate !== null && candidate !== undefined
     && history.coverage >= MIN_ADVICE_COVERAGE
     && backtestResult.beatsSeasonalNaive && history.weeks.length >= MIN_ADVICE_WEEKS
+    && history.hours.every((point) => point.demand !== null)
     && !history.weeks.some((week) => week.censored)
     && input.accounts.every((account) => account.capacity > 0 && account.knownWeight && account.usable
       && account.remaining !== null && account.shareKnown !== false && (rolling || account.resetAt !== null));

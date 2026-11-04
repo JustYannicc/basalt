@@ -71,6 +71,29 @@ test("hourly totals keep weighted minimum and last with per-plan source-time ran
   assert.equal(JSON.stringify([...storage.values]).includes("private-account"), false);
 });
 
+test("five-hour measurements gate each account by its weekly balance and retain raw quota by plan", async () => {
+  const history = new CapacityHistory(new Memory());
+  const weeklyWindow = 7 * 24 * 60 * 60;
+  await history.observe("pool-a", {
+    at: start,
+    expected: [...expected(2), { provider: "claude", windowSeconds: weeklyWindow, accounts: 2 }],
+    readings: [
+      reading("private-account-a", 6, { plan: "Pro", full: 10, mode: "fixed", observedAt: start - 30_000 }),
+      reading("private-account-b", 7, { plan: "Max", full: 20, mode: "fixed", observedAt: start - 20_000 }),
+      reading("private-account-a", 0, { windowSeconds: weeklyWindow, mode: null, full: 100, observedAt: start - 30_000 }),
+      reading("private-account-b", 50, { windowSeconds: weeklyWindow, mode: null, full: 100, observedAt: start - 20_000 }),
+    ],
+  });
+
+  const point = (await history.read("pool-a")).find((entry) => entry.windowSeconds === 18_000)!;
+  assert.equal(point.minimum.remaining, 7);
+  assert.equal(point.minimum.full, 30);
+  assert.deepEqual(point.plans.map((plan) => [plan.plan, plan.minimum.remaining]), [["Max", 7], ["Pro", 0]]);
+  assert.equal(point.raw?.minimum.remaining, 13);
+  assert.deepEqual(point.raw?.plans.map((plan) => [plan.plan, plan.minimum.remaining]), [["Max", 7], ["Pro", 6]]);
+  assert.equal(point.usable?.remaining, 20);
+});
+
 test("mixed units validate provider/window cohort coverage before storing separate groups", async () => {
   const history = new CapacityHistory(new Memory());
   const absolute = reading("private-account-b", 70, {

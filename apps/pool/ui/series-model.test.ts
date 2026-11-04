@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PoolUsageSeriesResult, SeriesBucket, SeriesCounts, SeriesGroup, SeriesKey } from "../usage-series-contract.ts";
-import { addDecimal, decimal, decimalText, money, readSeries, rows, total, type SeriesQuery } from "./series-model.ts";
+import { addDecimal, decimal, decimalText, money, personalDirectory, readSeries, rows, total, type SeriesQuery } from "./series-model.ts";
 
 const tokens = (sum: string | null, known = 1, missing = 0) => ({ sum, known, missing });
 
@@ -116,4 +116,12 @@ test("people retain directory names and inactive rows, and open to exact model/p
   assert.deepEqual(pat.children[0]!.usageKey, { person: "person-a", provider: "claude", model: "model-a" });
   assert.equal(pat.children[0]!.requestTokens?.p90, 20);
   assert.equal(list.find((row) => row.label === "Idle Example")?.empty, true);
+});
+
+test("personal overview keeps the signed caller row visible before their first request", () => {
+  const [you] = personalDirectory("caller-hash", false);
+  const list = rows([], "person", (id) => id, you ? [you] : [], { byPerson: [], byModel: [], byModelPerson: [] });
+  assert.equal(list.length, 1);
+  assert.equal(list[0]!.label, "You");
+  assert.equal(list[0]!.empty, true);
 });
