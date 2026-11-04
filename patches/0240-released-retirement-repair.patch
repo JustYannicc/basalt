@@ -101,7 +101,7 @@ new file mode 100644
 +import { canonical, sha256 } from "../crypto.ts";
 +import { record, type Row } from "./provider-apps-schema.ts";
 +
-+const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
++const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 +export const RetirementSelection = Schema.Struct({
 +  organization: Schema.NonEmptyString,
 +  actor: Schema.NonEmptyString,
