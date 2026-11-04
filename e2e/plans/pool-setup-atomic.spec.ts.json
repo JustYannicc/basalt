@@ -1,0 +1,102 @@
+{
+  "scenarios": {
+    "cloudPoolSetupAtomic": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud pool account recovery publishes the pool and native account link atomically",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The Cloud host owns automatic pool setup."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The Cloud host owns automatic pool setup."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolSetupAtomic": [
+      "pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/package.json",
+    ".upstream/apps/hosted/cloud/src/contracts/workflow-display.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/app-sessions.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-auth.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-server-worker.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflow-display-server.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflow-display.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/cloud/src/mcp-server.ts",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/workflow-display.ts",
+    ".upstream/apps/hosted/server/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-display-direct.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-input-displays.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-inputs.ts",
+    ".upstream/apps/hosted/web/src/contracts/protected-query.ts",
+    ".upstream/apps/hosted/web/src/contracts/workflow-input-review.ts",
+    ".upstream/apps/hosted/web/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/workflow-input-client.tsx",
+    ".upstream/apps/local/server/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/local/server/src/implementation/workflow-input-displays.ts",
+    ".upstream/apps/local/server/src/implementation/workflow-inputs.ts",
+    ".upstream/apps/local/web/src/contracts/workflow-input-review.ts",
+    ".upstream/apps/local/web/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/local/web/src/implementation/pages/approvals-list-client.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/approvals.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/workflow-input-client.tsx",
+    ".upstream/apps/local/web/src/implementation/routeTree.gen.ts",
+    ".upstream/apps/local/web/src/implementation/routes/_dashboard.approvals.workflow.$app.$input.tsx",
+    ".upstream/bun.lock",
+    ".upstream/packages/apps/protocols/24.json",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/21.ts",
+    ".upstream/packages/apps/src/contracts/protocols/23.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/protocols/workflow-input-21.ts",
+    ".upstream/packages/apps/src/contracts/workflow-input.ts",
+    ".upstream/packages/mcp/package.json",
+    ".upstream/packages/mcp/src/contracts/workflow-display.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/workflow-display.ts",
+    ".upstream/packages/mcp/src/index.ts",
+    ".upstream/packages/mcp/src/ui/app-frame.ts",
+    ".upstream/packages/sdk/src/contracts/workflow-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/workflows.ts",
+    ".upstream/packages/ui/src/contracts/workflow-inputs.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/browser-approval-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/browser-approval.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/elicitation-fields.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/loading.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-display-review.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-display.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-input.tsx",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

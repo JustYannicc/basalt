@@ -1,0 +1,59 @@
+{
+  "scenarios": {
+    "catalogInstances": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "catalog instances keep every service family reachable and create another explicitly",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned catalog and retained instance fixtures for the UI journey."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted service claims and organization inventory."
+        }
+      }
+    }
+  },
+  "runs": {
+    "catalogInstances": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/pool-inventory.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-creation.ts",
+    ".upstream/apps/hosted/server/src/contracts/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-bindings.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-hook.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-provenance.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-app-upgrades.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-catalog.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pools.ts",
+    ".upstream/apps/hosted/server/src/implementation/provisioning.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/add-app.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/catalog.tsx",
+    ".upstream/packages/catalog/src/index.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-add-another.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-instances.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx"
+  ]
+}

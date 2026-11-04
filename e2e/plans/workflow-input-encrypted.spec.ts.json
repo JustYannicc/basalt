@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "encryptedWorkflowInputAnswer": {
+      "fixtures": "actors",
+      "title": "Cloud encrypted workflow waits for a human answer and resumes with it",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud's encrypted native workflow driver."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud's encrypted native workflow driver."
+        }
+      }
+    },
+    "encryptedWorkflowInputExpiry": {
+      "fixtures": "actors",
+      "title": "Cloud encrypted workflow resumes when its human question expires",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Cloud's encrypted native workflow driver."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Cloud's encrypted native workflow driver."
+        }
+      }
+    }
+  },
+  "runs": {
+    "encryptedWorkflowInputAnswer": [
+      "contributed-accounts:contributed-accounts-through-cloud"
+    ],
+    "encryptedWorkflowInputExpiry": [
+      "contributed-accounts:contributed-accounts-through-cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflows.ts"
+  ]
+}

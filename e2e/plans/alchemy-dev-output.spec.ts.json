@@ -1,0 +1,10 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "fast",
+      "config": "alchemy-dev-output.config.ts"
+    }
+  ]
+}

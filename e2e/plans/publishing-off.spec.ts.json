@@ -1,0 +1,37 @@
+{
+  "scenarios": {
+    "publishingOff": {
+      "fixtures": "actors",
+      "title": "A host that does not publish says so, refuses publications and shows no Publish control",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Cloud scenarios share one server that publishes; a host without publishing is checked on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not publish apps."
+        }
+      }
+    }
+  },
+  "runs": {
+    "publishingOff": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/server/src/app-management.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/packages/app-management/src/contracts/api.ts",
+    ".upstream/packages/app-management/src/http.ts",
+    ".upstream/packages/sdk/src/contracts/registry.ts",
+    ".upstream/packages/sdk/src/implementation/registry.ts",
+    ".upstream/packages/ui/src/contracts/app-management.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/publish-app.tsx"
+  ]
+}

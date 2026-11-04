@@ -1,0 +1,150 @@
+{
+  "scenarios": {
+    "workflowInputLifecycle": {
+      "fixtures": "actors",
+      "title": "durable workflow input survives restart and concurrent valid answers resume once",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Restart owns an isolated self-host process."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted routes have a separate local counterpart."
+        }
+      }
+    },
+    "workflowInputPagination": {
+      "fixtures": "actors",
+      "title": "durable workflow input pages past inaccessible questions without losing its cursor",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app access filtering."
+        }
+      }
+    },
+    "workflowInputRevocation": {
+      "fixtures": "actors",
+      "title": "durable workflow input rechecks revoked app access and removed membership",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted membership and app access."
+        }
+      }
+    },
+    "workflowInputAuthority": {
+      "fixtures": "actors",
+      "title": "durable workflow input enforces recipients, withdrawal, expiry and downstream tool consent",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted authority and organization routes."
+        }
+      }
+    }
+  },
+  "runs": {
+    "workflowInputLifecycle": [
+      "declared:self-host"
+    ],
+    "workflowInputPagination": [
+      "declared:self-host"
+    ],
+    "workflowInputRevocation": [
+      "declared:self-host"
+    ],
+    "workflowInputAuthority": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/worker-build.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflows.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-inputs.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/contracts/management.ts",
+    ".upstream/apps/local/server/src/contracts/workflow-inputs.ts",
+    ".upstream/apps/local/server/src/implementation/server.ts",
+    ".upstream/apps/local/server/src/implementation/workflow-inputs.ts",
+    ".upstream/packages/apps/protocols/21.json",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/15.ts",
+    ".upstream/packages/apps/src/contracts/protocols/16.ts",
+    ".upstream/packages/apps/src/contracts/protocols/17.ts",
+    ".upstream/packages/apps/src/contracts/protocols/18.ts",
+    ".upstream/packages/apps/src/contracts/protocols/19.ts",
+    ".upstream/packages/apps/src/contracts/protocols/20.ts",
+    ".upstream/packages/apps/src/contracts/protocols/3.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/protocols/workflow-before-input.ts",
+    ".upstream/packages/apps/src/contracts/workflow-input.ts",
+    ".upstream/packages/apps/src/contracts/workflows.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/elicitation.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/workflow-context.ts",
+    ".upstream/packages/apps/src/implementation/workflow-input-questions.ts",
+    ".upstream/packages/apps/src/implementation/workflow-rpc.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/http.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/storage.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/contracts/workflow-inputs.ts",
+    ".upstream/packages/sdk/src/contracts/workflow-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/binding-workerd-apps.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/handlers.ts",
+    ".upstream/packages/sdk/src/implementation/owner-moves.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/promise.ts",
+    ".upstream/packages/sdk/src/implementation/remote-app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-schema.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/sdk/src/implementation/worker-workflow-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-apps.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts",
+    ".upstream/packages/sdk/src/implementation/workflow-input-store.ts",
+    ".upstream/packages/sdk/src/implementation/workflow-inputs.ts",
+    ".upstream/packages/sdk/src/implementation/workflows.ts",
+    ".upstream/playground/sdk/storage.ts"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "scenarios": {
+    "personalDataClientIsolation": {
+      "fixtures": "actors",
+      "title": "personal-data report state stays separate across operator OAuth registrations",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The proof uses two E2E operator OAuth clients on one issuer."
+        },
+        "local": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "personalDataClientIsolation": [
+      "personal-data-reporting:reporting-retained-data-and-registration-isolation"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/background-jobs.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/local/server/src/implementation/server.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/owner-moves.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/personal-data-reporting-close.ts",
+    ".upstream/packages/sdk/src/implementation/personal-data-reporting-http.ts",
+    ".upstream/packages/sdk/src/implementation/personal-data-reporting-state.ts",
+    ".upstream/packages/sdk/src/implementation/personal-data-reporting.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-schema.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/playground/sdk/storage.ts"
+  ]
+}

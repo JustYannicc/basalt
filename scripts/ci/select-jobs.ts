@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { changedInputs, jobRoutes, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
+import { declaredMatrices } from "./declarations.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");
@@ -21,7 +22,12 @@ try {
   console.log("::warning::Changed inputs could not be resolved. Every heavy CI job is selected.");
 }
 const output = ".generated/ci/selection.json";
-const routed = { ...selection, ...jobRoutes(selection.jobs, process.env.BOAT_JOBS ?? "") };
+const matrices = declaredMatrices(selection.full ? null : selection.declaredFiles);
+const routed = {
+  ...selection,
+  matrices,
+  ...jobRoutes(selection.jobs, process.env.BOAT_JOBS ?? ""),
+};
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)
@@ -41,6 +47,8 @@ if (process.env.GITHUB_OUTPUT)
       "\n" +
       "boat_jobs_csv=" +
       routed.boatJobs.join(",") +
+      "\nmatrices=" +
+      JSON.stringify(matrices) +
       "\n",
   );
 if (process.env.GITHUB_STEP_SUMMARY)

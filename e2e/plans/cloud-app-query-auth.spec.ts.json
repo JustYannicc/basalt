@@ -1,0 +1,31 @@
+{
+  "scenarios": {
+    "cloudAppQueryAuth": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "Cloud app queries read current authorization without deleting expired verification records",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "AppPages has a separate Better Auth adapter only on Cloud."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not serve hosted app origins."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudAppQueryAuth": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/app-sessions.ts"
+  ]
+}

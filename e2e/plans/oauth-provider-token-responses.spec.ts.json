@@ -1,0 +1,44 @@
+{
+  "scenarios": {
+    "oauthMixedTokenResponse": {
+      "fixtures": "actors",
+      "title": "A declared mixed OAuth response retains typed dynamic fields on sign-in and renewal",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback issuer with controlled wire responses."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared OAuth lifecycle through hosted APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthMixedTokenResponse": [
+      "declared:self-host"
+    ]
+  },
+  "inherited": [
+    "oauthDeclaredTokenResponses",
+    "oauthNestedTokenResponse",
+    "oauthJsonTokenRequests",
+    "oauthEmptyTokenScope"
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/alchemy.github.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/first-party-oauth-settings.ts",
+    ".upstream/apps/hosted/server/src/implementation/first-party-oauth.ts",
+    ".upstream/packages/apps/protocols/14.json",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/account-router.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-fields.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts"
+  ]
+}

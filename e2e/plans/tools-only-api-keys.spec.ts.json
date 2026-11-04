@@ -1,0 +1,56 @@
+{
+  "scenarios": {
+    "toolsOnlyApiKeyRestart": {
+      "fixtures": "actors",
+      "title": "Tools-only key access survives restart and stops at its expiry",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario advances the isolated self-host process clock."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local uses its instance key."
+        }
+      }
+    },
+    "toolsOnlyApiKeys": {
+      "fixtures": "actors",
+      "title": "Tools-only API keys discover and execute without app administration and revoke active MCP clients",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local uses its instance key."
+        }
+      }
+    }
+  },
+  "runs": {
+    "toolsOnlyApiKeyRestart": [
+      "declared:self-host"
+    ],
+    "toolsOnlyApiKeys": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts",
+    ".upstream/apps/hosted/server/src/contracts/api-keys.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/mcp.ts",
+    ".upstream/apps/hosted/server/src/implementation/api-keys.ts",
+    ".upstream/apps/hosted/server/src/implementation/bearer-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-approvals.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-oauth.ts"
+  ]
+}

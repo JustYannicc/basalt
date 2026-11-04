@@ -1,0 +1,50 @@
+{
+  "scenarios": {
+    "localWorkflowDiagram": {
+      "title": "Local workflows are drawn from the deployed code",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Hosted uses its member and manager scenario."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted uses its member and manager scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localWorkflowDiagram": [
+      "declared:local"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/apps.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-resources.tsx",
+    ".upstream/apps/local/web/src/contracts/api.ts",
+    ".upstream/apps/local/web/src/implementation/pages/app-resources.tsx",
+    ".upstream/bun.lock",
+    ".upstream/packages/ui/package.json",
+    ".upstream/packages/ui/src/contracts/app-browser.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-browser-loading.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-workflows.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram-canvas.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram-details.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram-references.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/workflow-diagram.tsx",
+    ".upstream/packages/workflow-graph/package.json",
+    ".upstream/packages/workflow-graph/src/contracts/graph.ts",
+    ".upstream/packages/workflow-graph/src/implementation/derive.ts",
+    ".upstream/packages/workflow-graph/src/implementation/layout.ts",
+    ".upstream/packages/workflow-graph/src/implementation/source.ts",
+    ".upstream/packages/workflow-graph/src/implementation/steps.ts",
+    ".upstream/packages/workflow-graph/src/implementation/walker.ts"
+  ]
+}

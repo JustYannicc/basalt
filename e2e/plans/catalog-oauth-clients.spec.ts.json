@@ -1,0 +1,76 @@
+{
+  "scenarios": {
+    "catalogOAuthClients": {
+      "fixtures": "actors",
+      "title": "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Restarts a runner-owned product with optional client credentials."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local products have no operator OAuth clients."
+        }
+      }
+    }
+  },
+  "runs": {
+    "catalogOAuthClients": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/contracts/oauth-wire.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/first-party-oauth.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/server/src/implementation/shared-catalog-oauth.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/oauth-callback.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/oauth.tsx",
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/27.json",
+    ".upstream/packages/apps/src/contracts/account-family.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/26.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-consumers.ts",
+    ".upstream/packages/sdk/src/contracts/account-family-recipes.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/oauth-families.ts",
+    ".upstream/packages/sdk/src/contracts/oauth.ts",
+    ".upstream/packages/sdk/src/contracts/provider.ts",
+    ".upstream/packages/sdk/src/implementation/account-consumer-plan.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/connection-state.ts",
+    ".upstream/packages/sdk/src/implementation/connection-target.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-connection-plan.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-consent-state.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-grant-reuse.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-protocol-native.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-scope-evidence.ts",
+    ".upstream/packages/sdk/src/implementation/oauth.ts",
+    ".upstream/packages/sdk/src/implementation/provider.ts",
+    ".upstream/packages/ui/src/contracts/account-identities.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx"
+  ]
+}

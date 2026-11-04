@@ -1,0 +1,45 @@
+{
+  "scenarios": {
+    "mcpAuthDiscovery": {
+      "fixtures": "actors",
+      "title": "MCP quick add confirms public or OAuth servers, checks OAuth accounts against the server and sends others to agent setup",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback MCP issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the shared import and OAuth implementation through hosted APIs."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpAuthDiscovery": [
+      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/apps.ts",
+    ".upstream/apps/hosted/server/src/contracts/organization.ts",
+    ".upstream/apps/hosted/server/src/contracts/service-install.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/catalog-service-search.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-install-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/service-installs.ts",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/catalog/src/contracts/service.ts",
+    ".upstream/packages/catalog/src/implementation/catalog.ts",
+    ".upstream/packages/catalog/src/implementation/services.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/custom-app.tsx"
+  ]
+}

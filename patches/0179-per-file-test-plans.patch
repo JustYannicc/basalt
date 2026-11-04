@@ -1,0 +1,45 @@
+diff --git a/e2e/basalt-plans.json b/e2e/basalt-plans.json
+new file mode 100644
+index 0000000..0967ef4
+--- /dev/null
++++ b/e2e/basalt-plans.json
+@@ -0,0 +1 @@
++{}
+diff --git a/e2e/basalt-plans.ts b/e2e/basalt-plans.ts
+new file mode 100644
+index 0000000..3d5ff38
+--- /dev/null
++++ b/e2e/basalt-plans.ts
+@@ -0,0 +1,6 @@
++import declarations from "./basalt-plans.json" with { type: "json" };
++import type { TestPlan } from "./test-plan.ts";
++
++export const basaltPlans = declarations as {
++  readonly [Name in keyof typeof declarations]: typeof TestPlan.Type;
++};
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4730a9e..0c6dbd1 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1,5 +1,6 @@
+ /** A target's applicability is explicit. Missing evidence never implies N/A. */
+ import { Schema } from "effect";
++import { basaltPlans } from "./basalt-plans.ts";
+ import type { Target } from "./report-model.ts";
+ 
+ /** Scheduled tests need a real result; other dispositions explain why none is expected. */
+@@ -106,8 +107,12 @@ export const oauthDocumentOriginCallback =
+  * any expression over all of them a union that grows with the plan, and TypeScript refuses one past
+  * about a thousand members (TS2590). Values are still checked against the plan, extra keys included.
+  */
+-const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof TestPlan.Type }) =>
+-  scenarios;
++export const legacyScenarios: Record<string, typeof TestPlan.Type> = {};
++const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof TestPlan.Type }) => {
++  for (const declared of Object.values(basaltPlans)) Schema.decodeUnknownSync(TestPlan)(declared);
++  Object.assign(legacyScenarios, scenarios);
++  return { ...scenarios, ...basaltPlans };
++};
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({

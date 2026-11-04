@@ -1,0 +1,61 @@
+{
+  "scenarios": {
+    "invitationRolePrivateAccounts": {
+      "fixtures": "actors",
+      "title": "organization admins who manage an app cannot use another person's private account",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted organization roles and account grants."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "invitationRoles": {
+      "fixtures": "actors",
+      "title": "invitation roles cannot grant owner authority through native auth routes",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted organization invitations."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "invitationRolePrivateAccounts": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ],
+    "invitationRoles": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-roles.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/index.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/organization-members.tsx"
+  ]
+}

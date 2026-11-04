@@ -1,0 +1,159 @@
+{
+  "scenarios": {
+    "cloudProductionOpsDiagnostics": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce safe refusal and SQL cause classification",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsCredentials": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce stable plans across credential rotation",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsStableKeys": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce stable identities through apply and replay",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsHostIdentity": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce the reviewed database host",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsDatabaseIdentity": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce the reviewed database name",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "cloudProductionOpsReferences": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations enforce organization references before verification",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudProductionOpsDiagnostics": [
+      "production-ops:identity-diagnostics"
+    ],
+    "cloudProductionOpsCredentials": [
+      "production-ops:identity-credentials"
+    ],
+    "cloudProductionOpsStableKeys": [
+      "production-ops:migrations"
+    ],
+    "cloudProductionOpsHostIdentity": [
+      "production-ops:identity-host"
+    ],
+    "cloudProductionOpsDatabaseIdentity": [
+      "production-ops:identity-database"
+    ],
+    "cloudProductionOpsReferences": [
+      "production-ops:migrations"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/body.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/http.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/cloud/src/mcp-server.ts"
+  ]
+}

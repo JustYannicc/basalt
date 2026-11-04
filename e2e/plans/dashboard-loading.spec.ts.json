@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "dashboardLoading": {
+      "fixtures": "actors",
+      "title": "Dashboard loading shows content skeletons without auth or organization gates",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This journey checks hosted session entry and organization references."
+        }
+      }
+    }
+  },
+  "runs": {
+    "dashboardLoading": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx"
+  ]
+}

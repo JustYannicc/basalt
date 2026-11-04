@@ -1,0 +1,50 @@
+{
+  "scenarios": {
+    "accountDirectoryHealth": {
+      "fixtures": "actors",
+      "title": "Accounts retains app-scoped checks and explains an unclassified check failure",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the hosted resource directory and app-scoped authorization."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountDirectoryHealth": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/account-observations-client.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/app-accounts.tsx",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-source.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx"
+  ]
+}

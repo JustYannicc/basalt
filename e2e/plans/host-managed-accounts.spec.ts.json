@@ -1,0 +1,58 @@
+{
+  "scenarios": {
+    "hostManagedAccounts": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "managementApps": [
+        "owner"
+      ],
+      "title": "host-managed accounts are hidden from sign-ins and healthy app sections, with repair details for editors",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a retained host credential in the isolated self-host database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account ownership and editor access."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostManagedAccounts": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/host-managed-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-sign-in.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/host-managed-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-provenance.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-recovery.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/hosted/web/src/contracts/resource-access.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard.ts",
+    ".upstream/packages/sdk/src/contracts/provider.ts",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/apps.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/connection-app-picker.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/scoped-connections.tsx"
+  ]
+}

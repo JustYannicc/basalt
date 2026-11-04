@@ -15,6 +15,7 @@ import { prepareUpstreamCheckout } from "./upstream-cache.ts";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { writePoolWorkerRevision } from "./pool-worker-revision.ts";
+import { prepareTestPlans } from "./ci/declarations.ts";
 
 const root =
   process.argv[2] === "--root" && process.argv[3]
@@ -39,6 +40,7 @@ for (const { file: patch } of patchManifest.patches) {
   run("git", ["apply", "--check", path], upstream);
   run("git", ["apply", path], upstream);
 }
+prepareTestPlans(root, upstream);
 bundlePoolApp(root, upstream);
 // Installed catalog apps roll forward once per deployed Basalt revision.
 const release = spawnSync("git", ["rev-parse", "HEAD"], {

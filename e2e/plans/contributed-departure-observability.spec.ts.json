@@ -1,0 +1,109 @@
+{
+  "scenarios": {
+    "contributedDepartureDiagnostics": {
+      "fixtures": "actors",
+      "title": "departure diagnostics retain the real eighth failure and stay bounded behind current app management",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization contributions."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses managed Cloud row locks to force an actual eighth failure."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "contributedDepartureRetainedDiagnostics": {
+      "fixtures": "actors",
+      "title": "retained departure diagnostics migrate once without inventing old queue timestamps or errors",
+      "legacyStorage": true,
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization contributions."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the previous self-host schema."
+        }
+      }
+    }
+  },
+  "runs": {
+    "contributedDepartureDiagnostics": [
+      "contributed-accounts:contributed-accounts-through-cloud"
+    ],
+    "contributedDepartureRetainedDiagnostics": [
+      "contributed-accounts:contributed-account-authority-and-recovery"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/app-data.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/contributed-departures.ts",
+    ".upstream/apps/hosted/server/src/contracts/models.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-model-contract.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-departure.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-errors.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-observability-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-queue.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-departure-reads.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-binding-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/model-bindings.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-models.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/packages/app-data/src/cloudflare.ts",
+    ".upstream/packages/apps/protocols/26.json",
+    ".upstream/packages/apps/src/contracts/app.ts",
+    ".upstream/packages/apps/src/contracts/context.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/models.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/25.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/workflows.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/failure-detail.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/models.ts",
+    ".upstream/packages/apps/src/implementation/workflow-context.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/models.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/models.ts",
+    ".upstream/packages/sdk/src/implementation/remote-app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/worker-bridge.ts",
+    ".upstream/packages/sdk/src/implementation/worker-elicitation.ts",
+    ".upstream/packages/sdk/src/implementation/worker-model-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts",
+    ".upstream/packages/sdk/src/implementation/workflows.ts"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "fast",
+      "config": "emulator-failures.config.ts"
+    }
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts",
+    ".upstream/packages/utils/package.json",
+    ".upstream/packages/utils/src/provisioning-request.ts"
+  ]
+}

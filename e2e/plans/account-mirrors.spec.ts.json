@@ -1,0 +1,26 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "host-managed-accounts-cloud",
+      "config": "account-mirrors.config.ts"
+    }
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/implementation/account-key-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-pool-account-mirror.ts",
+    ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-adapter.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-mirror.ts",
+    ".upstream/packages/sdk/src/implementation/account-acquisition-schema.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-schema.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts"
+  ]
+}

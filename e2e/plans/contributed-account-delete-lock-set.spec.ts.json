@@ -1,0 +1,56 @@
+{
+  "scenarios": {
+    "contributedAccountDeleteExpandedLinks": {
+      "fixtures": "actors",
+      "title": "a contributed account delete expands its app lock set after a public link commits",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization contributions."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Requires concurrent transactions in managed Cloud's PostgreSQL."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        }
+      }
+    },
+    "contributedAccountDeleteReconnect": {
+      "fixtures": "actors",
+      "title": "a contributed account delete and a public reconnect release reverse locks and complete",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization contributions."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Requires concurrent transactions in managed Cloud's PostgreSQL."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        }
+      }
+    }
+  },
+  "runs": {
+    "contributedAccountDeleteExpandedLinks": [
+      "declared:cloud"
+    ],
+    "contributedAccountDeleteReconnect": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-removal-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts"
+  ]
+}

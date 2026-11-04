@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "oauthDiscardedRefresh": {
+      "fixtures": "actors",
+      "title": "Cloud discards a rotated refresh safely after account deletion wins settlement",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The proof observes the managed Cloud's native SQL and background work."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The proof observes the managed Cloud's native SQL and background work."
+        }
+      }
+    },
+    "oauthDiscardedRefreshReconnect": {
+      "fixtures": "actors",
+      "title": "Cloud discards a rotated refresh without revoking reconnected credentials",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The proof observes the managed Cloud's native SQL and background work."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The proof observes the managed Cloud's native SQL and background work."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthDiscardedRefresh": [
+      "oauth:discard"
+    ],
+    "oauthDiscardedRefreshReconnect": [
+      "oauth:discard"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/oauth.ts"
+  ]
+}

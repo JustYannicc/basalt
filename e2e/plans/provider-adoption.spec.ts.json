@@ -1,0 +1,135 @@
+{
+  "scenarios": {
+    "providerAdoption": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud provider adoption preserves existing accounts through signed dry run apply and replay",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The named production migration uses the Cloud database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "providerAdoptionLocks": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud provider adoption orders authority before concurrent unlink",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The named production migration uses the Cloud database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "providerAdoptionForeign": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud provider adoption refuses foreign locks in a blocked plan",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The named production migration uses the Cloud database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "providerAdoptionAccountDelete": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud provider adoption refuses a busy concurrent account delete",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The named production migration uses the Cloud database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    },
+    "providerAdoptionPurge": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud provider adoption refuses a busy organization purge",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The named production migration uses the Cloud database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
+    }
+  },
+  "runs": {
+    "providerAdoption": [
+      "production-ops:adoption"
+    ],
+    "providerAdoptionLocks": [
+      "production-ops:adoption"
+    ],
+    "providerAdoptionForeign": [
+      "production-ops:adoption"
+    ],
+    "providerAdoptionAccountDelete": [
+      "production-ops:adoption"
+    ],
+    "providerAdoptionPurge": [
+      "production-ops:adoption"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/http.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-apps.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-consumers.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-plan.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-prerequisites.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-read.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-rows.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-definitions.ts",
+    ".upstream/apps/hosted/testing/cloud-locks-fixture.ts"
+  ]
+}

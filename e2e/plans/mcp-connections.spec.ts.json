@@ -1,0 +1,20 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": [
+    "scopedConnectionAccess",
+    "scopedConnectionAccounts",
+    "scopedConnectionLinkSwappedMidExecution",
+    "scopedConnectionConsent",
+    "scopedConnectionDashboard",
+    "scopedConnectionAppAccount"
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/computer-rows.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-setup.tsx"
+  ]
+}

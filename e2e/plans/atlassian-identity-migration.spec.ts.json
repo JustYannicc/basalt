@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "atlassianIdentityMigration": {
+      "fixtures": "actors",
+      "title": "Atlassian identity recovery binds exact grants and preserves sites, credentials and links through signed operations",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted production operations own this migration."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "atlassianIdentityMigration": [
+      "google-account-recovery:google-recovery-through-signed-cloud-operations"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-identity-v1.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-proofs.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-identity-records.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/retained-identity-records.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts"
+  ]
+}

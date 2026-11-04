@@ -1,0 +1,25 @@
+{
+  "scenarios": {
+    "oauthClientAuthentication": {
+      "fixtures": "actors",
+      "title": "OAuth clients authenticate to services that accept only Basic credentials, read them literally, or read only the request body, through sign-in, registration, refresh and revocation",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises shared OAuth through the hosted API."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthClientAuthentication": [
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+    ]
+  }
+}

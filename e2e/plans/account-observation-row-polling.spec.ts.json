@@ -1,0 +1,43 @@
+{
+  "scenarios": {
+    "accountObservationRowPolling": {
+      "fixtures": "actors",
+      "title": "an open account row shows newly retained usage without a manual refresh",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a loopback allowance service."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted rows read the server's retained reports."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountObservationRowPolling": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/account-observations.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observation-upkeep.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observations.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/web/src/contracts/account-observations.ts",
+    ".upstream/packages/sdk/src/contracts/account-observation-driver.ts",
+    ".upstream/packages/sdk/src/implementation/account-driver-observations.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-state.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-observations.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-cell.tsx"
+  ]
+}

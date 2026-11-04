@@ -1,0 +1,81 @@
+{
+  "scenarios": {
+    "nativeGrantLifecycle": {
+      "fixtures": "actors",
+      "title": "Native grants require device proof, allow personal tools and refuse administration through renewal and revocation",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture owns the external pool protocol and operator configuration."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted device grants."
+        }
+      }
+    },
+    "nativeGrantRefreshRefusal": {
+      "fixtures": "actors",
+      "title": "Native refresh refuses removed pool access and membership even on a cached rotation replay",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture owns the external pool protocol and operator configuration."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted device grants."
+        }
+      }
+    },
+    "nativeGrantModelsOnly": {
+      "fixtures": "actors",
+      "title": "Models-only native grants refuse tools and recover from access-token expiry without widening",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture owns the stopped clock and external pool protocol."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted device grants."
+        }
+      }
+    }
+  },
+  "runs": {
+    "nativeGrantLifecycle": [
+      "declared:self-host"
+    ],
+    "nativeGrantRefreshRefusal": [
+      "declared:self-host"
+    ],
+    "nativeGrantModelsOnly": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/auth-provisioning.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-auth.ts",
+    ".upstream/apps/hosted/self-host/src/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/bearer-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-oauth.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-grant-display.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-grant-host.ts",
+    ".upstream/packages/mcp-auth/src/contracts/native-display.ts",
+    ".upstream/packages/mcp-auth/src/implementation/device-authorization.ts",
+    ".upstream/packages/mcp-auth/src/implementation/native-grants.ts",
+    ".upstream/packages/mcp-auth/src/implementation/oauth.ts"
+  ]
+}

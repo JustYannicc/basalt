@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { matchesGlob } from "node:path";
 import { areas, heavyJobs, sharedInputs, staticInputs } from "./areas.ts";
+import { matchingDeclarations, readDeclarations } from "./declarations.ts";
 import { isEligibleJob } from "../ci-bundles/schedule.ts";
 
 const matches = (file: string, patterns: readonly string[]) =>
@@ -11,7 +12,10 @@ const validPath = (file: string) =>
   !file.split("/").some((part) => part === ".." || part === ".");
 
 export function selectPaths(paths: readonly string[]) {
+  const declarations = readDeclarations();
   const reasons = new Map<string, Set<string>>();
+  const declaredFiles = new Set<string>();
+  let complete = false;
   const select = (jobs: readonly string[], path: string) => {
     for (const job of jobs) {
       if (!heavyJobs.includes(job)) throw new Error("Unknown CI job in area declaration");
@@ -22,7 +26,21 @@ export function selectPaths(paths: readonly string[]) {
   };
   for (const path of [...new Set(paths)].sort()) {
     if (!validPath(path)) throw new Error("Changed path escapes the repository");
+    const declared = matchingDeclarations(path, declarations);
+    for (const entry of declared) {
+      declaredFiles.add(entry.file);
+      select(
+        entry.jobs.filter((job) => job !== "fast"),
+        path,
+      );
+    }
+    if (
+      /^(?:\.upstream\/e2e\/tests\/|e2e\/plans\/)/.test(path) &&
+      declared.some((entry) => entry.jobs.length)
+    )
+      continue;
     if (matches(path, sharedInputs)) {
+      complete = true;
       select(heavyJobs, path);
       continue;
     }
@@ -30,9 +48,11 @@ export function selectPaths(paths: readonly string[]) {
     const affected = areas.filter((area) => matches(path, area.paths));
     // A broad build input alone does not establish which product scenarios cover a runtime change.
     const covered = affected.some((area) => area.jobs.some((job) => job !== "production-build"));
+    if (!covered) complete = true;
     select(covered ? affected.flatMap((area) => area.jobs) : heavyJobs, path);
   }
   return {
+    declaredFiles: complete ? null : [...declaredFiles].sort(),
     jobs: heavyJobs.filter((job) => reasons.has(job)),
     reasons: Object.fromEntries([...reasons].map(([job, paths]) => [job, [...paths]])),
   };

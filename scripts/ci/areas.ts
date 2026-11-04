@@ -59,6 +59,9 @@ export const heavyJobs = [
   "account-acquisition",
   "pool-runtime",
   "production-build",
+  "declared-self-host",
+  "declared-local",
+  "declared-cloud",
   "docs-build",
   "upstream-contracts",
 ];

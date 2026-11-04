@@ -1,0 +1,38 @@
+{
+  "scenarios": {
+    "poolUsageNavigation": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "native pool usage preserves paging drafts, resets between pools and polls only while visible",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback usage backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization policy and the native Settings page."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolUsageNavigation": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-usage-format.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-usage.tsx",
+    "apps/pool/**",
+    "src/pool/**"
+  ]
+}

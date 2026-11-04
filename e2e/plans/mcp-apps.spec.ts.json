@@ -1,0 +1,110 @@
+{
+  "scenarios": {
+    "mcpApps": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "MCP Apps retain native results and bind approved callbacks to their original source",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local MCP wire and origin routing have their own scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpApps": [
+      "mcp-apps:captured-views-source-bindings-and-the-packaged-renderer"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/scripts/build-site.ts",
+    ".upstream/apps/hosted/cloud/src/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/mcp-session.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/schedules.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/site.ts",
+    ".upstream/apps/hosted/cloud/src/mcp-server.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/self-host/src/mcp.ts",
+    ".upstream/apps/hosted/server/src/contracts/mcp.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp-http.ts",
+    ".upstream/apps/hosted/server/src/implementation/mcp.ts",
+    ".upstream/apps/local/server/src/implementation/mcp.ts",
+    ".upstream/apps/local/server/src/implementation/server.ts",
+    ".upstream/bun.lock",
+    ".upstream/package.json",
+    ".upstream/packages/apps/protocols/18.json",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/mcp-apps.ts",
+    ".upstream/packages/apps/src/contracts/mcp.ts",
+    ".upstream/packages/apps/src/contracts/operations.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/17.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/router.ts",
+    ".upstream/packages/apps/src/implementation/account-router.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/mcp-app-selection.ts",
+    ".upstream/packages/apps/src/implementation/mcp-app-source.ts",
+    ".upstream/packages/apps/src/implementation/mcp-catalog.ts",
+    ".upstream/packages/apps/src/implementation/mcp-client.ts",
+    ".upstream/packages/apps/src/implementation/mcp-tools.ts",
+    ".upstream/packages/apps/src/implementation/mcp.ts",
+    ".upstream/packages/apps/src/implementation/router-catalog.ts",
+    ".upstream/packages/apps/src/implementation/router.ts",
+    ".upstream/packages/mcp/package.json",
+    ".upstream/packages/mcp/src/contracts/app-assets.ts",
+    ".upstream/packages/mcp/src/contracts/app-bridge.ts",
+    ".upstream/packages/mcp/src/contracts/app-sandbox.ts",
+    ".upstream/packages/mcp/src/contracts/app-views.ts",
+    ".upstream/packages/mcp/src/contracts/backend.ts",
+    ".upstream/packages/mcp/src/contracts/execute.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/app-capability.ts",
+    ".upstream/packages/mcp/src/implementation/app-sandbox.ts",
+    ".upstream/packages/mcp/src/implementation/app-tools.ts",
+    ".upstream/packages/mcp/src/implementation/app-views-backend.ts",
+    ".upstream/packages/mcp/src/implementation/deferred-app-views.ts",
+    ".upstream/packages/mcp/src/implementation/embedded-app-assets.ts",
+    ".upstream/packages/mcp/src/implementation/execute.ts",
+    ".upstream/packages/mcp/src/implementation/executions.ts",
+    ".upstream/packages/mcp/src/implementation/server.ts",
+    ".upstream/packages/mcp/src/index.ts",
+    ".upstream/packages/mcp/src/ui/app-authority.ts",
+    ".upstream/packages/mcp/src/ui/app-capabilities.ts",
+    ".upstream/packages/mcp/src/ui/renderer.ts",
+    ".upstream/packages/mcp/src/ui/sandbox.ts",
+    ".upstream/packages/sdk/src/contracts/app-views.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/runtime.ts",
+    ".upstream/packages/sdk/src/contracts/storage.ts",
+    ".upstream/packages/sdk/src/contracts/tools.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/app-view-storage.ts",
+    ".upstream/packages/sdk/src/implementation/app-views.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/declarations.ts",
+    ".upstream/packages/sdk/src/implementation/runtime.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-schema.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/sdk/src/implementation/tool-search.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/playground/sdk/storage.ts",
+    ".upstream/scripts/build-mcp-apps.ts",
+    ".upstream/scripts/check-app-protocols.ts"
+  ]
+}

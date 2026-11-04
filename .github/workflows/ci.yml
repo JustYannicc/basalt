@@ -26,6 +26,7 @@ jobs:
       hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
       boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
       boat_jobs_csv: ${{ steps.jobs.outputs.boat_jobs_csv }}
+      matrices: ${{ steps.jobs.outputs.matrices }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -317,13 +318,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^app query traces record ordered request phase durations$"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:app-query-phase-diagnostics)"
           --workers 1
       - name: Verify catalog service identity and import compatibility
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^Service installs reuse one team app|^Quick-add MCP apps retain package names|^MCP quick add confirms public"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:catalog-service-identity-and-import-compatibility)"
           --workers 1
       - name: Verify host-managed visibility and existing account behavior
         working-directory: .upstream
@@ -375,7 +376,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^poolUsageSeries is manager-only and preserves one bounded decimal usage read$"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:bounded-per-account-usage-through-the-public-host-api)"
           --workers 1
       - name: Collect bounded E2E evidence
         if: always()
@@ -412,7 +413,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          "^Verified account rows retain|^An existing identity batches|^Existing Google declarations gain|^One consent connects|^Incremental consent retains|^Wrong identities denial|^Refresh and changed targets|^Additive identity storage|^Verified subjects group|^Covering grants share|^Separate grants never"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-local:shared-identities-and-incremental-consent)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -451,7 +452,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app|^invitation roles cannot grant|^organization admins who manage an app"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement)"
           --workers 1
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
@@ -460,7 +461,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          '^A declared family reuses|^Consumer capability requirements block|^Family metadata preserves retained|^Exact account reuse preserves each app'
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:shared-account-families-and-consumer-capability-refusals)"
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
@@ -674,7 +675,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery publishes' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -710,7 +711,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify OIDC and SAML through the private service binding
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts sso-service-binding:oidc-and-saml-through-the-private-service-binding)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -748,20 +749,20 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations bind' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:runtime-database-binding-with-one-isolated-restart)" --workers 1
       - name: Verify encrypted production operation reads and backup refusal boundaries
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name '^Cloud production operations (encrypt|scope)' --workers 1
+        run: node ../scripts/ci/run-e2e.ts --job production-ops -- bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:encrypted-production-operation-reads-and-backup-refusal-boundaries)" --workers 1
       - name: Verify native provider links through the Cloud hosted API
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_BACKEND: "1"
-        run: bun run e2e:cloud --test-name '^Cloud native provider accounts link' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:native-provider-links-through-the-cloud-hosted-api)" --workers 1
       - name: Verify isolated billing policy and OIDC sign-in
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud (billing gates SSO|SSO OIDC setup preserves drafts)' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts production-ops:isolated-billing-policy-and-oidc-sign-in)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -802,9 +803,7 @@ jobs:
         run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
-        env:
-          BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (stable identities through apply and replay|organization references before verification)$
-        run: node scripts/production-ops/prove-scope.ts
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -830,21 +829,13 @@ jobs:
       matrix:
         include:
           - scope: diagnostics
-            scenario: safe refusal and SQL cause classification
           - scope: credentials
-            scenario: stable plans across credential rotation
           - scope: host
-            scenario: the reviewed database host
           - scope: database
-            scenario: the reviewed database name
           - scope: role
-            scenario: the reviewed SQL login
           - scope: physical
-            scenario: the reviewed physical database with equivalent fixture rows
           - scope: without-server
-            scenario: database identity when the server identifier is unavailable
           - scope: release
-            scenario: a fresh dry run after the reviewed deployment changes
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -861,9 +852,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify stable database identity through signed apply verification and replay
         timeout-minutes: 22
-        env:
-          BASALT_SCOPE_PROOF_PATTERN: '^Cloud production operations enforce ${{ matrix.scenario }}$'
-        run: node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:identity-${{ matrix.scope }})" node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -960,7 +949,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:local --test-name
-          "^local Approvals renders|^browser schedule controls enable"
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals)"
           --workers 1
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
@@ -969,7 +958,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Cloud product events preserve identity|^Cloud product events record onboarding replay|^Cloud support dialog lists"
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:browser-analytics-after-server-rendering)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1044,13 +1033,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^independent departure cleanup|^retained departure diagnostics migrate once|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "$(node ../scripts/ci/e2e-pattern.ts contributed-accounts:contributed-account-authority-and-recovery)"
           --workers 1
       - name: Verify contributed accounts through Cloud
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Cloud encrypted workflow|^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "$(node ../scripts/ci/e2e-pattern.ts contributed-accounts:contributed-accounts-through-cloud)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1126,13 +1115,13 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^scheduled personal-data reports|^personal-data|^account status preserves|^upgrading hosted storage from before app accounts"
+          "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:reporting-retained-data-and-registration-isolation)"
           --workers 2
       - name: Verify Cloud scheduling and organization isolation
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^scheduled personal-data reports|^personal-data reports use each organization"
+          "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:cloud-scheduling-and-organization-isolation)"
           --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
@@ -1168,7 +1157,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-inventory:the-cloud-inventory-and-exact-id-token-retirement-tooling)" --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - name: Verify the banked reset control in a browser with a synthetic provider
@@ -1219,7 +1208,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable|^Google OAuth choices keep'
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
       - name: Prove shared Google Admin OAuth selection through the pinned server
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
@@ -1238,7 +1227,7 @@ jobs:
             "$BASE_SHA"
       - name: Check the reviewed Google client through its native E2E scenario
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^The reviewed Google client follows' --workers 2
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:the-reviewed-google-client-through-its-native-e2e-scenario)" --workers 2
       - name: Retain the Google Admin proof summary
         uses: actions/upload-artifact@v4
         if: always()
@@ -1251,7 +1240,7 @@ jobs:
         run: node scripts/profile-dashboard-batch.ts
       - name: Check Cloud resources stay within each dashboard batch request
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'Cloud dashboard batches share one SQL pool'
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:cloud-resources-stay-within-each-dashboard-batch-request)"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1353,10 +1342,10 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^MCP Apps retain native|^MCP Apps preserve remote source|^MCP Apps render original|^App builds retain their selected npm framework' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
       - name: Verify encrypted retention, concurrent limits and restart
         working-directory: .upstream
-        run: bun run e2e:local --test-name '^Local MCP Apps survive' --workers 1
+        run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:encrypted-retention-concurrent-limits-and-restart)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1369,6 +1358,111 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           include-hidden-files: true
+          if-no-files-found: warn
+  declared-self-host:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-self-host')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-self-host'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  declared-local:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-local')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-local'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-local-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  declared-cloud:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'declared-cloud')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.matrices)['declared-cloud'] }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Run this file's declared scenarios
+        run: bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   fast:
     needs: select
@@ -1384,6 +1478,8 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
+      - name: Verify every adopted test declares its plan and CI job
+        run: bun scripts/ci/check-plans.ts
       - name: Format and lint changed source and carry targets
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
@@ -1697,7 +1793,7 @@ jobs:
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
-        run: bun run e2e:local --test-name '^local driver accounts|^tagged persisted observations' --workers 1
+        run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:local-account-lifetime-and-observation-provenance)" --workers 1
       - name: Verify account usage rows and cells
         working-directory: .upstream
         run: >-

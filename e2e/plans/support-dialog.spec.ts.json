@@ -1,0 +1,26 @@
+{
+  "scenarios": {
+    "supportDialog": {
+      "fixtures": "actors",
+      "title": "Cloud support dialog lists every channel across sidebar layouts and records its use",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard is covered by its own support scenario."
+        }
+      }
+    }
+  },
+  "runs": {
+    "supportDialog": [
+      "human-in-the-loop:browser-analytics-after-server-rendering"
+    ]
+  }
+}

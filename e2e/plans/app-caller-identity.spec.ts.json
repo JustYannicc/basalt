@@ -1,0 +1,49 @@
+{
+  "scenarios": {
+    "appCallerIdentity": {
+      "fixtures": "actors",
+      "title": "shared app handlers and cached dynamic tools retain each caller's stable identity",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization members to share an app with."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appCallerIdentity": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/docs/content/author-an-app.mdx",
+    ".upstream/bun.lock",
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/14.json",
+    ".upstream/packages/apps/src/contracts/app.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/13.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/app-runner.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/declarations.ts",
+    ".upstream/packages/sdk/src/implementation/runtime.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/worker-bridge.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts"
+  ]
+}

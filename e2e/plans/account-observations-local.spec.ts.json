@@ -1,0 +1,84 @@
+{
+  "scenarios": {
+    "accountObservationsLocal": {
+      "legacyStorage": true,
+      "title": "local observations survive restart and discard a refresh from replaced credentials",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Exercises the local SQLite adapter and agent API."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises the local SQLite adapter and agent API."
+        },
+        "local": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountObservationsLocal": [
+      "declared:local"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/account-observations.ts",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observation-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observation-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-observations.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-access.ts",
+    ".upstream/apps/local/server/src/contracts/dashboard.ts",
+    ".upstream/apps/local/server/src/implementation/dashboard.ts",
+    ".upstream/packages/apps/protocols/19.json",
+    ".upstream/packages/apps/src/contracts/account-observation.ts",
+    ".upstream/packages/apps/src/contracts/host.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/17.ts",
+    ".upstream/packages/apps/src/contracts/protocols/18.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/implementation/account-observation-output.ts",
+    ".upstream/packages/apps/src/implementation/account-status-output.ts",
+    ".upstream/packages/apps/src/implementation/connect.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/provider.ts",
+    ".upstream/packages/apps/src/index.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account-observation-driver.ts",
+    ".upstream/packages/sdk/src/contracts/account-observation.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/runtime.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-read.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-schema.ts",
+    ".upstream/packages/sdk/src/implementation/account-observation-store.ts",
+    ".upstream/packages/sdk/src/implementation/account-observations.ts",
+    ".upstream/packages/sdk/src/implementation/account-status-output.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/app-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/packages/sdk/src/implementation/handlers.ts",
+    ".upstream/packages/sdk/src/implementation/owners.ts",
+    ".upstream/packages/sdk/src/implementation/promise.ts",
+    ".upstream/packages/sdk/src/implementation/runtime.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
+    ".upstream/packages/utils/src/account-display-privacy.ts",
+    ".upstream/playground/sdk/storage.ts",
+    ".upstream/scripts/check-app-protocols.ts"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "scenarios": {
+    "catalogOAuthDeferrals": {
+      "fixtures": "actors",
+      "title": "Catalog OAuth deferrals appear only in Connect until a usable client is registered",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The shared Connect form is exercised through self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The shared OAuth fields are exercised through hosted catalog installation."
+        }
+      }
+    }
+  },
+  "runs": {
+    "catalogOAuthDeferrals": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/worker-build.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/apps/local/web/src/implementation/pages/oauth-fields.tsx",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/catalog/src/contracts/index.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/oauth-fields.tsx"
+  ]
+}

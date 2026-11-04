@@ -1,0 +1,24 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "inherited": [
+    "cloudAuthRateLimit",
+    "cloudAuthRateLimitRace",
+    "cloudAuthDatabaseFailureCode",
+    "cloudTokenRateLimitTelemetry"
+  ],
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/organization-access-request.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/application-audience.ts",
+    ".upstream/apps/hosted/server/src/implementation/groups.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-access-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-access-hook.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts"
+  ]
+}

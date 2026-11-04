@@ -1,0 +1,29 @@
+{
+  "scenarios": {
+    "nativeTunnel": {
+      "fixtures": "actors",
+      "title": "Native tunnel uses real grants for streamed models and cloud tools with bounded flow, expiry and revocation",
+      "targets": {
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The self-host fixture runs the Basalt router in workerd with external model and pool peers."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted native grants."
+        }
+      }
+    }
+  },
+  "runs": {
+    "nativeTunnel": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/mcp-auth/src/implementation/native-grants.ts"
+  ]
+}

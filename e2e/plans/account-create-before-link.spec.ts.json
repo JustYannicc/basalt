@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "accountCreateBeforeLink": {
+      "fixtures": "actors",
+      "title": "saved token accounts retry creation before authorized app links and survive another consumer's removal",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted account creation and resource authorization."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a process-owned complete product fixture and loopback app archive."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountCreateBeforeLink": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/native-pool-account-mirror.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-connection.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/packages/apps/src/host.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",
+    ".upstream/packages/mcp/src/implementation/app-assets.ts",
+    ".upstream/packages/sdk/src/contracts/account.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/accounts.ts"
+  ]
+}

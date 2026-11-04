@@ -1,0 +1,38 @@
+{
+  "scenarios": {
+    "telemetryRelay": {
+      "fixtures": "actors",
+      "title": "Cloud telemetry relay exports resolved app IDs, rejects forged identities and keeps explicit feedback available under DNT",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Self-host does not configure the hosted telemetry relay."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not configure the hosted telemetry relay."
+        }
+      }
+    }
+  },
+  "runs": {
+    "telemetryRelay": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/product-analytics.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/telemetry-relay.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/posthog.ts",
+    ".upstream/apps/hosted/server/src/contracts/feedback.ts",
+    ".upstream/apps/hosted/server/src/contracts/product-analytics.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/apps.ts",
+    ".upstream/apps/hosted/server/src/implementation/product-analytics.ts"
+  ]
+}

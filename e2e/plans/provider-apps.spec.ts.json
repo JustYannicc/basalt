@@ -1,0 +1,45 @@
+{
+  "scenarios": {
+    "providerApps": {
+      "fixtures": "actors",
+      "title": "OpenAI and Anthropic apps connect reusable accounts that keep feeding a pool after app deletion",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned loopback catalog and subscription sign-in service."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account policies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "providerApps": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/self-host/src/worker.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
+    ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/packages/catalog/src/contracts/catalog.ts",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
+    ".upstream/packages/ui/src/implementation/lib/provider-brand.ts",
+    ".upstream/packages/ui/src/implementation/styles/dashboard.css"
+  ]
+}
