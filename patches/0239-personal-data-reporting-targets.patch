@@ -1,0 +1,21 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3397,7 +3397,7 @@
+     targets: {
+       "self-host": scheduled,
+       cloud: managedCloud,
+-      local: scheduled,
++      local: na("Uses hosted organization account APIs and actor sessions."),
+     },
+   },
+   personalDataClientIsolation: {
+@@ -3407,7 +3407,7 @@
+     targets: {
+       "self-host": scheduled,
+       cloud: na("The proof uses two E2E operator OAuth clients on one issuer."),
+-      local: scheduled,
++      local: na("Uses hosted organization account APIs and actor sessions."),
+     },
+   },
+   personalDataReconnectCadence: {
