@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
@@ -26,6 +27,86 @@ const label = "Synthetic Codex";
 const page = (fn) => Effect.promise(fn);
 // What the setup saw last, written to failure.json so a failed run names the hop that broke.
 const diagnostics = {};
+
+/**
+ * Re-run the host's two observation checks on what the pool answered: the result schema and the
+ * credential-exposure scan against the binding reference. References are recorded only as their
+ * length and a hash, and masked in the raw answers.
+ */
+const diagnosePool = (traces) => {
+  const upstream = join(root, ".upstream");
+  const load = (path) => import(pathToFileURL(join(upstream, path)).href);
+  const loaded = Promise.all([
+    load("packages/apps/src/contracts/account-observation.ts"),
+    load("packages/utils/src/account-display-privacy.ts"),
+    import(
+      pathToFileURL(createRequire(join(upstream, "packages/apps/package.json")).resolve("effect"))
+        .href
+    ),
+  ])
+    .then(([contract, privacy, effect]) => ({
+      AccountObservationResult: contract.AccountObservationResult,
+      privateObservationStrings: privacy.privateObservationStrings,
+      Schema: effect.Schema,
+    }))
+    .catch((error) => {
+      diagnostics.poolCheckLoad = String(error).slice(0, 300);
+      return undefined;
+    });
+  const strings = (value, out = []) => {
+    if (typeof value === "string") out.push(value);
+    else if (value && typeof value === "object")
+      for (const item of Object.values(value)) strings(item, out);
+    return out;
+  };
+  return loaded.then((checks) =>
+    traces.map((trace) => {
+      const ref = trace.reference;
+      const mask = (text) => (ref ? text.split(ref).join("<ref>") : text);
+      let body;
+      try {
+        body = JSON.parse(trace.body);
+      } catch {
+        body = undefined;
+      }
+      const candidates = [
+        ["observation", body?.observation],
+        ["result.observation", body?.result?.observation],
+        ["result", body?.result?.observedAt === undefined ? undefined : body.result],
+      ].filter(([, value]) => value !== undefined && value !== null);
+      const verdicts = candidates.map(([at, value]) => {
+        if (checks === undefined) return { at, checks: "unavailable" };
+        const decoded = checks.Schema.decodeUnknownExit(checks.AccountObservationResult)(value);
+        const exposed =
+          ref === undefined ? undefined : !checks.privateObservationStrings(value, {}, ref);
+        const colliding = exposed ? strings(value).filter((text) => text.includes(ref)).length : 0;
+        return {
+          at,
+          decode: decoded._tag === "Success" ? "ok" : String(decoded.cause).slice(0, 600),
+          privacy: exposed === undefined ? "no reference" : exposed ? "rejected" : "ok",
+          ...(exposed
+            ? { collidingTokenLength: ref.length, stringsContainingReference: colliding }
+            : {}),
+        };
+      });
+      return {
+        method: trace.method,
+        route: trace.route,
+        status: trace.status,
+        ...(ref === undefined
+          ? {}
+          : {
+              reference: {
+                length: ref.length,
+                sha256: createHash("sha256").update(ref).digest("hex").slice(0, 16),
+              },
+            }),
+        verdicts,
+        body: mask(trace.body).slice(0, 8_192),
+      };
+    }),
+  );
+};
 
 const program = Effect.gen(function* () {
   const h = yield* poolCloudHarness(directory, { resets: true });
@@ -73,6 +154,14 @@ const program = Effect.gen(function* () {
         report.result?.observation.balances.some((balance) => balance.unit === "resets"),
       ),
     "the account's reading has no banked resets",
+  ).pipe(
+    Effect.tapError(() =>
+      Effect.promise(() =>
+        diagnosePool(h.fixture.traces).then((pool) => {
+          diagnostics.pool = pool;
+        }),
+      ),
+    ),
   );
   const consumes = () => h.fixture.resets.calls.filter((call) => call.action === "consume");
 
