@@ -221,7 +221,8 @@ model {
   }
   basalt.build -[sync]-> releaseSource "download verified release sources and binaries"
   basalt.deployment -[sync]-> releaseSource "download CI actions"
-  basalt.build -[sync]-> containerRegistry "pull pinned images and verify published image metadata"
+  basalt.build -[sync]-> containerRegistry "pull pinned images"
+  basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
   basalt.build -[sync]-> packageSource "install build packages"
   basalt.deployment -[sync]-> packageSource "install deployment packages"
   basalt.deployment -[sync]-> deploymentProvider "provision source namespace"
