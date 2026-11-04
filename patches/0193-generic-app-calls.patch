@@ -6,9 +6,9 @@ diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/co
  import { HostedModels } from "./models.ts";
  import { hostCookieName } from "./browser.ts";
  import { HostedWorkflowInputs } from "./workflow-inputs.ts";
-@@ -184,6 +185,7 @@
-     HostedResourceAccess,
+@@ -187,6 +188,7 @@
      HostedPoolUsage,
+     HostedPools,
      HostedModels,
 +    HostedAppConnections,
      HostedOAuthClients,
@@ -83,12 +83,12 @@ diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/s
 +++ b/apps/hosted/server/src/implementation/api.ts
 @@ -1,3 +1,4 @@
 +import { hostedAppConnectionHandlers } from "./app-connections.ts";
+ import { hostedAccountResetHandlers } from "./account-resets.ts";
  import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
  import { hostedAppAccountHandlers } from "./app-account-links.ts";
- import {
-@@ -85,6 +86,7 @@
-   hostedResourceAccessHandlers,
+@@ -88,6 +89,7 @@
    hostedPoolUsageHandlers,
+   hostedPoolHandlers,
    hostedModelHandlers,
 +  hostedAppConnectionHandlers,
    hostedOAuthClientHandlers,
@@ -147,11 +147,11 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,4 @@
-+import {requireAppAccess} from "./resource-policy.ts";
++import { requireAppAccess } from "./resource-policy.ts";
+ import { requireOrganizationAppWrite } from "./organization-app-write.ts";
  import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
  import { CurrentOrganization } from "../contracts/organization.ts";
- import { GroupDatabase } from "../contracts/groups.ts";
-@@ -276,6 +277,40 @@
+@@ -277,6 +278,40 @@
          ),
        );
      const lifecycle: ResourceLifecycle = {
@@ -202,13 +202,13 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
 +    AppConnectionConflict: ({ message }) => message,
 +    AppConnectionRefused: ({ message }) => message,
      AccountProvisioned: ({ message }) => message,
-     PoolUsageUnavailable: ({ message }) => message,
-     PoolCapConflict: ({ message }) => message,
+     AccountResetUnavailable: ({ message }) => message,
+     AccountResetRefused: ({ message }) => message,
 diff --git a/e2e/support/app-call-sdk-source.ts b/e2e/support/app-call-sdk-source.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-call-sdk-source.ts
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,122 @@
 +/** Complete public SDK host with retained PostgreSQL storage and a controlled host clock. */
 +export const appCallSdkSource = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -239,6 +239,8 @@ new file mode 100644
 +  const host = yield* workerdApps({directory: path.join(input.directory, "workerd"), blobs,
 +    executor: Deferred.await(ready), npmRegistry: input.npmRegistry, encryptionKey: secret});
 +  const owner = OwnerId.make("receipt-host");
++  const workflowObserved = yield* Deferred.make<void>();
++  const workflowEvidence:Array<{message:string;workflow:{run:string;name:string;step:string;stepId:string}|null}> = [];
 +  let approvedConfigurations = 0;
 +  let protectedChecks = 0;
 +  let confirmedChecks = 0;
@@ -254,7 +256,12 @@ new file mode 100644
 +          value:{fixture:"owner-confirmed"},
 +        }))};
 +      }),
-+      protectedDispatch:event => Effect.sync(() => {
++      protectedDispatch:event => Effect.gen(function* () {
++        if (event.source.workflow !== undefined) {
++          const decoded = yield* Schema.decodeUnknownEffect(Schema.Struct({message:Schema.String}))(event.decodedInput).pipe(Effect.orDie);
++          workflowEvidence.push({message:decoded.message,workflow:event.source.workflow});
++          if (workflowEvidence.length >= 2) yield* Deferred.succeed(workflowObserved,undefined);
++        }
 +        protectedChecks++;
 +        if (event.confirmation?.value.fixture === "owner-confirmed") {confirmedChecks++;return "approved" as const;}
 +        return "user-approval" as const;
@@ -290,11 +297,24 @@ new file mode 100644
 +    const connection = yield* executor.appConnections.save({app:source.id,owner,dependency:"remote",scope:"user",target:target.id,revision:0});
 +    return {source:source.id,target:target.id,connection:connection.id};
 +  });
++  const workflowSetup = Effect.gen(function* () {
++    const target = (yield* executor.apps.deploy({owner,name:"Workflow query target",files:[
++      {path:"index.ts",content:'import {defineApp,query,object,string,router} from "apps"; const guard=query({input:object({message:string()}),approval:()=>"user-approval"},async(_ctx,input)=>input);export default defineApp({},{tools:router({guard})});'},input.files[1],
++    ]})).app;
++    const source = (yield* executor.apps.deploy({owner,name:"Native workflow caller",files:[
++      {path:"index.ts",content:'import {defineApp,query,mutation,workflow,object,string,router} from "apps"; const configure=mutation({input:object({revision:string()}),approval:()=>"user-approval"},async(_ctx,input)=>input); const nested=query({input:object({target:string()})},async(ctx,input)=>ctx.apps.call({connection:"remote",target:input.target,tool:"guard",kind:"query",input:{message:"operation"}})); const prove=workflow({input:object({target:string()})},async(ctx,input)=>{const direct=await ctx.step.do("direct",step=>step.apps.call({connection:"remote",target:input.target,tool:"guard",kind:"query",input:{message:"direct"}}));const operation=await ctx.step.runQuery("operation",nested,input);return {direct,operation};});export default defineApp({dependencies:{remote:{scope:"user",configuration:{tool:"configure",policy:{fixture:"owner-confirmed"}},tools:{guard:{kind:"query"}}}}},{tools:router({configure,nested}),workflows:{prove}});'},input.files[1],
++    ]})).app;
++    const connection = yield* executor.appConnections.save({app:source.id,owner,dependency:"remote",scope:"user",target:target.id,revision:0});
++    return {source:source.id,target:target.id,connection:connection.id};
++  });
 +  const configureInput = Schema.Struct({app:AppId,tool:Schema.Literals(["configure","ordinary"]),revision:Schema.String});
 +  const queryInput = Schema.Struct({app:AppId,target:AppId});
 +  const routes = Layer.mergeAll(
 +    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
 +    route("configuration/setup", Schema.Null, () => configurationSetup),
++    route("workflow/setup",Schema.Null,() => workflowSetup),
++    route("workflow/start",Schema.Struct({app:AppId,target:AppId}),value => executor.apps.workflowRuns.start({app:value.app,workflow:"prove",input:{target:value.target}})),
++    route("workflow/evidence",Schema.Null,() => Deferred.await(workflowObserved).pipe(Effect.as(workflowEvidence))),
 +    route("configuration/configure", configureInput, value => executor.tools.call({app:value.app,tool:ToolName.make(value.tool),kind:"mutation",input:{revision:value.revision}})),
 +    route("configuration/resume", ToolInputs.resume, value => executor.tools.resume(value)),
 +    route("configuration/call", queryInput, value => executor.tools.call({app:value.app,tool:ToolName.make("invoke"),kind:"query",input:{target:value.target,message:"decoded"}})),
@@ -406,10 +426,20 @@ new file mode 100644
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8652,6 +8652,34 @@
+@@ -8710,6 +8710,44 @@
        "self-host": scheduled,
-       cloud: na("Uses a runner-owned synthetic organization for the native UI screenshot pass."),
-       local: na("Uses hosted organization audiences and roles."),
+       cloud: na("Uses a runner-owned catalog and retained instance fixtures for the UI journey."),
+       local: na("This scenario exercises hosted service claims and organization inventory."),
++    },
++  },
++  appCallWorkflow: {
++    file: "app-call-receipts.spec.ts",
++    title:
++      "native workerd workflows supply direct and operation app calls with trusted step identity",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses the public SDK native workerd workflow backend."),
++      cloud: na("Uses a runner-owned public SDK host."),
 +    },
 +  },
 +  appCallConfiguration: {
@@ -445,7 +475,7 @@ diff --git a/e2e/tests/app-call-receipts.spec.ts b/e2e/tests/app-call-receipts.s
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-call-receipts.spec.ts
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,233 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { appCallSdk } from "../support/app-call-sdk.ts";
@@ -511,6 +541,73 @@ new file mode 100644
 +          response: { action: "accept" },
 +        });
 +        expect((yield* counts()).body).toMatchObject({ approvedConfigurations: 1 });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.appCallWorkflow.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const sdk = yield* appCallSdk;
++        const setup = yield* sdk.request("workflow/setup", null);
++        expect(setup.status, JSON.stringify(setup.body)).toBe(200);
++        const ids = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({
++            source: Schema.String,
++            target: Schema.String,
++            connection: Schema.String,
++          }),
++        )(setup.body);
++        const pending = yield* sdk.request("configuration/configure", {
++          app: ids.source,
++          tool: "configure",
++          revision: "workflow-r1",
++        });
++        const approval = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ status: Schema.Literal("approval-required"), requestId: Schema.String }),
++        )(pending.body);
++        expect(
++          (yield* sdk.request("configuration/resume", {
++            requestId: approval.requestId,
++            response: { action: "accept" },
++          })).status,
++        ).toBe(200);
++        const started = yield* sdk.request("workflow/start", {
++          app: ids.source,
++          target: ids.target,
++        });
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const run = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
++          started.body,
++        );
++        const observed = yield* sdk.request("workflow/evidence", null);
++        expect(observed.status, JSON.stringify(observed.body)).toBe(200);
++        const evidence = yield* Schema.decodeUnknownEffect(
++          Schema.Array(
++            Schema.Struct({
++              message: Schema.String,
++              workflow: Schema.Struct({
++                run: Schema.String,
++                name: Schema.String,
++                step: Schema.String,
++                stepId: Schema.NonEmptyString,
++              }),
++            }),
++          ),
++        )(observed.body);
++        expect(
++          evidence.map((item) => ({
++            message: item.message,
++            run: item.workflow.run,
++            name: item.workflow.name,
++            step: item.workflow.step,
++          })),
++        ).toEqual([
++          { message: "direct", run: run.id, name: "prove", step: "direct" },
++          { message: "operation", run: run.id, name: "prove", step: "operation" },
++        ]);
++        expect(evidence[0]!.workflow.stepId).not.toBe(evidence[1]!.workflow.stepId);
 +      }),
 +    ),
 +  );
@@ -771,19 +868,19 @@ diff --git a/packages/apps/package.json b/packages/apps/package.json
 @@ -1,6 +1,6 @@
  {
    "name": "apps",
--  "version": "0.0.1-beta.104-basalt.2",
-+  "version": "0.0.1-beta.104-basalt.5",
+-  "version": "0.0.1-beta.104-basalt.6",
++  "version": "0.0.1-beta.104-basalt.8",
    "private": true,
    "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
    "type": "module",
-diff --git a/packages/apps/protocols/28.json b/packages/apps/protocols/28.json
+diff --git a/packages/apps/protocols/33.json b/packages/apps/protocols/33.json
 new file mode 100644
 --- /dev/null
-+++ b/packages/apps/protocols/28.json
-@@ -0,0 +1,4423 @@
++++ b/packages/apps/protocols/33.json
+@@ -0,0 +1,4479 @@
 +{
-+  "protocol": 28,
-+  "previous": 27,
++  "protocol": 33,
++  "previous": 31,
 +  "messages": {
 +    "requirements": {
 +      "_tag": "Objects",
@@ -1399,14 +1496,14 @@ new file mode 100644
 +              {
 +                "name": "app",
 +                "type": {
-+                  "$shared": "55675887c929a510"
++                  "$shared": "ce1e6e213f3baaa2"
 +                },
 +                "isOptional": false
 +              },
 +              {
 +                "name": "user",
 +                "type": {
-+                  "$shared": "55675887c929a510"
++                  "$shared": "ce1e6e213f3baaa2"
 +                },
 +                "isOptional": false
 +              }
@@ -2984,25 +3081,6 @@ new file mode 100644
 +    }
 +  },
 +  "shared": {
-+    "13099f856609bd7e": {
-+      "parameter": {
-+        "_tag": "String",
-+        "checks": [
-+          {
-+            "_tag": "Filter",
-+            "representation": {
-+              "id": "effect/schema/isMinLength",
-+              "payload": {
-+                "minLength": 1
-+              }
-+            }
-+          }
-+        ]
-+      },
-+      "type": {
-+        "$shared": "8cac9534e2e8d685"
-+      }
-+    },
 +    "14bd4853b682e21b": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
@@ -3228,7 +3306,7 @@ new file mode 100644
 +        }
 +      ]
 +    },
-+    "295d0fff752b7b0a": {
++    "1ae2cd72d14b73e6": {
 +      "_tag": "Union",
 +      "types": [
 +        {
@@ -3238,16 +3316,44 @@ new file mode 100644
 +          "$shared": "eaf2a9407a7920e9"
 +        },
 +        {
-+          "$shared": "47fa95b63854c73d"
++          "$shared": "dc1efdd791db195e"
 +        },
 +        {
-+          "$shared": "a6131fd014bbf238"
++          "$shared": "e4ecb492305b0157"
 +        },
 +        {
 +          "$shared": "308a91c53c50f2fb"
 +        },
 +        {
 +          "$shared": "14bd4853b682e21b"
++        }
++      ]
++    },
++    "20370d6d8d7d0e5a": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "66a1171c9ae038eb"
++      }
++    },
++    "2e246eca8625516d": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "c1d5e7226fffb905"
 +        }
 +      ]
 +    },
@@ -3622,7 +3728,462 @@ new file mode 100644
 +        }
 +      ]
 +    },
-+    "47fa95b63854c73d": {
++    "3cf3d3ca0e19be34": {
++      "name": "auth",
++      "type": {
++        "$shared": "2e246eca8625516d"
++      },
++      "isOptional": false
++    },
++    "4ded759dcdba2403": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "3634cfd2d0b776b7"
++        }
++      ]
++    },
++    "66a1171c9ae038eb": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "$shared": "b6695d489c14be1e"
++        },
++        {
++          "name": "capabilities",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "cardinality",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "one"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "many"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "contributed",
++          "type": {
++            "_tag": "Boolean"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "health",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "interactiveHealth",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "hostAcquisition",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "6fe43caea1192cbc": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "in",
++          "type": {
++            "_tag": "Literal",
++            "literal": "header"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "name",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^[!#$%&'*+.^_`|~0-9a-z-]+$",
++                    "flags": "u"
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "value",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "String"
++                  },
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "field",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  },
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "base64",
++                        "type": {
++                          "_tag": "Arrays",
++                          "rest": [
++                            {
++                              "_tag": "Union",
++                              "types": [
++                                {
++                                  "_tag": "String"
++                                },
++                                {
++                                  "_tag": "Objects",
++                                  "propertySignatures": [
++                                    {
++                                      "name": "field",
++                                      "type": {
++                                        "_tag": "String",
++                                        "checks": [
++                                          {
++                                            "_tag": "Filter",
++                                            "representation": {
++                                              "id": "effect/schema/isMinLength",
++                                              "payload": {
++                                                "minLength": 1
++                                              }
++                                            }
++                                          }
++                                        ]
++                                      },
++                                      "isOptional": false
++                                    }
++                                  ]
++                                }
++                              ]
++                            }
++                          ],
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  }
++                ]
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "7fa3e0fa96a362fd": {
++      "name": "request",
++      "type": {
++        "$shared": "4ded759dcdba2403"
++      },
++      "isOptional": true
++    },
++    "8fc3297d29f4a425": {
++      "name": "options",
++      "type": {
++        "$shared": "cead5e74ec394c0d"
++      },
++      "isOptional": false
++    },
++    "b6695d489c14be1e": {
++      "name": "definition",
++      "type": {
++        "$shared": "f488a65a734d5dc0"
++      },
++      "isOptional": false
++    },
++    "c1d5e7226fffb905": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "1ae2cd72d14b73e6"
++      }
++    },
++    "ce1e6e213f3baaa2": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "20370d6d8d7d0e5a"
++        }
++      ]
++    },
++    "cead5e74ec394c0d": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "retries",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "limit",
++                "type": {
++                  "_tag": "Number",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isInt",
++                        "payload": null
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isGreaterThanOrEqualTo",
++                        "payload": {
++                          "minimum": 0
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "delay",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Number",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isFinite",
++                            "payload": null
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isGreaterThanOrEqualTo",
++                            "payload": {
++                              "minimum": 0
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMinLength",
++                            "payload": {
++                              "minLength": 1
++                            }
++                          }
++                        }
++                      ]
++                    }
++                  ],
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "backoff",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Literal",
++                      "literal": "constant"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "linear"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "exponential"
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "timeout",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isFinite",
++                      "payload": null
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isGreaterThanOrEqualTo",
++                      "payload": {
++                        "minimum": 0
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "dc1efdd791db195e": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
 +        {
@@ -3632,6 +4193,18 @@ new file mode 100644
 +            "literal": "oauth2"
 +          },
 +          "isOptional": false
++        },
++        {
++          "name": "loopbackRedirectUri",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
 +        },
 +        {
 +          "name": "scopeSeparator",
@@ -3972,285 +4545,137 @@ new file mode 100644
 +        }
 +      ]
 +    },
-+    "4ded759dcdba2403": {
-+      "_tag": "Arrays",
-+      "rest": [
-+        {
-+          "$shared": "3634cfd2d0b776b7"
-+        }
-+      ]
-+    },
-+    "55675887c929a510": {
-+      "_tag": "Objects",
-+      "propertySignatures": [],
-+      "indexSignatures": [
-+        {
-+          "$shared": "13099f856609bd7e"
-+        }
-+      ]
-+    },
-+    "6fe43caea1192cbc": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "name": "in",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": "header"
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "name",
-+          "type": {
-+            "_tag": "String",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isPattern",
-+                  "payload": {
-+                    "source": "^[!#$%&'*+.^_`|~0-9a-z-]+$",
-+                    "flags": "u"
++    "e3ee43e615f766d0": {
++      "name": "family",
++      "type": {
++        "_tag": "Objects",
++        "propertySignatures": [
++          {
++            "name": "id",
++            "type": {
++              "_tag": "String",
++              "checks": [
++                {
++                  "_tag": "Filter",
++                  "representation": {
++                    "id": "effect/schema/isMinLength",
++                    "payload": {
++                      "minLength": 1
++                    }
 +                  }
 +                }
-+              }
-+            ]
++              ]
++            },
++            "isOptional": false
 +          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "value",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "Union",
-+                "types": [
-+                  {
-+                    "_tag": "String"
++          {
++            "name": "name",
++            "type": {
++              "_tag": "String",
++              "checks": [
++                {
++                  "_tag": "Filter",
++                  "representation": {
++                    "id": "effect/schema/isMinLength",
++                    "payload": {
++                      "minLength": 1
++                    }
++                  }
++                }
++              ]
++            },
++            "isOptional": false
++          },
++          {
++            "name": "methods",
++            "type": {
++              "_tag": "Objects",
++              "propertySignatures": [],
++              "indexSignatures": [
++                {
++                  "parameter": {
++                    "_tag": "String",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isMinLength",
++                          "payload": {
++                            "minLength": 1
++                          }
++                        }
++                      }
++                    ]
 +                  },
-+                  {
++                  "type": {
 +                    "_tag": "Objects",
 +                    "propertySignatures": [
 +                      {
-+                        "name": "field",
++                        "name": "mechanism",
 +                        "type": {
-+                          "_tag": "String",
-+                          "checks": [
++                          "_tag": "Union",
++                          "types": [
 +                            {
-+                              "_tag": "Filter",
-+                              "representation": {
-+                                "id": "effect/schema/isMinLength",
-+                                "payload": {
-+                                  "minLength": 1
-+                                }
-+                              }
++                              "_tag": "Literal",
++                              "literal": "api-key"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "oauth"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "interactive"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "other"
 +                            }
 +                          ]
 +                        },
 +                        "isOptional": false
-+                      }
-+                    ]
-+                  },
-+                  {
-+                    "_tag": "Objects",
-+                    "propertySignatures": [
++                      },
 +                      {
-+                        "name": "base64",
++                        "name": "offering",
 +                        "type": {
-+                          "_tag": "Arrays",
-+                          "rest": [
++                          "_tag": "Union",
++                          "types": [
 +                            {
-+                              "_tag": "Union",
-+                              "types": [
-+                                {
-+                                  "_tag": "String"
-+                                },
-+                                {
-+                                  "_tag": "Objects",
-+                                  "propertySignatures": [
-+                                    {
-+                                      "name": "field",
-+                                      "type": {
-+                                        "_tag": "String",
-+                                        "checks": [
-+                                          {
-+                                            "_tag": "Filter",
-+                                            "representation": {
-+                                              "id": "effect/schema/isMinLength",
-+                                              "payload": {
-+                                                "minLength": 1
-+                                              }
-+                                            }
-+                                          }
-+                                        ]
-+                                      },
-+                                      "isOptional": false
-+                                    }
-+                                  ]
-+                                }
-+                              ]
-+                            }
-+                          ],
-+                          "checks": [
++                              "_tag": "Literal",
++                              "literal": "subscription"
++                            },
 +                            {
-+                              "_tag": "Filter",
-+                              "representation": {
-+                                "id": "effect/schema/isMinLength",
-+                                "payload": {
-+                                  "minLength": 1
-+                                }
-+                              }
++                              "_tag": "Literal",
++                              "literal": "metered_api"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "prepaid"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "other"
++                            },
++                            {
++                              "_tag": "Literal",
++                              "literal": "unknown"
 +                            }
 +                          ]
 +                        },
-+                        "isOptional": false
++                        "isOptional": true
 +                      }
 +                    ]
 +                  }
-+                ]
-+              }
-+            ],
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isMinLength",
-+                  "payload": {
-+                    "minLength": 1
-+                  }
 +                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        }
-+      ]
-+    },
-+    "7b65fbc47748f5fc": {
-+      "name": "auth",
-+      "type": {
-+        "$shared": "d15261b7759e0ad5"
-+      },
-+      "isOptional": false
-+    },
-+    "7fa3e0fa96a362fd": {
-+      "name": "request",
-+      "type": {
-+        "$shared": "4ded759dcdba2403"
++              ]
++            },
++            "isOptional": true
++          }
++        ]
 +      },
 +      "isOptional": true
 +    },
-+    "8cac9534e2e8d685": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "$shared": "8dd3f7bcd645888f"
-+        },
-+        {
-+          "name": "capabilities",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "String",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isMinLength",
-+                      "payload": {
-+                        "minLength": 1
-+                      }
-+                    }
-+                  }
-+                ]
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "cardinality",
-+          "type": {
-+            "_tag": "Union",
-+            "types": [
-+              {
-+                "_tag": "Literal",
-+                "literal": "one"
-+              },
-+              {
-+                "_tag": "Literal",
-+                "literal": "many"
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "contributed",
-+          "type": {
-+            "_tag": "Boolean"
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "health",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": true
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "interactiveHealth",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": true
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "hostAcquisition",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "String",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isMinLength",
-+                      "payload": {
-+                        "minLength": 1
-+                      }
-+                    }
-+                  }
-+                ]
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        }
-+      ]
-+    },
-+    "8dd3f7bcd645888f": {
-+      "name": "definition",
-+      "type": {
-+        "$shared": "d7649ff277576492"
-+      },
-+      "isOptional": false
-+    },
-+    "8fc3297d29f4a425": {
-+      "name": "options",
-+      "type": {
-+        "$shared": "cead5e74ec394c0d"
-+      },
-+      "isOptional": false
-+    },
-+    "a6131fd014bbf238": {
++    "e4ecb492305b0157": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
 +        {
@@ -4260,6 +4685,18 @@ new file mode 100644
 +            "literal": "oauth2"
 +          },
 +          "isOptional": false
++        },
++        {
++          "name": "loopbackRedirectUri",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
 +        },
 +        {
 +          "name": "scopeSeparator",
@@ -4622,158 +5059,59 @@ new file mode 100644
 +        }
 +      ]
 +    },
-+    "b31d1845de2c4e7c": {
-+      "parameter": {
-+        "_tag": "String",
-+        "checks": [
-+          {
-+            "_tag": "Filter",
-+            "representation": {
-+              "id": "effect/schema/isMinLength",
-+              "payload": {
-+                "minLength": 1
-+              }
-+            }
-+          }
-+        ]
-+      },
-+      "type": {
-+        "$shared": "295d0fff752b7b0a"
-+      }
-+    },
-+    "cead5e74ec394c0d": {
++    "eaf2a9407a7920e9": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
 +        {
-+          "name": "retries",
++          "name": "type",
 +          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [
-+              {
-+                "name": "limit",
-+                "type": {
-+                  "_tag": "Number",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isInt",
-+                        "payload": null
-+                      }
-+                    },
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isGreaterThanOrEqualTo",
-+                        "payload": {
-+                          "minimum": 0
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "delay",
-+                "type": {
-+                  "_tag": "Union",
-+                  "types": [
-+                    {
-+                      "_tag": "Number",
-+                      "checks": [
-+                        {
-+                          "_tag": "Filter",
-+                          "representation": {
-+                            "id": "effect/schema/isFinite",
-+                            "payload": null
-+                          }
-+                        },
-+                        {
-+                          "_tag": "Filter",
-+                          "representation": {
-+                            "id": "effect/schema/isGreaterThanOrEqualTo",
-+                            "payload": {
-+                              "minimum": 0
-+                            }
-+                          }
-+                        }
-+                      ]
-+                    },
-+                    {
-+                      "_tag": "String",
-+                      "checks": [
-+                        {
-+                          "_tag": "Filter",
-+                          "representation": {
-+                            "id": "effect/schema/isMinLength",
-+                            "payload": {
-+                              "minLength": 1
-+                            }
-+                          }
-+                        }
-+                      ]
-+                    }
-+                  ],
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter"
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "backoff",
-+                "type": {
-+                  "_tag": "Union",
-+                  "types": [
-+                    {
-+                      "_tag": "Literal",
-+                      "literal": "constant"
-+                    },
-+                    {
-+                      "_tag": "Literal",
-+                      "literal": "linear"
-+                    },
-+                    {
-+                      "_tag": "Literal",
-+                      "literal": "exponential"
-+                    }
-+                  ]
-+                },
-+                "isOptional": true
-+              }
-+            ]
++            "_tag": "Literal",
++            "literal": "secrets"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "provisioned",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
 +          },
 +          "isOptional": true
 +        },
 +        {
-+          "name": "timeout",
++          "name": "label",
 +          "type": {
-+            "_tag": "Union",
-+            "types": [
++            "_tag": "String"
++          },
++          "isOptional": false
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
 +              {
-+                "_tag": "Number",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isFinite",
-+                      "payload": null
-+                    }
-+                  },
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isGreaterThanOrEqualTo",
-+                      "payload": {
-+                        "minimum": 0
-+                      }
-+                    }
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
 +                  }
-+                ]
-+              },
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "plain",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
 +              {
 +                "_tag": "String",
 +                "checks": [
@@ -4788,27 +5126,39 @@ new file mode 100644
 +                  }
 +                ]
 +              }
-+            ],
-+            "checks": [
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "raw",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
 +              {
-+                "_tag": "Filter"
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
 +              }
 +            ]
 +          },
 +          "isOptional": true
-+        }
-+      ]
-+    },
-+    "d15261b7759e0ad5": {
-+      "_tag": "Objects",
-+      "propertySignatures": [],
-+      "indexSignatures": [
++        },
 +        {
-+          "$shared": "b31d1845de2c4e7c"
++          "$shared": "7fa3e0fa96a362fd"
 +        }
 +      ]
 +    },
-+    "d7649ff277576492": {
++    "f488a65a734d5dc0": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
 +        {
@@ -4830,108 +5180,10 @@ new file mode 100644
 +          "isOptional": false
 +        },
 +        {
-+          "name": "family",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [
-+              {
-+                "name": "id",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "name",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "methods",
-+                "type": {
-+                  "_tag": "Objects",
-+                  "propertySignatures": [],
-+                  "indexSignatures": [
-+                    {
-+                      "parameter": {
-+                        "_tag": "String",
-+                        "checks": [
-+                          {
-+                            "_tag": "Filter",
-+                            "representation": {
-+                              "id": "effect/schema/isMinLength",
-+                              "payload": {
-+                                "minLength": 1
-+                              }
-+                            }
-+                          }
-+                        ]
-+                      },
-+                      "type": {
-+                        "_tag": "Objects",
-+                        "propertySignatures": [
-+                          {
-+                            "name": "mechanism",
-+                            "type": {
-+                              "_tag": "Union",
-+                              "types": [
-+                                {
-+                                  "_tag": "Literal",
-+                                  "literal": "api-key"
-+                                },
-+                                {
-+                                  "_tag": "Literal",
-+                                  "literal": "oauth"
-+                                },
-+                                {
-+                                  "_tag": "Literal",
-+                                  "literal": "interactive"
-+                                },
-+                                {
-+                                  "_tag": "Literal",
-+                                  "literal": "other"
-+                                }
-+                              ]
-+                            },
-+                            "isOptional": false
-+                          }
-+                        ]
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": true
-+              }
-+            ]
-+          },
-+          "isOptional": true
++          "$shared": "e3ee43e615f766d0"
 +        },
 +        {
-+          "$shared": "7b65fbc47748f5fc"
++          "$shared": "3cf3d3ca0e19be34"
 +        },
 +        {
 +          "name": "site",
@@ -5031,105 +5283,6 @@ new file mode 100644
 +            ]
 +          },
 +          "isOptional": true
-+        }
-+      ]
-+    },
-+    "eaf2a9407a7920e9": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "name": "type",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": "secrets"
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "provisioned",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": true
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "label",
-+          "type": {
-+            "_tag": "String"
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "fields",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [],
-+            "indexSignatures": [
-+              {
-+                "parameter": {
-+                  "_tag": "String"
-+                },
-+                "type": {
-+                  "_tag": "Declaration",
-+                  "representation": {
-+                    "id": "effect/schema/Json",
-+                    "payload": null
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "plain",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "String",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isMinLength",
-+                      "payload": {
-+                        "minLength": 1
-+                      }
-+                    }
-+                  }
-+                ]
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "raw",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "String",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isMinLength",
-+                      "payload": {
-+                        "minLength": 1
-+                      }
-+                    }
-+                  }
-+                ]
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "$shared": "7fa3e0fa96a362fd"
 +        }
 +      ]
 +    },
@@ -5340,7 +5493,7 @@ diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contract
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -27,6 +27,7 @@
+@@ -32,6 +32,7 @@
  } from "./workflows.ts";
  export * from "./workflows.ts";
  export * from "./models.ts";
@@ -5366,13 +5519,13 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
   * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
   * This file has no imports so the package build script can read it directly.
   */
--export const frameworkProtocol = 27;
-+export const frameworkProtocol = 28;
-diff --git a/packages/apps/src/contracts/protocols/27.ts b/packages/apps/src/contracts/protocols/27.ts
+-export const frameworkProtocol = 31;
++export const frameworkProtocol = 33;
+diff --git a/packages/apps/src/contracts/protocols/31.ts b/packages/apps/src/contracts/protocols/31.ts
 new file mode 100644
 --- /dev/null
-+++ b/packages/apps/src/contracts/protocols/27.ts
-@@ -0,0 +1,692 @@
++++ b/packages/apps/src/contracts/protocols/31.ts
+@@ -0,0 +1,691 @@
 +import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
 +import { AccountObservationResult } from "../account-observation.ts";
 +/**
@@ -5395,7 +5548,6 @@ new file mode 100644
 +import { ConnectCommand } from "../connect.ts";
 +import { ProviderSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-+
 +import {
 +  DatabaseFieldReserved,
 +  DatabaseLimitExceeded,
@@ -6037,7 +6189,7 @@ new file mode 100644
 +
 +/** Every message of the current protocol. The snapshot records them by name. */
 +export const current = {
-+  version: 27,
++  version: 31,
 +  schemas: {
 +    invocation: HostInvocation,
 +    request: HostRequest,
@@ -6122,15 +6274,15 @@ diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/s
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -1,3 +1,4 @@
-+import { current as protocol27 } from "./27.ts";
++import { current as protocol31 } from "./31.ts";
+ import { protocol30 } from "./30.ts";
  /**
   * Every released host protocol that the framework no longer speaks. Each is frozen: `bun run check`
-  * compares it with its snapshot in `packages/apps/protocols/`. The protocol the framework speaks is
-@@ -61,4 +62,5 @@
-   protocol24,
-   protocol25,
+@@ -66,4 +67,5 @@
    protocol26,
-+  protocol27,
+   protocol27,
+   protocol30,
++  protocol31,
  ] as const;
 diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contracts/workflows.ts
 --- a/packages/apps/src/contracts/workflows.ts
@@ -6963,6 +7115,30 @@ diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/
        | import("./app-views.ts").AppViewId
        | import("./events.ts").EventSubscriptionId
        | import("./events.ts").StoredEventId,
+diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
+--- a/packages/sdk/src/contracts/workerd-host.ts
++++ b/packages/sdk/src/contracts/workerd-host.ts
+@@ -1,3 +1,4 @@
++import { AppCallCommand } from "apps/contracts";
+ import { ModelCommand } from "apps/contracts";
+ import { WorkflowInputCommand } from "apps/contracts";
+ /** Private host capabilities and parsed app requests for the embedded workerd runtime. */
+@@ -114,6 +115,15 @@
+     input: WorkflowValue,
+     stepId: Schema.NonEmptyString,
+     timeout: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
++    runtimeStep: Schema.optionalKey(
++      Schema.Struct({ step: Schema.NonEmptyString, stepId: Schema.NonEmptyString }),
++    ),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-call"),
++    run: WorkflowRunId,
++    runtimeStep: Schema.Struct({ step: Schema.NonEmptyString, stepId: Schema.NonEmptyString }),
++    command: AppCallCommand,
+   }),
+   Schema.Struct({ operation: Schema.Literal("control"), run: WorkflowRunId, command: Schema.Json }),
+   Schema.Struct({
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
@@ -7844,19 +8020,19 @@ new file mode 100644
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -307,6 +307,7 @@
- const protocol25: AppProtocol = { ...protocol24, version: 25, nodeEntry: nodeAppEntry(25) };
- const protocol26: AppProtocol = { ...protocol25, version: 26, nodeEntry: nodeAppEntry(26) };
+@@ -309,6 +309,7 @@
  const protocol27: AppProtocol = { ...protocol26, version: 27, nodeEntry: nodeAppEntry(27) };
-+const protocol28: AppProtocol = { ...protocol27, version: 28, nodeEntry: nodeAppEntry(28) };
+ const protocol30: AppProtocol = { ...protocol27, version: 30, nodeEntry: nodeAppEntry(30) };
+ const protocol31: AppProtocol = { ...protocol30, version: 31, nodeEntry: nodeAppEntry(31) };
++const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeAppEntry(33) };
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -530,6 +531,7 @@
-     protocol25,
-     protocol26,
+@@ -534,6 +535,7 @@
      protocol27,
-+    protocol28,
+     protocol30,
+     protocol31,
++    protocol33,
    ].map((protocol) => [protocol.version, protocol]),
  );
  
@@ -8358,3 +8534,110 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
        );
 +    };
    });
+diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+--- a/packages/sdk/src/implementation/workerd-client.ts
++++ b/packages/sdk/src/implementation/workerd-client.ts
+@@ -1,3 +1,5 @@
++import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallReply, AppCallFailed } from "apps/contracts";
+ import { ModelRequestFailed, ModelReply } from "apps/contracts";
+ import { WorkflowInput } from "apps/contracts";
+ /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
+@@ -159,8 +161,46 @@
+             const context = yield* host.context(command.run);
+             return Redacted.value(context.accounts);
+           }
+-          case "invoke":
+-            return yield* host.invoke(command.run, command).pipe(Effect.timeout(command.timeout));
++          case "app-call": {
++            const seed = yield* host.seed(command.run);
++            const context = yield* host.context(command.run).pipe(
++              Effect.provideService(AppCallWorkflow, {
++                run: seed.runId,
++                name: seed.name,
++                ...command.runtimeStep,
++              }),
++            );
++            const call = context.workflowControls?.appCall;
++            return yield* (
++              call === undefined
++                ? Effect.fail(new AppCallFailed({ reason: "denied", retryable: false }))
++                : call(command.command)
++            ).pipe(
++              Effect.match({
++                onSuccess: (value) => ({ ok: true as const, value }),
++                onFailure: (error) => ({ ok: false as const, error }),
++              }),
++              Effect.flatMap(Schema.encodeUnknownEffect(AppCallReply)),
++            );
++          }
++          case "invoke": {
++            const seed = yield* host.seed(command.run);
++            if (command.runtimeStep !== undefined && command.runtimeStep.stepId !== command.stepId)
++              return yield* new WorkflowFailure({ reason: "input", retryable: false });
++            return yield* host.invoke(command.run, command).pipe(
++              Effect.provideService(
++                AppCallWorkflow,
++                command.runtimeStep === undefined
++                  ? undefined
++                  : {
++                      run: seed.runId,
++                      name: seed.name,
++                      ...command.runtimeStep,
++                    },
++              ),
++              Effect.timeout(command.timeout),
++            );
++          }
+           case "finish": {
+             if (command.result.ok) yield* host.finish(command.run, command.result);
+             else
+diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+--- a/packages/sdk/src/implementation/workerd-entry.ts
++++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -1,3 +1,5 @@
++import { AppCallWorkflow } from "./app-calls.ts";
++import { AppCallReply, AppCallFailed } from "apps/contracts";
+ import { ModelCommand } from "apps/contracts";
+ import { WorkflowInput } from "apps/contracts";
+ /** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
+@@ -459,6 +461,20 @@
+             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
+           const execution: WorkflowExecution = {
+             runId: seed.runId,
++            name: seed.name,
++            appCall: (runtimeStep, command) =>
++              hostRequest(this.env, {
++                operation: "app-call",
++                run: seed.runId,
++                runtimeStep,
++                command,
++              }).pipe(
++                Effect.flatMap(Schema.decodeUnknownEffect(AppCallReply)),
++                Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
++                Effect.flatMap((reply) =>
++                  reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
++                ),
++              ),
+             input: (command) =>
+               hostRequest(this.env, { operation: "input", run: seed.runId, command }).pipe(
+                 Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
+@@ -506,7 +522,17 @@
+                 Effect.mapError(decodeWorkflowFailure),
+               ),
+             invoke: (input) =>
+-              hostRequest(this.env, { operation: "invoke", run: seed.runId, ...input }),
++              Effect.gen({ self: this }, function* () {
++                const runtimeStep = yield* AppCallWorkflow;
++                return yield* hostRequest(this.env, {
++                  operation: "invoke",
++                  run: seed.runId,
++                  ...input,
++                  ...(runtimeStep === undefined
++                    ? {}
++                    : { runtimeStep: { step: runtimeStep.step, stepId: runtimeStep.stepId } }),
++                });
++              }),
+           };
+           const controls: WorkflowRpc = (input) =>
+             Effect.runPromise(
