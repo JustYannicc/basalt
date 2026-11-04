@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -66,7 +67,7 @@ test("the AWS source route serves the pinned source and the index includes its c
     noPublisher,
   );
   assert.equal(sourceResponse.status, 200);
-  assert.deepEqual(await sourceResponse.json(), source);
+  assert.deepEqual(await sourceResponse.json(), JSON.parse(onServedFramework(JSON.stringify(source))));
   assert.equal(publisherCalls, 0);
 
   const indexResponse = await handleCatalog(

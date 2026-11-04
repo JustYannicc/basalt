@@ -1,0 +1,413 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -1 +1,2 @@
++import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { cloudHostedRoutes } from "./hosted-routes.ts";
+@@ -78,2 +79,6 @@
+     Layer.succeed(
++      AccountResetBackend,
++      Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
++    ),
++    Layer.succeed(
+       PoolUsageBackend,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -1 +1,2 @@
++import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+@@ -221,2 +222,8 @@
+       return Layer.mergeAll(
++        Layer.succeed(
++          AccountResetBackend,
++          Option.isSome(modelSigningKey)
++            ? { key: modelSigningKey.value, origin: modelOrigin }
++            : undefined,
++        ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -19,2 +19,3 @@
+     "./resource-access": "./src/contracts/resource-access.ts",
++    "./account-resets": "./src/contracts/account-resets.ts",
+     "./account-observations": "./src/contracts/account-observations.ts",
+diff --git a/apps/hosted/server/src/contracts/account-resets.ts b/apps/hosted/server/src/contracts/account-resets.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/account-resets.ts
+@@ -0,0 +1,120 @@
++import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
++import { ApiError } from "@executor-js/utils/api-error";
++import { Context, Schema, type Redacted } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { BrowserSessionOnly, Forbidden } from "./auth.ts";
++import { requireAccount } from "./account-grants.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++
++export const ResetCredit = Schema.Struct({
++  id: Schema.NonEmptyString,
++  type: Schema.Literals(["codex_rate_limits", "cedar_ember"]),
++  remaining: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  expiresAt: Schema.NullOr(Schema.NonEmptyString),
++  usableNow: Schema.NullOr(Schema.Boolean),
++  requiresLimit: Schema.Boolean,
++  clears: Schema.NullOr(
++    Schema.Array(Schema.Literals(["five_hour", "seven_day", "seven_day_overage_included"])),
++  ),
++});
++export type ResetCredit = typeof ResetCredit.Type;
++export const ResetCredits = Schema.Struct({
++  provider: Schema.Literals(["codex", "claude"]),
++  observedAt: Schema.NonEmptyString,
++  available: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  credits: Schema.Array(ResetCredit),
++});
++export type ResetCredits = typeof ResetCredits.Type;
++export const ResetResult = Schema.Struct({
++  requestId: Schema.NonEmptyString,
++  outcome: Schema.Literals([
++    "reset",
++    "already_redeemed",
++    "already_used",
++    "nothing_to_reset",
++    "no_credit",
++    "not_limited",
++    "cooldown",
++    "ineligible",
++    "unavailable",
++    "rate_limited",
++    "auth_error",
++    "unknown",
++  ]),
++  cooldownCleared: Schema.Boolean,
++  usageRefreshQueued: Schema.Boolean,
++});
++export type ResetResult = typeof ResetResult.Type;
++export const ResetAttempt = Schema.Struct({
++  ...ResetResult.fields,
++  provider: Schema.Literals(["codex", "claude"]),
++  creditId: Schema.NonEmptyString,
++  startedAt: Schema.NonEmptyString,
++  retryUntil: Schema.NonEmptyString,
++  canRetryProvider: Schema.Boolean,
++});
++export type ResetAttempt = typeof ResetAttempt.Type;
++
++export const AccountResetUnavailable = ApiError.define({
++  tag: "AccountResetUnavailable",
++  status: 503,
++  message: "This account's banked resets could not be reached. Keep its request ID and retry.",
++});
++export const AccountResetRefused = ApiError.define({
++  tag: "AccountResetRefused",
++  status: 409,
++  fields: { reason: Schema.Literals(["invalid_query", "not_found", "unknown_provider", "busy"]) },
++  message:
++    "This reset cannot start. Read its retained attempt and current reset credits before trying again.",
++});
++
++export const AccountResetBackend = Context.Reference<
++  { readonly key: Redacted.Redacted<string>; readonly origin: string } | undefined
++>("hosted/AccountResetBackend", { defaultValue: () => undefined });
++
++const params = { organization: OrganizationReference, pool: AppId, account: AccountId };
++const prefix = "/api/organizations/:organization/pools/:pool/accounts/:account";
++const errors = [
++  OrganizationForbidden,
++  StorageError,
++  AccountResetUnavailable,
++  AccountResetRefused,
++] as const;
++/** Saved-account IDs cross this boundary; the host keeps the provider reference private. */
++export const HostedAccountResets = HttpApiGroup.make("accountResets")
++  .add(
++    HttpApiEndpoint.get("credits", `${prefix}/reset-credits`, {
++      params,
++      success: ResetCredits,
++      error: errors,
++    }).pipe(requireAccount.inspect),
++  )
++  .add(
++    HttpApiEndpoint.get("attempt", `${prefix}/reset-attempt`, {
++      params,
++      success: Schema.NullOr(ResetAttempt),
++      error: errors,
++    }).pipe(requireAccount.inspect),
++  )
++  .add(
++    HttpApiEndpoint.post("use", `${prefix}/reset`, {
++      params,
++      payload: Schema.Struct({
++        creditId: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
++        requestId: Schema.String.check(
++          Schema.isPattern(
++            /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/u,
++          ),
++        ),
++      }),
++      success: ResetResult,
++      error: [...errors, Forbidden],
++    })
++      .pipe(requireAccount.use)
++      .annotate(BrowserSessionOnly, true),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -39,2 +39,3 @@
+ import { HostedTools } from "./tools.ts";
++import { HostedAccountResets } from "./account-resets.ts";
+ import { HostedSkills } from "./skills.ts";
+@@ -191,2 +192,3 @@
+     HostedMcpConnections,
++    HostedAccountResets,
+     HostedFeedback,
+diff --git a/apps/hosted/server/src/implementation/account-resets.ts b/apps/hosted/server/src/implementation/account-resets.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-resets.ts
+@@ -0,0 +1,174 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Config, Effect, Option, Redacted, Schema } from "effect";
++import {
++  FetchHttpClient,
++  HttpBody,
++  HttpClient,
++  HttpClientResponse,
++  HttpServerResponse,
++} from "effect/http";
++import { HttpApiBuilder } from "effect/http-api";
++import { HostedApi } from "../contracts/api.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import {
++  AccountResetBackend,
++  AccountResetRefused,
++  AccountResetUnavailable,
++  ResetAttempt,
++  ResetCredits,
++  ResetResult,
++} from "../contracts/account-resets.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import { AccountGrants } from "./proofs/account-access.ts";
++import { browserOnly } from "./access.ts";
++import {
++  currentResourceAuthority,
++  policyDatabase,
++  requireAppAccessAs,
++  usableAppLinks,
++} from "./resource-policy.ts";
++import { nativePoolMembership } from "./pool-membership.ts";
++import { signPoolToken } from "./pool-token.ts";
++import { SqlClient } from "effect/sql";
++
++/** Resolve a current saved-account link in this person's own pool. Never guess from a label. */
++const target = (pool: AppId, spend: boolean) =>
++  Effect.gen(function* () {
++    if (spend) yield* browserOnly;
++    const grant = yield* spend ? AccountGrants.use : AccountGrants.inspect;
++    const actor = yield* currentResourceAuthority;
++    yield* requireAppAccessAs(actor, pool, "use");
++    const sql = yield* policyDatabase;
++    const rows =
++      yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'membership' as membership
++    from organization o
++    cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++    join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++    where o.id = ${actor.organization} and app.id = ${pool}`;
++    if (rows.length !== 1 || rows[0]?.owner !== actor.user)
++      return yield* new OrganizationForbidden();
++    const executor = yield* Effect.flatten(HostedExecutor);
++    let reference: string | undefined;
++    if (rows[0]?.membership === "executor-links-v1") {
++      const membership = yield* nativePoolMembership(actor.organization, pool, executor).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      );
++      const refs = [
++        ...new Set(
++          membership.accounts.flatMap((row) =>
++            row.account === grant.account &&
++            (row.method === "codex" || row.method === "claude") &&
++            row.homeReference !== null
++              ? [row.homeReference]
++              : [],
++          ),
++        ),
++      ];
++      if (membership.native && refs.length === 1) reference = refs[0];
++    } else {
++      // Released app-acquired subscriptions keep their ref in managed credentials, not a native binding.
++      const links = yield* sql`select a.id from ${yield* usableAppLinks(sql, [pool])}
++      and a.id = ${grant.account} and l.requirement = 'subscriptions'
++      and contribution_deployment.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
++      and contribution_deployment.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider' = a.provider`;
++      if (links.length === 1) {
++        const credentials = yield* executor.managedAccounts.readCredentials({
++          account: grant.account,
++          owner: grant.owner,
++        });
++        const fields = Redacted.value(credentials);
++        if (typeof fields.ref === "string") reference = fields.ref;
++      }
++    }
++    if (
++      reference === undefined ||
++      reference.length === 0 ||
++      reference.length > 256 ||
++      reference.startsWith("sbhrefs1:")
++    )
++      return yield* new AccountResetUnavailable();
++    return { pool, organization: actor.organization, owner: actor.user, reference };
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      AccountNotFound: () => new AccountResetUnavailable(),
++      CredentialsError: () => new AccountResetUnavailable(),
++    }),
++  );
++
++const send = <A>(
++  pool: AppId,
++  action: "resets" | "resets/attempt" | "resets/use",
++  schema: Schema.ConstraintDecoder<A, never>,
++  payload?: { readonly creditId: string; readonly requestId: string },
++) =>
++  Effect.gen(function* () {
++    const resolved = yield* target(pool, payload !== undefined);
++    const supplied = yield* AccountResetBackend;
++    const backend =
++      supplied ??
++      (yield* Effect.gen(function* () {
++        const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++        const origin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option);
++        return Option.isSome(key) && Option.isSome(origin)
++          ? { key: key.value, origin: origin.value }
++          : undefined;
++      }));
++    if (backend === undefined) return yield* new AccountResetUnavailable();
++    const token = yield* Effect.tryPromise(() =>
++      signPoolToken(Redacted.value(backend.key), resolved),
++    );
++    const client = yield* HttpClient.HttpClient;
++    const path = `/pool/v1/accounts/${encodeURIComponent(resolved.reference)}/${action}`;
++    const url = new URL(path, backend.origin).href;
++    const headers = { authorization: `Bearer ${token}`, "x-signalbox-caller": resolved.owner };
++    const response = yield* payload === undefined
++      ? client.get(url, { headers })
++      : client.post(url, { headers, body: HttpBody.jsonUnsafe(payload) });
++    if (response.status === 403) return yield* new OrganizationForbidden();
++    if (response.status !== 200) {
++      const value = yield* HttpClientResponse.schemaBodyJson(
++        Schema.Struct({ error: Schema.String }),
++      )(response);
++      if (
++        value.error === "invalid_query" ||
++        value.error === "not_found" ||
++        value.error === "unknown_provider" ||
++        value.error === "busy"
++      )
++        return yield* new AccountResetRefused({ reason: value.error });
++      return yield* new AccountResetUnavailable();
++    }
++    return yield* HttpClientResponse.schemaBodyJson(schema)(response);
++  }).pipe(
++    Effect.timeout("15 seconds"),
++    Effect.provide(FetchHttpClient.layer),
++    Effect.catchTags({
++      ConfigError: () => new AccountResetUnavailable(),
++      UnknownError: () => new AccountResetUnavailable(),
++      HttpClientError: () => new AccountResetUnavailable(),
++      SchemaError: () => new AccountResetUnavailable(),
++      TimeoutError: () => new AccountResetUnavailable(),
++    }),
++  );
++
++const fresh = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  work.pipe(
++    Effect.map((value) =>
++      HttpServerResponse.jsonUnsafe(value, { headers: { "cache-control": "no-store" } }),
++    ),
++  );
++
++export const hostedAccountResetHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "accountResets",
++  (handlers) =>
++    handlers
++      .handle("credits", ({ params }) => fresh(send(params.pool, "resets", ResetCredits)))
++      .handle("attempt", ({ params }) =>
++        fresh(send(params.pool, "resets/attempt", Schema.NullOr(ResetAttempt))),
++      )
++      .handle("use", ({ params, payload }) =>
++        fresh(send(params.pool, "resets/use", ResetResult, payload)),
++      ),
++);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -1 +1,2 @@
++import { hostedAccountResetHandlers } from "./account-resets.ts";
+ import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
+@@ -101,2 +102,3 @@
+   hostedMcpConnectionHandlers,
++  hostedAccountResetHandlers,
+   hostedFeedbackHandlers,
+diff --git a/apps/hosted/web/src/contracts/account-resets.ts b/apps/hosted/web/src/contracts/account-resets.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/account-resets.ts
+@@ -0,0 +1,40 @@
++import type { AccountId, AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++export type {
++  ResetCredit,
++  ResetAttempt,
++  ResetCredits,
++  ResetResult,
++} from "@executor-js/hosted-server/account-resets";
++import { Data, Effect } from "effect";
++import { Atom } from "effect/reactivity";
++import { HostedClient } from "./api.ts";
++
++class Target extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly pool: AppId;
++  readonly account: AccountId;
++}> {}
++// These are explicit fresh reads, not observation caches. Opening a confirm never spends.
++const credits = Atom.family((params: Target) =>
++  HostedClient.runtime.fn(() =>
++    Effect.flatMap(HostedClient, (client) => client.accountResets.credits({ params })),
++  ),
++);
++const attempt = Atom.family((params: Target) =>
++  HostedClient.runtime.fn(() =>
++    Effect.flatMap(HostedClient, (client) => client.accountResets.attempt({ params })),
++  ),
++);
++const use = Atom.family((params: Target) =>
++  HostedClient.runtime.fn((payload: { readonly creditId: string; readonly requestId: string }) =>
++    Effect.flatMap(HostedClient, (client) => client.accountResets.use({ params, payload })),
++  ),
++);
++export const resetCreditsAtom = (target: ConstructorParameters<typeof Target>[0]) =>
++  credits(new Target(target));
++export const resetAttemptAtom = (target: ConstructorParameters<typeof Target>[0]) =>
++  attempt(new Target(target));
++/** The browser invokes this only after confirmation; the request ID belongs to one intended spend. */
++export const useResetAtom = (target: ConstructorParameters<typeof Target>[0]) =>
++  use(new Target(target));
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -17,2 +17,4 @@
+     AccountProvisioned: ({ message }) => message,
++    AccountResetUnavailable: ({ message }) => message,
++    AccountResetRefused: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,

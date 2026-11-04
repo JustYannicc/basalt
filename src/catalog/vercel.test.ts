@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -13,7 +14,7 @@ test("the Vercel catalog source works without its publisher", async () => {
     },
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), vercelSource);
+  assert.deepEqual(await response.json(), JSON.parse(onServedFramework(JSON.stringify(vercelSource))));
   const head = await handleCatalog(
     new Request("https://catalog.example.test/catalog/apps/vercel.json", { method: "HEAD" }),
   );

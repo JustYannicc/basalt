@@ -46,20 +46,20 @@ export async function handleCatalog(
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
   if (relative === "apps/slack.json")
-    return new Response(request.method === "HEAD" ? null : JSON.stringify(slackSource), { headers });
+    return new Response(request.method === "HEAD" ? null : onServedFramework(JSON.stringify(slackSource)), { headers });
   if (relative === "apps/gitlab.json")
-    return new Response(request.method === "HEAD" ? null : JSON.stringify(gitlabSource), { headers });
+    return new Response(request.method === "HEAD" ? null : onServedFramework(JSON.stringify(gitlabSource)), { headers });
   if (relative === "apps/miro.json")
-    return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
+    return new Response(request.method === "HEAD" ? null : onServedFramework(JSON.stringify(miroSource)), { headers });
   if (relative === "apps/vercel.json")
-    return new Response(request.method === "HEAD" ? null : JSON.stringify(vercelSource), { headers });
+    return new Response(request.method === "HEAD" ? null : onServedFramework(JSON.stringify(vercelSource)), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) {
     if (!added.source)
       return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: `${added.entry.name} is not set up yet.` }), {
         status: 503, headers: { ...headers, "Cache-Control": "no-store" },
       });
-    return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
+    return new Response(request.method === "HEAD" ? null : onServedFramework(JSON.stringify(added.source)), { headers });
   }
   try {
     const response = await fetcher(new URL(relative, catalog.official), {
