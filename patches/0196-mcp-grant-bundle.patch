@@ -1,0 +1,132 @@
+diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
+--- a/apps/hosted/cloud/scripts/worker-sizes.ts
++++ b/apps/hosted/cloud/scripts/worker-sizes.ts
+@@ -325,9 +325,7 @@
+             }),
+           );
+           if (Exit.isFailure(exit))
+-            failures.push(
+-              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause).split("\n")[0]}`,
+-            );
++            failures.push(`${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`);
+         }
+         return failures;
+       }),
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+@@ -2,7 +2,7 @@
+ import {
+   AuthenticationUnavailable,
+   McpAuthentication,
+-  authOptions,
++  mcpAuthOptions,
+   type HostedOAuthOrigins,
+   mcpBrowserGrantError,
+   mcpBearerAccess,
+@@ -11,6 +11,7 @@
+ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+ import { RuntimeContext } from "alchemy";
+ import { betterAuth } from "better-auth/minimal";
++import type { BetterAuthPlugin } from "better-auth";
+ import { Config, Effect, Layer, Option, Redacted } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+@@ -26,10 +27,26 @@
+ import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
+ import { cloudHosts } from "./stage.ts";
+ 
++/** The API owns administration; grant reads retain its user and session columns only. */
++const adminTables = {
++  id: "admin",
++  schema: {
++    user: {
++      fields: {
++        role: { type: "string", required: false, input: false },
++        banned: { type: "boolean", defaultValue: false, required: false, input: false },
++        banReason: { type: "string", required: false, input: false },
++        banExpires: { type: "date", required: false, input: false },
++      },
++    },
++    session: { fields: { impersonatedBy: { type: "string", required: false, input: false } } },
++  },
++} satisfies BetterAuthPlugin;
++
+ /**
+- * Better Auth with the shared grant, API key and admin plugins and the organization columns the
+- * grant checks read. The dashboard's instance adds sign-in, email and billing to the same
+- * plugins and writes the same rows; none of its additions take part in a grant check.
++ * Better Auth with the shared grant and API key plugins and the organization columns the
++ * grant checks read. The dashboard adds administration, sign-in, email and billing and writes the same rows.
++ * This instance only reads sessions and operates on grants; it never creates a user or session.
+  */
+ const mcpGrantAuth = (
+   { origin, resourceOrigins, issuer }: HostedOAuthOrigins,
+@@ -38,7 +55,7 @@
+   nativeSigningKey: Option.Option<Redacted.Redacted<string>>,
+   nativePoolOrigin: Option.Option<string>,
+ ) => {
+-  const base = authOptions(
++  const base = mcpAuthOptions(
+     {
+       url: origin,
+       resourceOrigins,
+@@ -51,7 +68,7 @@
+   );
+   return betterAuth({
+     ...base,
+-    plugins: [...base.plugins, organizationTables],
++    plugins: [...base.plugins, adminTables, organizationTables],
+     database: database.options,
+     secret,
+     advanced: {
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -81,7 +81,7 @@
+  * Shared session and protocol defaults; each host supplies its sign-in policy and its
+  * organization plugin, so no host builds an organization plugin it then discards.
+  */
+-export const authOptions = (
++export const mcpAuthOptions = (
+   settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri"> & {
+     /** The origins of MCP and API OAuth resources; `url` stays the browser origin. */
+     readonly resourceOrigins: ResourceOrigins;
+@@ -104,7 +104,6 @@
+     account: { encryptOAuthTokens: true },
+     onAPIError: { errorURL: `${settings.url}/login` },
+     plugins: [
+-      admin(),
+       explicitOrganizationAuth,
+       organizationInvitationRole,
+       apiKeys,
+@@ -150,6 +149,12 @@
+     },
+   }) satisfies BetterAuthOptions;
+ 
++/** Sign-in hosts also expose administration; grant-only Workers never serve these endpoints. */
++export const authOptions = (...args: Parameters<typeof mcpAuthOptions>) => {
++  const base = mcpAuthOptions(...args);
++  return { ...base, plugins: [admin(), ...base.plugins] };
++};
++
+ /** Project only identity fields; never expose Better Auth tokens as product identity. */
+ export const sessionPrincipal = (
+   session: {
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -20,7 +20,12 @@
+   RequireUser,
+   CurrentPrincipal,
+ } from "./contracts/auth.ts";
+-export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
++export {
++  authOptions,
++  mcpAuthOptions,
++  authSettings,
++  sessionPrincipal,
++} from "./implementation/auth.ts";
+ export * from "./contracts/organization.ts";
+ export { organizationRoleHooks } from "./implementation/organization-roles.ts";
+ export {
