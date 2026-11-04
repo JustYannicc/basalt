@@ -1,0 +1,83 @@
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 788ece8..8a22033 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -267,6 +267,24 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+               .getByRole("link", { name: `Connected app ${index + 1}` })
+               .waitFor(),
+           );
++        yield* browser.use(
++          "The verified group shows its issuer rather than its first app",
++          (page) =>
++            page
++              .locator(".inventory-row")
++              .filter({ hasText: "same@example.test" })
++              .getByRole("img", { name: "Fixture identity", exact: true })
++              .waitFor(),
++        );
++        expect(
++          yield* browser.use("No first-consumer logo names the verified group", (page) =>
++            page
++              .locator(".inventory-row")
++              .filter({ hasText: "same@example.test" })
++              .getByRole("img", { name: "Connected app 1", exact: true })
++              .count(),
++          ),
++        ).toBe(0);
+         yield* browser.use("Inspect each app's requested access", (page) =>
+           page
+             .locator(".inventory-row")
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 767c9df..773175c 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -11,6 +11,7 @@ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
+ import { cn } from "../lib/utils.ts";
+ import { AccountLogo } from "./account-health.tsx";
++import { ProviderIcon } from "./common.tsx";
+ 
+ /** One app or pool using the account, with that consumer's own sign-in state and check. */
+ export interface AccountRowBinding {
+@@ -455,14 +456,25 @@ export function AccountRowDescription({ account }: { readonly account: AccountSu
+ }
+ 
+ /** The compact logo, named for assistive technology and on hover, since Type can be blank. */
+-export function AccountRowLogo({ account }: { readonly account: AccountSummary }) {
+-  const name = account.providerName ?? account.identity?.name;
++export function AccountRowLogo({
++  account,
++  identityGroup = false,
++}: {
++  readonly account: AccountSummary;
++  readonly identityGroup?: boolean;
++}) {
++  const identity = identityGroup ? account.identity : undefined;
++  const name = identity?.name ?? account.providerName ?? account.identity?.name;
+   return (
+     <span
+       className="flex items-center"
+       {...(name === undefined ? {} : { role: "img", "aria-label": name, title: name })}
+     >
+-      <AccountLogo account={account} compact />
++      {identity === undefined ? (
++        <AccountLogo account={account} compact />
++      ) : (
++        <ProviderIcon name={identity.name} url={identity.issuer} icons={[]} medium />
++      )}
+     </span>
+   );
+ }
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index b140659..f5488a2 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -249,7 +249,7 @@ function AccountsList({
+                     ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
+                     : {})}
+                 >
+-                  <AccountRowLogo account={account} />
++                  <AccountRowLogo account={account} identityGroup />
+                   <AccountRowName
+                     account={account}
+                     title={accountTitle(account)}
