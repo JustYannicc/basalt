@@ -1,0 +1,1234 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index 11fb67cd6d6467da24dd4716b74c0cfe8b30499a..4d48d99ce328675da402a5dbb1ce215977f9d64b 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,3 +1,4 @@
++import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
+ import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+@@ -6,4 +7,5 @@ import type { ProductionMigration } from "./contracts.ts";
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
+   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
++  [atlassianAccountIdentityV1.name]: atlassianAccountIdentityV1,
+ };
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-identity-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-identity-v1.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a3797a3b1430745e1c792765355ba38295cb81a
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-identity-v1.ts
+@@ -0,0 +1,209 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json, ProductionMigration } from "../contracts.ts";
++import {
++  RetainedIdentityRefused,
++  accountHash,
++  identityId,
++  readRetainedAccount,
++  sha256,
++} from "./retained-identity-records.ts";
++import { AtlassianMigrationRequest, requireAtlassianProof } from "./atlassian-identity-records.ts";
++
++const IdentityRow = Schema.Struct({
++  id: Schema.String,
++  owner: Schema.String,
++  placement: Schema.String,
++  issuer: Schema.String,
++  subject: Schema.String,
++  name: Schema.String,
++  label: Schema.String,
++  verifiedAt: Schema.String,
++  createdAt: Schema.String,
++});
++
++const readIdentity = (id: string, lock = false) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql.unsafe(
++      `select id, owner, placement, issuer, subject, name, label,
++    to_char(verified_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "verifiedAt",
++    to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
++    from executor_account_identities where id = $1${lock ? " for update" : ""}`,
++      [id],
++    );
++    return (yield* Schema.decodeUnknownEffect(Schema.Array(IdentityRow))(rows))[0];
++  });
++
++const prepare = (request: Json, lock = false) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(AtlassianMigrationRequest)(request);
++    const proofs = [...input.proofs].sort((a, b) => a.account.localeCompare(b.account));
++    if (new Set(proofs.map((proof) => proof.account)).size !== proofs.length)
++      return yield* new RetainedIdentityRefused({ reason: "duplicate-account-selection" });
++    const accounts = [];
++    const identities = new Map<string, typeof IdentityRow.Type>();
++    const changes = [];
++    for (const proof of proofs) {
++      const row = yield* readRetainedAccount(proof.account, lock);
++      yield* requireAtlassianProof(row, proof, input.organization);
++      const id = yield* identityId(proof);
++      if (row.identity !== null && row.identity !== id)
++        return yield* new RetainedIdentityRefused({ reason: "identity-already-different" });
++      const existing = yield* readIdentity(id, lock);
++      if (
++        existing !== undefined &&
++        (existing.owner !== proof.owner ||
++          existing.placement !== proof.placement ||
++          existing.issuer !== proof.issuer ||
++          existing.subject !== proof.subject)
++      )
++        return yield* new RetainedIdentityRefused({ reason: "identity-provenance-changed" });
++      const identity = {
++        id,
++        owner: proof.owner,
++        placement: proof.placement,
++        issuer: proof.issuer,
++        subject: proof.subject,
++        name: "Atlassian",
++        label: proof.label,
++        verifiedAt: proof.observedAt,
++        createdAt: existing?.createdAt ?? proof.observedAt,
++      };
++      const prior = identities.get(id);
++      if (
++        prior !== undefined &&
++        (prior.label !== identity.label || prior.verifiedAt !== identity.verifiedAt)
++      )
++        return yield* new RetainedIdentityRefused({ reason: "inconsistent-identity-proof" });
++      if (prior === undefined) {
++        identities.set(id, identity);
++        if (
++          existing !== undefined &&
++          Date.parse(existing.verifiedAt) > Date.parse(proof.observedAt)
++        )
++          return yield* new RetainedIdentityRefused({ reason: "newer-identity-proof-exists" });
++        const beforeSha256 = existing === undefined ? null : yield* sha256(existing);
++        const afterSha256 = yield* sha256(identity);
++        if (beforeSha256 !== afterSha256)
++          changes.push({
++            table: "executor_account_identities",
++            key: { id },
++            action: existing === undefined ? ("insert" as const) : ("update" as const),
++            beforeSha256,
++            afterSha256,
++          });
++      }
++      // Authored names survive; generic labels become the verified profile label.
++      const label = /^default(?: account| \d+)?$/iu.test(row.label) ? proof.label : row.label;
++      const beforeSha256 = yield* accountHash(row);
++      const afterSha256 = yield* accountHash(row, id, label);
++      if (beforeSha256 !== afterSha256)
++        changes.push({
++          table: "executor_accounts",
++          key: { id: row.account },
++          action: "update" as const,
++          beforeSha256,
++          afterSha256,
++        });
++      accounts.push({
++        account: row.account,
++        identity: id,
++        label,
++        afterSha256,
++        grantSha256: row.grantSha256,
++        credentialsSha256: row.credentialsSha256,
++        linksSha256: row.linksSha256,
++      });
++    }
++    return { changes, data: { accounts, identities: [...identities.values()] } };
++  });
++
++const PlanData = Schema.Struct({
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Schema.String,
++      identity: Schema.String,
++      label: Schema.String,
++      afterSha256: Schema.String,
++      grantSha256: Schema.String,
++      credentialsSha256: Schema.String,
++      linksSha256: Schema.String,
++    }),
++  ),
++  identities: Schema.Array(IdentityRow),
++});
++
++/** Only verified display identity changes; bindings, grants and every access/link record stay intact. */
++export const atlassianAccountIdentityV1: ProductionMigration = {
++  name: "atlassian-account-identity-v1",
++  revision: "1",
++  tables: [
++    "executor_accounts",
++    "executor_account_identities",
++    "executor_providers",
++    "executor_oauth_grants",
++    "hosted_account_access",
++    "hosted_account_groups",
++    "hosted_app_account_links",
++  ],
++  inspect: (request) => prepare(request),
++  apply: (request, plan) =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      const current = yield* prepare(request, true);
++      if (
++        (yield* sha256(current)) !==
++        (yield* sha256({ changes: plan.changes.map((change) => ({ ...change })), data: plan.data }))
++      )
++        return yield* new RetainedIdentityRefused({ reason: "plan-changed" });
++      for (const identity of current.data.identities) {
++        if (
++          !current.changes.some(
++            (change) =>
++              change.table === "executor_account_identities" && change.key.id === identity.id,
++          )
++        )
++          continue;
++        yield* sql`insert into executor_account_identities
++        (id, owner, placement, issuer, subject, name, label, verified_at, created_at)
++        values (${identity.id}, ${identity.owner}, ${identity.placement}, ${identity.issuer}, ${identity.subject},
++          ${identity.name}, ${identity.label}, ${identity.verifiedAt}::timestamptz, ${identity.createdAt}::timestamptz)
++        on conflict (id) do update set label = excluded.label, verified_at = excluded.verified_at`;
++      }
++      for (const account of current.data.accounts) {
++        if (
++          !current.changes.some(
++            (change) => change.table === "executor_accounts" && change.key.id === account.account,
++          )
++        )
++          continue;
++        yield* sql`update executor_accounts set identity_id = ${account.identity}, label = ${account.label}
++        where id = ${account.account}`;
++      }
++    }),
++  verify: (request, plan) =>
++    Effect.gen(function* () {
++      yield* Schema.decodeUnknownEffect(AtlassianMigrationRequest)(request);
++      const expected = yield* Schema.decodeUnknownEffect(PlanData)(plan.data);
++      let identities = true,
++        accountMetadata = true,
++        credentials = true,
++        appLinks = true;
++      for (const identity of expected.identities) {
++        const actual = yield* readIdentity(identity.id);
++        identities &&=
++          actual !== undefined && (yield* sha256(actual)) === (yield* sha256(identity));
++      }
++      for (const account of expected.accounts) {
++        const actual = yield* readRetainedAccount(account.account);
++        accountMetadata &&= (yield* accountHash(actual)) === account.afterSha256;
++        credentials &&=
++          actual.grantSha256 === account.grantSha256 &&
++          actual.credentialsSha256 === account.credentialsSha256;
++        appLinks &&= actual.linksSha256 === account.linksSha256;
++      }
++      const checks = { identities, accountMetadata, credentials, appLinks };
++      return { ok: Object.values(checks).every(Boolean), checks };
++    }),
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-proofs.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-proofs.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb5c34f56f96764a2ac645cd4433ec1e31fcf9bb
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-account-proofs.ts
+@@ -0,0 +1,149 @@
++import { Clock, Context, Effect, Redacted, Schema } from "effect";
++import {
++  AccountId,
++  OAuthGrant,
++  isFirstPartyGrant,
++  type Credentials,
++  type FirstPartyOAuthClient,
++} from "@executor-js/sdk/core";
++import type { OAuthProtocol } from "@executor-js/sdk/oauth-protocol-contracts";
++import type { Json } from "../contracts.ts";
++import { RetainedIdentityRefused, readRetainedAccount } from "./retained-identity-records.ts";
++import {
++  AtlassianProof,
++  atlassianIssuer,
++  atlassianAuthorizationEndpoint,
++  atlassianTokenEndpoint,
++  atlassianProfileEndpoint,
++  requireAtlassianProvider,
++  requireAtlassianProof,
++} from "./atlassian-identity-records.ts";
++
++export class AtlassianProofRuntime extends Context.Service<
++  AtlassianProofRuntime,
++  {
++    readonly credentials: Pick<Credentials, "decrypt">;
++    readonly identify: OAuthProtocol["identify"];
++    readonly firstPartyClients: readonly FirstPartyOAuthClient[];
++  }
++>()("basalt/production-ops/AtlassianProofRuntime") {}
++
++const Request = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  accounts: Schema.Array(Schema.NonEmptyString).check(
++    Schema.isMinLength(1),
++    Schema.isMaxLength(50),
++  ),
++});
++
++/** Existing tokens go only to the host-pinned profile lookup; preparation never refreshes or writes. */
++export const prepareAtlassianAccountProofs = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(Request)(request);
++    const runtime = yield* AtlassianProofRuntime;
++    const now = yield* Clock.currentTimeMillis;
++    const observedAt = new Date(now).toISOString();
++    const proofs: (typeof AtlassianProof.Type)[] = [];
++    const insufficientProof: { account: string; reason: string }[] = [];
++    const selected = [...new Set(input.accounts)].sort();
++    if (selected.length !== input.accounts.length)
++      return yield* new RetainedIdentityRefused({ reason: "duplicate-account-selection" });
++    for (const account of selected) {
++      const result = yield* Effect.gen(function* () {
++        const before = yield* readRetainedAccount(account);
++        if (
++          before.organization !== input.organization ||
++          before.owner !== `organization:${input.organization}`
++        )
++          return yield* new RetainedIdentityRefused({ reason: "account-outside-organization" });
++        yield* requireAtlassianProvider(before);
++        const fields = yield* runtime.credentials.decrypt(
++          AccountId.make(before.grant),
++          Redacted.make(before.encrypted),
++        );
++        const grant = yield* Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(fields));
++        if (
++          grant.grant === "client_credentials" ||
++          (grant.expiresAt !== undefined && grant.expiresAt <= now) ||
++          (grant.generation !== undefined && grant.generation !== before.generation)
++        )
++          return yield* new RetainedIdentityRefused({ reason: "reconnect-required" });
++        const token = grant.fields.access_token;
++        if (typeof token !== "string" || token.length === 0)
++          return yield* new RetainedIdentityRefused({ reason: "access-token-unavailable" });
++        const operator = isFirstPartyGrant(grant)
++          ? runtime.firstPartyClients.find((client) => client.id === grant.firstParty)
++          : undefined;
++        if (
++          isFirstPartyGrant(grant) &&
++          (operator === undefined || grant.authorizationClient !== operator.clientId)
++        )
++          return yield* new RetainedIdentityRefused({ reason: "client-unavailable" });
++        const server = isFirstPartyGrant(grant)
++          ? {
++              issuer: atlassianIssuer,
++              authorization_endpoint: operator!.server.authorizationUrl,
++              token_endpoint: operator!.server.tokenUrl,
++            }
++          : grant.server;
++        if (
++          server.authorization_endpoint !== atlassianAuthorizationEndpoint ||
++          server.token_endpoint !== atlassianTokenEndpoint ||
++          server.issuer !== atlassianIssuer ||
++          (!isFirstPartyGrant(grant) &&
++            grant.authorizationClient !== undefined &&
++            grant.authorizationClient !== grant.client.client_id)
++        )
++          return yield* new RetainedIdentityRefused({ reason: "grant-not-atlassian" });
++        const verified = yield* runtime.identify(
++          { issuer: atlassianIssuer, name: "Atlassian" },
++          server,
++          token,
++        );
++        if (
++          verified.issuer !== atlassianIssuer ||
++          (grant.identity !== undefined &&
++            (grant.identity.issuer !== verified.issuer ||
++              grant.identity.subject !== verified.subject))
++        )
++          return yield* new RetainedIdentityRefused({ reason: "identity-mismatch" });
++        const proof = yield* Schema.decodeUnknownEffect(AtlassianProof)({
++          account,
++          owner: before.owner,
++          provider: before.provider,
++          method: before.method,
++          generation: before.generation,
++          placement: before.placement,
++          site: before.site,
++          grantSha256: before.grantSha256,
++          credentialsSha256: before.credentialsSha256,
++          linksSha256: before.linksSha256,
++          issuer: verified.issuer,
++          subject: verified.subject,
++          label: verified.label,
++          observedAt,
++          evidence: {
++            kind: "host-pinned-profile",
++            authorizationEndpoint: atlassianAuthorizationEndpoint,
++            tokenEndpoint: atlassianTokenEndpoint,
++            profileEndpoint: atlassianProfileEndpoint,
++          },
++        });
++        yield* requireAtlassianProof(
++          yield* readRetainedAccount(account),
++          proof,
++          input.organization,
++        );
++        return proof;
++      }).pipe(Effect.result);
++      if (result._tag === "Success") proofs.push(result.success);
++      else
++        insufficientProof.push({
++          account,
++          reason: Schema.is(RetainedIdentityRefused)(result.failure)
++            ? result.failure.reason
++            : "insufficient-proof",
++        });
++    }
++    return { organization: input.organization, proofs, insufficientProof };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-identity-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-identity-records.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b68a3c256ec7380c55fbe7d9fad4b59f857a9bfe
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/atlassian-identity-records.ts
+@@ -0,0 +1,87 @@
++import { Effect, Schema } from "effect";
++import { ProviderDefinition } from "@executor-js/sdk/core";
++import {
++  RetainedIdentityRefused,
++  type RetainedAccountSnapshot,
++} from "./retained-identity-records.ts";
++
++export const atlassianIssuer = "https://auth.atlassian.com";
++export const atlassianAuthorizationEndpoint = "https://auth.atlassian.com/authorize";
++export const atlassianTokenEndpoint = "https://auth.atlassian.com/oauth/token";
++export const atlassianProfileEndpoint = "https://api.atlassian.com/me";
++
++const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++
++export const AtlassianProof = Schema.Struct({
++  account: Schema.NonEmptyString,
++  owner: Schema.NonEmptyString,
++  provider: Schema.NonEmptyString,
++  method: Schema.NonEmptyString,
++  generation: Schema.Int,
++  placement: Schema.NonEmptyString,
++  site: Schema.NullOr(Schema.String),
++  grantSha256: Digest,
++  credentialsSha256: Digest,
++  linksSha256: Digest,
++  issuer: Schema.Literal(atlassianIssuer),
++  subject: Schema.NonEmptyString,
++  label: Schema.NonEmptyString,
++  observedAt: Schema.String,
++  evidence: Schema.Struct({
++    kind: Schema.Literal("host-pinned-profile"),
++    authorizationEndpoint: Schema.Literal(atlassianAuthorizationEndpoint),
++    tokenEndpoint: Schema.Literal(atlassianTokenEndpoint),
++    profileEndpoint: Schema.Literal(atlassianProfileEndpoint),
++  }),
++});
++
++export const AtlassianMigrationRequest = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  proofs: Schema.Array(AtlassianProof).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
++});
++
++export const requireAtlassianProvider = (row: RetainedAccountSnapshot) =>
++  Effect.gen(function* () {
++    const definition = yield* Schema.decodeUnknownEffect(ProviderDefinition)(row.definition);
++    const method = definition.auth[row.method];
++    if (
++      method?.type !== "oauth2" ||
++      method.grant === "client_credentials" ||
++      method.discover !== undefined ||
++      method.authorizationUrl !== atlassianAuthorizationEndpoint ||
++      method.tokenUrl !== atlassianTokenEndpoint ||
++      (method.issuer !== undefined && method.issuer !== atlassianIssuer) ||
++      (method.identity !== undefined && method.identity.issuer !== atlassianIssuer) ||
++      method.authorizationParams?.audience !== "api.atlassian.com"
++    )
++      return yield* new RetainedIdentityRefused({ reason: "provider-not-atlassian" });
++  });
++
++/** Proof covers the complete retained binding; it grants no new scope, site or consumer access. */
++export const requireAtlassianProof = (
++  row: RetainedAccountSnapshot,
++  proof: typeof AtlassianProof.Type,
++  organization: string,
++) =>
++  Effect.gen(function* () {
++    yield* requireAtlassianProvider(row);
++    const observed = Date.parse(proof.observedAt);
++    if (
++      !(
++        row.organization === organization &&
++        row.owner === `organization:${organization}` &&
++        row.owner === proof.owner &&
++        row.provider === proof.provider &&
++        row.method === proof.method &&
++        row.generation === proof.generation &&
++        row.placement === proof.placement &&
++        row.site === proof.site &&
++        row.grantSha256 === proof.grantSha256 &&
++        row.credentialsSha256 === proof.credentialsSha256 &&
++        row.linksSha256 === proof.linksSha256 &&
++        Number.isFinite(observed) &&
++        new Date(observed).toISOString() === proof.observedAt
++      )
++    )
++      return yield* new RetainedIdentityRefused({ reason: "prepared-proof-changed" });
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
+index bdb076037fa2794f6719d3274ec7749c76403b9b..7aea77a639aeac9097e0da7400110ad114892825 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
+@@ -1,12 +1,18 @@
+ import { Effect, Schema } from "effect";
+ import { ProviderDefinition } from "@executor-js/sdk/core";
+-import { SqlClient } from "effect/sql";
+-import type { Json } from "../contracts.ts";
++import {
++  RetainedIdentityRefused as GoogleIdentityRefused,
++  type RetainedAccountSnapshot as GoogleAccountSnapshot,
++} from "./retained-identity-records.ts";
+ 
+-export class GoogleIdentityRefused extends Schema.TaggedError<GoogleIdentityRefused>()(
+-  "GoogleIdentityRefused",
+-  { reason: Schema.String },
+-) {}
++export {
++  RetainedIdentityRefused as GoogleIdentityRefused,
++  accountHash,
++  identityId as googleIdentityId,
++  readRetainedAccount as readGoogleAccount,
++  sha256,
++  type RetainedAccountSnapshot as GoogleAccountSnapshot,
++} from "./retained-identity-records.ts";
+ 
+ export const GoogleProof = Schema.Struct({
+   account: Schema.NonEmptyString,
+@@ -32,162 +38,6 @@ export const GoogleMigrationRequest = Schema.Struct({
+   proofs: Schema.Array(GoogleProof).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
+ });
+ 
+-const AccountRow = Schema.Struct({
+-  account: Schema.NonEmptyString,
+-  owner: Schema.String,
+-  provider: Schema.String,
+-  method: Schema.String,
+-  label: Schema.String,
+-  description: Schema.NullOr(Schema.String),
+-  site: Schema.NullOr(Schema.String),
+-  createdAt: Schema.String,
+-  grantReference: Schema.NullOr(Schema.String),
+-  generation: Schema.Int,
+-  identity: Schema.NullOr(Schema.String),
+-  organization: Schema.String,
+-  kind: Schema.String,
+-  person: Schema.NullOr(Schema.String),
+-  audience: Schema.NullOr(Schema.String),
+-  revision: Schema.String,
+-  definition: Schema.Unknown,
+-  grant: Schema.String,
+-  grantStatus: Schema.String,
+-  grantOwner: Schema.NullOr(Schema.String),
+-  grantUpdatedAt: Schema.String,
+-  encrypted: Schema.Uint8Array,
+-  credentials: Schema.Uint8Array,
+-});
+-
+-const sortedJson = (value: Json): string => {
+-  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
+-  if (value !== null && typeof value === "object")
+-    return `{${Object.entries(value)
+-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+-      .map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`)
+-      .join(",")}}`;
+-  return JSON.stringify(value);
+-};
+-
+-export const sha256 = (value: Json) =>
+-  Effect.promise(async () => {
+-    const digest = await crypto.subtle.digest(
+-      "SHA-256",
+-      new TextEncoder().encode(sortedJson(value)),
+-    );
+-    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+-      "",
+-    );
+-  });
+-
+-const bytes = (value: Uint8Array) =>
+-  Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+-
+-/** The grant and access revision are read again after UserInfo; network I/O holds no SQL locks. */
+-export const readGoogleAccount = (account: string, lock = false) =>
+-  Effect.gen(function* () {
+-    const sql = yield* SqlClient.SqlClient;
+-    const rows = yield* sql.unsafe(
+-      `select a.id as account, a.owner, a.provider, a.method, a.label, a.description, a.site,
+-    to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
+-    a.oauth_grant_id as "grantReference",
+-    a.credential_generation as generation, a.identity_id as identity,
+-    h.organization_id as organization, h.kind, h.personal_user_id as person, h.audience,
+-    h.revision, p.definition, g.id as grant, g.status as "grantStatus", g.owner as "grantOwner",
+-    to_char(g.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "grantUpdatedAt", g.encrypted,
+-    a.encrypted_credentials as credentials
+-    from executor_accounts a join executor_providers p on p.id = a.provider
+-    join hosted_account_access h on h.account_id = a.id
+-    join executor_oauth_grants g on g.id = coalesce(a.oauth_grant_id, a.id)
+-    where a.id = $1${lock ? " for update of a, g for share of h, p" : ""}`,
+-      [account],
+-    );
+-    const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(AccountRow))(rows);
+-    const row = decoded[0];
+-    if (decoded.length !== 1 || row === undefined || !row.grantStatus.startsWith("ready_"))
+-      return yield* new GoogleIdentityRefused({ reason: "account-or-grant-unavailable" });
+-    const groups = yield* sql.unsafe(
+-      `select group_id from hosted_account_groups
+-    where account_id = $1 order by group_id${lock ? " for share" : ""}`,
+-      [account],
+-    );
+-    const memberships = yield* Schema.decodeUnknownEffect(
+-      Schema.Array(Schema.Struct({ group_id: Schema.String })),
+-    )(groups);
+-    const placement = JSON.stringify([
+-      row.organization,
+-      row.kind,
+-      row.person,
+-      row.audience,
+-      memberships.map((group) => group.group_id),
+-    ]);
+-    const grantSha256 = yield* sha256([
+-      row.account,
+-      row.owner,
+-      row.provider,
+-      row.method,
+-      row.generation,
+-      placement,
+-      row.revision,
+-      row.grant,
+-      row.grantStatus,
+-      row.grantOwner,
+-      row.grantUpdatedAt,
+-      bytes(row.encrypted),
+-    ]);
+-    const credentialsSha256 = yield* sha256(bytes(row.credentials));
+-    const links =
+-      yield* sql`select app, requirement, subject, linked_by from hosted_app_account_links
+-    where account = ${account} order by app, requirement, subject nulls first`;
+-    const linked = yield* Schema.decodeUnknownEffect(
+-      Schema.Array(
+-        Schema.Struct({
+-          app: Schema.String,
+-          requirement: Schema.String,
+-          subject: Schema.NullOr(Schema.String),
+-          linked_by: Schema.NullOr(Schema.String),
+-        }),
+-      ),
+-    )(links);
+-    return {
+-      ...row,
+-      placement,
+-      grantSha256,
+-      credentialsSha256,
+-      linksSha256: yield* sha256(linked),
+-    };
+-  });
+-
+-export type GoogleAccountSnapshot = Effect.Success<ReturnType<typeof readGoogleAccount>>;
+-
+-export const accountHash = (
+-  row: GoogleAccountSnapshot,
+-  identity = row.identity,
+-  label = row.label,
+-) =>
+-  sha256([
+-    row.account,
+-    row.owner,
+-    row.provider,
+-    row.method,
+-    row.generation,
+-    identity,
+-    label,
+-    row.description,
+-    row.site,
+-    row.createdAt,
+-    row.grantReference,
+-    row.placement,
+-    row.revision,
+-    row.grantSha256,
+-    row.credentialsSha256,
+-    row.linksSha256,
+-  ]);
+-
+-export const googleIdentityId = (proof: typeof GoogleProof.Type) =>
+-  sha256([proof.owner, proof.placement, proof.issuer, proof.subject]).pipe(
+-    Effect.map((digest) => `aid_${digest}`),
+-  );
+-
+ export const requireGoogleProof = (
+   row: GoogleAccountSnapshot,
+   proof: typeof GoogleProof.Type,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/retained-identity-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/retained-identity-records.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..799146af8eea4179f3a0843a77205781eba0bade
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/retained-identity-records.ts
+@@ -0,0 +1,169 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json } from "../contracts.ts";
++
++export class RetainedIdentityRefused extends Schema.TaggedError<RetainedIdentityRefused>()(
++  "RetainedIdentityRefused",
++  { reason: Schema.String },
++) {}
++
++const AccountRow = Schema.Struct({
++  account: Schema.NonEmptyString,
++  owner: Schema.String,
++  provider: Schema.String,
++  method: Schema.String,
++  label: Schema.String,
++  description: Schema.NullOr(Schema.String),
++  site: Schema.NullOr(Schema.String),
++  createdAt: Schema.String,
++  grantReference: Schema.NullOr(Schema.String),
++  generation: Schema.Int,
++  identity: Schema.NullOr(Schema.String),
++  organization: Schema.String,
++  kind: Schema.String,
++  person: Schema.NullOr(Schema.String),
++  audience: Schema.NullOr(Schema.String),
++  revision: Schema.String,
++  definition: Schema.Unknown,
++  grant: Schema.String,
++  grantStatus: Schema.String,
++  grantOwner: Schema.NullOr(Schema.String),
++  grantUpdatedAt: Schema.String,
++  encrypted: Schema.Uint8Array,
++  credentials: Schema.Uint8Array,
++});
++
++const sortedJson = (value: Json): string => {
++  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
++  if (value !== null && typeof value === "object")
++    return `{${Object.entries(value)
++      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
++      .map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`)
++      .join(",")}}`;
++  return JSON.stringify(value);
++};
++
++export const sha256 = (value: Json) =>
++  Effect.promise(async () => {
++    const digest = await crypto.subtle.digest(
++      "SHA-256",
++      new TextEncoder().encode(sortedJson(value)),
++    );
++    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
++      "",
++    );
++  });
++
++const bytes = (value: Uint8Array) =>
++  Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
++
++/** The grant and access revision are read again after UserInfo; network I/O holds no SQL locks. */
++export const readRetainedAccount = (account: string, lock = false) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql.unsafe(
++      `select a.id as account, a.owner, a.provider, a.method, a.label, a.description, a.site,
++    to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
++    a.oauth_grant_id as "grantReference",
++    a.credential_generation as generation, a.identity_id as identity,
++    h.organization_id as organization, h.kind, h.personal_user_id as person, h.audience,
++    h.revision, p.definition, g.id as grant, g.status as "grantStatus", g.owner as "grantOwner",
++    to_char(g.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "grantUpdatedAt", g.encrypted,
++    a.encrypted_credentials as credentials
++    from executor_accounts a join executor_providers p on p.id = a.provider
++    join hosted_account_access h on h.account_id = a.id
++    join executor_oauth_grants g on g.id = coalesce(a.oauth_grant_id, a.id)
++    where a.id = $1${lock ? " for update of a, g for share of h, p" : ""}`,
++      [account],
++    );
++    const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(AccountRow))(rows);
++    const row = decoded[0];
++    if (decoded.length !== 1 || row === undefined || !row.grantStatus.startsWith("ready_"))
++      return yield* new RetainedIdentityRefused({ reason: "account-or-grant-unavailable" });
++    const groups = yield* sql.unsafe(
++      `select group_id from hosted_account_groups
++    where account_id = $1 order by group_id${lock ? " for share" : ""}`,
++      [account],
++    );
++    const memberships = yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ group_id: Schema.String })),
++    )(groups);
++    const placement = JSON.stringify([
++      row.organization,
++      row.kind,
++      row.person,
++      row.audience,
++      memberships.map((group) => group.group_id),
++    ]);
++    const grantSha256 = yield* sha256([
++      row.account,
++      row.owner,
++      row.provider,
++      row.method,
++      row.generation,
++      placement,
++      row.revision,
++      row.grant,
++      row.grantStatus,
++      row.grantOwner,
++      row.grantUpdatedAt,
++      bytes(row.encrypted),
++    ]);
++    const credentialsSha256 = yield* sha256(bytes(row.credentials));
++    const links =
++      yield* sql`select app, requirement, subject, linked_by from hosted_app_account_links
++    where account = ${account} order by app, requirement, subject nulls first`;
++    const linked = yield* Schema.decodeUnknownEffect(
++      Schema.Array(
++        Schema.Struct({
++          app: Schema.String,
++          requirement: Schema.String,
++          subject: Schema.NullOr(Schema.String),
++          linked_by: Schema.NullOr(Schema.String),
++        }),
++      ),
++    )(links);
++    return {
++      ...row,
++      placement,
++      grantSha256,
++      credentialsSha256,
++      linksSha256: yield* sha256(linked),
++    };
++  });
++
++export type RetainedAccountSnapshot = Effect.Success<ReturnType<typeof readRetainedAccount>>;
++
++export const accountHash = (
++  row: RetainedAccountSnapshot,
++  identity = row.identity,
++  label = row.label,
++) =>
++  sha256([
++    row.account,
++    row.owner,
++    row.provider,
++    row.method,
++    row.generation,
++    identity,
++    label,
++    row.description,
++    row.site,
++    row.createdAt,
++    row.grantReference,
++    row.placement,
++    row.revision,
++    row.grantSha256,
++    row.credentialsSha256,
++    row.linksSha256,
++  ]);
++
++export const identityId = (proof: {
++  readonly owner: string;
++  readonly placement: string;
++  readonly issuer: string;
++  readonly subject: string;
++}) =>
++  sha256([proof.owner, proof.placement, proof.issuer, proof.subject]).pipe(
++    Effect.map((digest) => `aid_${digest}`),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+index 4f2a4326b64c9af4b8948e59393023721e5ff67f..4fe15bb334acf343c170fdd74b602c8d8d6db760 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -11,6 +11,10 @@ import {
+   GoogleProofRuntime,
+   prepareGoogleAccountProofs,
+ } from "./migrations/google-account-proofs.ts";
++import {
++  AtlassianProofRuntime,
++  prepareAtlassianAccountProofs,
++} from "./migrations/atlassian-account-proofs.ts";
+ import type { ProductionPreparation } from "./contracts.ts";
+ 
+ /** Key access runs inside the signed invocation; preparation never initializes a mutating executor. */
+@@ -27,6 +31,20 @@ export const cloudProductionPreparations = Effect.gen(function* () {
+     urlPolicy: egress.policy,
+   });
+   const preparations: Readonly<Record<string, ProductionPreparation>> = {
++    "atlassian-account-proofs": {
++      name: "atlassian-account-proofs",
++      run: (request) =>
++        Effect.gen(function* () {
++          const credentials = yield* aesGcmCredentials(yield* key, globalThis.crypto);
++          return yield* prepareAtlassianAccountProofs(request).pipe(
++            Effect.provideService(AtlassianProofRuntime, {
++              credentials,
++              firstPartyClients: clients,
++              identify: (...args) => protocol.identify(...args).pipe(Effect.provide(wire)),
++            }),
++          );
++        }),
++    },
+     "google-account-proofs": {
+       name: "google-account-proofs",
+       run: (request) =>
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index b0166aa6f51fc8caa38c5ef4c83b26308f42638e..6f361f6c8797ae165b26b7b36e307f61be22d7c9 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -265,6 +265,17 @@ export const scenarios = plan({
+       cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
+     },
+   },
++  atlassianIdentityMigration: {
++    fixtures: "actors",
++    file: "atlassian-identity-migration.spec.ts",
++    title:
++      "Atlassian identity recovery binds exact grants and preserves sites, credentials and links through signed operations",
++    targets: {
++      local: na("Hosted production operations own this migration."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
+   googleIdentityMigration: {
+     fixtures: "actors",
+     file: "google-identity-migration.spec.ts",
+diff --git a/e2e/tests/atlassian-identity-migration.spec.ts b/e2e/tests/atlassian-identity-migration.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4f45f20bfbe52d75e60cfab948d72c77d92ece2
+--- /dev/null
++++ b/e2e/tests/atlassian-identity-migration.spec.ts
+@@ -0,0 +1,325 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { createHash, randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { scenarios } from "../test-plan.ts";
++import { Artifact, productionOpsClient } from "../support/production-ops-client.ts";
++
++const canonical = (value: unknown): string =>
++  JSON.stringify(value, (_key, item: unknown) =>
++    item !== null && typeof item === "object" && !Array.isArray(item)
++      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
++      : item,
++  );
++const hash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
++
++layer(HostedLive, { excludeTestServices: true })("Atlassian recovery operations", (it) => {
++  it.effect(scenarios.atlassianIdentityMigration.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          database = yield* cloudLocks;
++        const client = yield* productionOpsClient;
++        const organization = actors.organization.id,
++          owner = `organization:${organization}`;
++        const rows = (sql: string, params: readonly (string | number | null)[] = []) =>
++          database.run({ sql, params });
++        const ids = [`acc_${randomUUID()}`, `acc_${randomUUID()}`],
++          provider = `prv_${randomUUID()}`;
++        const session = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const person = session.user.id;
++        const deployed = yield* api.request(
++          actors.owner,
++          "POST",
++          `/api/organizations/${organization}/apps/deploy`,
++          {
++            name: `Recovery ${randomUUID()}`,
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content:
++                  'import { defineApp, router } from "apps"; export default defineApp({}, {tools:router({})});',
++              },
++            ],
++          },
++        );
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = (yield* body(Schema.Struct({ id: Schema.String }), deployed)).id;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const id of ids) {
++              yield* rows("delete from executor_accounts where id = $1", [id]);
++              yield* rows("delete from executor_oauth_grants where id = $1", [id]);
++            }
++            yield* rows(
++              "delete from executor_account_identities where owner = $1 and subject = $2",
++              [owner, `subject-${ids[0]}`],
++            );
++            yield* rows("delete from executor_providers where id = $1", [provider]);
++            yield* api.request(
++              actors.owner,
++              "DELETE",
++              `/api/organizations/${organization}/apps/${app}`,
++            );
++          }).pipe(Effect.orDie),
++        );
++        const authorizationEndpoint = "https://auth.atlassian.com/authorize";
++        const tokenEndpoint = "https://auth.atlassian.com/oauth/token";
++        yield* rows("insert into executor_providers (id,definition) values ($1,$2::jsonb)", [
++          provider,
++          JSON.stringify({
++            name: "Atlassian recovery fixture",
++            auth: {
++              oauth: {
++                type: "oauth2",
++                authorizationUrl: authorizationEndpoint,
++                tokenUrl: tokenEndpoint,
++                scopes: ["read:me"],
++                authorizationParams: { audience: "api.atlassian.com" },
++                tokenEndpointAuthMethod: "none",
++                response: {
++                  type: "object",
++                  properties: { access_token: { type: "string" } },
++                  required: ["access_token"],
++                },
++              },
++            },
++          }),
++        ]);
++        for (const [index, id] of ids.entries()) {
++          yield* rows(
++            `insert into executor_accounts
++        (id,owner,provider,method,label,site,encrypted_credentials,created_at,credential_generation)
++        values ($1,$2,$3,'oauth',$4,$5,decode('123456','hex'),now(),3)`,
++            [
++              id,
++              owner,
++              provider,
++              index === 0 ? "Default" : "My Atlassian",
++              `https://site-${index}.atlassian.net`,
++            ],
++          );
++          yield* rows(
++            `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
++        values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
++            [id, owner],
++          );
++          yield* rows(
++            `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
++        values ($1,$2,$3,'personal',$3)`,
++            [id, organization, person],
++          );
++          yield* rows(
++            `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
++        values ($1,'service',$2,$3,$2)`,
++            [app, person, id],
++          );
++        }
++        const operation = (
++          action: string,
++          selection: string,
++          request: unknown,
++          extra: object = {},
++        ) => client.request({ action, selection, request, recipient: client.recipient, ...extra });
++        const open = client.decrypt;
++        const snapshot = () =>
++          rows(
++            `select a.id, a.owner, a.provider, a.method, a.credential_generation as generation,
++      a.oauth_grant_id, a.site, encode(a.encrypted_credentials,'hex') as credentials,
++      encode(g.encrypted,'hex') as encrypted,g.status,g.owner as "grantOwner",
++      to_char(g.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated,
++      h.revision, h.kind, h.personal_user_id as person,h.audience,
++      (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links
++      from executor_accounts a join executor_oauth_grants g on g.id=a.id
++      join hosted_account_access h on h.account_id=a.id where a.id in ($1,$2) order by a.id`,
++            ids,
++          );
++        const before = yield* snapshot();
++        const observedAt = new Date().toISOString();
++        const proofs = before.map((row) => {
++          const placement = JSON.stringify([organization, row.kind, row.person, row.audience, []]);
++          return {
++            account: row.id,
++            owner,
++            provider,
++            method: "oauth",
++            generation: row.generation,
++            placement,
++            grantSha256: hash([
++              row.id,
++              owner,
++              provider,
++              "oauth",
++              row.generation,
++              placement,
++              row.revision,
++              row.id,
++              row.status,
++              row.grantOwner,
++              row.updated,
++              row.encrypted,
++            ]),
++            issuer: "https://auth.atlassian.com",
++            subject: `subject-${ids[0]}`,
++            label: "person@example.test",
++            site: row.site,
++            credentialsSha256: hash(row.credentials),
++            linksSha256: hash([
++              { app, requirement: "service", subject: person, linked_by: person },
++            ]),
++            observedAt,
++            evidence: {
++              kind: "host-pinned-profile",
++              authorizationEndpoint,
++              tokenEndpoint,
++              profileEndpoint: "https://api.atlassian.com/me",
++            },
++          };
++        });
++        const request = { organization, proofs };
++        const prepared = yield* operation("prepare", "atlassian-account-proofs", {
++          organization,
++          accounts: ids,
++        });
++        expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
++        const preparation = open(
++          (yield* body(Schema.Struct({ artifact: Artifact }), prepared)).artifact,
++        );
++        const result = Schema.decodeUnknownSync(
++          Schema.Struct({
++            result: Schema.Struct({
++              proofs: Schema.Array(Schema.Unknown),
++              insufficientProof: Schema.Array(
++                Schema.Struct({ account: Schema.String, reason: Schema.String }),
++              ),
++            }),
++          }),
++        )(preparation).result;
++        expect(result.proofs).toEqual([]);
++        expect(result.insufficientProof.map((entry) => entry.account).sort()).toEqual(
++          [...ids].sort(),
++        );
++        expect(yield* snapshot()).toEqual(before);
++        const selection = "atlassian-account-identity-v1";
++        for (const invalid of [
++          proofs.map((proof) => ({ ...proof, issuer: "https://example.invalid" })),
++          proofs.map(({ subject: _subject, ...proof }) => proof),
++          [...proofs, ...proofs],
++          proofs.map((proof) => ({ ...proof, placement: "another-placement" })),
++          proofs.map((proof) => ({ ...proof, site: "https://another.atlassian.net" })),
++          proofs.map((proof) => ({ ...proof, credentialsSha256: "0".repeat(64) })),
++          proofs.map((proof) => ({ ...proof, linksSha256: "0".repeat(64) })),
++          proofs.map((proof) => ({
++            ...proof,
++            evidence: { ...proof.evidence, profileEndpoint: "https://example.invalid/me" },
++          })),
++        ]) {
++          expect(
++            (yield* operation("dry-run", selection, { organization, proofs: invalid })).status,
++          ).toBe(409);
++        }
++        const dry = yield* operation("dry-run", selection, request);
++        expect(dry.status, JSON.stringify(dry.body)).toBe(200);
++        const plan = yield* body(
++          Schema.Struct({
++            changes: Schema.Number,
++            artifact: Artifact,
++            backup: Artifact,
++            backupSha256: Schema.String,
++          }),
++          dry,
++        );
++        expect(plan.changes).toBe(3);
++        const decoded = Schema.decodeUnknownSync(
++          Schema.Struct({
++            database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++            plan: Schema.Struct({
++              changes: Schema.Array(Schema.Struct({ table: Schema.String })),
++            }),
++          }),
++        )(open(plan.artifact));
++        expect(decoded.plan.changes.map((change) => change.table).sort()).toEqual([
++          "executor_account_identities",
++          "executor_accounts",
++          "executor_accounts",
++        ]);
++        open(plan.backup);
++        expect(yield* snapshot()).toEqual(before);
++        const apply = (go = `GO ${plan.artifact.sha256}`) =>
++          operation("apply", selection, request, {
++            artifact: plan.artifact,
++            planSha256: plan.artifact.sha256,
++            backupSha256: plan.backupSha256,
++            go,
++          });
++        expect((yield* apply("GO wrong-plan")).status).toBe(409);
++        const metadata = () =>
++          rows(
++            "select id,identity_id,label from executor_accounts where id in ($1,$2) order by id",
++            ids,
++          );
++        const retainedMetadata = yield* metadata();
++        const receipt = () =>
++          rows("select plan_sha256 from private_production_ops_receipts where plan_sha256=$1", [
++            plan.artifact.sha256,
++          ]);
++        expect(yield* receipt()).toEqual([]);
++        yield* rows("update executor_accounts set credential_generation=4 where id=$1", [ids[0]!]);
++        expect((yield* apply()).status).toBe(409);
++        expect(yield* metadata()).toEqual(retainedMetadata);
++        expect(yield* receipt()).toEqual([]);
++        yield* rows("update executor_accounts set credential_generation=3 where id=$1", [ids[0]!]);
++        yield* rows("update executor_accounts set site=$2 where id=$1", [
++          ids[0]!,
++          "https://changed.atlassian.net",
++        ]);
++        expect((yield* apply()).status).toBe(409);
++        expect(yield* metadata()).toEqual(retainedMetadata);
++        expect(yield* receipt()).toEqual([]);
++        yield* rows("update executor_accounts set site=$2 where id=$1", [
++          ids[0]!,
++          "https://site-0.atlassian.net",
++        ]);
++        const applied = yield* apply();
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(
++          yield* body(
++            Schema.Struct({
++              repeated: Schema.Boolean,
++              verification: Schema.Struct({ ok: Schema.Boolean }),
++            }),
++            applied,
++          ),
++        ).toEqual({ repeated: false, verification: { ok: true } });
++        expect(yield* snapshot()).toEqual(before);
++        const accounts = yield* rows(
++          "select id,identity_id,label from executor_accounts where id in ($1,$2) order by id",
++          ids,
++        );
++        expect(new Set(accounts.map((account) => account.identity_id)).size).toBe(1);
++        expect(accounts.find((account) => account.id === ids[0])?.label).toBe(
++          "person@example.test",
++        );
++        expect(accounts.find((account) => account.id === ids[1])?.label).toBe("My Atlassian");
++        const repeated = yield* apply();
++        expect(repeated.status).toBe(200);
++        expect((yield* body(Schema.Struct({ repeated: Schema.Boolean }), repeated)).repeated).toBe(
++          true,
++        );
++        const noop = yield* operation("dry-run", selection, request);
++        expect(noop.status, JSON.stringify(noop.body)).toBe(200);
++        expect((yield* body(Schema.Struct({ changes: Schema.Number }), noop)).changes).toBe(0);
++      }),
++    ),
++  );
++});

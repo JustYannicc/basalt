@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { test, type TestContext } from "node:test";
 import { PoolControl, type ControlStorage } from "./attribution.ts";
 import { signPoolToken } from "./token.ts";
-import type { ResetCredits, ResetResult } from "../../apps/pool/action-contract.ts";
+import type { ResetAttempt, ResetCredits, ResetResult } from "../../apps/pool/action-contract.ts";
 
 const signingKey = "ef".repeat(32);
 const requestId = "12345678-abcd-4000-8000-000000000001";
@@ -87,7 +87,7 @@ async function fixture(t: TestContext, provider = "codex", audience: readonly st
   const token = await signPoolToken(signingKey, { pool: "pool", owner: "owner", organization: "org" });
   const call = async (action: string, body?: Json, owner = true, id = "account") => control.handle(new Request(
     `https://pool.example/pool/v1/accounts/${id}/${action}`, {
-      method: action === "resets" ? "GET" : "POST",
+      method: action === "resets" || action === "resets/attempt" ? "GET" : "POST",
       headers: { authorization: `Bearer ${token}`, "x-signalbox-caller": owner ? "owner" : "member" },
       ...(body ? { body: JSON.stringify(body) } : {}),
     },
@@ -234,4 +234,47 @@ test("Claude cooldown prevents a new claim even when the grant's usable_now flag
   assert.equal(f.counts().consumes, 0);
   f.advance(10 * 60_000);
   assert.equal((await f.use()).result.outcome, "reset");
+});
+
+
+test("an owner can recover an unknown reset after restart without another provider call", async (t) => {
+  const f = await fixture(t);
+  assert.equal(await (await f.call("resets/attempt")).json(), null);
+  f.consume(async () => ({ status_code: 502, body: "{}" }));
+  await f.use();
+  f.restart();
+  const before = f.counts();
+  const read = await f.call("resets/attempt");
+  assert.equal(read.status, 200);
+  const attempt = await read.json() as ResetAttempt;
+  assert.deepEqual(attempt, {
+    provider: "codex", creditId: "credit", requestId,
+    startedAt: "2030-01-01T00:00:00.000Z", retryUntil: "2030-01-01T00:10:00.000Z",
+    canRetryProvider: true, outcome: "unknown", cooldownCleared: false, usageRefreshQueued: false,
+  });
+  assert.deepEqual(f.counts(), before);
+  assert.equal((await f.use(secondId)).status, 409);
+  f.advance(10 * 60_000); f.restart();
+  assert.deepEqual(await (await f.call("resets/attempt")).json(), { ...attempt, canRetryProvider: false });
+  assert.deepEqual(f.counts(), before);
+  assert.equal((await f.use(secondId)).status, 409);
+});
+
+test("reset attempt reads recover confirmed follow-ups and retain account authorization", async (t) => {
+  const f = await fixture(t);
+  f.cooldownFailure(true);
+  await f.use(); f.restart();
+  const before = f.counts();
+  const attempt = await (await f.call("resets/attempt")).json() as ResetAttempt;
+  assert.equal(attempt.requestId, requestId);
+  assert.equal(attempt.outcome, "reset");
+  assert.equal(attempt.canRetryProvider, false);
+  assert.equal(attempt.cooldownCleared, false);
+  assert.equal(attempt.usageRefreshQueued, true);
+  assert.deepEqual(f.counts(), before);
+  assert.equal((await f.call("resets/attempt", undefined, false)).status, 403);
+  assert.equal((await f.call("resets/attempt", undefined, true, "other")).status, 404);
+  f.remove();
+  assert.equal((await f.call("resets/attempt")).status, 404);
+  assert.deepEqual(f.counts(), before);
 });
