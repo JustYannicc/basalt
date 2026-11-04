@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { test } from "node:test";
+import { Schema } from "effect";
 
 const upstream = resolve(".upstream");
 const require = createRequire(
@@ -14,7 +15,8 @@ const { Miniflare } = require("miniflare") as typeof import("miniflare");
 
 const worker = `
 import { createWorker } from "@cloudflare/worker-bundler";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
+class FixtureCompileFailed extends Data.TaggedError("FixtureCompileFailed")<{ readonly cause: unknown }> {}
 import { makeBuildAdmission } from "./apps/hosted/cloud/src/implementation/build-admission.ts";
 import { compileWithinDeadline } from "./apps/hosted/cloud/src/implementation/compiler-request.ts";
 const admission = makeBuildAdmission(2, "50 seconds");
@@ -42,7 +44,7 @@ export default {
           },
         }],
       }),
-      catch: error => error,
+      catch: cause => new FixtureCompileFailed({ cause }),
     });
     const work = id === "owner" ? once(0).pipe(Effect.andThen(once(1))) : once(0);
     const pending = Effect.runPromise(admission(compileWithinDeadline(work), phase => {
@@ -58,14 +60,19 @@ export default {
     try {
       const result = await pending;
       return Response.json({ id, bytes: JSON.stringify(result.modules).length, bundle: result.modules[result.mainModule] });
-    } catch (error) {
-      return new Response(String(error), { status: 500 });
+    } catch {
+      return new Response("Fixture compilation failed", { status: 500 });
     }
   },
 };`;
 
 const bundled = build({
-  stdin: { contents: worker, resolveDir: upstream, sourcefile: "compiler-session-worker.ts" },
+  stdin: {
+    contents: worker,
+    resolveDir: upstream,
+    sourcefile: "compiler-session-worker.ts",
+    loader: "ts",
+  },
   absWorkingDir: upstream,
   nodePaths: [resolve(upstream, "packages/sdk/node_modules"), resolve(upstream, "node_modules")],
   bundle: true,
@@ -87,19 +94,21 @@ const bundled = build({
   ],
 });
 const deferred = () => Promise.withResolvers<void>();
-const within = async <A>(work: Promise<A>, message: string) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), 2_000);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-};
+const BundleResponse = Schema.Struct({
+  id: Schema.String,
+  bytes: Schema.Number,
+  bundle: Schema.String,
+});
+const decodeBundle = Schema.decodeUnknownSync(Schema.fromJsonString(BundleResponse));
+const decodeEvents = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      phase: Schema.Literals(["admitted", "bundle-start", "released"]),
+      pass: Schema.optional(Schema.Number),
+    }),
+  ),
+);
 const runtime = async (outboundService?: (request: Request) => Promise<Response>) => {
   const built = await bundled;
   return new Miniflare({
@@ -126,7 +135,8 @@ const runtime = async (outboundService?: (request: Request) => Promise<Response>
 test(
   "an admitted successor replies while an earlier request starts another bundle and ends",
   { timeout: 15_000 },
-  async () => {
+  async (context) => {
+    let againHeld = false;
     const first = deferred(),
       again = deferred(),
       admitted = deferred();
@@ -140,8 +150,10 @@ test(
           await releaseFirst.promise;
           break;
         case "/again":
+          againHeld = true;
           again.resolve();
           await releaseAgain.promise;
+          againHeld = false;
           break;
         case "/admitted":
           admitted.resolve();
@@ -155,44 +167,55 @@ test(
       }
       return new Response("ready");
     });
+    let abort = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(context.signal.reason);
+      if (context.signal.aborted) abort();
+      else context.signal.addEventListener("abort", abort, { once: true });
+    });
+    const until = <A>(work: Promise<A>) => Promise.race([work, cancelled]);
     const requests: Promise<unknown>[] = [];
     const evidence: Record<string, unknown> = {};
     try {
-      await mf.ready;
+      await until(mf.ready);
       const owner = mf.dispatchFetch("https://compiler.test/?id=owner&abandon=1");
       requests.push(owner);
-      await within(first.promise, "the owner's first bundle did not reach its input");
+      await until(first.promise);
       const started = performance.now();
       const successor = mf.dispatchFetch("https://compiler.test/?id=successor");
       requests.push(successor);
-      await within(admitted.promise, "the successor was not admitted beside the first owner");
-      const before = await (await mf.dispatchFetch("https://compiler.test/state")).json();
+      await until(admitted.promise);
+      const before = decodeEvents(
+        await until((await until(mf.dispatchFetch("https://compiler.test/state"))).json()),
+      );
       evidence.before = before;
-      assert.ok(Array.isArray(before));
       assert.equal(before.filter((event) => event.phase === "admitted").length, 2);
       releaseFirst.resolve();
-      await within(again.promise, "the owner did not start its next bundle");
-      assert.equal((await owner).status, 200);
+      await until(again.promise);
+      assert.equal((await until(owner)).status, 200);
       releaseSuccessor.resolve();
-      const response = await within(
-        successor,
-        "the admitted successor did not reply within 2 seconds while the owner's next bundle held its input",
-      );
-      const body = await response.text();
+      const response = await until(successor);
+      const body = await until(response.text());
       evidence.successor = {
         status: response.status,
         elapsedMs: performance.now() - started,
         body,
       };
       assert.equal(response.status, 200, body);
-      assert.ok(JSON.parse(body).bytes > 0);
-      assert.ok(JSON.parse(body).bundle.includes(JSON.stringify("successor")));
-      assert.ok(
-        performance.now() - started < 2_000,
-        "the successor must not wait for another request's 50-second lease",
+      const decoded = decodeBundle(body);
+      assert.ok(decoded.bytes > 0);
+      assert.ok(decoded.bundle.includes(JSON.stringify("successor")));
+      assert.equal(
+        againHeld,
+        true,
+        "the successor must finish before the owner's next input is released",
       );
-      evidence.after = await (await mf.dispatchFetch("https://compiler.test/state")).json();
+      evidence.againHeldAtSuccessorReply = againHeld;
+      evidence.after = decodeEvents(
+        await until((await until(mf.dispatchFetch("https://compiler.test/state"))).json()),
+      );
     } finally {
+      context.signal.removeEventListener("abort", abort);
       releaseFirst.resolve();
       releaseAgain.resolve();
       releaseSuccessor.resolve();
@@ -220,7 +243,7 @@ test(
           Array.from({ length: 16 }, async (_, index) => {
             const id = `bundle-${wave}-${index}`;
             const response = await mf.dispatchFetch(`https://compiler.test/?id=${id}`);
-            const body = (await response.json()) as { id: string; bytes: number; bundle: string };
+            const body = decodeBundle(await response.text());
             assert.equal(response.status, 200);
             assert.equal(body.id, id);
             assert.ok(body.bytes > 0);

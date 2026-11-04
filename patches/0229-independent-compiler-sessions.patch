@@ -1,3 +1,232 @@
+diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
+new file mode 100644
+index 000000000..4b61d9a22
+--- /dev/null
++++ b/apps/hosted/testing/management-provisioning.ts
+@@ -0,0 +1,81 @@
++/** Commit notifications for readiness in a runner-owned disposable database. */
++import type { Pool } from "pg";
++import { Schema } from "effect";
++
++const channel = "e2e_management_provisioned";
++const Readiness = Schema.Array(Schema.Struct({ ready: Schema.Boolean }));
++class ManagementProvisioningFailed extends Schema.TaggedError<ManagementProvisioningFailed>()(
++  "ManagementProvisioningFailed",
++  {},
++) {}
++
++export const installManagementNotifications = (database: Pool) =>
++  database.query(`create or replace function e2e_management_provisioned() returns trigger language plpgsql as $$
++    begin perform pg_notify('e2e_management_provisioned', ''); return null; end $$;
++    create or replace trigger e2e_management_metadata after update of metadata on organization
++      for each statement execute function e2e_management_provisioned();
++    create or replace trigger e2e_management_links after insert or update or delete on hosted_app_account_links
++      for each statement execute function e2e_management_provisioned()`);
++
++/** The metadata and link must be visible in the same committed snapshot. */
++const managementReadiness = `select coalesce(
++  (team.metadata::jsonb->'executorDefaults'->>'installed')::boolean, false)
++  and exists (select 1 from executor_accounts account join hosted_app_account_links link
++    on link.account = account.id
++    where account.id = team.metadata::jsonb->'executorKeyAccounts'->>$2
++      and account.owner = 'organization:' || team.id
++      and link.app = team.metadata::jsonb->'executorDefaults'->>'app') as ready
++  from organization team where team.id = $1`;
++
++export const awaitManagementProvisioning = async (
++  database: Pool,
++  organization: string,
++  user: string,
++  signal: AbortSignal,
++) => {
++  const client = await database.connect();
++  let revision = 0;
++  let wake = () => {};
++  let disconnected = false;
++  const changed = () => {
++    revision++;
++    wake();
++  };
++  const failed = () => {
++    disconnected = true;
++    changed();
++  };
++  client.on("notification", changed);
++  client.on("error", failed);
++  signal.addEventListener("abort", changed);
++  try {
++    // Subscribe before reading; a completion during the read also advances the revision.
++    await client.query(`listen ${channel}`);
++    for (;;) {
++      if (signal.aborted || disconnected) throw new ManagementProvisioningFailed();
++      const observed = revision;
++      const [state] = Schema.decodeUnknownSync(Readiness)(
++        (await client.query(managementReadiness, [organization, user])).rows,
++      );
++      if (state === undefined) throw new ManagementProvisioningFailed();
++      if (state.ready) return;
++      if (revision !== observed) continue;
++      await new Promise<void>((resolve) => {
++        wake = resolve;
++      });
++    }
++  } finally {
++    client.off("notification", changed);
++    client.off("error", failed);
++    signal.removeEventListener("abort", changed);
++    if (disconnected) client.release(true);
++    else {
++      try {
++        await client.query(`unlisten ${channel}`);
++        client.release();
++      } catch {
++        client.release(true);
++      }
++    }
++  }
++};
+diff --git a/apps/hosted/testing/scenario-server.ts b/apps/hosted/testing/scenario-server.ts
+index 7f1180470..44dfdef5b 100644
+--- a/apps/hosted/testing/scenario-server.ts
++++ b/apps/hosted/testing/scenario-server.ts
+@@ -27,6 +27,10 @@ import {
+   HttpServerResponse,
+ } from "effect/http";
+ import { provisionTestAccount, testAccountAuth, TestAccountFailed } from "./accounts.ts";
++import {
++  installManagementNotifications,
++  awaitManagementProvisioning,
++} from "./management-provisioning.ts";
+ import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";
+ 
+ const Setup = Schema.Struct({
+@@ -142,6 +146,10 @@ const main = Effect.gen(function* () {
+       )(current.rows);
+       if (rows[0]?.name !== input.databaseName)
+         return yield* new TestAccountFailed({ stage: "database" });
++      yield* Effect.tryPromise({
++        try: () => installManagementNotifications(database),
++        catch: () => new TestAccountFailed({ stage: "database" }),
++      });
+       auth = testAccountAuth({
+         origin,
+         secret: input.secret,
+@@ -200,6 +208,24 @@ const main = Effect.gen(function* () {
+       }),
+     );
+   });
++  const managementProvisioned = Effect.gen(function* () {
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const { id, user } = yield* request.json.pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Struct({ id: Id, user: Schema.NonEmptyString })),
++      ),
++    );
++    const scenario = owned.get(id),
++      database = pool;
++    if (database === undefined || scenario?.organization === undefined || !scenario.users.has(user))
++      return yield* new TestAccountFailed({ stage: "fixture" });
++    const organization = scenario.organization;
++    yield* Effect.tryPromise({
++      try: (signal) => awaitManagementProvisioning(database, organization, user, signal),
++      catch: () => new TestAccountFailed({ stage: "fixture" }),
++    });
++    return { ready: true };
++  });
+   const session = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+     const input = yield* request.json.pipe(
+@@ -381,6 +407,7 @@ const main = Effect.gen(function* () {
+     HttpRouter.add("POST", "/configure", endpoint(configure)),
+     HttpRouter.add("POST", "/actors", endpoint(provision)),
+     HttpRouter.add("POST", "/session", endpoint(session)),
++    HttpRouter.add("POST", "/management-provisioned", endpoint(managementProvisioned)),
+     HttpRouter.add("POST", "/operator", endpoint(operator)),
+     HttpRouter.add("POST", "/remove", endpoint(remove)),
+     HttpRouter.add(
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+index a8c60164a..5867390d6 100644
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -1,8 +1,10 @@
+-/** Wait for the product's background provisioning through its public reads. */
+-import { Effect, Schedule } from "effect";
++/** Cloud setup waits for committed provisioning before checking the public inventory. */
++import { Effect, Schedule, Schema } from "effect";
+ import { Actors } from "./actors.ts";
+ import { Api, SessionClients, body, type RequestFailed, type Session } from "./api.ts";
+ import { Inventory } from "./contracts.ts";
++import { fixtureRequest, FixtureFailed } from "../sdk/fixtures.ts";
++import { Target } from "./platform.ts";
+ import type { Response } from "./platform.ts";
+ 
+ export const managementApp = (actor: Session, organizationId?: string) =>
+@@ -17,27 +19,51 @@ export const managementApp = (actor: Session, organizationId?: string) =>
+ /** Await a synthetic actor's linked Executor key inside the native setup deadline. */
+ export const prepareManagementApp = (actor: Session, organizationId: string) =>
+   Effect.gen(function* () {
+-    const clients = yield* SessionClients;
+-    return yield* waitForManagementApp(organizationId, (path) =>
+-      clients.request(actor, "GET", path),
++    const clients = yield* SessionClients,
++      target = yield* Target;
++    if (target.metadata.target !== "cloud")
++      return yield* waitForManagementApp(organizationId, (path) =>
++        clients.request(actor, "GET", path),
++      );
++    if (target.fixtures === undefined || target.scenarioId === undefined)
++      return yield* new FixtureFailed({
++        operation: "Management provisioning requires its fixture capability",
++      });
++    // A normal authenticated request dispatches the jobs queued when the fixture identities committed.
++    const session = yield* body(
++      Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++      yield* clients.request(actor, "GET", "/api/auth/get-session"),
+     );
++    yield* fixtureRequest(target.fixtures, "/management-provisioned", {
++      id: target.scenarioId,
++      user: session.user.id,
++    }).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
++    );
++    return yield* readManagementApp(organizationId, (path) => clients.request(actor, "GET", path));
+   });
+ 
+ const waitForManagementApp = (
+   organizationId: string,
+   request: (path: string) => Effect.Effect<Response, RequestFailed>,
++) =>
++  readManagementApp(organizationId, request).pipe(
++    Effect.retry({ times: 40, schedule: Schedule.spaced("250 millis") }),
++  );
++
++const readManagementApp = (
++  organizationId: string,
++  request: (path: string) => Effect.Effect<Response, RequestFailed>,
+ ) =>
+   Effect.gen(function* () {
+     const root = `/api/organizations/${organizationId}`;
+-    return yield* Effect.gen(function* () {
+-      const inventory = yield* body(Inventory, yield* request(`${root}/inventory`));
+-      const app = inventory.apps.find((app) => app.slug === "executor");
+-      if (app === undefined)
+-        return yield* Effect.fail(new Error("Executor app provisioning is pending"));
+-      const linked = inventory.links.filter((link) => link.app === app.id);
+-      const link = linked[0];
+-      if (linked.length !== 1 || link === undefined)
+-        return yield* Effect.fail(new Error("Executor key provisioning is pending"));
+-      return { app, account: link.account };
+-    }).pipe(Effect.retry({ times: 40, schedule: Schedule.spaced("250 millis") }));
++    const inventory = yield* body(Inventory, yield* request(`${root}/inventory`));
++    const app = inventory.apps.find((app) => app.slug === "executor");
++    if (app === undefined)
++      return yield* new FixtureFailed({ operation: "Executor app provisioning" });
++    const linked = inventory.links.filter((link) => link.app === app.id);
++    const link = linked[0];
++    if (linked.length !== 1 || link === undefined)
++      return yield* new FixtureFailed({ operation: "Executor key provisioning" });
++    return { app, account: link.account };
+   });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index a57b0b767..ad6acce91 100644
 --- a/e2e/test-plan.ts
