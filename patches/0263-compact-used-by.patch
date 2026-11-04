@@ -155,7 +155,7 @@ index 8c3ec05..f5d18b8 100644
            page
              .setViewportSize({ width: 1280, height: 900 })
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index b140659..3afacad 100644
+index b140659..8f39324 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -48,7 +48,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
@@ -205,7 +205,7 @@ index b140659..3afacad 100644
 +                        className={cn(
 +                          appReferences,
 +                          // The margin keeps room for the focus ring inside the clipped line.
-+                          "-m-1 flex-nowrap overflow-hidden p-1 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:overflow-visible",
++                          "-m-1 flex-nowrap items-center overflow-hidden p-1 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:overflow-visible",
 +                        )}
 +                        data-used-by
 +                      >
