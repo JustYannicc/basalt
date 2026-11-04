@@ -252,3 +252,31 @@ test("a full compatible catalog larger than the old mirror limit is retained wit
     ids.map((id) => ({ name: id, alias: id })),
   );
 });
+
+test("malformed provider responses and service-account JSON never expose their content in errors", async () => {
+  const malformed = await fixture(
+    "kimi",
+    "apiKey",
+    { token: "synthetic-saved-token" },
+    () =>
+      new Response("synthetic-private-response", {
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  await assert.rejects(malformed.mirror(), (error: unknown) => {
+    assert.match(String(error), /Provider account configuration unavailable/);
+    assert.equal(String(error).includes("synthetic-private-response"), false);
+    return true;
+  });
+  assert.equal(malformed.calls.length, 0);
+  const invalid = await fixture("vertex", "serviceAccount", {
+    token: "unused",
+    serviceAccount: "synthetic-private-json",
+  });
+  await assert.rejects(invalid.mirror(), (error: unknown) => {
+    assert.match(String(error), /Provider account configuration unavailable/);
+    assert.equal(String(error).includes("synthetic-private-json"), false);
+    return true;
+  });
+  assert.equal(invalid.calls.length, 0);
+});

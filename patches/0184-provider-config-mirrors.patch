@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/account-key-mirror.ts b/apps/hosted/server/src/implementation/account-key-mirror.ts
-index af54ed9..738b5ff 100644
+index af54ed9..7cc14e0 100644
 --- a/apps/hosted/server/src/implementation/account-key-mirror.ts
 +++ b/apps/hosted/server/src/implementation/account-key-mirror.ts
 @@ -10,13 +10,16 @@ import { signEnvelope } from "./pool-token.ts";
@@ -37,7 +37,13 @@ index af54ed9..738b5ff 100644
        ...(credential === undefined ? {} : { credential }),
      });
      const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
-@@ -44,7 +48,13 @@ export const homeAccountKeyMirror = (options: {
+@@ -39,12 +43,19 @@ export const homeAccountKeyMirror = (options: {
+       headers: { "content-type": "application/json" },
+       body: JSON.stringify({ envelope }),
+     });
++    await response.body?.cancel();
+     if (!response.ok) throw new Error("Account mirror backend unavailable");
+   };
    return {
      mirror: async (context: AccountAcquisitionMirrorContext) => {
        const saved = Redacted.value(context.fields);
@@ -52,7 +58,7 @@ index af54ed9..738b5ff 100644
        for (const [target, source] of Object.entries(options.fields)) {
          const value = saved[source];
          if (typeof value !== "string" || value.length === 0)
-@@ -53,6 +63,7 @@ export const homeAccountKeyMirror = (options: {
+@@ -53,6 +64,7 @@ export const homeAccountKeyMirror = (options: {
        }
        await send(context, "upsert", credential);
      },
@@ -150,10 +156,10 @@ index 4350ccc..ee43288 100644
                check: async (context: AccountAcquisitionAccountContext) => {
 diff --git a/apps/hosted/server/src/implementation/pool-provider-mirror.ts b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
 new file mode 100644
-index 0000000..9d54ecb
+index 0000000..1ed490f
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,193 @@
 +import type { AccountAcquisitionMirrorContext, JsonObject } from "@executor-js/sdk/core";
 +import { Redacted } from "effect";
 +import type { ProviderCapability } from "./pool-provider-capabilities.ts";
@@ -215,8 +221,12 @@ index 0000000..9d54ecb
 +    data.set(chunk, offset);
 +    offset += chunk.byteLength;
 +  }
-+  const value: unknown = JSON.parse(new TextDecoder().decode(data));
-+  return object(value) ? value : missing();
++  try {
++    const value: unknown = JSON.parse(new TextDecoder().decode(data));
++    return object(value) ? value : missing();
++  } catch {
++    return missing();
++  }
 +}
 +function models(value: unknown): JsonObject[] {
 +  if (!Array.isArray(value) || !value.length || value.length > 2000) return missing();
@@ -294,7 +304,12 @@ index 0000000..9d54ecb
 +      if (serviceAccount) {
 +        const source = field(context, "serviceAccount");
 +        if (source.length > 48_000) return missing();
-+        const account: unknown = JSON.parse(source);
++        let account: unknown;
++        try {
++          account = JSON.parse(source);
++        } catch {
++          return missing();
++        }
 +        if (
 +          !object(account) ||
 +          account.type !== "service_account" ||
