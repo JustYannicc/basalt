@@ -76,7 +76,7 @@ index b081f74..1b20234 100644
          expect(failed[5], "the retained reading keeps its source time").toBe(observedAt);
          expect(failed[6], "a usage failure never asks to reconnect").toBe(0);
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index f8a317b..c34b88f 100644
+index dde2a21..d9cb1a6 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
 @@ -285,7 +285,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
@@ -89,10 +89,10 @@ index f8a317b..c34b88f 100644
          expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
          expect(staleCells[0]?.count).toContain("↻ 1");
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-index 0236ffa..5f280ab 100644
+index 7bad9eb..220d99c 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
-@@ -17,12 +17,15 @@ export function ObservationReadings({
+@@ -21,6 +21,7 @@ export function ObservationReadings({
    now,
    format,
    tokens,
@@ -100,15 +100,16 @@ index 0236ffa..5f280ab 100644
  }: {
    readonly record: AccountObservationRecord;
    readonly source?: string;
+@@ -29,6 +30,8 @@ export function ObservationReadings({
    readonly now: number;
    readonly format: DisplayFormat;
    readonly tokens?: ((entry: Window) => ReactNode) | undefined;
 +  /** The account's lab colour for its healthy bars. */
 +  readonly brand?: string | undefined;
  }) {
-   const observation = record.result?.observation;
-   const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
-@@ -46,6 +49,7 @@ export function ObservationReadings({
+   const result = record.result;
+   const observation = result?.observation;
+@@ -59,6 +62,7 @@ export function ObservationReadings({
            now={now}
            format={format}
            tokens={tokens?.(entry)}
@@ -117,18 +118,18 @@ index 0236ffa..5f280ab 100644
        ))}
      </div>
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index a506df2..8db6f01 100644
+index 2295eb7..dc74570 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
-@@ -24,6 +24,7 @@ import {
- import { ObservationReadings } from "./account-observation-readings.tsx";
+@@ -25,6 +25,7 @@ import { ObservationReadings } from "./account-observation-readings.tsx";
+ import type { AccountResetActions } from "./account-reset-control.tsx";
  import { useQuery } from "./context.tsx";
  import { useAccountRow } from "./account-row.tsx";
 +import { brandFill, brandLab } from "../lib/provider-brand.ts";
  
  /** What a product lets the caller see of an account's reported usage. */
  export interface AccountObservationsView {
-@@ -174,6 +175,7 @@ export function AccountObservations<E>({
+@@ -180,6 +181,7 @@ export function AccountObservations<E>({
                now={now}
                format={format}
                tokens={windowTokens}
@@ -137,22 +138,28 @@ index a506df2..8db6f01 100644
            ),
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-index 5031d12..cb508f2 100644
+index 72c1023..2634ed4 100644
 --- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
-@@ -21,8 +21,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+@@ -21,11 +21,12 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
  };
  
  /**
 - * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
 - * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
+- * reset count for the window they refill; it becomes the reset control only when the product
+- * passes one for a caller who may spend. `tokens` is what a gateway counted in the window, at the
+- * left of the footer.
 + * One limited window: its label, what remains, the bar and when it resets. A healthy bar takes its
 + * lab's `brand` colour; low and critical keep their warning colours. A stale reading keeps its
-+ * exact amount and drawn width, greys the bar and says plainly that it is stale and how old it is. `resets` is the banked
-  * reset count for the window they refill; it is a count only, never a control. `tokens` is what a
-  * gateway counted in the window, at the left of the footer.
++ * exact amount and drawn width, greys the bar and says plainly that it is stale and how old it is.
++ * `resets` is the banked reset count for the window they refill; it becomes the reset control only
++ * when the product passes one for a caller who may spend. `tokens` is what a gateway counted in
++ * the window, at the left of the footer.
   */
-@@ -33,9 +34,12 @@ export function UsageCell({
+ export function UsageCell({
+   entry,
+@@ -34,9 +35,12 @@ export function UsageCell({
    now,
    format,
    tokens,
@@ -162,10 +169,10 @@ index 5031d12..cb508f2 100644
    readonly stale: boolean;
 +  /** The lab's bar colour from `brandFill`, for a reading with room to spare. */
 +  readonly brand?: string | undefined;
-   readonly resets?: { readonly count: number; readonly title: string } | undefined;
-   readonly now: number;
-   readonly format: DisplayFormat;
-@@ -60,7 +64,7 @@ export function UsageCell({
+   readonly resets?:
+     | { readonly count: number; readonly title: string; readonly control?: ReactNode }
+     | undefined;
+@@ -63,7 +67,7 @@ export function UsageCell({
          </span>
          {stale && (
            <span className="shrink-0 text-sign-in-warning" data-stale-age>
@@ -174,7 +181,7 @@ index 5031d12..cb508f2 100644
            </span>
          )}
          <span className="flex-1" />
-@@ -120,7 +124,11 @@ export function UsageCell({
+@@ -125,7 +129,11 @@ export function UsageCell({
            <span
              className={cn(
                "block h-full rounded-full",
