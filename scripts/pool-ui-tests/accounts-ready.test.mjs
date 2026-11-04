@@ -616,7 +616,9 @@ test(
           [0.88, 0.63],
         ],
       });
-    const saved = sourceRef ? "build-seat-1@example.com" : "2 accounts";
+    const saved = sourceRef
+      ? "build-seat-1@example.com"
+      : "3 subscription accounts across 2 labs. Conversations stay on one account; new ones spread across them.";
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);

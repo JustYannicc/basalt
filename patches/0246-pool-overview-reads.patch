@@ -31,7 +31,7 @@ index 3c7bf08e6..adb1d5f63 100644
        HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
        HttpRouter.add("GET", "/_executor/*", notFound),
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 501703c96..a6f385b75 100644
+index d1dec401bec2369d6dff410990c5b3fdfd94e4ea..0d00df5906c3eac1b2de695492088bcaffed3bd9 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,5 +1,7 @@
@@ -45,11 +45,11 @@ index 501703c96..a6f385b75 100644
 @@ -831,6 +833,10 @@ export const hostedAppUi = <R = never>(
      sessionAccess,
      telemetry,
-     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) },
+     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
 +    poolPersonalUsageOverview: {
 +      path: poolAppPersonalUsageOverviewPath,
 +      read: poolAppPersonalUsageOverview(authorize),
-+    },
++    } as const,
      poolUsageOverview: {
        path: poolAppUsageOverviewPath,
        read: poolAppUsageOverview(authorize),

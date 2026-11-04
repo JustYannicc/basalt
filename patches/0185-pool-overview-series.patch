@@ -25,7 +25,7 @@ index 019163b..8b798aa 100644
        HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
        HttpRouter.add("GET", "/_executor/*", notFound),
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 68f944e..1a85b97 100644
+index 68f944e0db92874d4cb22eb3ef213279b71b17aa..d1dec401bec2369d6dff410990c5b3fdfd94e4ea 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,3 +1,9 @@
@@ -42,11 +42,11 @@ index 68f944e..1a85b97 100644
      originAccess,
      sessionAccess,
      telemetry,
-+    poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) },
++    poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
 +    poolUsageOverview: {
 +      path: poolAppUsageOverviewPath,
 +      read: poolAppUsageOverview(authorize),
-+    },
++    } as const,
    };
  };
 diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
