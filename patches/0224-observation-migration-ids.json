@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-observation-migration-ids",
+  "file": "0224-observation-migration-ids.patch",
+  "content_sha256": "1fe2f2a1bbe417d23c03ffc503da38c6aa5a669729cca7d8f082693f1f4b4ed8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
