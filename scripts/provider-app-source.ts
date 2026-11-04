@@ -12,7 +12,7 @@ export function providerAppSource(root: string, lab: (typeof providerAppLabs)[nu
     files: [
       {
         path: "index.ts",
-        content: `import { defineApp } from "apps";\nimport { providers } from "./providers.ts";\n\nexport const requirements = { app: { accounts: { ${lab}: providers.${lab}.many() } } };\n\nexport default defineApp(requirements, {});\n`,
+        content: `import { defineApp } from "apps";\nimport { providers } from "./providers.ts";\n\nexport const requirements = { app: { accounts: { ${lab}: providers.${lab}.many().requiring("model-inference") } } };\n\nexport default defineApp(requirements, {});\n`,
       },
       {
         path: "package.json",

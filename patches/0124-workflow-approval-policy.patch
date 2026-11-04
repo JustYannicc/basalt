@@ -1,36 +1,37 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -148,6 +148,7 @@
-           publishing,
-         },
-         hooks: lifecycle.hooks,
+@@ -130,6 +130,7 @@
+         Effect.provideContext(services),
+       );
+       const executor = yield* createExecutor({
 +        appCalls: lifecycle.appCalls,
-         acquisition,
-         models: poolModels(
-           poolSigningKey,
+         database: storage,
+         secret: key,
+         origin,
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -131,6 +131,7 @@
-           `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
-         registry,
-         hooks: lifecycle.hooks,
+@@ -114,6 +114,7 @@
+         Config.withDefault(origin),
+       );
+       const executor = yield* createExecutor({
 +        appCalls: lifecycle.appCalls,
-         oauth: {
-           httpClient: egress.client,
-           clientName: (yield* productBrandConfig).name,
+         database: storage,
+         secret: key,
+         origin,
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -1,4 +1,5 @@
--import {requireAppAccess} from "./resource-policy.ts";
+@@ -26,6 +26,7 @@
+ import { OrganizationId } from "../contracts/organization.ts";
+ import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { hostedWorkflowApprovals } from "./workflow-app-approvals.ts";
-+import { requireAppAccess } from "./resource-policy.ts";
- import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
- import { CurrentOrganization } from "../contracts/organization.ts";
- import { GroupDatabase } from "../contracts/groups.ts";
-@@ -879,6 +880,7 @@
+ 
+ import { requireGroupSharing } from "./group-sharing.ts";
+ import {
+@@ -842,6 +843,7 @@
    });
    return {
      hooks,
