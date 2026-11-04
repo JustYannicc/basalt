@@ -4082,7 +4082,7 @@ diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/c
 +    account.method,
 +  ) ?? "unknown";
 +
-+const connectionKindLabel = (
++export const connectionKindLabel = (
 +  mechanism: AccountCredentialMechanism | undefined,
 +  offering: AccountOffering | undefined,
 +) => {
