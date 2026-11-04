@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { poolFrameworkVersion } from "./pool-app-bundle.ts";
+import { servedFrameworkVersion } from "../framework-release.ts";
 
 export const providerAppLabs = ["openai", "anthropic"] as const;
 
@@ -16,7 +16,7 @@ export function providerAppSource(root: string, lab: (typeof providerAppLabs)[nu
       },
       {
         path: "package.json",
-        content: `${JSON.stringify({ name: `provider-${lab}`, private: true, type: "module", dependencies: { apps: poolFrameworkVersion } }, null, 2)}\n`,
+        content: `${JSON.stringify({ name: `provider-${lab}`, private: true, type: "module", dependencies: { apps: servedFrameworkVersion } }, null, 2)}\n`,
       },
       {
         path: "providers.ts",

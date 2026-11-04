@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { poolFrameworkVersion } from "./pool-app-bundle.ts";
+import { servedFrameworkVersion } from "../framework-release.ts";
 
 export const recipeRoles = ["operator", "pool-owner", "personal"] as const;
 const names = {
@@ -12,7 +12,7 @@ const names = {
 export function recipeSource(
   root: string,
   role: (typeof recipeRoles)[number],
-  version = poolFrameworkVersion,
+  version = servedFrameworkVersion,
 ) {
   const files: Array<{ path: string; content: string }> = [];
   for (const directory of ["common", role]) {

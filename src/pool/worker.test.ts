@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { signEnvelope, signPoolToken } from "./token.ts";
+import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 import providers from "./providers.json" with { type: "json" };
 
@@ -51,6 +52,56 @@ test("operator calls require the named entrypoint and never enter the public poo
   assert.deepEqual(calls, [undefined, approved]);
   assert.equal((await invoke(new Request(path, { method: "POST", body: '{}' }))).status, 400);
   assert.equal(calls.length, 2);
+});
+
+test("runtime recovery is only reachable through the named private operator entrypoint", async () => {
+  let reads = 0;
+  const env = { PoolContainer: { jurisdiction() { return { getByName() { return {
+    fetch: async () => { reads++; return Response.json({ instanceId: "a".repeat(64), imageHash: "synthetic", ready: false, running: true }); },
+  }; } }; } } };
+  const request = new Request("https://pool.example/runtime-recovery");
+  assert.equal((await poolWorker.fetch(request, env)).status, 404);
+  assert.equal(reads, 0);
+  const response = await PoolOperations.prototype.fetch.call({ env }, request);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ready, false);
+  assert.equal(reads, 1);
+});
+
+test("the owner controller restarts the exact runtime once and serves models after recovery", async () => {
+  const values = new Map<string, unknown>();
+  let starts = 0, destroys = 0;
+  const key = "ab".repeat(32), instanceId = "a".repeat(64), imageHash = "synthetic-image";
+  const container = {
+    running: true, start() { this.running = true; starts++; },
+    async destroy() { this.running = false; destroys++; }, setInactivityTimeout: async () => {},
+    getTcpPort(port: number) { return { fetch: async () => port === 8318
+      ? Response.json({ boot_id: `boot-${starts}`, started_at: "2026-11-04T00:00:00Z" })
+      : Response.json({ data: [{ id: "synthetic-model" }] }) }; },
+  };
+  const worker = new PoolContainer({ id: { toString: () => instanceId }, container, waitUntil: () => {}, storage: {
+    get: async (name: string) => structuredClone(values.get(name)),
+    put: async (name: string, value: unknown) => { values.set(name, structuredClone(value)); },
+    getAlarm: async () => null, setAlarm: async () => {},
+  } }, { POOL_DATABASE_URL: "postgres://fixture", POOL_MANAGEMENT_KEY: "fixture",
+    POOL_APP_SIGNING_KEY: key, POOL_IMAGE_HASH: imageHash });
+  const env = { PoolContainer: { jurisdiction() { return { getByName() { return worker; } }; } } };
+  const at = Date.now(), operationId = crypto.randomUUID();
+  const envelope = await signEnvelope(key, runtimeRecoveryPrefix, {
+    version: 1, action: "restart", operationId, instanceId, imageHash, at, expiresAt: at + 60_000,
+  });
+  const request = () => new Request("https://pool/runtime-recovery", { method: "POST", body: JSON.stringify({ envelope }) });
+  assert.equal((await poolWorker.fetch(request(), env)).status, 404);
+  const invoke = () => PoolOperations.prototype.fetch.call({ env }, request());
+  for (const response of await Promise.all([invoke(), invoke()])) {
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "ready");
+  }
+  assert.equal(starts, 1);
+  assert.equal(destroys, 1);
+  const response = await worker.fetch(new Request("https://pool/v1/models"));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { data: [{ id: "synthetic-model" }] });
 });
 
 test("the Durable Object alarm provisions pending pool members", async () => {

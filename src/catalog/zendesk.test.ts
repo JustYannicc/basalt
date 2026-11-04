@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -42,7 +43,7 @@ test("Zendesk source carries the full Support API router and the Z mark from its
   const served = await sourceResponse.json() as {
     files: { path: string; content: string }[];
   };
-  assert.deepEqual(served, sourceSnapshot);
+  assert.deepEqual(served, JSON.parse(onServedFramework(JSON.stringify(sourceSnapshot))));
 
   const readme = served.files.find(file => file.path === "README.md")!.content;
   const index = served.files.find(file => file.path === "index.ts")!.content;
