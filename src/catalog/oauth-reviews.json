@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "d7047e4226b6744b95f9cd0a4bd573630dc254e1d8344c9f8ad530d0f7de8294",
+      "sourceSha256": "c6247d27ba8af4b8068bbb6501bbad05be9407b858519600fe16dc3c8b32137a",
       "methods": {
         "oauth": {
           "kind": "hosted",

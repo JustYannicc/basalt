@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { brand } from "../../brand.ts";
 import { handleCatalog } from "./worker.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
 import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
@@ -17,7 +18,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
   const reviews = oauthReviews(reviewData);
   for (const id of ["atlassian", "gitlab", "miro", "slack", "vercel"]) {
     const response = await handleCatalog(
-      new Request(`https://catalog.example.test/catalog/apps/${id}.json`),
+      new Request(`https://${brand.host}/catalog/apps/${id}.json`),
       async () => {
         throw new Error("A carried source must not contact its publisher");
       },

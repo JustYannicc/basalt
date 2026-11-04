@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { brand } from "../brand.ts";
 import { handleCatalog } from "../src/catalog/worker.ts";
 import { oauthMethods, type OAuthReview, type OAuthEvidence } from "../src/catalog/oauth-policy.ts";
 import type { Feed } from "../src/catalog/feed.ts";
@@ -42,7 +43,7 @@ export async function catalogOAuthEvidence(
 ) {
   const official = await read("https://catalog.executor.sh/index.json");
   const response = await handleCatalog(
-    new Request("https://catalog.executor.sh/catalog/index.json"),
+    new Request(`https://${brand.host}/catalog/index.json`),
     async () => Response.json(official),
   );
   if (!response.ok) throw new Error("The composed catalog is unavailable");
@@ -62,9 +63,7 @@ export async function catalogOAuthEvidence(
     async (entry) => {
       try {
         const source = await handleCatalog(
-          new Request(
-            `https://catalog.executor.sh/catalog/apps/${encodeURIComponent(entry.id)}.json`,
-          ),
+          new Request(`https://${brand.host}/catalog/apps/${encodeURIComponent(entry.id)}.json`),
         );
         if (!source.ok) {
           failures.push(`${entry.id}: catalog source returned HTTP ${source.status}`);
