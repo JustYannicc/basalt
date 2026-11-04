@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hitl-pending-asks-only",
+  "file": "0238-hitl-pending-asks-only.patch",
+  "content_sha256": "bedbad331ae5504138c7fa42d24523aa9b240aa56e097a39f2d0a1623f244317",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}
