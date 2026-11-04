@@ -122,10 +122,11 @@ const program = Effect.gen(function* () {
     "pool access not linked",
   );
   h.fixture.prepareAcquisition(pool.id, id, "codex");
+  // Shared from the start, so a member can later see its usage; a personal account can't be shared.
   const pending = yield* h.request(
     "POST",
     `${h.appPath(pool.id)}/accounts/app/subscriptions/connections`,
-    {},
+    { destination: { kind: "shared", audience: { kind: "everyone" } } },
   );
   const connection = `${h.prefix}/connections/${pending.id}/interactive`;
   yield* h.request("POST", `${connection}/start`, { method: "loginFile" });
@@ -187,7 +188,25 @@ const program = Effect.gen(function* () {
     owner.evaluate(() => document.activeElement?.hasAttribute("data-reset-cancel") === true);
 
   // Opening reads the catalog and the attempt; it never spends. Cancel takes focus.
-  yield* page(() => load().then(() => shot("reset-idle")));
+  // Which binding the row's reset control would act through: a pool, usable, created by the viewer.
+  const rows = yield* h.request("GET", `${h.prefix}/resources/accounts`);
+  const row = (Array.isArray(rows) ? rows : (rows?.accounts ?? rows?.rows ?? [])).find(
+    (entry) => entry?.id === saved.account.id,
+  );
+  diagnostics.resetBinding = {
+    viewerIsUser: typeof identity?.user?.id === "string",
+    rowFound: row !== undefined,
+    bindings: (row?.bindings ?? []).map((binding) => ({
+      pool: binding.pool === undefined ? "none" : binding.pool === pool.id ? "this pool" : "other",
+      canUse: binding.access?.canUse,
+      creatorIsViewer: binding.access?.creator === identity?.user?.id,
+    })),
+  };
+  yield* page(() =>
+    load()
+      .then(() => shot("reset-idle"))
+      .catch((error) => shot("reset-missing").then(() => Promise.reject(error))),
+  );
   checked("loading the row spends nothing", consumes().length, 0);
   yield* page(() => control.click().then(() => confirm.waitFor()));
   checked("Cancel takes focus in the confirm", yield* page(cancelFocused), true);
@@ -393,13 +412,8 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => shot("reset-blocked"));
 
-  // The owner shares the account and its usage, so a member sees the cells and the count. The
-  // member doesn't own the pool, so the count stays read-only and no provider is reached.
-  const access = yield* h.request("GET", `${account}/access`);
-  yield* h.request("PATCH", `${account}/access`, {
-    audience: { kind: "everyone" },
-    revision: access.revision,
-  });
+  // The owner shares the account's usage, so a member sees the cells and the count. The member
+  // doesn't own the pool, so the count stays read-only and no provider is reached.
   const policy = yield* h.request("GET", `${account}/observations/access`);
   yield* h.request("PUT", `${account}/observations/access`, {
     ...policy,
@@ -407,8 +421,31 @@ const program = Effect.gen(function* () {
   });
   const calls = h.fixture.resets.calls.length;
   const member = yield* open("member");
+  // What the member's own reads see, kept for failure.json if the count never shows.
+  const memberView = yield* h
+    .requestAs("member", "GET", `${account}/observations`)
+    .pipe(Effect.result);
+  diagnostics.memberObservations =
+    memberView._tag === "Success"
+      ? {
+          canInspect: memberView.success?.canInspect,
+          reports: (memberView.success?.reports ?? []).map((report) => ({
+            outcome: report.lastAttempt?.outcome,
+            hasResult: report.result != null,
+            balances: report.result?.observation?.balances?.length ?? 0,
+            windows: report.result?.observation?.windows?.length ?? 0,
+          })),
+        }
+      : { error: String(memberView.failure).slice(0, 300) };
   yield* page(() =>
-    member.goto(accounts).then(() => member.locator("[data-reset-count]").first().waitFor()),
+    member
+      .goto(accounts)
+      .then(() => member.locator("[data-reset-count]").first().waitFor())
+      .catch((error) =>
+        member
+          .screenshot({ path: join(directory, "member-missing.png") })
+          .then(() => Promise.reject(error)),
+      ),
   );
   checked(
     "a member who sees the usage cells sees no reset control",

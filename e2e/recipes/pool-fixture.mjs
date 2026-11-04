@@ -248,6 +248,8 @@ export async function startPoolFixture(signingKey) {
             id: "short",
             scope: "account",
             scope_id: "codex",
+            // Home reports each limit window's unit; without one the pool can't show the window.
+            unit: "percent",
             window_seconds: 18000,
             remaining_ratio: remaining,
             observed_at: observed,
