@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-app-listener-native-http",
+  "file": "0187-cloud-app-listener-native-http.patch",
+  "content_sha256": "9402e4872900f26779cb360c0bcc7b9598b33844abbbdb807dc7278f5bf59967",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

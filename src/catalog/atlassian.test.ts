@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -38,7 +39,7 @@ test("the app source is served locally without contacting the official publisher
     noFetch,
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), atlassianAddition().source);
+  assert.deepEqual(await response.json(), JSON.parse(onServedFramework(JSON.stringify(atlassianAddition(new URL(url).origin).source))));
   const head = await handleCatalog(new Request(url, { method: "HEAD" }), noFetch);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");

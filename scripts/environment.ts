@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
 import { catalog } from "../src/catalog/settings.ts";
 import { zendeskMarketplaceMetadata } from "../src/catalog/zendesk/metadata.ts";
-import { poolFrameworkVersion } from "./pool-app-bundle.ts";
+import { servedFrameworkVersion } from "../framework-release.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { feedbackEndpoints } from "../src/feedback/ui.ts";
 import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
@@ -204,7 +204,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
     EXECUTOR_BUILD_VERSION: commit,
-    EXECUTOR_APPS_VERSION: poolFrameworkVersion,
+    EXECUTOR_APPS_VERSION: servedFrameworkVersion,
     EXECUTOR_APPS_FRAMEWORK: fileURLToPath(
       new URL("../.upstream/.local/basalt-framework", import.meta.url),
     ),
@@ -283,7 +283,7 @@ export function previewEnvironment(
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
     EXECUTOR_BUILD_VERSION: upstreamCommit,
-    EXECUTOR_APPS_VERSION: poolFrameworkVersion,
+    EXECUTOR_APPS_VERSION: servedFrameworkVersion,
     EXECUTOR_APPS_FRAMEWORK: fileURLToPath(
       new URL("../.upstream/.local/basalt-framework", import.meta.url),
     ),

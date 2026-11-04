@@ -277,3 +277,38 @@ test("alarm never collects connector credentials or explicitly unlimited model a
   await new PoolUsage({ storage, client, signingKey, audience: async () => [], now: () => now, collection }).observe();
   assert.deepEqual(collected, []);
 });
+
+test("the existing alarm persists weighted capacity without extra Home reads and stale accounts leave gaps", async () => {
+  const { CapacityHistory } = await import("./capacity/history.ts");
+  const storage = new Memory();
+  let clock = now, stale = false;
+  const calls: string[] = [];
+  const client = new HomeClient(async (path) => {
+    const route = new URL(path, "https://home.example.test").pathname.slice("/v8/management".length);
+    calls.push(route);
+    if (route === "/channel-groups") return Response.json({ channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }] });
+    if (route === "/channel-group-details") return Response.json({ channel_group_details: ["a", "b"].map((id, index) => ({ id: index + 1, channel_group_id: 1, auth_id: id })) });
+    if (route === "/capabilities") return Response.json({});
+    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+    if (route === "/credentials") return Response.json({ files: ["a", "b"].map((id) => ({ id, provider: "claude" })) });
+    if (route === "/quota/credentials") return Response.json({ items: ["a", "b"].map((id) => ({
+      credential_id: id, plan: { name: "Max 5x" }, freshness: stale && id === "b" ? "stale" : "fresh",
+      collection_status: "success", observed_at: clock.toISOString(),
+      primary_windows: [{ id: "claude-five-hour", scope: "account", status: "healthy", unit: "percentage", limit: 100,
+        remaining: 40, remaining_ratio: 0.4, window_seconds: 18_000, observed_at: clock.toISOString() }],
+    })) });
+    throw new Error(path);
+  });
+  const usage = new PoolUsage({ storage, client, signingKey, audience: async () => [], now: () => clock });
+  await usage.observe();
+  const points = await new CapacityHistory(storage).read("pool-a");
+  assert.equal(points.length, 1);
+  assert.equal(points[0]!.last.remaining, 4);
+  assert.equal(points[0]!.last.full, 10);
+  assert.equal(points[0]!.last.accountCount, 2);
+  assert.equal(calls.filter((route) => route === "/quota/credentials").length, 1);
+  assert.equal(calls.some((route) => route.startsWith("/quota/credentials/")), false);
+  clock = new Date(clock.getTime() + 3_600_000); stale = true;
+  await usage.observe();
+  assert.equal((await new CapacityHistory(storage).read("pool-a")).length, 1);
+});

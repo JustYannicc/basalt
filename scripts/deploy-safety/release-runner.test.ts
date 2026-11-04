@@ -51,6 +51,7 @@ function dependencies(overrides: Partial<ReleaseDependencies> = {}): ReleaseDepe
     begin: async (_value, backup) => { calls.push("begin"); begun.push(backup); return 7; },
     mark: async (_id, state) => { calls.push(`mark:${state}`); },
     deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
     rollback: async () => { calls.push("rollback"); },
     ...overrides,
@@ -73,7 +74,7 @@ test("automatic release runs deploy, smoke and records success in order", async 
   try {
     const deps = dependencies();
     const result = await executeRelease(report(), "automatic", deps);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "smoke", "mark:success"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "smoke", "mark:success"]);
     assert.deepEqual(result, { state: "deployed", deploymentId: 7 });
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
@@ -89,11 +90,32 @@ test("safe release deploy failure rolls back only after the deploy process start
   try {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     await assert.rejects(executeRelease(report(), "automatic", deps), /previous safe release was redeployed successfully/);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure", "rollback"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure", "rollback"]);
 
     const firstDeploy = dependencies({ deploy: async () => { firstDeploy.calls.push("deploy"); return { started: false, exitCode: null }; } });
     await assert.rejects(executeRelease(report(), "automatic", firstDeploy), /did not start; no rollback was attempted/);
     assert.deepEqual(firstDeploy.calls, ["validate", "begin", "deploy", "mark:failure"]);
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});
+
+test("missing publication evidence or image drift stops before smoke and never automatically rolls back", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME;
+  const oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "push";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    const deps = dependencies();
+    deps.assertImages = async () => { deps.calls.push("image"); return { started: true, exitCode: 1 }; };
+    await assert.rejects(executeRelease(report(), "automatic", deps), /without automatic rollback/);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
+    deps.calls.length = 0;
+    deps.deploy = async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; };
+    deps.assertImages = async () => { deps.calls.push("image"); throw new Error("Missing receipt"); };
+    await assert.rejects(executeRelease(report(), "automatic", deps), /without automatic rollback/);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -108,7 +130,7 @@ test("initial release failure never redeploys the candidate as a pretend rollbac
   try {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     await assert.rejects(executeRelease(report({ candidate: { gitCommit: sha("1"), pins } }), "automatic", deps), /Initial production deployment command failed/);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -124,7 +146,7 @@ test("manual release failures do not trigger automatic rollback", async () => {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
     const value = report({ databaseChanged: true });
     await assert.rejects(executeRelease(value, "manual", deps), /manual rollback path/);
-    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
     assert.deepEqual(deps.begun, [fixtureBackup(value)], "the verified backup reaches the deployment record");
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
@@ -162,6 +184,7 @@ test("manual database rollback builds the exact old source, deploys it, smokes p
     begin: async (_value, expectedDeploymentId) => { calls.push(`begin:${expectedDeploymentId}`); return 99; },
     mark: async (id, state) => { calls.push(`mark:${id}:${state}`); },
     deploy: async () => { calls.push("deploy-old-source"); return { started: true, exitCode: 0 }; },
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("public-smoke"); return { started: true, exitCode: 0 }; },
   };
   const result = await executeManualRollback(
@@ -170,7 +193,7 @@ test("manual database rollback builds the exact old source, deploys it, smokes p
   );
   assert.deepEqual(calls, [
     "backup", "prepare-and-build-old-source", "validate-old-source-and-credentials", "begin:42",
-    "deploy-old-source", "public-smoke", "mark:99:success",
+    "deploy-old-source", "image", "public-smoke", "mark:99:success",
   ]);
   assert.deepEqual(result, { state: "rolled-back", deploymentId: 99 });
 });
@@ -185,6 +208,7 @@ test("manual rollback does not create a ledger record when prior-source preparat
     begin: async () => { calls.push("begin"); return 99; },
     mark: async () => { calls.push("mark"); },
     deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
   };
   await assert.rejects(
@@ -207,6 +231,7 @@ test("manual rollback records deployment or smoke failure and requires trusted m
     begin: async () => { calls.push("begin"); return 99; },
     mark: async (_id, state) => { calls.push(`mark:${state}`); },
     deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 1 }; },
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
   };
   await assert.rejects(executeManualRollback(
@@ -222,7 +247,7 @@ test("manual rollback records deployment or smoke failure and requires trusted m
     report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
     "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
   ), /public smoke failed/);
-  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "smoke", "mark:failure"]);
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "image", "smoke", "mark:failure"]);
 
   calls.length = 0;
   await assert.rejects(executeManualRollback(
@@ -252,6 +277,7 @@ test("manual rollback of a Workflow-identity release checks drain before buildin
     begin: async () => { calls.push("begin"); return 99; },
     mark: async (_id, state) => { calls.push(`mark:${state}`); },
     deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
   });
   const run = (drained: () => Promise<void>) => executeManualRollback(
@@ -288,7 +314,7 @@ test("a ScriptStartupError CPU-limit rejection is retried once, in both release 
       deps.deploy = deploys(deps, startupCpu, { started: true, exitCode: 0 });
       const result = await executeRelease(value, mode, deps);
       assert.equal(result.state, "deployed", mode);
-      assert.deepEqual(deps.calls.filter((call) => call !== "backup"), ["validate", "begin", "deploy", "deploy", "smoke", "mark:success"], mode);
+      assert.deepEqual(deps.calls.filter((call) => call !== "backup"), ["validate", "begin", "deploy", "deploy", "image", "smoke", "mark:success"], mode);
       assert.equal(logs.length, 1);
       assert.match(logs[0]!, /ScriptStartupError.*retrying the deploy once/);
     }
@@ -307,12 +333,12 @@ test("the startup retry happens only once and only for that rejection", async ()
     const twice = dependencies({ log: () => {} });
     twice.deploy = deploys(twice, startupCpu);
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", twice), /manual rollback path/);
-    assert.deepEqual(twice.calls, ["validate", "backup", "begin", "deploy", "deploy", "mark:failure"]);
+    assert.deepEqual(twice.calls, ["validate", "backup", "begin", "deploy", "deploy", "image", "mark:failure"]);
 
     const other = dependencies({ log: () => { throw new Error("must not retry"); } });
     other.deploy = deploys(other, { started: true, exitCode: 1 });
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", other), /manual rollback path/);
-    assert.deepEqual(other.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(other.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
 
     const unstarted = dependencies({ log: () => { throw new Error("must not retry"); } });
     unstarted.deploy = deploys(unstarted, { started: false, exitCode: null, scriptStartupCpuLimit: true });
@@ -334,7 +360,7 @@ test("a startup rejection whose deploy left something running is not retried, an
     const deps = dependencies({ log: (text) => { logs.push(text); } });
     deps.deploy = deploys(deps, { ...startupCpu, outputHeld: true }, { started: true, exitCode: 0 });
     await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", deps), /manual rollback path/);
-    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "image", "mark:failure"]);
     assert.equal(logs.length, 1);
     assert.match(logs[0]!, /still running after it exited, so it was not retried/);
   } finally {
@@ -353,6 +379,7 @@ test("manual rollback retries the same startup rejection once", async () => {
     begin: async () => { calls.push("begin"); return 99; },
     mark: async (_id, state) => { calls.push(`mark:${state}`); },
     deploy: deploys({ calls }, startupCpu, { started: true, exitCode: 0 }),
+    assertImages: async () => { calls.push("image"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
     log: () => {},
   };
@@ -360,5 +387,5 @@ test("manual rollback retries the same startup rejection once", async () => {
     report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
     "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
   );
-  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "deploy", "smoke", "mark:success"]);
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "deploy", "image", "smoke", "mark:success"]);
 });

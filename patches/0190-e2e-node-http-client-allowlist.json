@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-node-http-client-allowlist",
+  "file": "0190-e2e-node-http-client-allowlist.patch",
+  "content_sha256": "d1cc576e9ed24b676efebbdcac9320efb0aefef1460f3c131f7d685a70ad599f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

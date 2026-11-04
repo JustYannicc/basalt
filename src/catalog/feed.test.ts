@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -124,22 +125,38 @@ test("GitLab serves the site-aware source while Miro serves its full REST source
       assert.equal(carried.package, "@executor.sh/miro");
       assert.ok(carried.files.some(file => file.path === "openapi.ts"));
     } else {
-      assert.deepEqual(await source.json(), gitlabSource);
+      assert.deepEqual(await source.json(), JSON.parse(onServedFramework(JSON.stringify(gitlabSource))));
       assert.ok(gitlabSource.files.find(file => file.path === "index.ts")?.content.includes("account.site"));
     }
   }
 });
 
 test("ElevenLabs offers sign-in in its existing personal API-key app", async () => {
-  const entry = { ...official.apps[0]!, id: "elevenlabs", package: "@executor.sh/elevenlabs", name: "ElevenLabs",
-    auth: [{ method: "apiKey", kind: "secrets", label: "API key" }] };
-  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json({ version: 1, apps: [entry] }));
-  const result = (await response.json() as Feed).apps[0]!;
-  assert.deepEqual(result.auth, [{ method: "oauth", kind: "oauth2", label: "Sign in with ElevenLabs" }, ...entry.auth]);
+  const entry = {
+    ...official.apps[0]!,
+    id: "elevenlabs",
+    package: "@executor.sh/elevenlabs",
+    name: "ElevenLabs",
+    auth: [{ method: "apiKey", kind: "secrets", label: "API key" }],
+  };
+  const response = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [entry] }),
+  );
+  const result = ((await response.json()) as Feed).apps[0]!;
+  assert.deepEqual(result.auth, [
+    { method: "oauth", kind: "oauth2", label: "Sign in with ElevenLabs" },
+    ...entry.auth,
+  ]);
   assert.deepEqual(result.service?.mcp, ["https://api.elevenlabs.io/v1/mcp"]);
   assert.equal(result.source, "apps/elevenlabs.json");
-  const source = await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"));
-  assert.deepEqual(await source.json(), elevenlabsSource);
+  const source = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"),
+  );
+  assert.deepEqual(
+    await source.json(),
+    JSON.parse(onServedFramework(JSON.stringify(elevenlabsSource))),
+  );
 });
 
 test("Zendesk source snapshot matches its provenance digests", () => {
@@ -189,7 +206,7 @@ test("Zendesk source is served locally and catalog requests cannot choose its te
       assert.equal(source.status, 200);
       assert.equal(source.headers.get("cache-control"), "public, max-age=300");
       if (method === "HEAD") assert.equal(await source.text(), "");
-      else assert.deepEqual(await source.json(), sourceSnapshot);
+      else assert.deepEqual(await source.json(), JSON.parse(onServedFramework(JSON.stringify(sourceSnapshot))));
     }
   }
   assert.deepEqual(zendeskAddition().source, sourceSnapshot);

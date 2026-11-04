@@ -1,0 +1,384 @@
+diff --git a/apps/hosted/server/src/implementation/account-reconnect.ts b/apps/hosted/server/src/implementation/account-reconnect.ts
+new file mode 100644
+index 000000000..fdc640930
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-reconnect.ts
+@@ -0,0 +1,51 @@
++import { permitsAction } from "@executor-js/authorization";
++import {
++  InteractiveHost,
++  type Account,
++  type AccountScope,
++  type App,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { AccountTargets } from "../contracts/account-grants.ts";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { checkDestination } from "./connection-policy.ts";
++import { requireRequirementAccess } from "./contributed-account-policy.ts";
++import { AccountGrants } from "./proofs/account-access.ts";
++import { requireProviderAccountMethod } from "./provider-account-methods.ts";
++
++/** Match reconnect's account grant, destination requirement and supported acquisition method. */
++export const canReconnectAccount = (
++  executor: Executor,
++  owner: OwnerId,
++  app: App,
++  scope: AccountScope,
++  requirement: string,
++  account: Account,
++) =>
++  Effect.gen(function* () {
++    if (!permitsAction(yield* CurrentAuthorization, "manage")) return false;
++    const required = app.requirements.accounts[requirement];
++    if (
++      required === undefined ||
++      required.scope !== scope ||
++      required.provider !== account.provider ||
++      !Object.hasOwn(required.definition.auth, account.method)
++    )
++      return false;
++    const grant = yield* AccountGrants.reconnect.pipe(
++      Effect.provideService(AccountTargets.reconnect, { account: account.id }),
++    );
++    yield* checkDestination(
++      grant.access.ownership.kind === "personal" ? { kind: "personal" } : grant.access.ownership,
++    );
++    yield* requireRequirementAccess({ app: app.id, scope, requirement });
++    yield* requireProviderAccountMethod(app, requirement, account.method);
++    return (yield* executor[InteractiveHost].binding({ owner, account: account.id })) === undefined;
++  }).pipe(
++    Effect.catchTags({
++      OrganizationForbidden: () => Effect.succeed(false),
++      AuthMethodInvalid: () => Effect.succeed(false),
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 4ec827d3d..f96bac29f 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -1,3 +1,4 @@
++import { canReconnectAccount } from "./account-reconnect.ts";
+ import { contributedDepartures } from "./contributed-departure-reads.ts";
+ import {
+   prepareNativePoolAccountMirror,
+@@ -96,10 +97,12 @@ const linkViews = (
+   app: AppId,
+   records: ReadonlyArray<LinkRecord>,
+   identity: boolean,
++  scope: AccountScope,
+   savedAccounts?: readonly Account[],
+ ) =>
+   Effect.gen(function* () {
+     if (records.length === 0) return [];
++    const target = yield* executor.apps.get({ owner, app });
+     const accounts = new Map(
+       (savedAccounts ?? (yield* executor.accounts.list({ owner }))).map((account) => [
+         account.id as string,
+@@ -132,15 +135,15 @@ const linkViews = (
+         const checks = health.get(account.id);
+         return Effect.all([
+           linkedAccountSignIn(executor, owner, account.id),
+-          executor[InteractiveHost].binding({ owner, account: account.id }),
++          canReconnectAccount(executor, owner, target, scope, record.requirement, account),
+         ]).pipe(
+-          Effect.map(([state, binding]): AppAccountLink[] => [
++          Effect.map(([state, canReconnect]): AppAccountLink[] => [
+             {
+               requirement: record.requirement,
+               account,
+               createdAt: record.createdAt,
+               signIn: state,
+-              canReconnect: binding === undefined,
++              canReconnect,
+               ...(managed.has(account.id) ? { hostManaged: true as const } : {}),
+               linkedBy: { id: record.linkedBy, name: record.linkedByName },
+               canRemove: identity || (record.contributed && record.linkedBy === user),
+@@ -215,6 +218,7 @@ export const listAppAccountLinks = (
+         app,
+         yield* userLinkRecords(app),
+         true,
++        scope,
+         savedAccounts,
+       );
+     }
+@@ -226,6 +230,7 @@ export const listAppAccountLinks = (
+       app,
+       yield* linkRecords(app, null),
+       access.canManage,
++      scope,
+       savedAccounts,
+     );
+   });
+@@ -346,6 +351,7 @@ const savedLink = (
+       app,
+       records,
+       subject !== null || access.canManage,
++      subject === null ? "app" : "user",
+     );
+     if (view === undefined) return yield* new AccountNotFound({ account });
+     return view;
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index 2d0b1d943..0374df4e7 100644
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -42,7 +42,7 @@ import { linkedAccountSignIn } from "./account-sign-in.ts";
+ import { projectSavedAccounts } from "./account-projection.ts";
+ 
+ /** Shared resource listing for the normal app/account lists and an explicit management view. */
+-export const resourceDirectory = (view: "available" | "managed" = "available") =>
++export const resourceDirectory = (view: "available" | "managed" | "readable" = "available") =>
+   Effect.gen(function* () {
+     const actor = yield* currentResourceAuthority;
+     const executor = yield* Effect.flatten(HostedExecutor);
+@@ -57,7 +57,12 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+     );
+     const visibleApps = apps.flatMap((app) => {
+       const access = appPolicies.get(app.id);
+-      return access !== undefined && (view === "managed" ? access.canManage : access.canUse)
++      return access !== undefined &&
++        (view === "readable"
++          ? access.canUse || access.canManage
++          : view === "managed"
++            ? access.canManage
++            : access.canUse)
+         ? [{ app, access }]
+         : [];
+     });
+@@ -111,7 +116,14 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+     const accountEntries = yield* Effect.forEach(accounts, (account) =>
+       Effect.gen(function* () {
+         const access = accountPolicies.get(account.id);
+-        if (access === undefined || !(view === "managed" ? access.canManage : access.canUse))
++        if (
++          access === undefined ||
++          !(view === "readable"
++            ? access.canUse || access.canManage
++            : view === "managed"
++              ? access.canManage
++              : access.canUse)
++        )
+           return [];
+         let provider = providers.get(account.provider);
+         if (provider === undefined) {
+@@ -257,7 +269,7 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
+     Effect.gen(function* () {
+       return handlers
+         .handle("accounts", ({ query }) =>
+-          resourceDirectory().pipe(
++          resourceDirectory("readable").pipe(
+             Effect.flatMap((directory) => projectSavedAccounts(directory, query.pool)),
+           ),
+         )
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 05352a4a0..7942d2391 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -111,6 +111,18 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({
++  savedAccountProjection: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "saved-account-projection.spec.ts",
++    title:
++      "Saved-account rows retain exact IDs, managed-only pool bindings and truthful reconnect actions",
++    targets: {
++      local: na("Hosted policy owns saved-account visibility."),
++      "self-host": scheduled,
++      cloud: na("Uses retained pool metadata in the process-owned hosted database."),
++    },
++  },
+   contributedAppAccess: {
+     fixtures: "actors",
+     file: "contributed-app-access.spec.ts",
+diff --git a/e2e/tests/account-identity-policy.spec.ts b/e2e/tests/account-identity-policy.spec.ts
+index 4ed5845cb..0dd14aefd 100644
+--- a/e2e/tests/account-identity-policy.spec.ts
++++ b/e2e/tests/account-identity-policy.spec.ts
+@@ -143,6 +143,15 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
+         );
+         accounts.add(binding.account.id);
+         expect(binding.account.identity?.id).toBe(source.identity?.id);
++        const projected = yield* api.request(actors.owner, "GET", `${prefix}/resources/accounts`);
++        expect(projected.status, JSON.stringify(projected.body)).toBe(200);
++        const rows = yield* body(Schema.Array(IdentityAccount), projected);
++        const siblings = rows.filter((row) => [source.id, binding.account.id].includes(row.id));
++        expect(new Set(siblings.map((row) => row.id)).size).toBe(2);
++        expect(siblings.map((row) => row.identity?.id)).toEqual([
++          source.identity?.id,
++          source.identity?.id,
++        ]);
+         expect((yield* issuer.metrics).authorizations).toBe(1);
+         expect([403, 404]).toContain(
+           (yield* api.request(actors.member, "GET", `${prefix}/accounts/${binding.account.id}`))
+diff --git a/e2e/tests/saved-account-projection.spec.ts b/e2e/tests/saved-account-projection.spec.ts
+new file mode 100644
+index 000000000..58f59e76b
+--- /dev/null
++++ b/e2e/tests/saved-account-projection.spec.ts
+@@ -0,0 +1,161 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body, type Session } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { ok } from "../support/app-links.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { contributedApp, contributedSource } from "../support/contributed-app.ts";
++import { Resource } from "../support/contracts.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Access = Schema.Struct({ canUse: Schema.Boolean, canManage: Schema.Boolean });
++const Rows = Schema.Array(
++  Schema.Struct({
++    id: Schema.String,
++    label: Schema.String,
++    identity: Schema.optionalKey(Schema.Unknown),
++    bindings: Schema.Array(
++      Schema.Struct({
++        id: Schema.String,
++        app: Schema.String,
++        scope: Schema.String,
++        requirement: Schema.String,
++        access: Access,
++        canReconnect: Schema.Boolean,
++        canRemove: Schema.Boolean,
++      }),
++    ),
++  }),
++);
++
++layer(RuntimeLive, { excludeTestServices: true })("Saved-account projection", (it) => {
++  it.effect(scenarios.savedAccountProjection.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* contributedApp;
++        const { api, actors, prefix } = f;
++        const personal = yield* f.connect(actors.member, "app", "shared", "Same label");
++        const other = yield* f.connect(actors.owner, "app", "shared", "Same label");
++        const third = yield* f.connect(actors.owner, "user", "own", "Unlinked to pools");
++        yield* ok(yield* f.link(actors.owner, "ordinary", other));
++        const deployed = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
++          name: "Member's private pool",
++          files: [{ path: "index.ts", content: contributedSource }, appsManifest],
++        });
++        yield* ok(deployed);
++        const privatePool = (yield* body(Resource, deployed)).id;
++        const privatePath = `${prefix}/apps/${privatePool}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", privatePath).pipe(Effect.asVoid, Effect.orDie),
++        );
++        yield* ok(
++          yield* api.request(
++            actors.member,
++            "PUT",
++            `${privatePath}/accounts/app/shared/${personal}`,
++          ),
++        );
++        // Retained pool records predate the projection; activation and credential migration are separate.
++        yield* legacyStorage([
++          {
++            sql: "update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2",
++            params: [
++              JSON.stringify({ first: { app: f.app.id }, second: { app: privatePool } }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("start");
++        const projection = (actor: Session, pool?: string) =>
++          api
++            .request(
++              actor,
++              "GET",
++              `${prefix}/resources/accounts${pool === undefined ? "" : `?pool=${encodeURIComponent(pool)}`}`,
++            )
++            .pipe(Effect.tap(ok));
++        const rows = (actor: Session, pool?: string) =>
++          projection(actor, pool).pipe(Effect.flatMap((response) => body(Rows, response)));
++        yield* ok(
++          yield* api.request(actors.member, "POST", `${prefix}/accounts/${personal}/health`),
++        );
++        const memberRows = yield* rows(actors.member, f.app.id);
++        expect(
++          memberRows
++            .filter((row) => [personal, other].includes(row.id))
++            .map((row) => row.id)
++            .sort(),
++        ).toEqual([personal, other].sort());
++        expect(memberRows.find((row) => row.id === personal)?.label).toBe("Same label");
++        expect(memberRows.find((row) => row.id === other)?.label).toBe("Same label");
++        expect(memberRows.every((row) => row.identity === undefined)).toBe(true);
++        expect(memberRows.some((row) => row.id === third)).toBe(false);
++        const ownBindings = memberRows.find((row) => row.id === personal)!.bindings;
++        expect(ownBindings).toHaveLength(2);
++        expect(new Set(ownBindings.map((binding) => binding.id)).size).toBe(2);
++        expect(ownBindings.every((binding) => binding.canReconnect)).toBe(true);
++        const foreign = memberRows.find((row) => row.id === other)!;
++        expect(foreign.bindings.every((binding) => !binding.canReconnect)).toBe(true);
++        expect(foreign.bindings.every((binding) => !binding.canRemove)).toBe(true);
++        const native = yield* api.request(actors.member, "GET", `${f.path}/accounts/app`);
++        yield* ok(native);
++        expect(native.body).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({
++              account: expect.objectContaining({ id: other }),
++              canReconnect: false,
++            }),
++          ]),
++        );
++        expect(
++          (yield* api.request(actors.member, "POST", `${f.path}/accounts/app/shared/connections`, {
++            account: other,
++          })).status,
++        ).toBe(403);
++        const reconnect = yield* api.request(
++          actors.member,
++          "POST",
++          `${f.path}/accounts/app/shared/connections`,
++          { account: personal },
++        );
++        yield* ok(reconnect);
++        const access = yield* body(
++          Access,
++          yield* api.request(actors.owner, "GET", `${privatePath}/access`),
++        );
++        expect(access).toMatchObject({ canManage: true, canUse: false });
++        const managed = yield* rows(actors.owner, privatePool);
++        expect(managed.map((row) => row.id)).toEqual([personal]);
++        expect(managed[0]!.bindings).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({
++              app: privatePool,
++              access: { canManage: true, canUse: false },
++              canReconnect: false,
++            }),
++          ]),
++        );
++        expect((yield* rows(actors.owner)).find((row) => row.id === personal)?.bindings).toEqual(
++          expect.arrayContaining([expect.objectContaining({ app: privatePool })]),
++        );
++        const raw = (yield* projection(actors.owner, privatePool)).body;
++        const text = JSON.stringify(raw);
++        for (const key of ["canInspect", "canRefresh", "windows", "displayStatus"])
++          expect(text).not.toContain(`"${key}":`);
++        yield* ok(yield* f.unlink(actors.member, "shared", personal));
++        expect((yield* rows(actors.member, f.app.id)).some((row) => row.id === personal)).toBe(
++          false,
++        );
++        const remaining = (yield* rows(actors.member, privatePool)).find(
++          (row) => row.id === personal,
++        )!;
++        expect(remaining.bindings.map((binding) => binding.app)).toEqual([privatePool]);
++        yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${personal}`));
++      }),
++    ),
++  );
++});

@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -13,7 +14,10 @@ test("the ElevenLabs catalog source works without its publisher", async () => {
     },
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), elevenlabsSource);
+  assert.deepEqual(
+    await response.json(),
+    JSON.parse(onServedFramework(JSON.stringify(elevenlabsSource))),
+  );
   const head = await handleCatalog(
     new Request("https://catalog.example.test/catalog/apps/elevenlabs.json", { method: "HEAD" }),
   );

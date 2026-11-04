@@ -98,6 +98,7 @@ export class Computers {
         const pools = directory.choices(user, value.expiresAt - setupTtl, claims)
           .filter((pool) => owner || pool.id === claims.pool);
         return json({ intent, href: `${this.origin()}/setup#intent=${encodeURIComponent(intent)}`, computers, pools,
+          accountsHref: `${this.origin()}/org/${encodeURIComponent(claims.organization)}/apps/${encodeURIComponent(claims.pool)}?view=accounts`,
           ...(canManage ? { shareHref: `${this.origin()}/org/${encodeURIComponent(claims.organization)}/apps/${encodeURIComponent(claims.pool)}?view=settings` } : {}),
           undoPrompt: `Undo ${brand.name} setup on this computer. Download ${this.origin()}/setup/client.mjs to a private temporary file, run it with Node.js 18 or newer and --undo, then delete it. Restore the backups and preserve later unrelated edits. Revocation is separate in your pool.` });
       });

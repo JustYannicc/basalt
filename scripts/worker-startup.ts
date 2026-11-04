@@ -54,9 +54,9 @@ const listFiles = (directory: string, prefix = ""): string[] =>
   );
 
 /**
- * The Worker's main module. Rolldown names the entry `[name].js` and every other chunk
- * `[name]-[hash].js`, and chunks import the entry back, so the import graph has no single root.
- * A content hash is 8 URL-safe characters with at least one capital or digit.
+ * Worker builds keep the entry at the root and hashed chunks below `chunks/`. Chunks may import
+ * the entry back, so the import graph has no single root. Legacy flat chunks with a capital or
+ * digit in their hash remain recognizable; ambiguous root modules fail closed.
  */
 export const findEntry = (modules: ReadonlyArray<string>) => {
   const entries = modules.filter(
