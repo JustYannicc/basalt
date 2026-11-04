@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import { historyBackfillPath, historyBackfillVersion, historySchemaApplyPath, historySchemaCatalogPath } from "../src/pool/model-history/operator.ts";
 
-import { historyBaseSchemaVersion, historySchemaVersion, historySchemaStatements, historySchemaMigrations } from "../src/pool/model-history/schema.ts";
+import { historyBaseSchemaVersion, historyAppSchemaVersion, historySchemaVersion, historySchemaStatements, historySchemaMigrations } from "../src/pool/model-history/schema.ts";
 
 type Platform = { env: { POOL_OPERATIONS: { fetch(request: Request): Promise<Response> } }; dispose(): Promise<void> };
 
@@ -24,14 +24,15 @@ export function historyOperatorOptions(args: string[]) {
 }
 
 function hashes(value: Record<string, unknown>) {
-  if ((value.version !== historyBaseSchemaVersion && value.version !== historySchemaVersion) || typeof value.schemaHash !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaHash)
+  if (![historyBaseSchemaVersion, historyAppSchemaVersion, historySchemaVersion].includes(String(value.version)) || typeof value.schemaHash !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaHash)
     || typeof value.catalogHash !== "string" || !/^[a-f0-9]{64}$/.test(value.catalogHash)) throw new Error("Invalid history schema plan");
   return { schemaHash: value.schemaHash, catalogHash: value.catalogHash };
 }
 
 function schemaPreview(report: Record<string, unknown>) {
   hashes(report);
-  const manifest = report.version === historyBaseSchemaVersion ? historySchemaStatements : historySchemaMigrations;
+  const manifest = report.version === historyBaseSchemaVersion ? historySchemaStatements
+    : report.version === historyAppSchemaVersion ? historySchemaMigrations.slice(0, 2) : historySchemaMigrations;
   if (report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex")
     || typeof report.applied !== "boolean") throw new Error("Unknown history schema statements");
   const diff = historyObject(report.catalogDiff);
@@ -48,15 +49,26 @@ function schemaPreview(report: Record<string, unknown>) {
   // The Worker's ledger bootstrap runs outside the hashed versioned migrations.
   const ledgerDdl = ledgerExists ? [] : [`CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`];
-  const pending = report.applied ? [] : report.version === historyBaseSchemaVersion
+  const pending = report.version === historySchemaVersion ? pendingV3(report)
+    : report.applied ? [] : report.version === historyBaseSchemaVersion
     ? [historySchemaMigrations[0]!]
-    : diff.createTables.length ? historySchemaMigrations : [historySchemaMigrations[1]!];
+    : diff.createTables.length ? historySchemaMigrations.slice(0, 2) : [historySchemaMigrations[1]!];
   return {
     pendingDdl: [...ledgerDdl, ...pending.flatMap(migration => migration.statements)],
     migrationMarkers: pending.map(migration => ({
       text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", values: [migration.name],
     })),
   };
+}
+
+function pendingV3(report: Record<string, unknown>) {
+  const names = report.pendingMigrations;
+  if (!Array.isArray(names) || names.some((name) => !historySchemaMigrations.some((migration) => migration.name === name))
+    || report.applied !== (names.length === 0)) throw new Error("Invalid pending history migrations");
+  const pending = historySchemaMigrations.filter((migration) => names.includes(migration.name));
+  if (JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name))
+    || names.length && names.at(-1) !== historySchemaVersion) throw new Error("Invalid pending history migrations");
+  return pending;
 }
 
 function approvalFor(operation: "schema" | "backfill", report: Record<string, unknown>) {
@@ -109,9 +121,8 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
     if (approval) await writeFile(receipt, JSON.stringify({ status: "started", accountId, worker: options.worker, ...approval }),
       { mode: 0o600, flag: "wx" });
     const path = options.operation === "backfill" ? historyBackfillPath : approval ? historySchemaApplyPath : historySchemaCatalogPath;
-    const response = await platform.env.POOL_OPERATIONS.fetch(new Request(`http://pool-operations${path}`, {
-      ...(approval ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...approval, go: true }) } : {}),
-    }));
+    const response = await platform.env.POOL_OPERATIONS.fetch(new Request(`http://pool-operations${path}`,
+      approval ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...approval, go: true }) } : {}));
     if (!response.ok) throw new Error("History operator failed; inspect the private receipt before another apply");
     let report = historyObject(await response.json());
     if (approval) {

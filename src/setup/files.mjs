@@ -1,7 +1,7 @@
 import { mkdir, readFile, lstat, writeFile, rename, unlink, rmdir, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { apply, clientEntries, markToml, remove } from "./config.mjs";
+import { apply, clientEntries, decode, markToml, remove } from "./config.mjs";
 
 async function read(path) {
   try {
@@ -52,7 +52,7 @@ export function configPaths(home, env) {
   ];
 }
 
-async function plan({ home, env = {}, brand, credentials, clients, undo = false }) {
+async function plan({ home, env = {}, brand, credentials, clients, replaceMcp = {}, undo = false }) {
   const directory = join(home, ".local", "state", brand.setup.id);
   const manifestPath = join(directory, "backups.json");
   const manifestBytes = await read(manifestPath);
@@ -147,7 +147,24 @@ async function plan({ home, env = {}, brand, credentials, clients, undo = false 
       });
       continue;
     }
-    const result = apply(source, target.format, entries[target.kind]);
+    const client = target.kind === "codex" ? "codex" : "claude";
+    const root = target.kind === "codex" ? "mcp_servers" : "mcpServers";
+    const currentServers = current ? decode(Buffer.from(current.bytes, "base64").toString(), target.format)[root] : undefined;
+    const replacements = target.kind === "claude" || !entries[target.kind].some(([path]) => path[0] === root)
+      ? []
+      : [...new Set([
+          ...(old?.changes.filter((change) => change.path.length === 2 && change.path[0] === root && change.after === undefined && change.before !== undefined && currentServers?.[change.path[1]] === undefined).map((change) => change.path[1]) ?? []),
+          ...(replaceMcp[client] ?? []),
+        ])];
+    const servers = replacements.length ? decode(source, target.format)[root] : undefined;
+    for (const name of replacements) {
+      if (!servers || !Object.hasOwn(servers, name))
+        throw new Error("An MCP connection changed. Review setup again.");
+    }
+    const result = apply(source, target.format, [
+      ...replacements.filter((name) => name !== brand.mcpServerName).map((name) => [[root, name], undefined]),
+      ...entries[target.kind],
+    ]);
     if (target.format === "toml") result.source = markToml(result.source, brand);
     const file = {
       ...target,

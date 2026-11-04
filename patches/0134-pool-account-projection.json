@@ -1,0 +1,9 @@
+{
+  "identity": "executor-pool-account-projection",
+  "file": "0134-pool-account-projection.patch",
+  "content_sha256": "594cf3609e3e6396123e5a667d5fae9da8b80329e571c97480452907c08afa4d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
