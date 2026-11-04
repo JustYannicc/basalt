@@ -510,7 +510,7 @@ index 621aa73f..641258da 100644
  import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
  import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { hostedWorkflowApprovals } from "./workflow-app-approvals.ts";
- 
+
  import { requireGroupSharing } from "./group-sharing.ts";
  import {
 @@ -882,6 +884,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
@@ -788,7 +788,7 @@ index 7d41e423..dc84b5a7 100644
    "15_hosted_routes": migrateHostedRoutes,
 +  "16_tool_policies": migrateToolPolicies,
  });
- 
+
  /**
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
 index b13ee894..06c42862 100644
@@ -1663,7 +1663,7 @@ index bc68e274..30ed9ce3 100644
 +  readonly previous?: AppCallConfirmation;
 +  readonly current?: AppCallConfirmation;
 +}
- 
+
  /** Issued only after a successful consumed SDK approval, never an ordinary tools.call. */
  export interface AppApprovedConfiguration {
 @@ -198,6 +228,10 @@ export interface AppProtectedDispatch {
