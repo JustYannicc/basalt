@@ -171,6 +171,11 @@ test("every workflow job has a gate dependency and declared selection policy", (
     );
   }
   assert.equal(jobs.check.if, "always()");
+  assert.equal(
+    jobs.check.name,
+    "${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}",
+  );
+  assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
   assert.equal(jobs["boat-bundle"].if, "needs.select.outputs.boat_jobs != '[]'");
   assert.equal(
     jobs["boat-bundle"].steps.find((step: { id?: string }) => step.id === "bundle").env
@@ -303,4 +308,49 @@ test("fast unit selection runs changed tests and nearby source tests, with a con
     "src/new-feature.ts",
   ])
     assert.deepEqual(selectUnitTests(tests, [input]), tests, input);
+});
+
+test("first batch pushes resolve their zero before SHA to the main merge base", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const step = workflow.jobs.select.steps.find(
+    (entry: { id?: string }) => entry.id === "comparison",
+  );
+  const root = mkdtempSync(join(tmpdir(), "basalt-batch-base-"));
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  try {
+    git("init", "-q");
+    git("config", "user.name", "CI fixture");
+    git("config", "user.email", "ci@example.invalid");
+    writeFileSync(join(root, "input"), "base");
+    git("add", ".");
+    git("commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/main", base);
+    writeFileSync(join(root, "input"), "batch");
+    git("commit", "-qam", "batch");
+    const head = git("rev-parse", "HEAD");
+    for (const before of ["0".repeat(40), base]) {
+      const output = join(root, "output");
+      writeFileSync(output, "");
+      execFileSync("bash", ["-e", "-c", step.run], {
+        cwd: root,
+        env: { ...process.env, BASE_SHA: before, HEAD_SHA: head, GITHUB_OUTPUT: output },
+      });
+      assert.equal(readFileSync(output, "utf8"), `base_sha=${base}\n`);
+      assert.deepEqual(changedInputs(root, base, head).changed, ["input"]);
+    }
+    assert.equal(
+      workflow.jobs.fast.steps.find(
+        (entry: { name?: string }) =>
+          entry.name === "Format and lint changed source and carry targets",
+      ).env.BASE_SHA,
+      "${{ needs.select.outputs.base_sha }}",
+    );
+    assert.equal(workflow.jobs["cpa-pipeline"].needs, "select");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
