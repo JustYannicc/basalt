@@ -570,14 +570,17 @@ index f8735731..5ede3e08 100644
  export * from "./models.ts";
  export * from "./account-observation-driver.ts";
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 1cf07e15..29a43120 100644
+index 1cf07e15..d2a7f6ef 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -1,3 +1,4 @@
+@@ -1,5 +1,6 @@
 +import { composedToolPolicy } from "./tool-policy.ts";
  import { makeAppConfirmations } from "./app-confirmations.ts";
- import { makeAppCalls } from "./app-calls.ts";
+-import { makeAppCalls } from "./app-calls.ts";
++import { makeAppCalls, AppCallWorkflow } from "./app-calls.ts";
  import { makeAppCallReceipts } from "./app-call-receipts.ts";
+ import { AppCallsHost } from "../contracts/app-calls.ts";
+ import { makeAppConnections } from "./app-connections.ts";
 @@ -169,7 +170,13 @@ export const createExecutor = (
            ),
      };
@@ -593,7 +596,14 @@ index 1cf07e15..29a43120 100644
      const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
      const appCalls = makeAppCalls({
        db,
-@@ -192,7 +199,10 @@ export const createExecutor = (
+@@ -186,13 +193,18 @@ export const createExecutor = (
+     }) =>
+       Effect.gen(function* () {
+         const appCall = yield* appCalls.forInvocation(input);
++        const workflow = yield* AppCallWorkflow;
+         return input.workflowControls === undefined
+           ? {}
+           : {
                workflowControls: {
                  ...input.workflowControls,
                  appCall,
@@ -601,11 +611,12 @@ index 1cf07e15..29a43120 100644
 +                appToolPolicy: composedToolPolicy(
 +                  input.workflowControls,
 +                  appCalls.toolPolicy(input),
++                  workflow,
 +                ),
                },
              };
        });
-@@ -302,6 +312,7 @@ export const createExecutor = (
+@@ -302,6 +314,7 @@ export const createExecutor = (
        declarations,
        options.workflows,
        options.workflowInputUrl,
@@ -613,7 +624,7 @@ index 1cf07e15..29a43120 100644
      );
      const webhooks = makeWebhooks(
        options.database,
-@@ -348,6 +359,7 @@ export const createExecutor = (
+@@ -348,6 +361,7 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
@@ -621,7 +632,7 @@ index 1cf07e15..29a43120 100644
      );
      const interactiveOperations = makeInteractiveAccounts(
        db,
-@@ -680,7 +692,10 @@ export const createExecutor = (
+@@ -680,7 +694,10 @@ export const createExecutor = (
              return result;
            }),
        },
@@ -960,10 +971,10 @@ index 00000000..7bf81f50
 +>;
 diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
 new file mode 100644
-index 00000000..3a484af8
+index 00000000..83a4958d
 --- /dev/null
 +++ b/packages/sdk/src/implementation/tool-policy.ts
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,115 @@
 +import { AppCallWorkflow } from "./app-calls.ts";
 +import { Effect } from "effect";
 +import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
@@ -1026,7 +1037,11 @@ index 00000000..3a484af8
 +
 +/** Compose once at the existing private native-host callback, before workflow-specific consent. */
 +export const composedToolPolicy =
-+  (controls: WorkflowHostControls, fallback: AppToolPolicyHost): AppToolPolicyHost =>
++  (
++    controls: WorkflowHostControls,
++    fallback: AppToolPolicyHost,
++    workflow?: import("../contracts/app-calls.ts").AppCallWorkflowIdentity,
++  ): AppToolPolicyHost =>
 +  (command) =>
 +    Effect.gen(function* () {
 +      if (command.decision === "denied" || command.decision === "failed")
@@ -1034,7 +1049,9 @@ index 00000000..3a484af8
 +      const standing = (controls as Controls)[StandingPolicy];
 +      if (standing !== undefined) {
 +        // `matched` remains host-local. It is never read from a public command or app response.
-+        const result = yield* standing(command);
++        const result = yield* standing(command).pipe(
++          Effect.provideService(AppCallWorkflow, workflow),
++        );
 +        if ("matched" in result && result.matched === true) {
 +          if (result.decision !== "approved") return { decision: result.decision };
 +          // Approved general policy skips workflow attachment, but the dispatcher still owns
