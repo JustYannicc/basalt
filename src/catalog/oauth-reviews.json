@@ -1913,6 +1913,17 @@
       }
     },
     {
+      "entry": "gitlab-mcp",
+      "package": "@signalbox/gitlab-mcp",
+      "sourceSha256": "aa8d96e5d7e6801af079b2c94f4551b4cb472244ad6c5169f5ba98f5b6c9aac6",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "GitLab MCP uses an OAuth app registered on your selected instance with the mcp scope. Automatic client registration is not configured for this app. You can connect with your own OAuth app or a fine-grained personal token."
+        }
+      }
+    },
+    {
       "entry": "glasp",
       "package": "@executor.sh/glasp",
       "methods": {
