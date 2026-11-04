@@ -1,7 +1,7 @@
 {
   "identity": "basalt-compact-account-rows",
   "file": "0181-compact-account-rows.patch",
-  "content_sha256": "60493e32719e6b6eb3157749a5480eec906687e39de1fe34cd0b2c1220e01b4f",
+  "content_sha256": "b57b2e901132fce8f8e85f3ffcbc997ba89b250d969313ed439cbfc7c6e18274",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

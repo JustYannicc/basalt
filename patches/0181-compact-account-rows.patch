@@ -76,7 +76,7 @@ index 10c8bac..d925f28 100644
            <HostedAccountObservations
              account={account}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 28e67e8..2ada3eb 100644
+index a43d790..5146b1a 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -32,6 +32,8 @@ import {
@@ -87,8 +87,8 @@ index 28e67e8..2ada3eb 100644
 +import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
- import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./connect-account.tsx";
-@@ -50,7 +52,7 @@ import {
+ import { HostedAccountForm, OAuthReturnContext } from "./connect-account.tsx";
+@@ -51,7 +53,7 @@ import {
  } from "../../contracts/accounts.ts";
  import type { HostedError } from "../../contracts/errors.ts";
  import { HostedAccountDialog } from "./account-actions.tsx";
@@ -97,7 +97,7 @@ index 28e67e8..2ada3eb 100644
  import { catalogAtom } from "../../contracts/api.ts";
  
  /**
-@@ -84,6 +86,14 @@ export function AppAccounts({
+@@ -85,6 +87,14 @@ export function AppAccounts({
    const catalog = useQuery(catalogAtom);
    const canUse = Option.isSome(data) && data.value.canUse;
    const methodQuery = useQuery(appMethodsAtom({ organization, app: app.id }));
@@ -112,7 +112,7 @@ index 28e67e8..2ada3eb 100644
    const reported = methodQuery.data;
    const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
    const methods: RequirementMethods | undefined = Option.isSome(reported)
-@@ -198,7 +208,9 @@ export function AppAccounts({
+@@ -199,7 +209,9 @@ export function AppAccounts({
              : { contribute: editing(scope), readOnly }),
            // Only accounts the caller can use; a shared account's own policy decides its usage.
            accountDetails: (account) =>
@@ -123,7 +123,7 @@ index 28e67e8..2ada3eb 100644
            accountMenu: (account, slot, requirement, linked) =>
              linked &&
              (usable(account) || removable(links, slot, account)) && (
-@@ -250,7 +262,7 @@ export function AppAccounts({
+@@ -251,7 +263,7 @@ export function AppAccounts({
                </Button>
              ),
          }
