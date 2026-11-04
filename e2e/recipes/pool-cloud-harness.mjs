@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Exit, Layer } from "effect";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
 import { prepareScenario } from "../../.upstream/e2e/sdk/scenario.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
@@ -11,6 +11,8 @@ import { createCloudScenarioActors } from "../../.upstream/e2e/support/actors.ts
 import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { bundlePoolApp } from "../../scripts/pool-app-bundle.ts";
 import { root } from "./harness.mjs";
+import { cloudLocks } from "../../.upstream/e2e/support/cloud-locks.ts";
+import { redactLogText } from "../../src/feedback/logs.ts";
 import { startPoolFixture } from "./pool-fixture.mjs";
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -123,12 +125,73 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
     );
     const api = Context.get(services, SessionClients);
     let actors = yield* createCloudScenarioActors.pipe(Effect.provideContext(services));
+    // Capture before actor and environment finalizers remove the failed runtime.
+    let lastApps;
+    let organization;
+    if (resets)
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isFailure(exit)
+          ? Effect.gen(function* () {
+              const diagnostics = { runtimeDirectory: target.directory, apps: lastApps };
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
+                  diagnostics.provisioning = yield* database.run({
+                    sql: `select kind, status, attempts, available_at, updated_at from hosted_provisioning
+                    where organization_id = $1 order by kind, updated_at limit 50`,
+                    params: [organization ?? ""],
+                  });
+                }),
+              ).pipe(
+                Effect.timeout("3 seconds"),
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    diagnostics.provisioningUnavailable = true;
+                  }),
+                ),
+              );
+              yield* Effect.promise(async () => {
+                try {
+                  const log = await readFile(join(target.directory, "cloud.log"), "utf8");
+                  await writeFile(
+                    join(directory, "runtime-cloud.log"),
+                    redactLogText(log).slice(-2 * 1024 * 1024),
+                    { mode: 0o600 },
+                  );
+                } catch {
+                  diagnostics.cloudLogUnavailable = true;
+                }
+                await writeFile(
+                  join(directory, "runtime-diagnostics.json"),
+                  JSON.stringify(diagnostics, null, 2) + "\n",
+                  { mode: 0o600 },
+                );
+              });
+            }).pipe(Effect.catchCause(() => Effect.logWarning("Reset diagnostic retention failed")))
+          : Effect.void,
+      );
+
     const raw = (role, method, path, input, headers) =>
       api.request(actors[role], method, path, input, headers);
     const requestAs = (role, method, path, input) =>
       raw(role, method, path, input).pipe(
         Effect.map((response) => {
           assert.equal(response.status, 200, `${method} ${path}: ${JSON.stringify(response.body)}`);
+          if (
+            resets &&
+            method === "GET" &&
+            path === `/api/organizations/${organization}/apps` &&
+            Array.isArray(response.body)
+          ) {
+            lastApps = {
+              total: response.body.length,
+              rows: response.body.slice(0, 50).map((app) => ({
+                id: app.id,
+                name: redactLogText(String(app.name ?? "")).slice(0, 200),
+                activeVersion: app.activeVersion,
+              })),
+            };
+          }
           return response.body;
         }),
       );
@@ -138,6 +201,7 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
       slug: `recipe-${randomBytes(8).toString("hex")}`,
       keepCurrentActiveOrganization: true,
     });
+    organization = team.id;
     actors = { ...actors, organization: { id: team.id, slug: team.slug } };
     for (const role of ["member"]) {
       const identity = yield* requestAs(role, "GET", "/api/auth/get-session");

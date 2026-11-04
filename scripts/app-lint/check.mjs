@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 import { fileURLToPath } from "node:url";
 import { checkManifest } from "./manifest.mjs";
 import { directoryFiles, discoverApps } from "./source.mjs";
@@ -23,7 +24,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       throw new Error("Usage: check.mjs [--app directory]");
     const apps = args.length
       ? [{ name: args[1], files: directoryFiles(resolve(args[1])) }]
-      : discoverApps(root);
+      : discoverApps(root, onServedFramework);
     const errors = checkApps(apps, hostVersion(root));
     for (const error of errors) console.error(error);
     if (errors.length) process.exitCode = 1;

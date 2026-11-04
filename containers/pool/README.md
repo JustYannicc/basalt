@@ -52,7 +52,9 @@ The bounded unit tests use Python's standard library. From the repository root, 
 
 The pool builds Home and its node from the exact release source commits. <code>sources.json</code> pins each source archive and privacy carry by SHA-256. The release patch registry binds that manifest. A version update must port the carries or meet their manual retirement proof before the image builds.
 
-Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor drops arbitrary child output. It forwards validated privacy progress, retry and final audit counts, plus fixed startup and maintenance failure counts. Derived-column, cache-read and token-accounting backfill failures emit <code>POOL_HOME_MAINTENANCE_FAILURE</code> with one closed numeric category set. It never forwards error text or key IDs.
+Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor forwards validated privacy progress, retry and final audit counts, plus fixed startup and maintenance failure counts. Derived-column, cache-read and token-accounting backfill failures emit <code>POOL_HOME_MAINTENANCE_FAILURE</code> with one closed numeric category set.
+
+When Home exits unexpectedly, <code>POOL_CHILD_EXIT</code> includes its last eight projected error records in <code>output_tail</code>. Child stderr and stdout share the same pipe. Capture runs before startup errors become category counts. Only Home's own formatter at error, fatal or panic level is accepted; timestamps, caller fields and request IDs are discarded. Home's formatter escapes embedded CR and LF after interpolating the message and fields, then appends exactly one physical line delimiter. Embedded formatter headers stay inside the same error slot and are never parsed again. Each record matches at most one fixed message template from pinned Home's <code>cmd/home/main.go</code>. Only that template's static text is emitted. The entire dynamic <code>%v</code> error slot, including punctuation, becomes one of 11 fixed labels, with the first matching class winning in this priority order: <code>fenced_or_retired</code>, <code>context_canceled</code>, <code>deadline_exceeded</code>, <code>conn_refused</code>, <code>eof</code>, <code>tls</code>, <code>dns</code>, <code>permission_denied</code>, <code>no_such_file</code>, <code>sql</code>, then <code>other</code>. The listen-address <code>%s</code> slot always becomes <code>redacted</code>. Unmatched records emit only the level and <code>unrecognized</code>. No input words or punctuation are copied from a dynamic slot, and the projection never decodes input or reads environment secrets. The coordinator accepts the classifier's bounded residual: at most about 4 bits per record, 8 records. A credential can influence the class label, so this is a deliberately bounded channel, not a claim of zero information disclosure. Every retained record is at most 512 bytes. Unformatted output and oversized physical lines are dropped. The framing change is a separate checksum-bound Home patch; the merged privacy carry and request pipeline stay unchanged. Normal output is not streamed and no file log is enabled. Dynamic details and text already suppressed inside Home are unavailable.
 
 The stack enables container log observability with this image. Home's allowed count markers and supervisor phase records go to stdout; node output is suppressed. The supervisor emits one <code>POOL_STARTUP_PHASE</code> JSON record when each measured phase exits, including when it raises. Its exact keys are <code>phase</code>, <code>start_ms</code>, <code>end_ms</code> and <code>duration_ms</code>. The phase is one of <code>home_boot</code>, <code>bootstrap_import</code>, <code>config_apply</code>, <code>node_launch</code> or <code>initial_health</code>. The integer fields are bounded to 24 hours and use monotonic milliseconds from supervisor <code>main()</code> entry; duration equals end minus start. No wall-clock time or boot identifier is included.
 
@@ -107,3 +109,25 @@ Known limitation: the pinned backend does not expose a complete non-Codex speed-
 ## Compatibility caveat
 
 The selected Home release declares a CLIProxyAPI module dependency older than the separately pinned node release. Upstream publishes no compatibility matrix for this pair. The local Docker/PostgreSQL integration exercises bootstrap, a synthetic provider stream, affinity, spreading, quota failover and restart persistence with this pair. Real-subscription acceptance remains separate.
+
+## Recovery after a runtime Home failure
+
+After a healthy generation, an unexpected Home exit code 1 permits at most two
+replacement Home/node launches per supervisor lifetime, after 1 second and then
+5 seconds. A recovery episode has one 180-second deadline across teardown,
+backoff, management calls, health checks and terminal cleanup. Operations reserve
+three seconds of that same deadline for forced termination. Home output must drain
+before recovery eligibility is decided; a buffered policy fuse stays terminal. A healthy interval never resets the
+launch budget. Startup failures, node failures, signal exits and policy fuses
+keep their existing terminal behavior. Recovery never imports an empty database.
+
+Readiness is false during replacement. Each replacement has a new boot identity
+and needs fresh native-policy and Home/node health; old probes cannot grant its
+lease. Requests in flight can fail. Recovery uses normal startup configuration
+and node enrollment, without changing Home/Node patches or request handling.
+
+`POOL_HOME_RECOVERY` records contain only the closed state `attempt`, `recovered`
+or `exhausted`, attempt number, delay seconds and elapsed milliseconds. Every
+failed child retains its normal exit receipt. Exhaustion leaves readiness false,
+emits `POOL_RUNTIME_FAILURE` and exits the container with code 1. The lifetime
+budget is in memory; a platform container replacement starts a new budget.
