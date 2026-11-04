@@ -263,10 +263,10 @@ index 00000000..9e6303a6
 +    menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
 +  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index f1b94e7e..1cce472c 100644
+index 9615b695..579bb196 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -10060,6 +10060,17 @@ export const scenarios = plan({
+@@ -10070,6 +10070,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows."),
      },
    },

@@ -210,3 +210,18 @@ test("only affected configured Boat jobs substitute for hosted jobs, and every b
     );
   assert.ok(gateErrors(needs, selected, ["production-ops-identity"]).length);
 });
+
+test("carry selection accepts unified diffs without Git headers", () => {
+  assert.deepEqual(carryTargets("--- a/old.ts\n+++ b/new.ts\n"), [
+    ".upstream/old.ts",
+    ".upstream/new.ts",
+  ]);
+  assert.deepEqual(carryTargets("--- /dev/null\n+++ b/new.ts\n"), [".upstream/new.ts"]);
+  assert.deepEqual(carryTargets("--- a/old.ts\n+++ /dev/null\n"), [".upstream/old.ts"]);
+  assert.throws(() => carryTargets("--- a/../outside.ts\n+++ b/new.ts\n"));
+  for (const name of ["0059-native-device-grants", "0128-planetscale-hosted-oauth"])
+    assert.ok(
+      carryTargets(readFileSync(new URL(`../patches/${name}.patch`, import.meta.url), "utf8"))
+        .length > 0,
+    );
+});

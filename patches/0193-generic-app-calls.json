@@ -1,7 +1,7 @@
 {
   "identity": "basalt-generic-app-calls",
   "file": "0193-generic-app-calls.patch",
-  "content_sha256": "1f30075c6fad9cb93dc582fd4ee639321a784858fde4e026bfb6eed82354219c",
+  "content_sha256": "3e650cf446ddde30e0f2eaa92e59b83fd9dfcb6ede169f45cbc782cf83374122",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

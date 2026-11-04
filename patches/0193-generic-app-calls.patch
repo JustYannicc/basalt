@@ -432,10 +432,10 @@ index 00000000..f2a37fe5
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 28df5bfe..5ccacd66 100644
+index 3a9784a5..5022f900 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9767,6 +9767,44 @@ export const scenarios = plan({
+@@ -9777,6 +9777,44 @@ export const scenarios = plan({
        local: na("This scenario exercises hosted service claims and organization inventory."),
      },
    },

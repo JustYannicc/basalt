@@ -1,16 +1,17 @@
 diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
+index f7b4e573..9e195149 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
-@@ -3,7 +3,7 @@
+@@ -3,7 +3,7 @@ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
  import type { AccountsPage as AccountsClient } from "./accounts-client.tsx";
  import type { OrganizationPageReads } from "../components/organization.tsx";
- import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 -import { AccountRowsSkeleton } from "@executor-js/ui/dashboard/loading";
 +import { InventoryPageSkeleton } from "@executor-js/ui/dashboard/loading";
  /** The organization's account directory. */
  export const accountsPageReads: OrganizationPageReads = (organization) => [
    resourceDirectoryAtom(organization),
-@@ -17,10 +17,10 @@
+@@ -18,10 +18,10 @@ const Client = lazy(() =>
  export function AccountsPage(props: Parameters<typeof AccountsClient>[0]) {
    const hydrated = useHydrated();
    return hydrated ? (
@@ -24,14 +25,13 @@ diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted
    );
  }
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index e359c8bd..5b60c721 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -5671,6 +5671,16 @@
-       "self-host": scheduled,
-       cloud: scheduled,
+@@ -6475,6 +6475,16 @@ export const scenarios = plan({
        local: na("Personal tokens are hosted only."),
-+    },
-+  },
+     },
+   },
 +  dashboardClientLoading: {
 +    fixtures: "actors",
 +    file: "dashboard-client-loading.spec.ts",
@@ -40,11 +40,14 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      cloud: scheduled,
 +      local: na("Local has no hosted account directory."),
-     },
-   },
++    },
++  },
    dashboardLoading: {
+     fixtures: "actors",
+     file: "dashboard-loading.spec.ts",
 diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-client-loading.spec.ts
 new file mode 100644
+index 00000000..8128080b
 --- /dev/null
 +++ b/e2e/tests/dashboard-client-loading.spec.ts
 @@ -0,0 +1,179 @@
