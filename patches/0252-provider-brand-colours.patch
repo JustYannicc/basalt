@@ -249,43 +249,61 @@ index ce7b13a..38d5311 100644
 +    ? undefined
 +    : `brand-fill brand-${lab}${shade > 0 ? ` brand-shade-${Math.min(shade, brandShadeCount - 1)}` : ""}`;
 diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
-index 746ac2d..22ca4d8 100644
+index 746ac2d..17014bc 100644
 --- a/packages/ui/src/implementation/styles/dashboard.css
 +++ b/packages/ui/src/implementation/styles/dashboard.css
-@@ -14,28 +14,60 @@ body:has([data-name-account-handoff][data-state="open"])
+@@ -14,28 +14,78 @@ body:has([data-name-account-handoff][data-state="open"])
    display: none;
  }
  
 +/*
 + * Lab identity colours (`provider-brand.ts`), one value per lab for icon tiles, healthy usage bars
-+ * and pool chart series. Status colours (low, critical, stale) never come from here.
++ * and pool chart series, plus two lightness steps of the same hue for extra series. Every shade keeps
++ * at least 3:1 against the page on both themes. Status colours (low, critical, stale) never come
++ * from here.
 + */
 +:root {
 +  --brand-openai: light-dark(#10a37f, #19c37d);
++  --brand-openai-1: light-dark(#0b6e56, #7fe3b8);
++  --brand-openai-2: light-dark(#178f6a, #14a86b);
 +  --brand-anthropic: light-dark(#c4623f, #d97757);
++  --brand-anthropic-1: light-dark(#8f4129, #f0b59d);
++  --brand-anthropic-2: light-dark(#b5532f, #c4623f);
 +  --brand-kimi: light-dark(#1773e6, #5aa7ff);
++  --brand-kimi-1: light-dark(#0d4fa6, #a8d0ff);
++  --brand-kimi-2: light-dark(#2a64c9, #3d8ef0);
 +  --brand-google: light-dark(#1a73e8, #8ab4f8);
++  --brand-google-1: light-dark(#0f4fa8, #c3d7fb);
++  --brand-google-2: light-dark(#3367d6, #6b9ff0);
 +}
 +.brand-fill.brand-openai {
 +  --brand-ink: var(--brand-openai);
++  --brand-ink-1: var(--brand-openai-1);
++  --brand-ink-2: var(--brand-openai-2);
 +}
 +.brand-fill.brand-anthropic {
 +  --brand-ink: var(--brand-anthropic);
++  --brand-ink-1: var(--brand-anthropic-1);
++  --brand-ink-2: var(--brand-anthropic-2);
 +}
 +.brand-fill.brand-kimi {
 +  --brand-ink: var(--brand-kimi);
++  --brand-ink-1: var(--brand-kimi-1);
++  --brand-ink-2: var(--brand-kimi-2);
 +}
 +.brand-fill.brand-google {
 +  --brand-ink: var(--brand-google);
++  --brand-ink-1: var(--brand-google-1);
++  --brand-ink-2: var(--brand-google-2);
 +}
 +.brand-fill {
 +  background-color: var(--brand-ink);
 +}
 +.brand-fill.brand-shade-1 {
-+  background-color: color-mix(in oklab, var(--brand-ink) 65%, var(--foreground));
++  background-color: var(--brand-ink-1);
 +}
 +.brand-fill.brand-shade-2 {
-+  background-color: color-mix(in oklab, var(--brand-ink) 55%, var(--background));
++  background-color: var(--brand-ink-2);
 +}
 +
  /*

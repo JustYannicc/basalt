@@ -34,3 +34,41 @@ test("the fill is one shared class per lab, with bounded tints", () => {
   assert.equal(brandFill("anthropic", 9), "brand-fill brand-anthropic brand-shade-2");
   assert.equal(brandFill(undefined), undefined);
 });
+
+const styles = new URL("../../.upstream/packages/ui/src/implementation/styles/", import.meta.url);
+const read = async (name: string) =>
+  (await import("node:fs/promises")).readFile(new URL(name, styles), "utf8");
+
+const luminance = (hex: string) => {
+  const channel = (offset: number) => {
+    const value = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+};
+const contrast = (a: string, b: string) => {
+  const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (high + 0.05) / (low + 0.05);
+};
+const expand = (hex: string) =>
+  hex.length === 4 ? `#${[...hex.slice(1)].map((c) => c + c).join("")}` : hex;
+
+test("every lab shade keeps at least 3:1 against the page on both themes", async () => {
+  const globals = await read("globals.css");
+  const backgrounds = [...globals.matchAll(/--background:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
+    expand(m[1]!.toLowerCase()),
+  );
+  const [light, dark] = backgrounds as [string, string];
+  assert.equal(backgrounds.length, 2, "one light and one dark page background");
+  const shades = [
+    ...(await read("dashboard.css")).matchAll(
+      /(--brand-[a-z]+(?:-\d)?):\s*light-dark\((#[0-9a-f]{6}),\s*(#[0-9a-f]{6})\)/gi,
+    ),
+  ];
+  // Four labs, each with its own colour and two extra series shades.
+  assert.equal(shades.length, 12);
+  for (const [, name, onLight, onDark] of shades) {
+    assert.ok(contrast(onLight!, light) >= 3, `${name} on the light page`);
+    assert.ok(contrast(onDark!, dark) >= 3, `${name} on the dark page`);
+  }
+});
