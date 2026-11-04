@@ -20,7 +20,8 @@
   },
   "runs": {
     "appQueryTiming": [
-      "host-managed-accounts:app-query-phase-diagnostics"
+      "host-managed-accounts:app-query-phase-diagnostics",
+      "declared:cloud"
     ]
   },
   "inputs": [

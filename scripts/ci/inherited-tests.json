@@ -348,10 +348,36 @@
     "app-cache.spec.ts": "bd253b3d7793c59d1ae888d082339adc3c2d8dba",
     "tool-call-batch.spec.ts": "4a440bfbc28bd59ae4de977f81551bece4ad1d2a",
     "account-cache-scope.spec.ts": "4112b8590b7f6aea9cc2b4e92e4a522fb442ca83",
-    "user-api-key.spec.ts": "3337a20487a96b18a3af3bc2b64c79358a9f596e",
-    "docker-release.spec.ts": "dda32e7f6e25e71733d7c3f6a2d0bdcccd3a15ff"
+    "user-api-key.spec.ts": "3337a20487a96b18a3af3bc2b64c79358a9f596e"
   },
-  "releaseOnly": {
-    "docker-release.spec.ts": "Upstream Docker release scenarios require published self-host images; this Cloud fork does not publish that image."
+  "manualTargets": {
+    "executorKeyUnlinkSticks": {
+      "file": "executor-key-account.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^A member'\"'\"'s unlinked managed Executor key stays unlinked through reads and redeploys$'"
+    },
+    "mcpAppsUi": {
+      "file": "mcp-apps-ui.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^MCP Apps render original UI with source-bound callbacks and isolated sandbox policy$'"
+    },
+    "mcpApps": {
+      "file": "mcp-apps.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^MCP Apps retain native results and bind approved callbacks to their original source$'"
+    },
+    "navigationIntentReads": {
+      "file": "navigation-intent.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^Hovering an app link reads the app and its tools before the click, and opening it reuses that read$'"
+    }
   }
 }

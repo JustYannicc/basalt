@@ -35,6 +35,23 @@ const json = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export function readDeclarations(root = repository) {
+  const manualTargets = Object.fromEntries(
+    Object.entries(
+      record(record(json(join(root, "scripts/ci/inherited-tests.json"))).manualTargets ?? {}),
+    ).map(([key, value]) => {
+      const manual = record(value);
+      return [
+        key,
+        {
+          file: text(manual.file),
+          target: choice(manual.target, targets),
+          runtime: choice(manual.runtime, ["attached"] as const),
+          reason: text(manual.reason),
+          command: text(manual.command),
+        },
+      ];
+    }),
+  );
   const groups = Object.fromEntries(
     Object.entries(record(json(join(root, "scripts/ci/e2e-groups.json")))).map(([id, value]) => {
       if (!/^[a-z0-9:-]+$/.test(id)) throw new Error("Invalid e2e group: " + id);
@@ -108,7 +125,11 @@ export function readDeclarations(root = repository) {
                 const config = text(item.config);
                 if (!/^[a-z0-9-]+\.config\.ts$/.test(config))
                   throw new Error("Invalid test config: " + config);
-                return { job, config };
+                return {
+                  job,
+                  config,
+                  titles: item.titles === undefined ? [] : strings(item.titles),
+                };
               });
         const inherited = source.inherited === undefined ? [] : strings(source.inherited);
         if (!Object.keys(scenarios).length && !config.length && !inherited.length)
@@ -123,7 +144,44 @@ export function readDeclarations(root = repository) {
         return [file, { scenarios, runs, config, inherited, inputs, fixture }];
       }),
   );
-  return { groups, files };
+  for (const [file, entry] of Object.entries(files))
+    for (const [key, scenario] of Object.entries(entry.scenarios)) {
+      for (const target of targets) {
+        const applicability = record(scenario.targets[target]);
+        if (applicability.status !== "scheduled") continue;
+        const runtime = applicability.runtime ?? "managed";
+        if (
+          entry.runs[key]!.some(
+            (id) => groups[id]!.target === target && groups[id]!.mode === runtime,
+          )
+        )
+          continue;
+        const manual = manualTargets[key];
+        if (
+          !manual ||
+          manual.file !== file ||
+          manual.target !== target ||
+          manual.runtime !== runtime
+        )
+          throw new Error(file + ": scheduled target has no CI job: " + key + " / " + target);
+        if (
+          target !== "cloud" ||
+          !entry.runs[key]!.some((id) => groups[id]!.target === "self-host")
+        )
+          throw new Error(key + ": inherited manual coverage requires a self-host CI counterpart");
+      }
+    }
+  for (const [key, manual] of Object.entries(manualTargets)) {
+    const entry = files[manual.file];
+    const applicability = entry?.scenarios[key]?.targets[manual.target];
+    if (
+      !applicability ||
+      record(applicability).status !== "scheduled" ||
+      record(applicability).runtime !== manual.runtime
+    )
+      throw new Error("Stale inherited manual target: " + key);
+  }
+  return { groups, files, manualTargets };
 }
 
 export function patternForGroup(group: string, file?: string, root = repository) {
@@ -137,6 +195,13 @@ export function patternForGroup(group: string, file?: string, root = repository)
           .map(([key]) => entry.scenarios[key]!.title),
   );
   if (!titles.length) throw new Error("No scenarios assigned to e2e group: " + group);
+  return "^(?:" + [...new Set(titles)].map(escape).join("|") + ")$";
+}
+
+export function patternForConfig(file: string, root = repository) {
+  const entry = readDeclarations(root).files[file];
+  const titles = entry?.config.flatMap((config) => config.titles) ?? [];
+  if (!titles.length) throw new Error("Config has no declared scenario names: " + file);
   return "^(?:" + [...new Set(titles)].map(escape).join("|") + ")$";
 }
 

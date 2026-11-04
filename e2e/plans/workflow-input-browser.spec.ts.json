@@ -51,13 +51,16 @@
   },
   "runs": {
     "workflowInputBrowser": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "declared:cloud"
     ],
     "workflowDisplayBrowser": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "declared:cloud"
     ],
     "workflowDisplayAuthority": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ]
   },
   "inputs": [

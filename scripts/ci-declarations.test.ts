@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  cpSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   declaredMatrices,
@@ -28,6 +38,7 @@ const withFixture = (
     writeFileSync(join(root, file), JSON.stringify(value));
   mkdirSync(join(root, "scripts/ci"), { recursive: true });
   mkdirSync(join(root, "e2e/plans"), { recursive: true });
+  write("scripts/ci/inherited-tests.json", { manualTargets: {} });
   write("scripts/ci/e2e-groups.json", {
     "declared:self-host": {
       job: "declared-self-host",
@@ -105,4 +116,69 @@ test("an affected Maps declaration selects its file rather than every newly adop
     ["hosted-routes.spec.ts"],
   );
   assert.ok(!selected.jobs.includes("declared-self-host"));
+});
+
+test("every scheduled target requires a runner, with explicit inherited attached exceptions", () =>
+  withFixture((root, write) => {
+    const plan = scenario("Both hosted targets");
+    const targets = { ...plan.targets, cloud: { status: "scheduled", runtime: "attached" } };
+    write("e2e/plans/first.spec.ts.json", {
+      scenarios: { first: { ...plan, targets } },
+      runs: { first: ["declared:self-host"] },
+    });
+    assert.throws(() => readDeclarations(root), /scheduled target has no CI job/);
+    write("scripts/ci/inherited-tests.json", {
+      manualTargets: {
+        first: {
+          file: "first.spec.ts",
+          target: "cloud",
+          runtime: "attached",
+          reason: "A deployed stage is required",
+          command: "bun run e2e:deployed",
+        },
+      },
+    });
+    assert.equal(Object.keys(readDeclarations(root).manualTargets).length, 1);
+    write("e2e/plans/first.spec.ts.json", {
+      scenarios: { first: { ...plan, targets: { ...targets, cloud: { status: "scheduled" } } } },
+      runs: { first: ["declared:self-host"] },
+    });
+    assert.throws(() => readDeclarations(root), /scheduled target has no CI job/);
+  }));
+
+test("the coverage CLI rejects a changed inherited image test even with the old bypass field", () => {
+  const repository = fileURLToPath(new URL("../", import.meta.url));
+  const root = mkdtempSync(join(tmpdir(), "basalt-coverage-"));
+  try {
+    for (const path of ["e2e", "scripts/ci", ".github/workflows"])
+      mkdirSync(join(root, path), { recursive: true });
+    cpSync(join(repository, "e2e/plans"), join(root, "e2e/plans"), { recursive: true });
+    cpSync(
+      join(repository, "scripts/ci/e2e-groups.json"),
+      join(root, "scripts/ci/e2e-groups.json"),
+    );
+    cpSync(join(repository, ".github/workflows/ci.yml"), join(root, ".github/workflows/ci.yml"));
+    cpSync(join(repository, "upstream.json"), join(root, "upstream.json"));
+    symlinkSync(join(repository, ".upstream"), join(root, ".upstream"), "dir");
+    const inventory = JSON.parse(
+      readFileSync(join(repository, "scripts/ci/inherited-tests.json"), "utf8"),
+    );
+    inventory.files["docker-release.spec.ts"] = execFileSync(
+      "git",
+      ["-C", join(repository, ".upstream"), "rev-parse", "HEAD:e2e/tests/docker-release.spec.ts"],
+      { encoding: "utf8" },
+    ).trim();
+    inventory.releaseOnly = { "docker-release.spec.ts": "Old bypass must have no effect" };
+    writeFileSync(join(root, "scripts/ci/inherited-tests.json"), JSON.stringify(inventory));
+    rmSync(join(root, "e2e/plans/docker-release.spec.ts.json"));
+    const result = spawnSync("bun", [join(repository, "scripts/ci/check-plans.ts")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /Changed inherited test needs a declaration/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

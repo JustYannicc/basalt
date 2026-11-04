@@ -22,7 +22,8 @@
   },
   "runs": {
     "importDiagnostics": [
-      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "declared:self-host"
     ]
   }
 }

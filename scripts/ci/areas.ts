@@ -58,6 +58,7 @@ export const heavyJobs = [
   "mcp-apps",
   "account-acquisition",
   "pool-runtime",
+  "upstream-image",
   "production-build",
   "declared-self-host",
   "declared-local",

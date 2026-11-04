@@ -71,13 +71,16 @@
       "declared:self-host"
     ],
     "workflowInputPagination": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ],
     "workflowInputRevocation": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ],
     "workflowInputAuthority": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ]
   },
   "inputs": [

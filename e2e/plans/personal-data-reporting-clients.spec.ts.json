@@ -19,7 +19,8 @@
   },
   "runs": {
     "personalDataClientIsolation": [
-      "personal-data-reporting:reporting-retained-data-and-registration-isolation"
+      "personal-data-reporting:reporting-retained-data-and-registration-isolation",
+      "declared:local"
     ]
   },
   "inputs": [

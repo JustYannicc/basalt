@@ -19,7 +19,8 @@
   },
   "runs": {
     "workflowDiagram": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ]
   },
   "inputs": [

@@ -36,7 +36,8 @@
   },
   "runs": {
     "deviceCodeProof": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ],
     "deviceCodeProofRestart": [
       "declared:self-host"

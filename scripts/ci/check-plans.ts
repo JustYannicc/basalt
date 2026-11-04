@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { Schema } from "effect";
@@ -15,7 +15,7 @@ const prepared = new Map(Object.entries(scenarios));
 const inventory = JSON.parse(readFileSync("scripts/ci/inherited-tests.json", "utf8")) as {
   pin: string;
   files: Record<string, string>;
-  releaseOnly: Record<string, string>;
+  manualTargets: Record<string, unknown>;
 };
 const pin = JSON.parse(readFileSync("upstream.json", "utf8")).commit;
 assert.equal(inventory.pin, pin, "Refresh the inherited inventory when the upstream pin changes");
@@ -66,6 +66,11 @@ for (const [file, entry] of Object.entries(declarations.files)) {
       readFileSync(join(".upstream/e2e", config.config), "utf8").includes("e2e/tests/" + file),
       "Config does not include test: " + file,
     );
+    for (const title of config.titles)
+      assert.ok(
+        readFileSync(join(".upstream/e2e/tests", file), "utf8").includes(title),
+        "Declared config scenario is absent: " + title,
+      );
   }
 }
 for (const [key, plan] of Object.entries(legacyScenarios)) {
@@ -85,12 +90,7 @@ for (const file of files) {
     .update("blob " + source.length + "\0")
     .update(source)
     .digest("hex");
-  assert.ok(
-    actual === expected || inventory.releaseOnly[file],
-    "Changed inherited test needs a declaration: " + file,
-  );
-  if (inventory.releaseOnly[file])
-    assert.ok(inventory.releaseOnly[file].trim(), "Release-only inventory requires a reason");
+  assert.equal(actual, expected, "Changed inherited test needs a declaration: " + file);
 }
 for (const file of Object.keys(inventory.files))
   assert.ok(files.includes(file), "Stale inherited test inventory: " + file);
@@ -119,7 +119,16 @@ const report = {
   inheritedFiles: Object.keys(inventory.files).length,
   declaredScenarios: known.size,
   groups: Object.keys(declarations.groups).length,
+  manualTargets: declarations.manualTargets,
 };
 mkdirSync(".generated/ci", { recursive: true });
 writeFileSync(".generated/ci/coverage.json", JSON.stringify(report, null, 2) + "\n");
+if (process.env.GITHUB_STEP_SUMMARY && Object.keys(declarations.manualTargets).length)
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    "Explicit inherited manual targets:\n\n" +
+      Object.entries(declarations.manualTargets)
+        .map(([key, value]) => "- " + key + " / " + value.target + ": " + value.reason + "\n")
+        .join(""),
+  );
 console.log(JSON.stringify(report));

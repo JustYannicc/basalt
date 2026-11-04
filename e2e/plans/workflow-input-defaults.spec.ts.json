@@ -19,7 +19,8 @@
   },
   "runs": {
     "workflowInputDefaults": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ]
   },
   "inputs": [

@@ -20,7 +20,8 @@
   "runs": {
     "personalDataReporting": [
       "personal-data-reporting:reporting-retained-data-and-registration-isolation",
-      "personal-data-reporting:cloud-scheduling-and-organization-isolation"
+      "personal-data-reporting:cloud-scheduling-and-organization-isolation",
+      "declared:local"
     ]
   },
   "inputs": [

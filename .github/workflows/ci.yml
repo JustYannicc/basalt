@@ -1464,6 +1464,42 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  upstream-image:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-image')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      EXECUTOR_E2E_DOCKER_IMAGE: basalt-ci-self-host:contract
+      EXECUTOR_E2E_DOCKER_ARCH: amd64
+      EXECUTOR_E2E_DOCKER_VERSION: 0.0.0-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Build the image whose carried assertions are adopted
+        timeout-minutes: 20
+        run: docker build --file .upstream/apps/hosted/self-host/Dockerfile --build-arg EXECUTOR_BUILD_VERSION="$EXECUTOR_E2E_DOCKER_VERSION" --tag "$EXECUTOR_E2E_DOCKER_IMAGE" .upstream
+      - name: Verify carried registry and network refusals through the real image
+        working-directory: .upstream
+        run: |
+          mkdir -p ../.generated/ci-image
+          bunx vitest run --config e2e/docker-release.config.ts e2e/tests/docker-release.spec.ts --testNamePattern "$(node ../scripts/ci/e2e-pattern.ts --config docker-release.spec.ts)" --reporter=default --reporter=json --outputFile=../.generated/ci-image/results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-image-contract
+          path: .generated/ci-image/results.json
+          include-hidden-files: true
+          if-no-files-found: warn
   fast:
     needs: select
     runs-on: ubuntu-latest
@@ -1729,7 +1765,7 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, google-account-diagnostics, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, google-account-diagnostics, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, upstream-image, production-build, docs-build, upstream-contracts, declared-self-host, declared-local, declared-cloud, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -36,7 +36,8 @@
   },
   "runs": {
     "accountHealthFailures": [
-      "declared:self-host"
+      "declared:self-host",
+      "declared:cloud"
     ],
     "driverHealthFailures": [
       "declared:self-host"

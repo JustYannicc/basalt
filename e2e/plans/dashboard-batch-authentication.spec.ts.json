@@ -19,7 +19,8 @@
   },
   "runs": {
     "dashboardBatchAuthentication": [
-      "dashboard:profile"
+      "dashboard:profile",
+      "declared:cloud"
     ]
   },
   "inputs": [

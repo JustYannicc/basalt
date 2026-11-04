@@ -20,7 +20,8 @@
   },
   "runs": {
     "supportDialog": [
-      "human-in-the-loop:browser-analytics-after-server-rendering"
+      "human-in-the-loop:browser-analytics-after-server-rendering",
+      "declared:self-host"
     ]
   }
 }
