@@ -1,3 +1,4 @@
+import { controlBasePath } from "../../../apps/pool/contract.ts";
 import { fail, failureResponse, json, object, readBody } from "../json.ts";
 import { openEnvelope } from "../token.ts";
 import { withHistoryDatabase } from "./database.ts";
@@ -6,8 +7,8 @@ import { seriesAuthority } from "./series-input.ts";
 import { poolUsageSeries } from "./series.ts";
 import { lastSuccessAt } from "./last-success.ts";
 
-export const poolUsageSeriesPath = "/__setup/v1/poolUsageSeries";
-export const lastSuccessAtPath = "/__setup/v1/lastSuccessAt";
+export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
+export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
 
 /** Native host policy authorizes this exact signed read while holding its organization lock. */
 export async function handleUsageSeries(
