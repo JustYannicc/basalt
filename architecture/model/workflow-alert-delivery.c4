@@ -1,0 +1,8 @@
+model {
+  extend basalt.workflowRecipes {
+    selfEmail = part "Workflow-owned email delivery" {
+      description "Each self-email destination declares its own dependency and named send step. Configure shows the exact workflow step, target, saved account and sole recipient in the approval input. Delivery uses the native saved connection from that runtime step; the host owns permission and account checks. Existing claims, current-question checks, no-retry submission and receipt state remain in charge of duplicate prevention. The shared dispatcher's effects_unavailable refusal is known pre-submission; other uncertain errors cannot be retried. Defaults remain approvals-only."
+      metadata { code "recipes/common/workflow-delivery.ts|recipes/common/delivery.ts" }
+    }
+  }
+}

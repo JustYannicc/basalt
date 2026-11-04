@@ -10,6 +10,7 @@ import {
 } from "apps";
 import { always } from "apps/operations/approval";
 import { configurationRevision } from "./configuration-revision.ts";
+import { deliveryScope } from "./workflow-delivery.ts";
 import { requirements } from "./installation.ts";
 import { controls, write } from "./state.ts";
 type Writer = MutationContext<typeof requirements>;
@@ -18,11 +19,14 @@ export const configure = mutation(
   {
     description:
       "Set up this private copy. Delivery remains off unless explicitly enabled. Pausing a schedule stops new scans; turn delivery off or terminate its runs to stop current ones.",
-    input: object({ deliveryEnabled: boolean() }),
+    input: object({ deliveryEnabled: boolean(), deliveryScope: string().optional() }),
     approval: always(),
   },
   async (ctx: Writer, input) => {
     const revision = await configurationRevision();
+    const scope = deliveryScope();
+    if (input.deliveryEnabled && scope !== "[]" && input.deliveryScope !== scope)
+      throw new Error("Read settings and include its exact deliveryScope when enabling delivery.");
     return ctx.sql.transaction((tx) => {
       if (ctx.user.id === undefined) throw new Error("A personal identity is required.");
       const current = tx
@@ -49,6 +53,7 @@ export const settings = query(
       deliveryEnabled: current.delivery_enabled === 1,
       revision: current.configuration_revision,
       current: current.configuration_revision === (await configurationRevision()),
+      deliveryScope: deliveryScope(),
     };
   },
 );

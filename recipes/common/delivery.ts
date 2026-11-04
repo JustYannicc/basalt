@@ -1,5 +1,6 @@
 import type { WorkflowContext, WorkflowStepContext } from "apps";
 import { configurationRevision } from "./configuration-revision.ts";
+import { deliveryConnection } from "./workflow-delivery.ts";
 import { fieldsFor, type WorkflowName } from "./workflow-fields.ts";
 import { api, ReadUnavailable, record, text, tool } from "./api.ts";
 import { requirements } from "./installation.ts";
@@ -99,7 +100,7 @@ export async function nudge(
       )
         return { status: "refused" };
       const channel = fields.destination;
-      if (channel.kind !== "tool") return { status: "refused" };
+      if (channel.kind === "approvals") return { status: "refused" };
       const candidate = crypto.randomUUID();
       const acquired = await tool(
         step,
@@ -119,26 +120,44 @@ export async function nudge(
       if (acquired === "configuration-changed") return { status: "refused" };
       if (acquired !== true) return { status: "uncertain" };
       attempt = candidate;
-      const result = await tool(
-        step,
-        {
-          app: channel.app,
-          tool: channel.tool,
-          input: channel.input("A workflow needs your input.", question.reviewUrl),
-        },
-        "mutation",
-      );
-      const receipt = channel.receipt(result);
+      const result =
+        channel.kind === "self-email"
+          ? await step.apps.call({
+              connection: deliveryConnection(workflow),
+              target: channel.app,
+              tool: "send",
+              kind: "mutation",
+              input: {
+                account: channel.account,
+                to: [channel.recipient],
+                subject: "A workflow needs your input",
+                body: `A workflow needs your input.\n${question.reviewUrl}`,
+              },
+            })
+          : await tool(
+              step,
+              {
+                app: channel.app,
+                tool: channel.tool,
+                input: channel.input("A workflow needs your input.", question.reviewUrl),
+              },
+              "mutation",
+            );
+      const receipt =
+        channel.kind === "self-email" ? text(record(result)?.messageId) : channel.receipt(result);
       return receipt && /^[a-zA-Z0-9_.:-]{1,200}$/.test(receipt)
         ? { status: "sent", receipt, attempt }
         : { status: "uncertain", attempt };
     } catch (error) {
+      const failure = record(error);
+      const effectGated = channelEffectUnavailable(failure);
       return {
         ...(attempt === undefined ? {} : { attempt }),
         status:
-          error instanceof ReadUnavailable &&
-          error.reason !== undefined &&
-          beforeSubmission.has(error.reason)
+          effectGated ||
+          (error instanceof ReadUnavailable &&
+            error.reason !== undefined &&
+            beforeSubmission.has(error.reason))
             ? "refused"
             : "uncertain",
       };
@@ -154,4 +173,11 @@ export async function nudge(
     : saved.notified === "refused"
       ? "delivery-refused"
       : "sent";
+}
+
+/** The shared dispatcher refuses this before any target invocation. Other app-call errors may
+ * follow submission and remain uncertain until the dispatcher supplies a stronger contract.
+ */
+function channelEffectUnavailable(error: Record<string, unknown> | undefined) {
+  return error?._tag === "AppCallFailed" && error.reason === "effects_unavailable";
 }

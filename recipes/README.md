@@ -41,6 +41,16 @@ opaque receipt. Credentials remain in normal account connections. The tool's
 existing policy must permit the agreed unattended send. Answering a workflow
 question does not authorize a protected tool.
 
+For the inspected structured Gmail sender, use `kind: "self-email"` with the exact
+app, saved account ID and your verified owner address. Save that workflow's
+`alert_<workflow name>` dependency connection to the same app and account. Read
+`settings`, then include its exact `deliveryScope` in the owner-approved `configure`
+call when enabling delivery. The host checks the current source, target and account
+generation, and only that workflow's named send step can use the permission.
+CC, BCC, replies and uninspected sender implementations keep requiring approval.
+Changing the source, connection, target version or account generation requires
+confirmation again. Turning delivery off stops subsequent submissions.
+
 Customized copies keep their source. When updating one manually, move its former
 `configuration.channel` and `configuration.quietHours` values into each affected
 workflow's fields, preserving its destinations and timing before removing the

@@ -1,6 +1,7 @@
 export interface WorkflowFields {
   destination:
     | { kind: "approvals" }
+    | { kind: "self-email"; app: string; account: string; recipient: string }
     | {
         kind: "tool";
         app: string;
