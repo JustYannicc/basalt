@@ -318,15 +318,17 @@ jobs:
           bun run e2e:self-host --test-name
           "^poolUsageSeries is manager-only and preserves one bounded decimal usage read$"
           --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .upstream/.local/e2e .generated/ci-evidence/host-managed-accounts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: host-managed-accounts-self-host-e2e
-          path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+          path: .generated/ci-evidence/host-managed-accounts
+          include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts-local:
     needs: select
@@ -1307,6 +1309,8 @@ jobs:
       - run: npm run check:build
       - name: Check every Worker's startup CPU and size against Cloudflare's limits
         run: npm run check:startup
+      - name: Generate the architecture model for typechecking
+        run: npm run architecture:model
       - run: npm run typecheck
 
   docs-build:
@@ -1431,14 +1435,17 @@ jobs:
           bun run e2e:self-host --test-name
           "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall|^account rows show a mapped pool account's requests"
           --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .upstream/.local/e2e .generated/ci-evidence/account-acquisition
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: account-acquisition-e2e
-          path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/report/**
+          path: .generated/ci-evidence/account-acquisition
+          include-hidden-files: true
           if-no-files-found: warn
 
   boat-bundle:
