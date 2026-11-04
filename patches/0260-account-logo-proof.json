@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-logo-proof",
+  "file": "0260-account-logo-proof.patch",
+  "content_sha256": "111fd9ee6cdae8f968d9c08775ea6b86e3cb303942b05275de77d096f387a9ac",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
