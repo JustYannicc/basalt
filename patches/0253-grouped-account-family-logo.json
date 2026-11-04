@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-grouped-account-family-logo",
+  "file": "0253-grouped-account-family-logo.patch",
+  "content_sha256": "39824c48408872b8b93b9f621c50bdf6b1af911db1d73f55bc1aad8e6582466b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
