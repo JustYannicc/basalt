@@ -1610,10 +1610,10 @@ index a711e92..7f0bed0 100644
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 new file mode 100644
-index 0000000..a368a5e
+index 0000000..cf5248d
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,318 @@
 +import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
 +import { HugeiconsIcon } from "@hugeicons/react";
 +import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
@@ -1660,19 +1660,17 @@ index 0000000..a368a5e
 +  "healthy",
 +];
 +
-+/** Lower is worse: grant problems, then current results by severity, then outdated ones. */
++/** Lower is worse: grant problems, then current results by severity, then outdated ones by severity. */
 +const rank = (health: AccountRowHealth) =>
 +  health.kind === "needs-sign-in"
 +    ? 0
 +    : health.kind === "unavailable"
 +      ? 1
 +      : health.kind === "check"
-+        ? health.check.current
-+          ? 2 + severity.indexOf(health.check.status)
-+          : 2 + severity.length
++        ? 2 + (health.check.current ? 0 : severity.length) + severity.indexOf(health.check.status)
 +        : health.kind === "not-checked"
-+          ? 3 + severity.length
-+          : 4 + severity.length;
++          ? 2 + 2 * severity.length
++          : 3 + 2 * severity.length;
 +
 +const grant = (
 +  account: AccountSummary,
@@ -1754,22 +1752,25 @@ index 0000000..a368a5e
 +};
 +
 +/**
-+ * An app's Accounts tab: that app's own check comes first, the account's own check only when the
-+ * app has none, so the app's failure and its Reconnect are never hidden.
++ * An app's Accounts tab: a current result beats an outdated one, and among current results this
++ * app's own check comes before the account's own check. So neither the app's failure nor a current
++ * credential rejection, with its Reconnect, is hidden behind a stale result.
 + */
 +export const appRowHealth = (row: AccountRowInput, own: AccountRowBinding): AccountRowHealth => {
 +  const driver = row.account.health?.driver;
++  const app = worstApp(row.account, [own]);
++  const account: AccountRowHealth | undefined =
++    driver?.check == null
++      ? undefined
++      : { kind: "check", check: driver.check, sources: [{ account: row.account }], grouped: false };
++  const current = (state: AccountRowHealth | undefined) =>
++    state?.kind === "check" && state.check.current ? state : undefined;
 +  return (
 +    grant(row.account, [own]) ??
-+    worstApp(row.account, [own]) ??
-+    (driver?.check == null
-+      ? undefined
-+      : {
-+          kind: "check",
-+          check: driver.check,
-+          sources: [{ account: row.account }],
-+          grouped: false,
-+        }) ??
++    current(app) ??
++    current(account) ??
++    app ??
++    account ??
 +    (driver?.checkable === true || own.check?.checkable === true
 +      ? { kind: "not-checked" }
 +      : { kind: "no-check" })
