@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compiler-admission-deadline",
+  "file": "0221-compiler-admission-deadline.patch",
+  "content_sha256": "12483d5bdc63e1c987f2f2628360e35305e0a1a351dedc6617770c7dffca638d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
