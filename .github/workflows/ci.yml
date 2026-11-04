@@ -752,6 +752,7 @@ jobs:
           name: compiler-diagnostics-e2e
           include-hidden-files: true
           path: |
+            .upstream/.local/e2e/**/compiler-cache-host.log
             .upstream/.local/e2e/**/compiler-cache-production.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
