@@ -1495,7 +1495,6 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
          const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
 diff --git a/e2e/support/maps-routes-emulator.ts b/e2e/support/maps-routes-emulator.ts
 new file mode 100644
-index 0000000..5984ec5
 --- /dev/null
 +++ b/e2e/support/maps-routes-emulator.ts
 @@ -0,0 +1,168 @@
@@ -1593,15 +1592,15 @@ index 0000000..5984ec5
 +    ] as const;
 +    const source = replaceText(input.document.source, replacements);
 +    const entry = input.document.entry;
-+    const routes = HttpRouter.addAll([
-+      HttpRouter.route(
++    const routes = Layer.mergeAll(
++      HttpRouter.add(
 +        "GET",
 +        "/catalog/index.json",
 +        HttpServerResponse.json({ version: 1, apps: [entry] }),
 +      ),
-+      HttpRouter.route("GET", "/catalog/apps/google-maps.json", HttpServerResponse.json(source)),
-+      HttpRouter.route("GET", "/catalog/icons/*", HttpServerResponse.empty({ status: 404 })),
-+      HttpRouter.route(
++      HttpRouter.add("GET", "/catalog/apps/google-maps.json", HttpServerResponse.json(source)),
++      HttpRouter.add("GET", "/catalog/icons/*", HttpServerResponse.empty({ status: 404 })),
++      HttpRouter.add(
 +        "GET",
 +        "/__fixture/state",
 +        Effect.gen(function* () {
@@ -1611,7 +1610,7 @@ index 0000000..5984ec5
 +          return yield* HttpServerResponse.json(yield* Ref.get(state));
 +        }),
 +      ),
-+      HttpRouter.route(
++      HttpRouter.add(
 +        "POST",
 +        "/__fixture/reset",
 +        Effect.gen(function* () {
@@ -1622,7 +1621,7 @@ index 0000000..5984ec5
 +          return yield* HttpServerResponse.json({ ok: true });
 +        }),
 +      ),
-+      HttpRouter.route(
++      HttpRouter.add(
 +        "POST",
 +        expectedPath,
 +        Effect.gen(function* () {
@@ -1656,8 +1655,8 @@ index 0000000..5984ec5
 +          return yield* HttpServerResponse.json(routeResponse);
 +        }),
 +      ),
-+      HttpRouter.route("*", "/*", HttpServerResponse.json({ error: "not_found" }, { status: 404 })),
-+    ]);
++      HttpRouter.add("*", "/*", HttpServerResponse.json({ error: "not_found" }, { status: 404 })),
++    );
 +    const services = yield* Layer.build(
 +      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
 +        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
