@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-approval-schema-type",
+  "file": "0197-approval-schema-type.patch",
+  "content_sha256": "a848caa2751d38c8db737fa62d9e6a3aff3b54d695cf11174726511059d29c61",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

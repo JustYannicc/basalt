@@ -1,0 +1,4227 @@
+diff --git a/packages/sdk/src/implementation/workflow-approval.ts b/packages/sdk/src/implementation/workflow-approval.ts
+new file mode 100644
+index 00000000..2b7b3910
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-approval.ts
+@@ -0,0 +1,110 @@
++import { selfEmailEnvelope } from "./workflow-email-envelope.ts";
++
++/** Source-owned declaration. A host must validate it before recording owner confirmation. */
++export interface WorkflowApprovalDeclaration {
++  readonly workflow: string;
++  readonly step: string;
++  readonly connection: string;
++  readonly envelope: "self-email";
++  readonly expiresAt?: number;
++}
++
++/** Exact values captured by the host at owner-approved configuration, never by the app command. */
++export interface WorkflowApprovalBinding {
++  readonly source: string;
++  readonly sourceVersion: string;
++  readonly configurationRevision: string;
++  readonly connectionRevision: number;
++  readonly target: string;
++  readonly targetVersion: string;
++  readonly tool: string;
++  readonly account: string;
++  readonly accountRevision: string;
++  readonly owner: string;
++  readonly recipient: string;
++}
++
++export interface WorkflowApprovalConfirmation {
++  readonly declaration: WorkflowApprovalDeclaration;
++  readonly binding: WorkflowApprovalBinding;
++  readonly approvedBy: string;
++}
++
++export interface WorkflowApprovalEvidence {
++  readonly declaration: WorkflowApprovalDeclaration;
++  readonly binding: WorkflowApprovalBinding;
++  readonly confirmation?: WorkflowApprovalConfirmation;
++  readonly now: number;
++  readonly deliveryEnabled: boolean;
++  readonly accessAllowed: boolean;
++  readonly accountOwner: string;
++  readonly verifiedOwnerRecipient?: string;
++  /** Host registration for the inspected target version's structured compose implementation. */
++  readonly envelope?: "self-email";
++  readonly workflow?: { readonly name: string; readonly step: string; readonly run: string };
++  readonly kind: "query" | "mutation";
++  readonly decodedInput: unknown;
++  readonly appPolicy: "approved" | "denied" | "user-approval" | "failed";
++}
++
++const sameDeclaration = (a: WorkflowApprovalDeclaration, b: WorkflowApprovalDeclaration) =>
++  a.workflow === b.workflow &&
++  a.step === b.step &&
++  a.connection === b.connection &&
++  a.envelope === b.envelope &&
++  a.expiresAt === b.expiresAt;
++
++const bindingKeys = [
++  "source",
++  "sourceVersion",
++  "configurationRevision",
++  "connectionRevision",
++  "target",
++  "targetVersion",
++  "tool",
++  "account",
++  "accountRevision",
++  "owner",
++  "recipient",
++] as const;
++
++/** Evaluate after target decoding and app policy, before receipt reservation or submission.
++ * This pure result is not a trusted approval token. The dispatch host owns granting authority.
++ */
++export const workflowApproval = (
++  evidence: WorkflowApprovalEvidence,
++): "approved" | "denied" | "user-approval" | "failed" => {
++  const { declaration, binding, confirmation, workflow } = evidence;
++  if (!evidence.accessAllowed) return "denied";
++  // A declaration only satisfies an ask. App denial and callback failure remain authoritative.
++  if (evidence.appPolicy !== "user-approval") return evidence.appPolicy;
++  if (!evidence.deliveryEnabled || confirmation === undefined || workflow === undefined)
++    return "user-approval";
++  if (
++    !Number.isFinite(evidence.now) ||
++    (declaration.expiresAt !== undefined &&
++      (!Number.isFinite(declaration.expiresAt) || evidence.now >= declaration.expiresAt)) ||
++    declaration.workflow.length === 0 ||
++    declaration.step.length === 0 ||
++    declaration.connection.length === 0 ||
++    workflow.run.length === 0 ||
++    workflow.name !== declaration.workflow ||
++    workflow.step !== declaration.step ||
++    !sameDeclaration(declaration, confirmation.declaration)
++  )
++    return "user-approval";
++  if (
++    !Number.isSafeInteger(binding.connectionRevision) ||
++    binding.connectionRevision < 1 ||
++    bindingKeys.some((key) => binding[key] !== confirmation.binding[key] || binding[key] === "") ||
++    binding.owner !== evidence.accountOwner ||
++    confirmation.approvedBy !== evidence.accountOwner ||
++    evidence.verifiedOwnerRecipient !== binding.recipient ||
++    evidence.kind !== "mutation" ||
++    declaration.envelope !== "self-email" ||
++    evidence.envelope !== "self-email" ||
++    !selfEmailEnvelope(evidence.decodedInput, binding.account, binding.recipient)
++  )
++    return "user-approval";
++  return "approved";
++};
+diff --git a/packages/sdk/src/implementation/workflow-email-envelope.ts b/packages/sdk/src/implementation/workflow-email-envelope.ts
+new file mode 100644
+index 00000000..f95e870f
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-email-envelope.ts
+@@ -0,0 +1,24 @@
++/** The inspected structured compose operation only. Raw MIME and reply operations never qualify. */
++export const selfEmailEnvelope = (input: unknown, account: string, recipient: string): boolean => {
++  if (input === null || typeof input !== "object" || Array.isArray(input)) return false;
++  const allowed = new Set(["account", "to", "cc", "bcc", "subject", "body", "html", "replyAll"]);
++  if (Object.keys(input).some((key) => !allowed.has(key))) return false;
++  const value = input as Record<string, unknown>;
++  // Only a bare address is eligible. Display names, aliases and header syntax require an ask.
++  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(recipient))
++    return false;
++  if (account.length === 0 || value.account !== account) return false;
++  if (!Array.isArray(value.to) || value.to.length !== 1 || value.to[0] !== recipient) return false;
++  for (const key of ["cc", "bcc"]) {
++    const recipients = value[key];
++    if (recipients !== undefined && (!Array.isArray(recipients) || recipients.length !== 0))
++      return false;
++  }
++  if (typeof value.body !== "string" || (value.html !== undefined && value.html !== false))
++    return false;
++  if (value.replyAll !== undefined && value.replyAll !== false) return false;
++  return (
++    value.subject === undefined ||
++    (typeof value.subject === "string" && !/[\r\n]/.test(value.subject))
++  );
++};
+diff --git a/packages/sdk/src/implementation/workflow-approval-hooks.ts b/packages/sdk/src/implementation/workflow-approval-hooks.ts
+new file mode 100644
+index 00000000..6d06cf8d
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-approval-hooks.ts
+@@ -0,0 +1,242 @@
++import { Clock, Effect, Schema } from "effect";
++import type {
++  AppCallHooks,
++  AppApprovedConfiguration,
++  AppProtectedDispatch,
++  AppConfigurationAttachment,
++} from "../contracts/app-calls.ts";
++import { StorageError } from "../contracts/shared.ts";
++import { workflowApproval } from "./workflow-approval.ts";
++
++const Declaration = Schema.Struct({
++  envelope: Schema.Literal("self-email"),
++  workflow: Schema.NonEmptyString,
++  step: Schema.NonEmptyString,
++  expiresAt: Schema.optionalKey(Schema.Number),
++});
++const Attachment = Schema.Struct({
++  declaration: Declaration,
++  account: Schema.NonEmptyString,
++  owner: Schema.NonEmptyString,
++  recipient: Schema.NonEmptyString,
++  targetVersion: Schema.NonEmptyString,
++});
++const ConfigureInput = Schema.Struct({
++  deliveryEnabled: Schema.Boolean,
++  deliveryScope: Schema.optionalKey(Schema.String),
++});
++const Scope = Schema.Array(
++  Schema.Struct({
++    workflow: Schema.String,
++    step: Schema.String,
++    connection: Schema.String,
++    target: Schema.String,
++    tool: Schema.String,
++    account: Schema.String,
++    to: Schema.Array(Schema.String),
++    cc: Schema.Array(Schema.String),
++    bcc: Schema.Array(Schema.String),
++  }),
++);
++const approvedScopes = (input: typeof ConfigureInput.Type): typeof Scope.Type => {
++  if (input.deliveryScope === undefined) return [];
++  try {
++    const value: unknown = JSON.parse(input.deliveryScope);
++    return Schema.is(Scope)(value) ? value : [];
++  } catch {
++    return [];
++  }
++};
++
++/** Product-owned facts. Resolve these from current access, verified identity and audited target
++ * code, never from the source app's policy JSON or an account's app-reported health metadata.
++ */
++export interface WorkflowApprovalHost {
++  readonly configuration: (
++    event: AppApprovedConfiguration | AppProtectedDispatch,
++  ) => Effect.Effect<
++    { readonly revision: string; readonly enabled: boolean } | undefined,
++    StorageError
++  >;
++  readonly personalEmailAccount: (input: {
++    readonly account: string;
++    readonly target: string;
++    readonly source: string;
++  }) => Effect.Effect<
++    | {
++        readonly owner: string;
++        readonly recipient: string;
++        readonly targetVersion: string;
++        readonly inspectedCompose: boolean;
++      }
++    | undefined,
++    StorageError
++  >;
++}
++
++/** Adapt only SDK-issued configuration and postdecoded dispatch events. Registration belongs
++ * to the product, which supplies live personal-account authority and inspected target support.
++ */
++export const workflowApprovalHooks = (host: WorkflowApprovalHost): AppCallHooks => ({
++  configurationApproved: (event) =>
++    Effect.gen(function* () {
++      const state = yield* host.configuration(event);
++      const attachments: AppConfigurationAttachment[] = [];
++      if (
++        state === undefined ||
++        !Schema.is(ConfigureInput)(event.input) ||
++        event.input.deliveryEnabled !== state.enabled
++      )
++        return { approvedBy: event.actor, attachments };
++      const scopes = approvedScopes(event.input);
++      for (const connection of event.connections) {
++        const configuration = connection.declaration.configuration;
++        if (
++          configuration?.tool !== event.tool ||
++          !Schema.is(Declaration)(configuration.policy) ||
++          connection.declaration.tools.send?.kind !== "mutation"
++        )
++          continue;
++        const base = {
++          connection: connection.id,
++          revision: connection.revision,
++          configurationRevision: state.revision,
++        };
++        // Each successful configuration replaces its old permission, including a scope
++        // that no longer qualifies. A disable also clears an account that lost eligibility.
++        const index = attachments.push({ ...base, value: null }) - 1;
++        if (!state.enabled) continue;
++        const selected = connection.accountVersions;
++        const account = selected[0];
++        if (!connection.enabled || selected.length !== 1 || account === undefined) continue;
++        const identity = yield* host.personalEmailAccount({
++          account: account.account,
++          target: connection.target,
++          source: event.app,
++        });
++        if (identity === undefined || !identity.inspectedCompose || identity.owner !== event.actor)
++          continue;
++        const scope = scopes.filter((scope) => scope.connection === connection.dependency);
++        if (
++          scope.length !== 1 ||
++          !scope.some(
++            (scope) =>
++              scope.workflow === configuration.policy.workflow &&
++              scope.step === configuration.policy.step &&
++              scope.target === connection.target &&
++              scope.tool === "send" &&
++              scope.account === account.account &&
++              scope.to.length === 1 &&
++              scope.to[0] === identity.recipient &&
++              scope.cc.length === 0 &&
++              scope.bcc.length === 0,
++          )
++        )
++          continue;
++        attachments[index] = {
++          ...base,
++          value: {
++            declaration: configuration.policy,
++            account: account.account,
++            owner: identity.owner,
++            recipient: identity.recipient,
++            targetVersion: identity.targetVersion,
++          },
++        };
++      }
++      return { approvedBy: event.actor, attachments };
++    }),
++  protectedDispatch: (event) =>
++    Effect.gen(function* () {
++      const confirmation = event.confirmation;
++      const workflow = event.source.workflow;
++      const policy = event.declaration.configuration?.policy;
++      if (
++        confirmation === undefined ||
++        workflow === undefined ||
++        workflow.stepId.length === 0 ||
++        event.target.tool !== "send" ||
++        !event.connection.enabled ||
++        !Schema.is(Declaration)(policy) ||
++        !Schema.is(Attachment)(confirmation.value)
++      )
++        return "user-approval";
++      const account = event.target.accountVersions[0];
++      const confirmedAccount = confirmation.accountVersions[0];
++      if (
++        event.target.accountVersions.length !== 1 ||
++        confirmation.accountVersions.length !== 1 ||
++        account === undefined ||
++        confirmedAccount === undefined ||
++        account.account !== confirmedAccount.account ||
++        account.owner !== confirmedAccount.owner ||
++        account.credentialGeneration !== confirmedAccount.credentialGeneration ||
++        !Number.isSafeInteger(account.credentialGeneration) ||
++        account.credentialGeneration < 0 ||
++        confirmation.value.account !== account.account
++      )
++        return "user-approval";
++      const identity = yield* host.personalEmailAccount({
++        account: account.account,
++        target: event.target.app,
++        source: event.source.app,
++      });
++      const state = yield* host.configuration(event);
++      if (
++        identity === undefined ||
++        !identity.inspectedCompose ||
++        state === undefined ||
++        identity.targetVersion !== event.target.version ||
++        confirmation.value.targetVersion !== event.target.version
++      )
++        return "user-approval";
++      const value = confirmation.value;
++      const accountRevision = JSON.stringify([
++        account.account,
++        account.owner,
++        account.credentialGeneration,
++      ]);
++      const binding = {
++        source: event.source.app,
++        sourceVersion: event.source.version,
++        configurationRevision: state.revision,
++        connectionRevision: event.connection.revision,
++        target: event.target.app,
++        targetVersion: event.target.version,
++        tool: event.target.tool,
++        account: account.account,
++        accountRevision,
++        owner: identity.owner,
++        recipient: identity.recipient,
++      };
++      return workflowApproval({
++        declaration: { ...policy, connection: event.connection.dependency },
++        binding,
++        confirmation: {
++          declaration: { ...value.declaration, connection: event.connection.dependency },
++          binding: {
++            ...binding,
++            sourceVersion: confirmation.sourceVersion,
++            targetVersion: confirmation.targetVersion,
++            connectionRevision: confirmation.connectionRevision,
++            configurationRevision: confirmation.configurationRevision,
++            owner: value.owner,
++            recipient: value.recipient,
++          },
++          approvedBy: confirmation.approvedBy,
++        },
++        now: yield* Clock.currentTimeMillis,
++        deliveryEnabled: state.enabled,
++        accessAllowed: true,
++        accountOwner: identity.owner,
++        verifiedOwnerRecipient: identity.recipient,
++        envelope: "self-email",
++        workflow: { name: workflow.name, step: workflow.step, run: workflow.run },
++        kind: event.target.kind,
++        decodedInput: event.decodedInput,
++        appPolicy: event.appPolicy,
++      }) === "approved"
++        ? "approved"
++        : "user-approval";
++    }),
++});
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 2242e405..b508f390 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -1,4 +1,9 @@
++export { matchesToolPolicyInput, validToolPolicyConstraint } from "./implementation/tool-policy.ts";
+ /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
++export {
++  workflowApprovalHooks,
++  type WorkflowApprovalHost,
++} from "./implementation/workflow-approval-hooks.ts";
+ export * from "./contracts/index.ts";
+ export { createExecutor, createRemoteExecutor } from "./implementation/create.ts";
+ export { httpEventSender } from "./implementation/event-sender.ts";
+diff --git a/apps/hosted/server/src/implementation/workflow-app-approvals.ts b/apps/hosted/server/src/implementation/workflow-app-approvals.ts
+new file mode 100644
+index 00000000..0cb18153
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/workflow-app-approvals.ts
+@@ -0,0 +1,84 @@
++import { confirmationChanged } from "./workflow-confirmations.ts";
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import {
++  AppId,
++  StorageError,
++  ToolName,
++  workflowApprovalHooks,
++  type Executor,
++} from "@executor-js/sdk/core";
++
++// Full inspected structured Gmail compose source. Changes require a new envelope review.
++const structuredGmailSource = "895ce27492bff5270ea3a1101c585fe5e5849e07fe78821c2eb1a4ea1338878e";
++const Identity = Schema.Struct({ owner: Schema.NonEmptyString, recipient: Schema.NonEmptyString });
++const Settings = Schema.Struct({
++  revision: Schema.NonEmptyString,
++  deliveryEnabled: Schema.Boolean,
++  current: Schema.Boolean,
++});
++
++/** Hosted identity and source checks are shared by self-host and Cloud. Local has no registered
++ * identity resolver, so it retains ordinary target approval behavior.
++ */
++export const hostedWorkflowApprovals = (
++  executor: Effect.Effect<Executor, StorageError>,
++  sql: SqlClient.SqlClient,
++) => ({
++  ...workflowApprovalHooks({
++    configuration: (event) =>
++      Effect.gen(function* () {
++        const sdk = yield* executor;
++        const source = "source" in event ? event.source : event;
++        const result = yield* sdk.tools.call({
++          app: source.app,
++          version: source.version,
++          tool: ToolName.make("settings"),
++          kind: "query",
++          input: {},
++        });
++        if (
++          result.status !== "completed" ||
++          result.toolError === true ||
++          !Schema.is(Settings)(result.value) ||
++          !result.value.current
++        )
++          return undefined;
++        return { revision: result.value.revision, enabled: result.value.deliveryEnabled };
++      }).pipe(Effect.mapError(() => new StorageError())),
++    personalEmailAccount: (input) =>
++      Effect.gen(function* () {
++        const rows = yield* sql`select a.personal_user_id as owner, u.email as recipient
++        from hosted_account_access a
++        join "user" u on u.id = a.personal_user_id and u."emailVerified" = true
++        join member m on m."userId" = u.id and m."organizationId" = a.organization_id
++        join hosted_app_access s on s.id = ${input.source} and s.organization_id = a.organization_id
++        join hosted_app_access t on t.id = ${input.target} and t.organization_id = a.organization_id
++        where a.account_id = ${input.account} and a.kind = 'personal'`;
++        if (rows.length !== 1) return undefined;
++        const identity = yield* Schema.decodeUnknownEffect(Identity)(rows[0]);
++        const sdk = yield* executor;
++        const source = yield* sdk.apps.source({ app: AppId.make(input.target) });
++        const files: Array<[string, string]> = [];
++        for (const file of source.files) {
++          if (!("content" in file) || "encoding" in file) return undefined;
++          files.push([file.path, file.content]);
++        }
++        files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
++        const digest = yield* Effect.tryPromise({
++          try: () =>
++            crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++          catch: () => new StorageError(),
++        });
++        const hash = Array.from(new Uint8Array(digest), (byte) =>
++          byte.toString(16).padStart(2, "0"),
++        ).join("");
++        return {
++          ...identity,
++          targetVersion: source.id,
++          inspectedCompose: hash === structuredGmailSource,
++        };
++      }).pipe(Effect.mapError(() => new StorageError())),
++  }),
++  confirmationChanged: confirmationChanged(sql),
++});
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 621aa73f..641258da 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
+ import { requireAppAccess } from "./resource-policy.ts";
+ import { requireOrganizationAppWrite } from "./organization-app-write.ts";
+ import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
+@@ -29,6 +30,7 @@ import { CurrentUserId } from "../contracts/auth.ts";
+ import { OrganizationId } from "../contracts/organization.ts";
+ import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
++import { hostedWorkflowApprovals } from "./workflow-app-approvals.ts";
+
+ import { requireGroupSharing } from "./group-sharing.ts";
+ import {
+@@ -882,6 +884,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+   });
+   return {
+     hooks,
++    appCalls: hostedWorkflowApprovals(executor, yield* SqlClient.SqlClient),
++    toolPolicy: hostedToolPolicy(yield* SqlClient.SqlClient),
+     /** Let the hooks reach the executor they were created for. */
+     attach: (instance: Executor) =>
+       Effect.sync(() => {
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index a14b8c51..10a1d36a 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -130,6 +130,8 @@ export const cloudExecutor = Effect.fn(function* (
+         Effect.provideContext(services),
+       );
+       const executor = yield* createExecutor({
++        appCalls: lifecycle.appCalls,
++        toolPolicy: lifecycle.toolPolicy,
+         database: storage,
+         secret: key,
+         origin,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index 912abbeb..16a80054 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -115,6 +115,8 @@ export const selfHostExecutorServices = <E, R>(
+         Config.withDefault(origin),
+       );
+       const executor = yield* createExecutor({
++        appCalls: lifecycle.appCalls,
++        toolPolicy: lifecycle.toolPolicy,
+         database: storage,
+         secret: key,
+         origin,
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 86d7500d..a7acd013 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -366,6 +366,7 @@ export interface ExecutorInputs {
+   /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
+   readonly hooks?: ResourceLifecycle;
+   readonly appCalls?: import("./app-calls.ts").AppCallHooks;
++  readonly toolPolicy?: import("./tool-policy.ts").ToolPolicyHook;
+   readonly workflows?: WorkflowRuntime;
+   /** Authenticated product review page for a durable workflow question. */
+   readonly workflowInputUrl?: (input: {
+diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
+index f8735731..5ede3e08 100644
+--- a/packages/sdk/src/contracts/index.ts
++++ b/packages/sdk/src/contracts/index.ts
+@@ -1,3 +1,4 @@
++export * from "./tool-policy.ts";
+ export * from "./account-observation.ts";
+ export * from "./models.ts";
+ export * from "./account-observation-driver.ts";
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 1cf07e15..d2a7f6ef 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -1,5 +1,6 @@
++import { composedToolPolicy } from "./tool-policy.ts";
+ import { makeAppConfirmations } from "./app-confirmations.ts";
+-import { makeAppCalls } from "./app-calls.ts";
++import { makeAppCalls, AppCallWorkflow } from "./app-calls.ts";
+ import { makeAppCallReceipts } from "./app-call-receipts.ts";
+ import { AppCallsHost } from "../contracts/app-calls.ts";
+ import { makeAppConnections } from "./app-connections.ts";
+@@ -169,7 +170,13 @@ export const createExecutor = (
+           ),
+     };
+     const base = toEffectRuntime(options.runtime, options.blobs, cache);
+-    const appConnectionStore = makeAppConnections(db, credentials, crypto, options.hooks);
++    const appConnectionStore = makeAppConnections(
++      db,
++      credentials,
++      crypto,
++      options.hooks,
++      options.appCalls,
++    );
+     const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
+     const appCalls = makeAppCalls({
+       db,
+@@ -186,13 +193,18 @@ export const createExecutor = (
+     }) =>
+       Effect.gen(function* () {
+         const appCall = yield* appCalls.forInvocation(input);
++        const workflow = yield* AppCallWorkflow;
+         return input.workflowControls === undefined
+           ? {}
+           : {
+               workflowControls: {
+                 ...input.workflowControls,
+                 appCall,
+-                appToolPolicy: appCalls.toolPolicy(input),
++                appToolPolicy: composedToolPolicy(
++                  input.workflowControls,
++                  appCalls.toolPolicy(input),
++                  workflow,
++                ),
+               },
+             };
+       });
+@@ -302,6 +314,7 @@ export const createExecutor = (
+       declarations,
+       options.workflows,
+       options.workflowInputUrl,
++      options.toolPolicy,
+     );
+     const webhooks = makeWebhooks(
+       options.database,
+@@ -348,6 +361,7 @@ export const createExecutor = (
+       workflows.controls,
+       options.hooks,
+       makeAppConfirmations(db, appConnectionStore, options.appCalls),
++      options.toolPolicy,
+     );
+     const interactiveOperations = makeInteractiveAccounts(
+       db,
+@@ -680,7 +694,10 @@ export const createExecutor = (
+             return result;
+           }),
+       },
+-      [AppCallsHost]: { receipts: appCallReceipts },
++      [AppCallsHost]: {
++        receipts: appCallReceipts,
++        confirmations: appConnectionStore.confirmations,
++      },
+       appConnections: appConnectionStore.operations,
+       publications: catalog.publications,
+       registry: catalog.registry,
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 0a4b1bf8..9159828e 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -1,3 +1,5 @@
++import { bindToolPolicy } from "./tool-policy.ts";
++import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
+ import type { AppApprovedConfiguration } from "../contracts/app-calls.ts";
+ import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.ts";
+ import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
+@@ -778,8 +780,20 @@ export const makeTools = (
+   configurationApproved?: (
+     event: Omit<AppApprovedConfiguration, "actor" | "connections">,
+   ) => Effect.Effect<void, StorageError>,
++  standingPolicy?: ToolPolicyHook,
+ ) => {
+   const db = database(storage);
++  const toolControls = (state: InvocationSnapshot) => {
++    const controls = workflows?.(state);
++    return controls === undefined
++      ? {}
++      : {
++          workflowControls:
++            standingPolicy === undefined
++              ? controls
++              : bindToolPolicy(controls, state, standingPolicy),
++        };
++  };
+   const resolveAccount = oauth.resolveSelected;
+   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
+   /** Renew an account the service refused without repeating what it refused; undefined when none was. */
+@@ -845,7 +859,7 @@ export const makeTools = (
+     app: state.app.id,
+     build: state.version.build,
+     ...context,
+-    ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
++    ...toolControls(state),
+     ...(state.version.requirements.capabilities?.sharedDefinitions === true
+       ? { definitions: "shared" as const }
+       : {}),
+@@ -1579,7 +1593,7 @@ export const makeTools = (
+               appView = undefined;
+               return runtime.call({
+                 app: state.app.id,
+-                ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
++                ...toolControls(state),
+                 build: state.version.build,
+                 database: ownsDatabase(state.version.requirements),
+                 ...context,
+@@ -1786,9 +1800,7 @@ export const makeTools = (
+                         appView = undefined;
+                         return runtime.call({
+                           app: saved.app,
+-                          ...(workflows === undefined
+-                            ? {}
+-                            : { workflowControls: workflows(state) }),
++                          ...toolControls(state),
+                           build: state.version.build,
+                           database: ownsDatabase(state.version.requirements),
+                           ...context,
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 961e20df..3a6f0ae3 100644
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -1036,18 +1036,21 @@ function dispatch(
+         ) {
+           return yield* new HostInputInvalid();
+         }
+-      } else if (tool.approval !== undefined) {
++      } else {
+         const approval = tool.approval;
+-        const decision = yield* safe(
+-          () =>
+-            approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
+-              Effect.withSpan("app.tool.approval", {
+-                attributes: { "executor.tool.name": toolName },
+-              }),
+-              Effect.flatMap(Schema.decodeUnknownEffect(ApprovalDecision)),
+-            ),
+-          new HostToolPolicyFailed(),
+-        );
++        const decision =
++          approval === undefined
++            ? ("approved" as const)
++            : yield* safe(
++                () =>
++                  approval({ toolName, toolInput: input, signal: invocationSignal }).pipe(
++                    Effect.withSpan("app.tool.approval", {
++                      attributes: { "executor.tool.name": toolName },
++                    }),
++                    Effect.flatMap(Schema.decodeUnknownEffect(ApprovalDecision)),
++                  ),
++                new HostToolPolicyFailed(),
++              );
+         const hostPolicy = context.workflowControls?.appToolPolicy;
+         const invokePolicy =
+           hostPolicy === undefined
+@@ -1061,7 +1064,7 @@ function dispatch(
+                   decision,
+                 });
+         const protectedDecision =
+-          decision !== "user-approval" || invokePolicy === undefined
++          decision === "denied" || invokePolicy === undefined
+             ? decision
+             : yield* safe(
+                 () => Schema.decodeUnknownEffect(JsonValue)(input),
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index c7afe68a..4dc2be5a 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -1,3 +1,4 @@
++import { HostedToolPolicies } from "./tool-policies.ts";
+ import { HostedAppConnections } from "./app-connections.ts";
+ import { HostedModels } from "./models.ts";
+ import { hostCookieName } from "./browser.ts";
+@@ -189,6 +190,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedPools,
+     HostedModels,
+     HostedAppConnections,
++    HostedToolPolicies,
+     HostedOAuthClients,
+     HostedAppData,
+     HostedMcpConnections,
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index 9538a0b0..753d7c85 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -1,3 +1,4 @@
++import { hostedToolPolicyHandlers } from "./tool-policy-handlers.ts";
+ import { hostedAppConnectionHandlers } from "./app-connections.ts";
+ import { hostedAccountResetHandlers } from "./account-resets.ts";
+ import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
+@@ -90,6 +91,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedPoolHandlers,
+   hostedModelHandlers,
+   hostedAppConnectionHandlers,
++  hostedToolPolicyHandlers,
+   hostedOAuthClientHandlers,
+   hostedWebhookSetupHandlers,
+   hostedWebhookHandlers,
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index 7d41e423..dc84b5a7 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -1,3 +1,4 @@
++import { migrateToolPolicies } from "./tool-policy-schema.ts";
+ /** Schema ownership is separate even though auth and product share one Postgres database. */
+ import type { BetterAuthOptions } from "better-auth";
+ import { getMigrations } from "better-auth/db/migration";
+@@ -144,6 +145,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+   "13_contributed_departure_observability": migrateContributedDepartureObservability,
+   "14_model_bindings": migrateModelBindings,
+   "15_hosted_routes": migrateHostedRoutes,
++  "16_tool_policies": migrateToolPolicies,
+ });
+
+ /**
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index b13ee894..06c42862 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -1,3 +1,4 @@
++import { migrateToolPolicies } from "@executor-js/hosted-server/tool-policy-schema";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
+ import { organizationPublishers } from "./publishers.ts";
+ /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
+@@ -217,6 +218,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+         "7_v1_import_orgs": migrateV1ImportOrgs,
+         "8_production_ops_receipts": migrateProductionOps,
+         "9_production_ops_database_identity": migrateProductionOpsDatabaseIdentity,
++        "10_tool_policies": migrateToolPolicies,
+       });
+     });
+     yield* Effect.gen(function* () {
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 70a467b9..8f7c6b97 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -51,7 +51,9 @@
+     "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
+     "./hosted-routes-token": "./src/implementation/hosted-routes-token.ts",
+     "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
+-    "./pool-models": "./src/implementation/pool-models.ts"
++    "./pool-models": "./src/implementation/pool-models.ts",
++    "./tool-policies": "./src/contracts/tool-policies.ts",
++    "./tool-policy-schema": "./src/implementation/tool-policy-schema.ts"
+   },
+   "dependencies": {
+     "@better-auth/api-key": "1.7.5",
+diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+index a48cea8f..95f479df 100644
+--- a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+@@ -1,3 +1,7 @@
++import { useState } from "react";
++import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
++import { Tabs, TabsContent, TabsList, TabsTrigger } from "@executor-js/ui/components/tabs";
++import { ToolPolicies } from "./tool-policies.tsx";
+ import { Link } from "@tanstack/react-router";
+ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/approvals";
+ import { approvalsAtom } from "../../contracts/workflow-inputs.ts";
+@@ -5,27 +9,53 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ export function ApprovalsPage() {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
++  const [tab, setTab] = useState("requests");
++  const [visitedRules, setVisitedRules] = useState(false);
+   return (
+-    <SharedApprovalsPage
+-      query={approvalsAtom(organization)}
+-      Failure={HostedFailure}
+-      review={(item) =>
+-        item.kind === "workflow" ? (
+-          <Link
+-            to="/org/$organizationSlug/approvals/workflow/$app/$input"
+-            params={{ organizationSlug, app: item.input.app, input: item.input.id }}
+-          >
+-            Respond
+-          </Link>
+-        ) : (
+-          <Link
+-            to="/org/$organizationSlug/approvals/$runId"
+-            params={{ organizationSlug, runId: item.run.id }}
+-          >
+-            Review
+-          </Link>
+-        )
+-      }
+-    />
++    <PageFrame>
++      <PageHeader
++        title="Human in the loop"
++        description="Requests for your input and the rules for asking you."
++      />
++      <Tabs
++        value={tab}
++        onValueChange={(value) => {
++          setTab(value);
++          if (value === "rules") setVisitedRules(true);
++        }}
++      >
++        <TabsList variant="line" aria-label="Human in the loop views">
++          <TabsTrigger value="requests">Requests</TabsTrigger>
++          <TabsTrigger value="rules">Rules</TabsTrigger>
++        </TabsList>
++        <TabsContent value="requests" forceMount hidden={tab !== "requests"}>
++          <SharedApprovalsPage
++            embedded
++            query={approvalsAtom(organization)}
++            Failure={HostedFailure}
++            review={(item) =>
++              item.kind === "workflow" ? (
++                <Link
++                  to="/org/$organizationSlug/approvals/workflow/$app/$input"
++                  params={{ organizationSlug, app: item.input.app, input: item.input.id }}
++                >
++                  Respond
++                </Link>
++              ) : (
++                <Link
++                  to="/org/$organizationSlug/approvals/$runId"
++                  params={{ organizationSlug, runId: item.run.id }}
++                >
++                  Review
++                </Link>
++              )
++            }
++          />
++        </TabsContent>
++        <TabsContent value="rules" forceMount hidden={tab !== "rules"}>
++          {visitedRules && <ToolPolicies />}
++        </TabsContent>
++      </Tabs>
++    </PageFrame>
+   );
+ }
+diff --git a/packages/sdk/src/contracts/tool-policy.ts b/packages/sdk/src/contracts/tool-policy.ts
+new file mode 100644
+index 00000000..7bf81f50
+--- /dev/null
++++ b/packages/sdk/src/contracts/tool-policy.ts
+@@ -0,0 +1,43 @@
++import type { Effect } from "effect";
++import type {
++  AccountId,
++  AppId,
++  BuildId,
++  Json,
++  OwnerId,
++  StorageError,
++  VersionId,
++} from "./shared.ts";
++
++export type ToolPolicyDecision = "approved" | "denied" | "user-approval" | "failed";
++/** The normal invocation snapshot supplies identity; the native host supplies decoded input and kind. */
++export interface ToolPolicyEvent {
++  readonly app: AppId;
++  readonly owner: OwnerId;
++  readonly version: VersionId;
++  readonly build: BuildId;
++  readonly actor?: string;
++  readonly workflow?: {
++    readonly run: string;
++    readonly name: string;
++    readonly step: string;
++    readonly stepId: string;
++  };
++  readonly accounts: readonly {
++    readonly account: AccountId;
++    readonly owner: OwnerId;
++    readonly credentialGeneration: number;
++  }[];
++  readonly tool: string;
++  readonly kind: "query" | "mutation";
++  readonly input: Json;
++  readonly decision: ToolPolicyDecision;
++}
++/** A matched ask is terminal. No match alone permits evaluation of workflow confirmation. */
++export type ToolPolicyHook = (event: ToolPolicyEvent) => Effect.Effect<
++  {
++    readonly matched: boolean;
++    readonly decision: ToolPolicyDecision;
++  },
++  StorageError
++>;
+diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
+new file mode 100644
+index 00000000..83a4958d
+--- /dev/null
++++ b/packages/sdk/src/implementation/tool-policy.ts
+@@ -0,0 +1,115 @@
++import { AppCallWorkflow } from "./app-calls.ts";
++import { Effect } from "effect";
++import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
++import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
++import type { InvocationSnapshot } from "./tools.ts";
++import { Validator } from "@cfworker/json-schema";
++import draft7Schema from "ajv/dist/refs/json-schema-draft-07.json" with { type: "json" };
++import type { Json, JsonObject } from "../contracts/shared.ts";
++
++const metaSchema: JsonObject = draft7Schema;
++const constraintSchema = new Validator(metaSchema, "7", false);
++
++const StandingPolicy = Symbol("executor.StandingToolPolicy");
++type Controls = WorkflowHostControls & { readonly [StandingPolicy]?: AppToolPolicyHost };
++
++/** Bound inside makeTools, before app code, with the actual selected saved accounts. */
++export const bindToolPolicy = (
++  controls: WorkflowHostControls,
++  state: InvocationSnapshot,
++  policy: ToolPolicyHook,
++): Controls => ({
++  ...controls,
++  [StandingPolicy]: (command) =>
++    Effect.gen(function* () {
++      const workflow = yield* AppCallWorkflow;
++      return yield* policy({
++        app: state.app.id,
++        owner: state.app.owner,
++        version: state.version.id,
++        build: state.version.build,
++        ...(state.actor === undefined ? {} : { actor: state.actor }),
++        ...(workflow === undefined ? {} : { workflow }),
++        accounts: [
++          ...new Map(
++            state.selections.flatMap((selection) =>
++              selection.accounts.map(
++                (account) =>
++                  [
++                    account.id,
++                    {
++                      account: account.id,
++                      owner: account.owner,
++                      credentialGeneration: account.credentialGeneration,
++                    },
++                  ] as const,
++              ),
++            ),
++          ).values(),
++        ],
++        tool: command.tool,
++        kind: command.kind,
++        input: command.input,
++        decision: command.decision,
++      }).pipe(
++        Effect.map((result) => ({ decision: result.decision, matched: result.matched })),
++        Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
++      );
++    }),
++});
++
++/** Compose once at the existing private native-host callback, before workflow-specific consent. */
++export const composedToolPolicy =
++  (
++    controls: WorkflowHostControls,
++    fallback: AppToolPolicyHost,
++    workflow?: import("../contracts/app-calls.ts").AppCallWorkflowIdentity,
++  ): AppToolPolicyHost =>
++  (command) =>
++    Effect.gen(function* () {
++      if (command.decision === "denied" || command.decision === "failed")
++        return { decision: command.decision };
++      const standing = (controls as Controls)[StandingPolicy];
++      if (standing !== undefined) {
++        // `matched` remains host-local. It is never read from a public command or app response.
++        const result = yield* standing(command).pipe(
++          Effect.provideService(AppCallWorkflow, workflow),
++        );
++        if ("matched" in result && result.matched === true) {
++          if (result.decision !== "approved") return { decision: result.decision };
++          // Approved general policy skips workflow attachment, but the dispatcher still owns
++          // finalization, including its durable receipt fence before any protected effect.
++          return yield* fallback({ ...command, decision: "approved" });
++        }
++      }
++      return yield* fallback(command);
++    });
++
++export const matchesToolPolicyInput = (
++  constraint: JsonObject | undefined,
++  input: Json,
++): boolean => {
++  if (constraint === undefined) return true;
++  try {
++    return new Validator(constraint, "7", false).validate(input).valid;
++  } catch {
++    return false;
++  }
++};
++export const validToolPolicyConstraint = (constraint: JsonObject | undefined): boolean => {
++  if (constraint === undefined) return true;
++  if (JSON.stringify(constraint).length > 65536) return false;
++  if (
++    constraint.$schema !== undefined &&
++    constraint.$schema !== "http://json-schema.org/draft-07/schema#" &&
++    constraint.$schema !== "https://json-schema.org/draft-07/schema#"
++  )
++    return false;
++  try {
++    if (!constraintSchema.validate(constraint).valid) return false;
++    new Validator(constraint, "7", false).validate(null);
++    return true;
++  } catch {
++    return false;
++  }
++};
+diff --git a/apps/hosted/server/src/contracts/tool-policies.ts b/apps/hosted/server/src/contracts/tool-policies.ts
+new file mode 100644
+index 00000000..cc334b7e
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/tool-policies.ts
+@@ -0,0 +1,159 @@
++import {
++  AccountId,
++  AppId,
++  AppConfirmationView,
++  JsonObject,
++  StorageError,
++} from "@executor-js/sdk/core";
++import { ApiError } from "@executor-js/utils/api-error";
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { BrowserSessionOnly, Forbidden } from "./auth.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++import { RequiredAction } from "./authorization.ts";
++
++export const ToolPolicyMode = Schema.Literals(["always-ask", "ask-writes", "never-ask"]);
++export const ToolPolicyTarget = Schema.Union([
++  Schema.Struct({
++    kind: Schema.Literal("app"),
++    app: AppId,
++    account: Schema.optionalKey(AccountId),
++  }),
++  Schema.Struct({
++    kind: Schema.Literal("tool"),
++    app: AppId,
++    tool: Schema.NonEmptyString,
++    account: Schema.optionalKey(AccountId),
++  }),
++  Schema.Struct({ kind: Schema.Literal("account"), account: AccountId }),
++]);
++export type ToolPolicyTarget = typeof ToolPolicyTarget.Type;
++export const ToolPolicyValues = Schema.Struct({
++  target: ToolPolicyTarget,
++  mode: ToolPolicyMode,
++  workflow: Schema.optionalKey(Schema.NonEmptyString),
++  inputSchema: Schema.optionalKey(JsonObject),
++});
++export type ToolPolicyValues = typeof ToolPolicyValues.Type;
++export const ToolPolicy = Schema.Struct({
++  ...ToolPolicyValues.fields,
++  id: Schema.NonEmptyString,
++  revision: Schema.Int,
++  revoked: Schema.Boolean,
++  actor: Schema.NonEmptyString,
++  updatedAt: Schema.Number,
++});
++export type ToolPolicy = typeof ToolPolicy.Type;
++export const ToolPolicyView = Schema.Struct({ ...ToolPolicy.fields, canEdit: Schema.Boolean });
++export const ToolPolicyHistory = Schema.Struct({
++  cursor: Schema.String,
++  at: Schema.Number,
++  actor: Schema.String,
++  actorName: Schema.String,
++  action: Schema.Literals([
++    "created",
++    "updated",
++    "restored",
++    "revoked",
++    "installed",
++    "replaced",
++    "cleared",
++  ]),
++  snapshot: JsonObject,
++});
++export const WorkflowPolicyChange = Schema.Struct({
++  ...ToolPolicyHistory.fields,
++  id: Schema.String,
++});
++export class ToolPolicyConflict extends ApiError.define({
++  tag: "ToolPolicyConflict",
++  status: 409,
++  message: "This rule changed. Read its current state before saving again.",
++}) {}
++export class ToolPolicyInvalid extends ApiError.define({
++  tag: "ToolPolicyInvalid",
++  status: 422,
++  message: "The rule or its input constraint is invalid.",
++}) {}
++const params = { organization: OrganizationReference };
++const item = { ...params, policy: Schema.NonEmptyString };
++const path = "/api/organizations/:organization/tool-policies";
++const error = [
++  StorageError,
++  OrganizationForbidden,
++  Forbidden,
++  ToolPolicyConflict,
++  ToolPolicyInvalid,
++];
++export const HostedToolPolicies = HttpApiGroup.make("toolPolicies")
++  .add(
++    HttpApiEndpoint.get("list", path, {
++      params,
++      success: Schema.Struct({
++        policies: Schema.Array(ToolPolicyView),
++        confirmations: Schema.Array(AppConfirmationView),
++        confirmationChanges: Schema.Array(WorkflowPolicyChange),
++      }),
++      error,
++    }).annotate(RequiredAction, "read"),
++  )
++  .add(
++    HttpApiEndpoint.post("create", path, {
++      params,
++      payload: ToolPolicyValues,
++      success: ToolPolicy,
++      error,
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(BrowserSessionOnly, true),
++  )
++  .add(
++    HttpApiEndpoint.put("update", `${path}/:policy`, {
++      params: item,
++      payload: Schema.Struct({ ...ToolPolicyValues.fields, revision: Schema.Int }),
++      success: ToolPolicy,
++      error,
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(BrowserSessionOnly, true),
++  )
++  .add(
++    HttpApiEndpoint.delete("revoke", `${path}/:policy`, {
++      params: item,
++      query: { revision: Schema.Int },
++      success: ToolPolicy,
++      error,
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(BrowserSessionOnly, true),
++  )
++  .add(
++    HttpApiEndpoint.get("history", `${path}/:policy/history`, {
++      params: item,
++      query: { after: Schema.optional(Schema.String.check(Schema.isPattern(/^\d+$/u))) },
++      success: Schema.Struct({
++        items: Schema.Array(ToolPolicyHistory),
++        next: Schema.optionalKey(Schema.String),
++      }),
++      error,
++    }).annotate(RequiredAction, "read"),
++  )
++  .add(
++    HttpApiEndpoint.post("revokeConfirmation", `${path}/confirmations/:app/:dependency`, {
++      params: { ...params, app: AppId, dependency: Schema.NonEmptyString },
++      payload: Schema.Struct({
++        scope: Schema.Literals(["app", "user"]),
++        revision: Schema.Int,
++        fingerprint: Schema.NonEmptyString,
++      }),
++      success: Schema.Struct({ success: Schema.Literal(true) }),
++      error,
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(BrowserSessionOnly, true),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/tool-policy-schema.ts b/apps/hosted/server/src/implementation/tool-policy-schema.ts
+new file mode 100644
+index 00000000..a08dc70f
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-policy-schema.ts
+@@ -0,0 +1,19 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Additive hosted policy state and immutable change records. No existing table changes. */
++export const migrateToolPolicies = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_tool_policies (
++    id text primary key, organization_id text not null references organization(id) on delete cascade,
++    revision integer not null check (revision > 0), definition jsonb not null
++  )`;
++  yield* sql`create index if not exists hosted_tool_policies_organization on hosted_tool_policies (organization_id, id)`;
++  yield* sql`create table if not exists hosted_tool_policy_history (
++    sequence bigint generated always as identity primary key,
++    organization_id text not null references organization(id) on delete cascade,
++    policy_id text not null, actor text not null, action text not null,
++    snapshot jsonb not null, changed_at timestamptz not null default now()
++  )`;
++  yield* sql`create index if not exists hosted_tool_policy_history_policy on hosted_tool_policy_history (organization_id, policy_id, sequence)`;
++});
+diff --git a/apps/hosted/server/src/implementation/tool-policy-store.ts b/apps/hosted/server/src/implementation/tool-policy-store.ts
+new file mode 100644
+index 00000000..e21c9ee3
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-policy-store.ts
+@@ -0,0 +1,64 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import { StorageError } from "@executor-js/sdk/core";
++import type { OrganizationId } from "../contracts/organization.ts";
++import { ToolPolicy, ToolPolicyHistory } from "../contracts/tool-policies.ts";
++
++export const readToolPolicies = (sql: SqlClient.SqlClient, organization: OrganizationId) =>
++  sql`select definition from hosted_tool_policies where organization_id = ${organization} order by id`.pipe(
++    Effect.flatMap(
++      Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ definition: ToolPolicy }))),
++    ),
++    Effect.map((rows) => rows.map((row) => row.definition)),
++    Effect.mapError(() => new StorageError()),
++  );
++
++export const readToolPolicy = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  id: string,
++  lock = false,
++) =>
++  sql`select definition from hosted_tool_policies where organization_id = ${organization} and id = ${id}${lock ? sql` for update` : sql``}`.pipe(
++    Effect.flatMap(
++      Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ definition: ToolPolicy }))),
++    ),
++    Effect.map((rows) => rows[0]?.definition),
++    Effect.mapError(() => new StorageError()),
++  );
++
++/** Called within the same transaction as the policy or SDK confirmation payload write. */
++export const recordToolPolicyChange = (
++  sql: SqlClient.SqlClient,
++  input: {
++    readonly organization: OrganizationId;
++    readonly id: string;
++    readonly actor: string;
++    readonly action: (typeof ToolPolicyHistory.Type)["action"];
++    readonly snapshot: (typeof ToolPolicyHistory.Type)["snapshot"];
++  },
++) =>
++  sql`insert into hosted_tool_policy_history (organization_id, policy_id, actor, action, snapshot)
++  values (${input.organization}, ${input.id}, ${input.actor}, ${input.action}, ${JSON.stringify(input.snapshot)}::jsonb)`.pipe(
++    Effect.asVoid,
++    Effect.mapError(() => new StorageError()),
++  );
++
++export const toolPolicyHistory = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  id: string,
++  after = "0",
++) =>
++  sql`select h.sequence::text as cursor, h.actor, coalesce(u.name, h.actor) as "actorName", h.action, h.snapshot,
++    extract(epoch from h.changed_at)::double precision * 1000 as at
++    from hosted_tool_policy_history h left join "user" u on u.id = h.actor
++    where h.organization_id = ${organization} and h.policy_id = ${id}
++      and h.sequence > ${after}::bigint order by h.sequence limit 101`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ToolPolicyHistory))),
++    Effect.map((rows) => ({
++      items: rows.slice(0, 100),
++      ...(rows.length > 100 ? { next: rows[99]!.cursor } : {}),
++    })),
++    Effect.mapError(() => new StorageError()),
++  );
+diff --git a/apps/hosted/server/src/implementation/tool-policy-evaluation.ts b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
+new file mode 100644
+index 00000000..9f511c01
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-policy-evaluation.ts
+@@ -0,0 +1,85 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import {
++  StorageError,
++  matchesToolPolicyInput,
++  type ToolPolicyHook,
++  type ToolPolicyEvent,
++} from "@executor-js/sdk/core";
++import { OrganizationId } from "../contracts/organization.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import type { ToolPolicy } from "../contracts/tool-policies.ts";
++import { resourceAuthority, accountAccesses } from "./resource-policy.ts";
++import { manageToolPolicy } from "./tool-policies.ts";
++import { readToolPolicies } from "./tool-policy-store.ts";
++
++const specificity = (rule: ToolPolicy) =>
++  (rule.target.kind === "tool" ? 4 : 0) +
++  (rule.target.kind !== "account" ? 2 : 0) +
++  (rule.target.account !== undefined ? 1 : 0) +
++  (rule.workflow !== undefined ? 8 : 0);
++const matches = (rule: ToolPolicy, event: ToolPolicyEvent) =>
++  !rule.revoked &&
++  (rule.workflow === undefined ||
++    (event.workflow !== undefined &&
++      event.workflow.run.length > 0 &&
++      event.workflow.stepId.length > 0 &&
++      event.workflow.name === rule.workflow)) &&
++  (rule.target.kind === "account" || rule.target.app === event.app) &&
++  (rule.target.kind !== "tool" || rule.target.tool === event.tool) &&
++  (rule.target.account === undefined ||
++    event.accounts.some((a) => a.account === rule.target.account)) &&
++  matchesToolPolicyInput(rule.inputSchema, event.input);
++
++/** Specific rules win; equally specific rules ask if any asks. Missing rules retain app defaults. */
++export const hostedToolPolicy =
++  (sql: SqlClient.SqlClient): ToolPolicyHook =>
++  (event) =>
++    Effect.gen(function* () {
++      if (event.decision === "denied" || event.decision === "failed")
++        return { matched: false, decision: event.decision };
++      if (!event.owner.startsWith("organization:"))
++        return { matched: false, decision: event.decision };
++      const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
++        event.owner.slice("organization:".length),
++      );
++      const rows = (yield* readToolPolicies(sql, organization)).filter((rule) =>
++        matches(rule, event),
++      );
++      const accepted: ToolPolicy[] = [];
++      for (const rule of rows) {
++        const eligible = yield* Effect.gen(function* () {
++          const author = yield* resourceAuthority(organization, rule.actor);
++          yield* manageToolPolicy(rule.target, author);
++          // App ownership alone cannot waive another person's account approval.
++          const accounts = yield* accountAccesses(
++            event.accounts.map((account) => account.account),
++            author,
++          );
++          const asks =
++            rule.mode === "always-ask" || (rule.mode === "ask-writes" && event.kind === "mutation");
++          if (
++            !asks &&
++            accounts.some(
++              (account) =>
++                account.ownership.kind === "personal" && account.ownership.user !== rule.actor,
++            )
++          )
++            return false;
++          return true;
++        }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)));
++        if (eligible) accepted.push(rule);
++      }
++      if (accepted.length === 0) return { matched: false, decision: event.decision };
++      const rank = Math.max(...accepted.map(specificity));
++      const asks = accepted
++        .filter((rule) => specificity(rule) === rank)
++        .some(
++          (rule) =>
++            rule.mode === "always-ask" || (rule.mode === "ask-writes" && event.kind === "mutation"),
++        );
++      return { matched: true, decision: asks ? ("user-approval" as const) : ("approved" as const) };
++    }).pipe(
++      Effect.provideService(GroupDatabase, Effect.succeed(sql)),
++      Effect.mapError(() => new StorageError()),
++    );
+diff --git a/apps/hosted/server/src/implementation/tool-policies.ts b/apps/hosted/server/src/implementation/tool-policies.ts
+new file mode 100644
+index 00000000..d4afd8c6
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-policies.ts
+@@ -0,0 +1,180 @@
++import { Clock, Effect, Schema } from "effect";
++import { StorageError, validToolPolicyConstraint } from "@executor-js/sdk/core";
++import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import {
++  ToolPolicyConflict,
++  ToolPolicyInvalid,
++  ToolPolicy,
++  type ToolPolicyTarget,
++  type ToolPolicyValues,
++} from "../contracts/tool-policies.ts";
++import { browserOnly } from "./access.ts";
++import {
++  policyDatabase,
++  lockCurrentActor,
++  currentResourceAuthority,
++  applicationAccess,
++  accountAccess,
++  type ResourceAuthority,
++} from "./resource-policy.ts";
++import {
++  readToolPolicies,
++  readToolPolicy,
++  recordToolPolicyChange,
++  toolPolicyHistory,
++} from "./tool-policy-store.ts";
++import {
++  listWorkflowConfirmations,
++  readWorkflowConfirmationHistory,
++  listWorkflowConfirmationChanges,
++} from "./workflow-confirmations.ts";
++export { revokeWorkflowConfirmation } from "./workflow-confirmations.ts";
++
++/** App management never grants management of somebody else's personal account. */
++export const manageToolPolicy = (target: ToolPolicyTarget, actor: ResourceAuthority) =>
++  Effect.gen(function* () {
++    if (target.kind !== "account") {
++      const app = yield* applicationAccess(target.app, actor);
++      if (target.account === undefined ? !app.canManage : !app.canUse)
++        return yield* new OrganizationForbidden();
++    }
++    if (target.account !== undefined && !(yield* accountAccess(target.account, actor)).canManage)
++      return yield* new OrganizationForbidden();
++  });
++export const readToolPolicyAccess = (target: ToolPolicyTarget, actor: ResourceAuthority) =>
++  Effect.gen(function* () {
++    if (target.kind !== "account") {
++      const app = yield* applicationAccess(target.app, actor);
++      if (!app.canManage && !app.canUse) return yield* new OrganizationForbidden();
++    }
++    if (target.account !== undefined) {
++      const account = yield* accountAccess(target.account, actor);
++      if (!account.canManage && !account.canUse) return yield* new OrganizationForbidden();
++    }
++  });
++export const listToolPolicies = Effect.gen(function* () {
++  const actor = yield* currentResourceAuthority;
++  const rows = yield* readToolPolicies(yield* policyDatabase, actor.organization);
++  const policies = (yield* Effect.forEach(rows, (policy) =>
++    Effect.gen(function* () {
++      yield* readToolPolicyAccess(policy.target, actor);
++      const canEdit = yield* manageToolPolicy(policy.target, actor).pipe(
++        Effect.as(true),
++        Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
++      );
++      return [{ ...policy, canEdit }];
++    }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed([]))),
++  )).flat();
++  return {
++    policies,
++    confirmations: yield* listWorkflowConfirmations,
++    confirmationChanges: yield* listWorkflowConfirmationChanges,
++  };
++});
++
++export const saveToolPolicy = (
++  input: ToolPolicyValues & { readonly id?: string; readonly revision?: number },
++) =>
++  Effect.gen(function* () {
++    yield* browserOnly;
++    const principal = yield* CurrentPrincipal;
++    if (principal.userId !== (yield* CurrentUserId)) return yield* new OrganizationForbidden();
++    if (!validToolPolicyConstraint(input.inputSchema)) return yield* new ToolPolicyInvalid();
++    const sql = yield* policyDatabase;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        yield* manageToolPolicy(input.target, actor);
++        const old =
++          input.id === undefined
++            ? undefined
++            : yield* readToolPolicy(sql, actor.organization, input.id, true);
++        if (input.id !== undefined) {
++          if (old === undefined || old.revision !== input.revision)
++            return yield* new ToolPolicyConflict();
++          yield* manageToolPolicy(old.target, actor);
++        }
++        const saved: ToolPolicy = {
++          id: old?.id ?? crypto.randomUUID(),
++          target: input.target,
++          mode: input.mode,
++          ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
++          ...(input.inputSchema === undefined ? {} : { inputSchema: input.inputSchema }),
++          revision: (old?.revision ?? 0) + 1,
++          revoked: false,
++          actor: actor.user,
++          updatedAt: yield* Clock.currentTimeMillis,
++        };
++        if (old === undefined)
++          yield* sql`insert into hosted_tool_policies (id, organization_id, revision, definition)
++      values (${saved.id}, ${actor.organization}, ${saved.revision}, ${JSON.stringify(saved)}::jsonb)`;
++        else
++          yield* sql`update hosted_tool_policies set revision = ${saved.revision}, definition = ${JSON.stringify(saved)}::jsonb
++      where id = ${saved.id} and organization_id = ${actor.organization}`;
++        yield* recordToolPolicyChange(sql, {
++          organization: actor.organization,
++          id: saved.id,
++          actor: actor.user,
++          action: old === undefined ? "created" : old.revoked ? "restored" : "updated",
++          snapshot: saved,
++        });
++        return saved;
++      }),
++    );
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++
++export const revokeToolPolicy = (id: string, revision: number) =>
++  Effect.gen(function* () {
++    yield* browserOnly;
++    const principal = yield* CurrentPrincipal;
++    if (principal.userId !== (yield* CurrentUserId)) return yield* new OrganizationForbidden();
++    const sql = yield* policyDatabase;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        const old = yield* readToolPolicy(sql, actor.organization, id, true);
++        if (old === undefined || old.revision !== revision || old.revoked)
++          return yield* new ToolPolicyConflict();
++        yield* manageToolPolicy(old.target, actor);
++        const saved = {
++          ...old,
++          revoked: true,
++          revision: old.revision + 1,
++          actor: actor.user,
++          updatedAt: yield* Clock.currentTimeMillis,
++        };
++        yield* sql`update hosted_tool_policies set revision = ${saved.revision}, definition = ${JSON.stringify(saved)}::jsonb
++      where id = ${id} and organization_id = ${actor.organization}`;
++        yield* recordToolPolicyChange(sql, {
++          organization: actor.organization,
++          id,
++          actor: actor.user,
++          action: "revoked",
++          snapshot: saved,
++        });
++        return saved;
++      }),
++    );
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++
++export const readToolPolicyHistory = (id: string, after?: string) =>
++  Effect.gen(function* () {
++    if (id.startsWith("confirmation:")) return yield* readWorkflowConfirmationHistory(id, after);
++    const actor = yield* currentResourceAuthority;
++    const sql = yield* policyDatabase;
++    const policy = yield* readToolPolicy(sql, actor.organization, id);
++    if (policy === undefined) return yield* new OrganizationForbidden();
++    yield* readToolPolicyAccess(policy.target, actor);
++    const page = yield* toolPolicyHistory(sql, actor.organization, id, after);
++    const items = (yield* Effect.forEach(page.items, (entry) =>
++      Effect.gen(function* () {
++        const snapshot = yield* Schema.decodeUnknownEffect(ToolPolicy)(entry.snapshot).pipe(
++          Effect.mapError(() => new StorageError()),
++        );
++        yield* readToolPolicyAccess(snapshot.target, actor);
++        return [entry];
++      }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed([]))),
++    )).flat();
++    return { ...page, items };
++  });
+diff --git a/apps/hosted/server/src/implementation/tool-policy-handlers.ts b/apps/hosted/server/src/implementation/tool-policy-handlers.ts
+new file mode 100644
+index 00000000..1edf9bdb
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/tool-policy-handlers.ts
+@@ -0,0 +1,24 @@
++import { HttpApiBuilder } from "effect/http-api";
++import { HostedApi } from "../contracts/api.ts";
++import {
++  listToolPolicies,
++  saveToolPolicy,
++  revokeToolPolicy,
++  readToolPolicyHistory,
++  revokeWorkflowConfirmation,
++} from "./tool-policies.ts";
++
++export const hostedToolPolicyHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "toolPolicies",
++  (handlers) =>
++    handlers
++      .handle("list", () => listToolPolicies)
++      .handle("create", ({ payload }) => saveToolPolicy(payload))
++      .handle("update", ({ params, payload }) => saveToolPolicy({ ...payload, id: params.policy }))
++      .handle("revoke", ({ params, query }) => revokeToolPolicy(params.policy, query.revision))
++      .handle("history", ({ params, query }) => readToolPolicyHistory(params.policy, query.after))
++      .handle("revokeConfirmation", ({ params, payload }) =>
++        revokeWorkflowConfirmation({ ...params, ...payload }),
++      ),
++);
+diff --git a/packages/sdk/src/contracts/app-calls.ts b/packages/sdk/src/contracts/app-calls.ts
+index bc68e274..30ed9ce3 100644
+--- a/packages/sdk/src/contracts/app-calls.ts
++++ b/packages/sdk/src/contracts/app-calls.ts
+@@ -121,6 +121,20 @@ export const AppConnectionInputs = {
+ /** Host adapters share one durable fence; app code and public JSON never receive it. */
+ export const AppCallsHost = Symbol("executor.AppCallsHost");
+ export interface AppCallsHost {
++  readonly confirmations: {
++    readonly list: (input: { readonly app: AppId; readonly owner: OwnerId }) => Effect.Effect<
++      {
++        readonly items: readonly AppConfirmationView[];
++      },
++      StorageError | AppConnectionRefused
++    >;
++    readonly revoke: (
++      input: AppConnectionIdentity & { readonly revision: number; readonly fingerprint: string },
++    ) => Effect.Effect<
++      { readonly success: true },
++      StorageError | AppConnectionRefused | AppConnectionConflict
++    >;
++  };
+   readonly receipts: {
+     readonly reserve: (input: {
+       readonly id: AppCallReceiptId;
+@@ -147,6 +161,22 @@ export interface AppCallsHost {
+     >;
+   };
+ }
++export const AppConfirmationView = Schema.Struct({
++  app: AppId,
++  owner: OwnerId,
++  connection: AppConnection,
++  confirmation: AppCallConfirmation,
++  fingerprint: Schema.NonEmptyString,
++});
++export type AppConfirmationView = typeof AppConfirmationView.Type;
++export interface AppConfirmationChange {
++  readonly app: AppId;
++  readonly owner: OwnerId;
++  readonly actor: string;
++  readonly connection: AppConnection;
++  readonly previous?: AppCallConfirmation;
++  readonly current?: AppCallConfirmation;
++}
+
+ /** Issued only after a successful consumed SDK approval, never an ordinary tools.call. */
+ export interface AppApprovedConfiguration {
+@@ -198,6 +228,10 @@ export interface AppProtectedDispatch {
+ }
+ /** Trusted host registration; it cannot be supplied through public JSON or an app declaration. */
+ export interface AppCallHooks {
++  /** Runs after the payload write in that same transaction. Failure rolls the write back. */
++  readonly confirmationChanged?: (
++    event: AppConfirmationChange,
++  ) => Effect.Effect<void, StorageError>;
+   readonly configurationApproved?: (
+     event: AppApprovedConfiguration,
+   ) => Effect.Effect<
+diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk/src/implementation/app-confirmations.ts
+index 9dc93d6e..18de65a6 100644
+--- a/packages/sdk/src/implementation/app-confirmations.ts
++++ b/packages/sdk/src/implementation/app-confirmations.ts
+@@ -117,7 +117,7 @@ export const makeAppConfirmations =
+             const accountVersions = yield* appCallAccountVersions(db, row.target, current.accounts);
+             if (JSON.stringify(accountVersions) !== JSON.stringify(candidate.accountVersions))
+               return yield* new AppCallFailed({ reason: "stale", retryable: false });
+-            const encrypted = yield* connections.seal(AppConnectionId.make(row.id), {
++            const next: typeof current = {
+               declaration: current.declaration,
+               accounts: current.accounts,
+               ...(attachment.value === null
+@@ -135,13 +135,15 @@ export const makeAppConfirmations =
+                       value: attachment.value,
+                     },
+                   }),
+-            });
++            };
++            const encrypted = yield* connections.seal(AppConnectionId.make(row.id), next);
+             yield* query(() =>
+               db.updateMany("appConnections", {
+                 where: (b) => b("id", "=", row.id),
+                 set: { encrypted },
+               }),
+             );
++            yield* connections.changed(row, current.confirmation, next.confirmation);
+           }
+         }),
+       );
+diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
+index 259f4b09..4502c87f 100644
+--- a/packages/sdk/src/implementation/app-connections.ts
++++ b/packages/sdk/src/implementation/app-connections.ts
+@@ -1,3 +1,5 @@
++import { Hex } from "effect/encoding";
++import type { AppCallHooks, AppConfirmationChange, AppCallsHost } from "../contracts/app-calls.ts";
+ import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+ import { AppDependency } from "apps/contracts";
+ import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
+@@ -20,6 +22,7 @@ export const makeAppConnections = (
+   credentials: Credentials,
+   crypto: Crypto.Crypto,
+   hooks?: ResourceLifecycle,
++  appCalls?: AppCallHooks,
+ ) => {
+   const authorize = (input: AppConnectionIdentity & { target?: AppId }, managing: boolean) =>
+     hooks === undefined
+@@ -83,8 +86,33 @@ export const makeAppConnections = (
+       const row = yield* find(input.app, input.dependency, yield* subject(input.scope));
+       if (row === null || row.owner !== input.owner || row.revision !== input.revision)
+         return yield* new AppConnectionConflict();
++      yield* authorize({ ...input, target: row.target }, true);
+       return row;
+     });
++  const fingerprint = (row: Row) =>
++    crypto.digest("SHA-256", row.encrypted).pipe(
++      Effect.map(Hex.encode),
++      Effect.mapError(() => new StorageError()),
++    );
++  const changed = (
++    row: Row,
++    previous: AppConfirmationChange["previous"],
++    current: AppConfirmationChange["current"],
++  ) =>
++    previous === undefined && current === undefined
++      ? Effect.void
++      : Effect.gen(function* () {
++          yield* (
++            appCalls?.confirmationChanged?.({
++              app: row.app,
++              owner: row.owner,
++              connection: view(row),
++              actor: (yield* CurrentActor) ?? "local",
++              ...(previous === undefined ? {} : { previous }),
++              ...(current === undefined ? {} : { current }),
++            }) ?? Effect.void
++          );
++        });
+   const operations: AppConnections = {
+     list: (input) =>
+       Effect.gen(function* () {
+@@ -142,6 +170,7 @@ export const makeAppConnections = (
+             yield* query(() =>
+               db.updateMany("appConnections", { where: (b) => b("id", "=", id), set: values }),
+             );
++          if (old !== null) yield* changed(old, (yield* payload(old)).confirmation, undefined);
+           return view({ ...values, id, createdAt: old?.createdAt ?? now });
+         }),
+       ).pipe(
+@@ -173,6 +202,7 @@ export const makeAppConnections = (
+               },
+             }),
+           );
++          yield* changed(old, data.confirmation, undefined);
+           return view({
+             ...old,
+             revision: old.revision + 1,
+@@ -186,12 +216,74 @@ export const makeAppConnections = (
+       transaction(db, () =>
+         Effect.gen(function* () {
+           const old = yield* current(input);
++          const previous = (yield* payload(old)).confirmation;
+           yield* query(() =>
+             db.deleteMany("appConnections", { where: (b) => b("id", "=", old.id) }),
+           );
++          yield* changed(old, previous, undefined);
++          return { success: true as const };
++        }),
++      ).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
++  };
++  const confirmations: AppCallsHost["confirmations"] = {
++    list: (input) =>
++      Effect.gen(function* () {
++        const listed = yield* operations.list(input);
++        const items = [];
++        for (const connection of listed.connections) {
++          const permitted = yield* authorize(
++            {
++              ...input,
++              dependency: connection.dependency,
++              scope: connection.scope,
++              target: connection.target,
++            },
++            true,
++          ).pipe(
++            Effect.as(true),
++            Effect.catchTag("AppConnectionRefused", () => Effect.succeed(false)),
++          );
++          if (!permitted) continue;
++          const row = yield* find(
++            input.app,
++            connection.dependency,
++            yield* subject(connection.scope),
++          );
++          if (row === null || row.revision !== connection.revision) continue;
++          const data = yield* payload(row);
++          if (data.confirmation !== undefined)
++            items.push({
++              ...input,
++              connection: view(row),
++              confirmation: data.confirmation,
++              fingerprint: yield* fingerprint(row),
++            });
++        }
++        return { items };
++      }),
++    revoke: (input) =>
++      transaction(db, () =>
++        Effect.gen(function* () {
++          const row = yield* current(input);
++          const data = yield* payload(row);
++          // The encrypted envelope has a fresh nonce on every attachment write, including an
++          // identical reconfirmation. Its digest fences replacements that did not bump revision.
++          if (data.confirmation === undefined || (yield* fingerprint(row)) !== input.fingerprint)
++            return yield* new AppConnectionConflict();
++          const encrypted = yield* seal(AppConnectionId.make(row.id), {
++            declaration: data.declaration,
++            accounts: data.accounts,
++          });
++          yield* query(() =>
++            db.updateMany("appConnections", {
++              where: (b) => b("id", "=", row.id),
++              set: { encrypted },
++            }),
++          );
++          yield* changed(row, data.confirmation, undefined);
+           return { success: true as const };
+         }),
+       ).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
+   };
+-  return { operations, find, payload, seal, view, declaration, authorize };
++  return { operations, confirmations, find, payload, seal, view, declaration, authorize, changed };
+ };
+diff --git a/apps/hosted/server/src/implementation/workflow-confirmations.ts b/apps/hosted/server/src/implementation/workflow-confirmations.ts
+new file mode 100644
+index 00000000..09788b5f
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/workflow-confirmations.ts
+@@ -0,0 +1,167 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import {
++  AccountId,
++  AppCallsHost,
++  AppConfirmationView,
++  AppConnection,
++  AppId,
++  StorageError,
++  type AppConfirmationChange,
++} from "@executor-js/sdk/core";
++import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
++import {
++  CurrentOrganization,
++  OrganizationForbidden,
++  OrganizationId,
++} from "../contracts/organization.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { browserOnly } from "./access.ts";
++import { policyDatabase, requireAccountAccess, requireAppAccess } from "./resource-policy.ts";
++import { recordToolPolicyChange, toolPolicyHistory } from "./tool-policy-store.ts";
++import { ToolPolicyConflict, WorkflowPolicyChange } from "../contracts/tool-policies.ts";
++
++export const confirmationHistoryId = (id: string) => `confirmation:${id}`;
++/** The SDK invokes this inside the transaction that has already written the encrypted payload. */
++export const confirmationChanged = (sql: SqlClient.SqlClient) => (event: AppConfirmationChange) =>
++  Effect.gen(function* () {
++    if (!event.owner.startsWith("organization:")) return yield* new StorageError();
++    const organization = OrganizationId.make(event.owner.slice("organization:".length));
++    yield* recordToolPolicyChange(sql, {
++      organization,
++      id: confirmationHistoryId(event.connection.id),
++      actor: event.actor,
++      action:
++        event.current === undefined
++          ? "cleared"
++          : event.previous === undefined
++            ? "installed"
++            : "replaced",
++      snapshot: {
++        app: event.app,
++        connection: event.connection,
++        ...(event.previous === undefined ? {} : { previous: event.previous }),
++        ...(event.current === undefined ? {} : { current: event.current }),
++      },
++    });
++  });
++
++export const listWorkflowConfirmations = Effect.gen(function* () {
++  const executor = yield* Effect.flatten(HostedExecutor);
++  const { owner } = yield* CurrentOrganization;
++  const apps = yield* executor.apps.list({ owner });
++  const pages = yield* Effect.forEach(apps, (app) =>
++    executor[AppCallsHost].confirmations.list({ app: app.id, owner }).pipe(
++      Effect.map((page) => page.items),
++      Effect.catchTag("AppConnectionRefused", () => Effect.succeed([])),
++    ),
++  );
++  return (yield* Effect.forEach(pages.flat(), (view) =>
++    requireConfirmationHistoryAccess({
++      app: view.app,
++      connection: view.connection,
++      current: view.confirmation,
++    }).pipe(
++      Effect.as([view]),
++      Effect.catchTag("OrganizationForbidden", () => Effect.succeed([])),
++    ),
++  )).flat();
++});
++
++const HistoricalConfirmation = Schema.Struct({
++  app: AppId,
++  connection: AppConnection,
++  previous: Schema.optionalKey(AppConfirmationView.fields.confirmation),
++  current: Schema.optionalKey(AppConfirmationView.fields.confirmation),
++});
++const requireConfirmationHistoryAccess = (snapshot: typeof HistoricalConfirmation.Type) =>
++  Effect.gen(function* () {
++    yield* requireAppAccess(snapshot.app, snapshot.connection.scope === "app" ? "manage" : "use");
++    const confirmation = snapshot.current ?? snapshot.previous;
++    if (confirmation === undefined) return yield* new OrganizationForbidden();
++    for (const version of confirmation.accountVersions)
++      yield* requireAccountAccess(AccountId.make(version.account), "manage");
++  });
++export const listWorkflowConfirmationChanges = Effect.gen(function* () {
++  const { organization } = yield* CurrentOrganization;
++  const sql = yield* policyDatabase;
++  const rows =
++    yield* sql`select distinct on (h.policy_id) h.policy_id as id, h.sequence::text as cursor,
++    h.actor, coalesce(u.name, h.actor) as "actorName", h.action, h.snapshot,
++    extract(epoch from h.changed_at)::double precision * 1000 as at
++    from hosted_tool_policy_history h left join "user" u on u.id = h.actor
++    where h.organization_id = ${organization} and h.policy_id like 'confirmation:%'
++    order by h.policy_id, h.sequence desc`;
++  const changes = yield* Schema.decodeUnknownEffect(Schema.Array(WorkflowPolicyChange))(rows).pipe(
++    Effect.mapError(() => new StorageError()),
++  );
++  return (yield* Effect.forEach(changes, (change) =>
++    Effect.gen(function* () {
++      const snapshot = yield* Schema.decodeUnknownEffect(HistoricalConfirmation)(
++        change.snapshot,
++      ).pipe(Effect.mapError(() => new StorageError()));
++      yield* requireConfirmationHistoryAccess(snapshot);
++      return [change];
++    }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed([]))),
++  )).flat();
++}).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++export const readWorkflowConfirmationHistory = (id: string, after?: string) =>
++  Effect.gen(function* () {
++    const { organization } = yield* CurrentOrganization;
++    const sql = yield* policyDatabase;
++    const rows = yield* sql`select snapshot from hosted_tool_policy_history
++    where organization_id = ${organization} and policy_id = ${id} order by sequence desc limit 1`;
++    const latest = yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ snapshot: HistoricalConfirmation })),
++    )(rows).pipe(Effect.mapError(() => new StorageError()));
++    const snapshot = latest[0]?.snapshot;
++    if (snapshot === undefined) return yield* new OrganizationForbidden();
++    yield* requireConfirmationHistoryAccess(snapshot);
++    const page = yield* toolPolicyHistory(sql, organization, id, after);
++    const items = (yield* Effect.forEach(page.items, (entry) =>
++      Effect.gen(function* () {
++        const snapshot = yield* Schema.decodeUnknownEffect(HistoricalConfirmation)(
++          entry.snapshot,
++        ).pipe(Effect.mapError(() => new StorageError()));
++        yield* requireConfirmationHistoryAccess(snapshot);
++        return [entry];
++      }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed([]))),
++    )).flat();
++    return { ...page, items };
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++
++export const revokeWorkflowConfirmation = (input: {
++  readonly app: AppId;
++  readonly dependency: string;
++  readonly scope: "app" | "user";
++  readonly revision: number;
++  readonly fingerprint: string;
++}) =>
++  Effect.gen(function* () {
++    yield* browserOnly;
++    const principal = yield* CurrentPrincipal;
++    if (principal.userId !== (yield* CurrentUserId)) return yield* new OrganizationForbidden();
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const { owner } = yield* CurrentOrganization;
++    const listed = yield* executor[AppCallsHost].confirmations
++      .list({ app: input.app, owner })
++      .pipe(Effect.catchTag("AppConnectionRefused", () => new OrganizationForbidden()));
++    const current = listed.items.find(
++      (view) =>
++        view.connection.dependency === input.dependency &&
++        view.connection.scope === input.scope &&
++        view.connection.revision === input.revision &&
++        view.fingerprint === input.fingerprint,
++    );
++    if (current === undefined) return yield* new ToolPolicyConflict();
++    yield* requireConfirmationHistoryAccess({
++      app: current.app,
++      connection: current.connection,
++      current: current.confirmation,
++    });
++    // The SDK locks and compares this same fingerprint again before clearing it.
++    return yield* executor[AppCallsHost].confirmations.revoke({ ...input, owner }).pipe(
++      Effect.catchTag("AppConnectionConflict", () => new ToolPolicyConflict()),
++      Effect.catchTag("AppConnectionRefused", () => new OrganizationForbidden()),
++    );
++  });
+diff --git a/apps/hosted/web/src/contracts/tool-policies.ts b/apps/hosted/web/src/contracts/tool-policies.ts
+new file mode 100644
+index 00000000..fe6037fc
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/tool-policies.ts
+@@ -0,0 +1,114 @@
++import { hydrated } from "@executor-js/ui/contracts/http";
++import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
++import { Atom } from "effect/reactivity";
++import { Data, Effect } from "effect";
++import type { AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { ToolPolicyValues } from "@executor-js/hosted-server/tool-policies";
++import { HostedClient } from "./api.ts";
++import { protectedQuery } from "./protected-query.ts";
++
++export const toolPoliciesAtom = Atom.family((organization: OrganizationReference) =>
++  HostedClient.query("toolPolicies", "list", hydrated({ params: { organization } })).pipe(
++    revalidated,
++    acknowledgedQuery,
++    protectedQuery,
++  ),
++);
++class HistoryKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly policy: string;
++  readonly after?: string;
++}> {}
++const history = Atom.family((key: HistoryKey) =>
++  HostedClient.query(
++    "toolPolicies",
++    "history",
++    hydrated({
++      params: { organization: key.organization, policy: key.policy },
++      query: key.after === undefined ? {} : { after: key.after },
++    }),
++  ).pipe(revalidated, protectedQuery),
++);
++export const toolPolicyHistoryAtom = (key: {
++  organization: OrganizationReference;
++  policy: string;
++  after?: string;
++}) => history(new HistoryKey(key));
++
++export const saveToolPolicyAtom = Atom.family((organization: OrganizationReference) =>
++  HostedClient.runtime.fn(
++    (input: ToolPolicyValues & { readonly id?: string; readonly revision?: number }, get) =>
++      Effect.flatMap(HostedClient, (client) =>
++        input.id === undefined
++          ? client.toolPolicies.create({ params: { organization }, payload: input })
++          : client.toolPolicies.update({
++              params: { organization, policy: input.id },
++              payload: { ...input, revision: input.revision ?? 0 },
++            }),
++      ).pipe(
++        Effect.tap((saved) =>
++          Effect.sync(() => {
++            acknowledge(get, toolPoliciesAtom(organization), (current) => ({
++              ...current,
++              policies: [
++                ...current.policies.filter((rule) => rule.id !== saved.id),
++                { ...saved, canEdit: true },
++              ],
++            }));
++            get.refresh(toolPolicyHistoryAtom({ organization, policy: saved.id }));
++          }),
++        ),
++        Effect.tapError(() => Effect.sync(() => get.refresh(toolPoliciesAtom(organization)))),
++      ),
++  ),
++);
++
++export const revokeToolPolicyAtom = Atom.family((organization: OrganizationReference) =>
++  HostedClient.runtime.fn((input: { readonly id: string; readonly revision: number }, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.toolPolicies.revoke({
++        params: { organization, policy: input.id },
++        query: { revision: input.revision },
++      }),
++    ).pipe(
++      Effect.tap((saved) =>
++        Effect.sync(() => {
++          acknowledge(get, toolPoliciesAtom(organization), (current) => ({
++            ...current,
++            policies: current.policies.map((rule) =>
++              rule.id === saved.id ? { ...saved, canEdit: true } : rule,
++            ),
++          }));
++          get.refresh(toolPolicyHistoryAtom({ organization, policy: saved.id }));
++        }),
++      ),
++      Effect.tapError(() => Effect.sync(() => get.refresh(toolPoliciesAtom(organization)))),
++    ),
++  ),
++);
++
++export const revokeWorkflowPolicyAtom = Atom.family((organization: OrganizationReference) =>
++  HostedClient.runtime.fn(
++    (
++      input: {
++        readonly app: AppId;
++        readonly dependency: string;
++        readonly scope: "app" | "user";
++        readonly revision: number;
++        readonly fingerprint: string;
++      },
++      get,
++    ) =>
++      Effect.flatMap(HostedClient, (client) =>
++        client.toolPolicies.revokeConfirmation({
++          params: { organization, app: input.app, dependency: input.dependency },
++          payload: input,
++        }),
++      ).pipe(
++        Effect.tap(() => Effect.sync(() => get.refresh(toolPoliciesAtom(organization)))),
++        Effect.tapError(() => Effect.sync(() => get.refresh(toolPoliciesAtom(organization)))),
++      ),
++  ),
++);
+diff --git a/apps/hosted/web/src/implementation/pages/tool-policies.tsx b/apps/hosted/web/src/implementation/pages/tool-policies.tsx
+new file mode 100644
+index 00000000..c9e74e10
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/tool-policies.tsx
+@@ -0,0 +1,204 @@
++import { useState } from "react";
++import { useAtomSet } from "@effect/atom-react";
++import { Exit } from "effect";
++import type { ToolPolicy, ToolPolicyView } from "@executor-js/hosted-server/tool-policies";
++import type { ResourceDirectory } from "@executor-js/hosted-server/resource-access";
++import { Button } from "@executor-js/ui/components/button";
++import { QueryView } from "@executor-js/ui/dashboard/context";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { appError } from "../../contracts/errors.ts";
++import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
++import { toolPoliciesAtom, revokeToolPolicyAtom } from "../../contracts/tool-policies.ts";
++import { ToolPolicyEditor, approvalModes } from "./tool-policy-editor.tsx";
++import { WorkflowPermissions } from "./tool-policy-workflow-permissions.tsx";
++import { ToolPolicyHistory } from "./tool-policy-history.tsx";
++
++type Directory = typeof ResourceDirectory.Type;
++const appLabel = (directory: Directory, id: string) =>
++  directory.apps.find((entry) => entry.app.id === id)?.app.name ?? id;
++const accountLabel = (directory: Directory, id: string) =>
++  directory.accounts.find((entry) => entry.account.id === id)?.account.label ?? id;
++function targetLabel(directory: Directory, rule: ToolPolicy) {
++  const target = rule.target;
++  const app = target.kind === "account" ? undefined : appLabel(directory, target.app);
++  return [
++    app,
++    target.kind === "tool" ? target.tool : undefined,
++    target.account === undefined ? undefined : accountLabel(directory, target.account),
++  ]
++    .filter(Boolean)
++    .join(" · ");
++}
++
++export function ToolPolicies() {
++  const { organization } = useOrganizationRoute();
++  const [editing, setEditing] = useState<ToolPolicy | "new">();
++  const [showRevoked, setShowRevoked] = useState(false);
++  return (
++    <div className="grid gap-4">
++      <div className="flex flex-wrap items-start justify-between gap-3">
++        <p className="max-w-prose text-sm text-muted-foreground">
++          Choose when an app, tool or account needs your approval. With no matching rule, the app's
++          own setting applies.
++        </p>
++        <Button
++          variant="outline"
++          onClick={() => setEditing("new")}
++          disabled={editing !== undefined}
++        >
++          New rule
++        </Button>
++      </div>
++      <QueryView query={toolPoliciesAtom(organization)} Failure={HostedFailure}>
++        {(data) => (
++          <QueryView query={resourceDirectoryAtom(organization)} Failure={HostedFailure}>
++            {(directory) => (
++              <>
++                {editing !== undefined && (
++                  <QueryView
++                    query={resourceDirectoryAtom(organization, "managed")}
++                    Failure={HostedFailure}
++                  >
++                    {(managed) => (
++                      <ToolPolicyEditor
++                        key={editing === "new" ? "new" : editing.id}
++                        {...(editing === "new" ? {} : { policy: editing })}
++                        directory={{
++                          ...managed,
++                          apps: [
++                            ...new Map(
++                              [...directory.apps, ...managed.apps].map((entry) => [
++                                entry.app.id,
++                                entry,
++                              ]),
++                            ).values(),
++                          ],
++                        }}
++                        onDone={() => setEditing(undefined)}
++                      />
++                    )}
++                  </QueryView>
++                )}
++                <div className="flex items-center justify-between gap-3">
++                  <h2 className="text-sm font-medium">Approval rules</h2>
++                  <Button
++                    variant="ghost"
++                    size="sm"
++                    aria-pressed={showRevoked}
++                    onClick={() => setShowRevoked(!showRevoked)}
++                  >
++                    {showRevoked ? "Hide revoked" : "Show revoked"}
++                  </Button>
++                </div>
++                {data.policies.filter((rule) => showRevoked || !rule.revoked).length === 0 ? (
++                  <p className="text-sm text-muted-foreground">
++                    No rules here. Add one for an app or account you manage.
++                  </p>
++                ) : (
++                  <ul className="divide-y rounded-md border" aria-label="Approval rules">
++                    {data.policies
++                      .filter((rule) => showRevoked || !rule.revoked)
++                      .map((rule) => (
++                        <RuleRow
++                          key={rule.id}
++                          rule={rule}
++                          label={targetLabel(directory, rule)}
++                          onEdit={() => setEditing(rule)}
++                          editing={editing !== undefined}
++                        />
++                      ))}
++                  </ul>
++                )}
++                <WorkflowPermissions
++                  confirmations={data.confirmations}
++                  changes={data.confirmationChanges}
++                  appLabel={(id) => appLabel(directory, id)}
++                />
++              </>
++            )}
++          </QueryView>
++        )}
++      </QueryView>
++    </div>
++  );
++}
++
++function RuleRow({
++  rule,
++  label,
++  onEdit,
++  editing,
++}: {
++  readonly rule: typeof ToolPolicyView.Type;
++  readonly label: string;
++  readonly onEdit: () => void;
++  readonly editing: boolean;
++}) {
++  const { organization } = useOrganizationRoute();
++  const revoke = useAtomSet(revokeToolPolicyAtom(organization), { mode: "promiseExit" });
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<string>();
++  const [history, setHistory] = useState(false);
++  return (
++    <li className="p-4">
++      <div className="flex flex-wrap items-start justify-between gap-3">
++        <div className="min-w-0">
++          <h3 className="break-words text-sm font-medium">{label}</h3>
++          <p className="mt-1 text-sm text-muted-foreground">
++            {rule.revoked ? "Revoked" : approvalModes[rule.mode]}
++            {rule.workflow === undefined ? "" : ` · Workflow: ${rule.workflow}`}
++            {rule.inputSchema === undefined ? "" : " · Matching input only"}
++          </p>
++        </div>
++        <div className="flex flex-wrap gap-1">
++          {rule.canEdit && (
++            <Button size="sm" variant="ghost" disabled={pending || editing} onClick={onEdit}>
++              {rule.revoked ? "Restore" : "Edit"}
++            </Button>
++          )}
++          {rule.canEdit && !rule.revoked && (
++            <Button
++              size="sm"
++              variant="outline"
++              disabled={pending}
++              onClick={async () => {
++                setPending(true);
++                setError(undefined);
++                const result = await revoke({ id: rule.id, revision: rule.revision });
++                setPending(false);
++                if (Exit.isFailure(result)) setError(appError(result.cause));
++              }}
++            >
++              {pending ? "Revoking…" : "Revoke"}
++            </Button>
++          )}
++          <Button
++            size="sm"
++            variant="ghost"
++            aria-expanded={history}
++            onClick={() => setHistory(!history)}
++          >
++            History
++          </Button>
++        </div>
++      </div>
++      {error && (
++        <p role="alert" className="mt-2 text-sm text-destructive">
++          {error}
++        </p>
++      )}
++      {rule.inputSchema !== undefined && (
++        <details className="mt-2">
++          <summary className="cursor-pointer text-xs text-muted-foreground">
++            Input constraint
++          </summary>
++          <pre className="mt-2 overflow-auto whitespace-pre-wrap break-words text-xs">
++            {JSON.stringify(rule.inputSchema, null, 2)}
++          </pre>
++        </details>
++      )}
++      {history && <ToolPolicyHistory id={rule.id} />}
++    </li>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx b/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx
+new file mode 100644
+index 00000000..46e1e7b1
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx
+@@ -0,0 +1,284 @@
++import { useState } from "react";
++import { useAtomSet } from "@effect/atom-react";
++import { Exit, Schema } from "effect";
++import { JsonObject, type AppId, type AccountId } from "@executor-js/sdk";
++import type { ResourceDirectory } from "@executor-js/hosted-server/resource-access";
++import type { ToolPolicy, ToolPolicyValues } from "@executor-js/hosted-server/tool-policies";
++import { Button } from "@executor-js/ui/components/button";
++import { Input } from "@executor-js/ui/components/input";
++import { Textarea } from "@executor-js/ui/components/textarea";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@executor-js/ui/components/select";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { saveToolPolicyAtom } from "../../contracts/tool-policies.ts";
++import { appError } from "../../contracts/errors.ts";
++
++export const approvalModes = {
++  "always-ask": "Always ask",
++  "ask-writes": "Ask for writes",
++  "never-ask": "Never ask",
++} as const;
++
++/** Its draft and base revision survive failed saves and background list refreshes. */
++export function ToolPolicyEditor({
++  policy,
++  directory,
++  onDone,
++}: {
++  readonly policy?: ToolPolicy;
++  readonly directory: typeof ResourceDirectory.Type;
++  readonly onDone: () => void;
++}) {
++  const { organization } = useOrganizationRoute();
++  const save = useAtomSet(saveToolPolicyAtom(organization), { mode: "promiseExit" });
++  const [base, setBase] = useState(policy);
++  const [scope, setScope] = useState<ToolPolicyValues["target"]["kind"]>(
++    policy?.target.kind ?? "app",
++  );
++  const [app, setApp] = useState<AppId | undefined>(
++    policy?.target.kind === "account" ? undefined : policy?.target.app,
++  );
++  const [account, setAccount] = useState<AccountId | undefined>(policy?.target.account);
++  const [tool, setTool] = useState(policy?.target.kind === "tool" ? policy.target.tool : "");
++  const [mode, setMode] = useState<ToolPolicyValues["mode"]>(policy?.mode ?? "always-ask");
++  const [constraint, setConstraint] = useState(
++    policy?.inputSchema === undefined ? "" : JSON.stringify(policy.inputSchema, null, 2),
++  );
++  const [workflow, setWorkflow] = useState(policy?.workflow ?? "");
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<string>();
++  const reset = () => {
++    setBase(policy);
++    setWorkflow(policy?.workflow ?? "");
++    setScope(policy?.target.kind ?? "app");
++    setApp(policy?.target.kind === "account" ? undefined : policy?.target.app);
++    setAccount(policy?.target.account);
++    setTool(policy?.target.kind === "tool" ? policy.target.tool : "");
++    setMode(policy?.mode ?? "always-ask");
++    setConstraint(
++      policy?.inputSchema === undefined ? "" : JSON.stringify(policy.inputSchema, null, 2),
++    );
++    setError(undefined);
++  };
++  const apps = directory.apps.filter((entry) => entry.access.canManage || entry.access.canUse);
++  const accounts = directory.accounts.filter((entry) => entry.access.canManage);
++  return (
++    <form
++      className="grid gap-4 py-4"
++      onSubmit={async (event) => {
++        event.preventDefault();
++        setError(undefined);
++        let inputSchema: typeof JsonObject.Type | undefined;
++        if (constraint.trim()) {
++          try {
++            const value: unknown = JSON.parse(constraint);
++            if (!Schema.is(JsonObject)(value)) throw new Error();
++            inputSchema = value;
++          } catch {
++            setError("Enter an input constraint as a JSON Schema object.");
++            return;
++          }
++        }
++        let target: ToolPolicyValues["target"];
++        if (scope === "account") {
++          if (account === undefined) {
++            setError("Choose an account.");
++            return;
++          }
++          target = { kind: "account", account };
++        } else {
++          if (app === undefined || (scope === "tool" && !tool.trim())) {
++            setError("Choose an app and enter the exact tool name when needed.");
++            return;
++          }
++          const narrowed = account === undefined ? {} : { account };
++          target =
++            scope === "tool"
++              ? { kind: "tool", app, tool: tool.trim(), ...narrowed }
++              : { kind: "app", app, ...narrowed };
++        }
++        if (
++          scope !== "account" &&
++          account === undefined &&
++          !apps.find((entry) => entry.app.id === app)?.access.canManage
++        ) {
++          setError(
++            "Choose one of your accounts to restrict this rule, or choose an app you manage.",
++          );
++          return;
++        }
++        setPending(true);
++        const result = await save({
++          target,
++          mode,
++          ...(workflow.trim() === "" ? {} : { workflow: workflow.trim() }),
++          ...(inputSchema === undefined ? {} : { inputSchema }),
++          ...(base === undefined ? {} : { id: base.id, revision: base.revision }),
++        });
++        setPending(false);
++        if (Exit.isFailure(result)) setError(appError(result.cause));
++        else onDone();
++      }}
++    >
++      <h3 className="text-sm font-medium">
++        {base?.revoked ? "Restore rule" : base ? "Edit rule" : "New approval rule"}
++      </h3>
++      <div className="grid gap-3 sm:grid-cols-2">
++        <label className="grid gap-1 text-sm">
++          Applies to
++          <Select
++            value={scope}
++            disabled={pending}
++            onValueChange={(value) => {
++              if (value === "app" || value === "tool" || value === "account") {
++                setScope(value);
++                setAccount(undefined);
++              }
++            }}
++          >
++            <SelectTrigger aria-label="Applies to">
++              <SelectValue />
++            </SelectTrigger>
++            <SelectContent>
++              <SelectItem value="app">App</SelectItem>
++              <SelectItem value="tool">Tool</SelectItem>
++              <SelectItem value="account">Account</SelectItem>
++            </SelectContent>
++          </Select>
++        </label>
++        <label className="grid gap-1 text-sm">
++          Approval
++          <Select
++            value={mode}
++            disabled={pending}
++            onValueChange={(value) => {
++              if (value === "always-ask" || value === "ask-writes" || value === "never-ask")
++                setMode(value);
++            }}
++          >
++            <SelectTrigger aria-label="Approval">
++              <SelectValue />
++            </SelectTrigger>
++            <SelectContent>
++              {Object.entries(approvalModes).map(([value, label]) => (
++                <SelectItem key={value} value={value}>
++                  {label}
++                </SelectItem>
++              ))}
++            </SelectContent>
++          </Select>
++        </label>
++        {scope !== "account" && (
++          <label className="grid gap-1 text-sm">
++            App
++            <Select
++              value={app ?? ""}
++              disabled={pending}
++              onValueChange={(value) =>
++                setApp(apps.find((entry) => entry.app.id === value)?.app.id)
++              }
++            >
++              <SelectTrigger aria-label="App">
++                <SelectValue placeholder="Choose an app" />
++              </SelectTrigger>
++              <SelectContent>
++                {apps.map((entry) => (
++                  <SelectItem key={entry.app.id} value={entry.app.id}>
++                    {entry.app.name}
++                  </SelectItem>
++                ))}
++              </SelectContent>
++            </Select>
++          </label>
++        )}
++        {scope === "tool" && (
++          <label className="grid gap-1 text-sm">
++            Exact tool name
++            <Input
++              value={tool}
++              onChange={(event) => setTool(event.target.value)}
++              disabled={pending}
++              required
++            />
++          </label>
++        )}
++        <label className="grid gap-1 text-sm">
++          {scope === "account" ? "Account" : "Account restriction"}
++          <Select
++            value={account ?? (scope === "account" ? "" : "all")}
++            disabled={pending}
++            onValueChange={(value) =>
++              setAccount(accounts.find((entry) => entry.account.id === value)?.account.id)
++            }
++          >
++            <SelectTrigger aria-label={scope === "account" ? "Account" : "Account restriction"}>
++              <SelectValue placeholder="Choose an account" />
++            </SelectTrigger>
++            <SelectContent>
++              {scope !== "account" && <SelectItem value="all">All linked accounts</SelectItem>}
++              {accounts.map((entry) => (
++                <SelectItem key={entry.account.id} value={entry.account.id}>
++                  {entry.account.label}
++                </SelectItem>
++              ))}
++            </SelectContent>
++          </Select>
++        </label>
++      </div>
++      <label className="grid gap-1 text-sm">
++        Workflow restriction
++        <Input
++          value={workflow}
++          onChange={(event) => setWorkflow(event.target.value)}
++          disabled={pending}
++          placeholder="All workflows and ordinary calls"
++        />
++        <span className="text-xs text-muted-foreground">
++          Optional exact workflow name. Restricted rules do not apply to ordinary calls.
++        </span>
++      </label>
++      <details>
++        <summary className="cursor-pointer text-sm">Input constraint</summary>
++        <div className="mt-2 grid gap-2">
++          <p className="text-xs text-muted-foreground">
++            Optional JSON Schema, draft 7. The rule applies only when the decoded input matches.
++          </p>
++          <Textarea
++            aria-label="Input constraint JSON Schema"
++            value={constraint}
++            onChange={(event) => setConstraint(event.target.value)}
++            disabled={pending}
++            rows={6}
++          />
++        </div>
++      </details>
++      <p className="text-xs text-muted-foreground">
++        App blocks and account access still apply. More specific rules take priority; equally
++        specific rules ask if any asks.
++      </p>
++      {error && (
++        <p role="alert" className="text-sm text-destructive">
++          {error}
++        </p>
++      )}
++      <div className="flex flex-wrap gap-2">
++        <Button type="submit" disabled={pending}>
++          {pending ? "Saving…" : base?.revoked ? "Restore rule" : "Save rule"}
++        </Button>
++        <Button type="button" variant="outline" disabled={pending} onClick={onDone}>
++          Cancel
++        </Button>
++        {base && (
++          <Button type="button" variant="ghost" disabled={pending} onClick={reset}>
++            Reset changes
++          </Button>
++        )}
++      </div>
++    </form>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/ui/src/implementation/dashboard/approvals.tsx
+index 98dba49c..c2c91d62 100644
+--- a/packages/ui/src/implementation/dashboard/approvals.tsx
++++ b/packages/ui/src/implementation/dashboard/approvals.tsx
+@@ -31,78 +31,85 @@ export function ApprovalsPage<E>({
+   query,
+   Failure,
+   review,
++  embedded = false,
+ }: {
+   readonly query: Query<readonly ApprovalQueueItem[], E>;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+   readonly review: (item: ApprovalQueueItem) => ReactNode;
++  readonly embedded?: boolean;
+ }) {
+   const brand = useProductBrand();
+-  return (
++  const content = (
++    <QueryView query={query} Failure={Failure}>
++      {(items) =>
++        items.length === 0 ? (
++          <EmptyState title="Nothing needs you right now">
++            Workflow requests appear here when they need your input or approval.
++          </EmptyState>
++        ) : (
++          <ul aria-label="Requests for you" className="divide-y rounded-lg border">
++            {items.map((item) => {
++              const expiresAt =
++                item.kind === "workflow" ? item.input.expiresAt : item.run.expiresAt;
++              const headingId = `request-${item.kind === "workflow" ? item.input.id : item.run.id}`;
++              const heading =
++                item.kind === "workflow"
++                  ? item.input.form.message.trim() || humanize(item.input.name)
++                  : humanize(item.invocationSummary?.tool ?? item.run.name);
++              const argumentsText =
++                item.kind === "scheduled" && item.invocationSummary !== undefined
++                  ? item.invocationSummary.arguments
++                  : undefined;
++              return (
++                <li
++                  key={item.kind === "workflow" ? item.input.id : item.run.id}
++                  className="flex flex-wrap items-start justify-between gap-4 p-4 sm:flex-nowrap"
++                >
++                  <div className="min-w-0">
++                    <h2
++                      id={headingId}
++                      className="line-clamp-2 text-sm font-medium whitespace-pre-wrap break-words"
++                    >
++                      {heading}
++                    </h2>
++                    <p className="mt-1 text-xs text-muted-foreground">
++                      {productNamed(item.app.name, brand)}
++                      {" · "}
++                      {item.kind === "workflow" ? requestType(item.input) : "Tool approval"}
++                      {" · "}
++                      {humanize(item.kind === "workflow" ? item.input.workflow : item.run.name)}
++                      {expiresAt && (
++                        <>
++                          {" · Expires "}
++                          <LocalTime value={expiresAt} options={timeOfDay} />
++                        </>
++                      )}
++                    </p>
++                    {item.kind === "scheduled" && (
++                      <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
++                        {argumentsText === undefined
++                          ? "Request details unavailable"
++                          : argumentsText}
++                      </p>
++                    )}
++                  </div>
++                  <Button size="sm" variant="outline" aria-describedby={headingId} asChild>
++                    {review(item)}
++                  </Button>
++                </li>
++              );
++            })}
++          </ul>
++        )
++      }
++    </QueryView>
++  );
++  return embedded ? (
++    content
++  ) : (
+     <PageFrame>
+       <PageHeader title={approvalsTitle} description={approvalsDescription} />
+-      <QueryView query={query} Failure={Failure}>
+-        {(items) =>
+-          items.length === 0 ? (
+-            <EmptyState title="Nothing needs you right now">
+-              Workflow requests appear here when they need your input or approval.
+-            </EmptyState>
+-          ) : (
+-            <ul aria-label="Requests for you" className="divide-y rounded-lg border">
+-              {items.map((item) => {
+-                const expiresAt =
+-                  item.kind === "workflow" ? item.input.expiresAt : item.run.expiresAt;
+-                const headingId = `request-${item.kind === "workflow" ? item.input.id : item.run.id}`;
+-                const heading =
+-                  item.kind === "workflow"
+-                    ? item.input.form.message.trim() || humanize(item.input.name)
+-                    : humanize(item.invocationSummary?.tool ?? item.run.name);
+-                const argumentsText =
+-                  item.kind === "scheduled" && item.invocationSummary !== undefined
+-                    ? item.invocationSummary.arguments
+-                    : undefined;
+-                return (
+-                  <li
+-                    key={item.kind === "workflow" ? item.input.id : item.run.id}
+-                    className="flex flex-wrap items-start justify-between gap-4 p-4 sm:flex-nowrap"
+-                  >
+-                    <div className="min-w-0">
+-                      <h2
+-                        id={headingId}
+-                        className="line-clamp-2 text-sm font-medium whitespace-pre-wrap break-words"
+-                      >
+-                        {heading}
+-                      </h2>
+-                      <p className="mt-1 text-xs text-muted-foreground">
+-                        {productNamed(item.app.name, brand)}
+-                        {" · "}
+-                        {item.kind === "workflow" ? requestType(item.input) : "Tool approval"}
+-                        {" · "}
+-                        {humanize(item.kind === "workflow" ? item.input.workflow : item.run.name)}
+-                        {expiresAt && (
+-                          <>
+-                            {" · Expires "}
+-                            <LocalTime value={expiresAt} options={timeOfDay} />
+-                          </>
+-                        )}
+-                      </p>
+-                      {item.kind === "scheduled" && (
+-                        <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+-                          {argumentsText === undefined
+-                            ? "Request details unavailable"
+-                            : argumentsText}
+-                        </p>
+-                      )}
+-                    </div>
+-                    <Button size="sm" variant="outline" aria-describedby={headingId} asChild>
+-                      {review(item)}
+-                    </Button>
+-                  </li>
+-                );
+-              })}
+-            </ul>
+-          )
+-        }
+-      </QueryView>
++      {content}
+     </PageFrame>
+   );
+ }
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 66ad1eac..1a8bd5eb 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -14,6 +14,8 @@ export type HostedError =
+   | Schema.SchemaError;
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
++    ToolPolicyConflict: ({ message }) => message,
++    ToolPolicyInvalid: ({ message }) => message,
+     AppConnectionConflict: ({ message }) => message,
+     AppConnectionRefused: ({ message }) => message,
+     AccountProvisioned: ({ message }) => message,
+diff --git a/apps/hosted/web/src/implementation/pages/tool-policy-history.tsx b/apps/hosted/web/src/implementation/pages/tool-policy-history.tsx
+new file mode 100644
+index 00000000..a74ca976
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/tool-policy-history.tsx
+@@ -0,0 +1,69 @@
++import { useState } from "react";
++import { QueryView } from "@executor-js/ui/dashboard/context";
++import { Button } from "@executor-js/ui/components/button";
++import { LocalTime } from "@executor-js/ui/components/local-time";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { toolPolicyHistoryAtom } from "../../contracts/tool-policies.ts";
++
++export function ToolPolicyHistory({ id }: { readonly id: string }) {
++  const { organization } = useOrganizationRoute();
++  const [after, setAfter] = useState<string>();
++  return (
++    <div className="mt-3 border-t pt-3">
++      <h4 className="mb-2 text-sm font-medium">Change history</h4>
++      <QueryView
++        query={toolPolicyHistoryAtom({
++          organization,
++          policy: id,
++          ...(after === undefined ? {} : { after }),
++        })}
++        Failure={HostedFailure}
++      >
++        {(page) => (
++          <>
++            {page.items.length === 0 ? (
++              <p className="text-sm text-muted-foreground">
++                No recorded changes. This permission may predate change history.
++              </p>
++            ) : (
++              <ol className="grid gap-3" aria-label="Rule change history">
++                {page.items.map((change) => (
++                  <li key={change.cursor}>
++                    <p className="text-sm">
++                      <span className="capitalize">{change.action}</span>
++                      {" by "}
++                      {change.actorName}
++                      {" · "}
++                      <LocalTime value={change.at} />
++                    </p>
++                    <details>
++                      <summary className="cursor-pointer text-xs text-muted-foreground">
++                        Saved scope and conditions
++                      </summary>
++                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">
++                        {JSON.stringify(change.snapshot, null, 2)}
++                      </pre>
++                    </details>
++                  </li>
++                ))}
++              </ol>
++            )}
++            <div className="mt-3 flex gap-2">
++              {after !== undefined && (
++                <Button variant="ghost" size="sm" onClick={() => setAfter(undefined)}>
++                  First changes
++                </Button>
++              )}
++              {page.next !== undefined && (
++                <Button variant="outline" size="sm" onClick={() => setAfter(page.next)}>
++                  Next changes
++                </Button>
++              )}
++            </div>
++          </>
++        )}
++      </QueryView>
++    </div>
++  );
++}
+diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
+new file mode 100644
+index 00000000..12391ff7
+--- /dev/null
++++ b/e2e/tests/tool-policies.spec.ts
+@@ -0,0 +1,354 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema, Schedule } from "effect";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Policy = Schema.Struct({ id: Schema.String, revision: Schema.Int, revoked: Schema.Boolean });
++const History = Schema.Struct({
++  items: Schema.Array(
++    Schema.Struct({
++      action: Schema.String,
++      actor: Schema.String,
++      actorName: Schema.String,
++      snapshot: Schema.Struct({ revision: Schema.Int }),
++    }),
++  ),
++});
++const source = `import {defineApp,query,mutation,workflow,object,string,router} from "apps";
++const input=object({title:string()});
++const read=query({input},async(_ctx,value)=>({read:value.title}));
++const write=mutation({input,approval:()=>"user-approval"},async(_ctx,value)=>({wrote:value.title}));
++const denied=mutation({input,approval:()=>"denied"},async()=>({ran:true}));
++const failed=mutation({input,approval:()=>{throw new Error("policy failure");}},async()=>({ran:true}));
++const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("read",read,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
++export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe,other:probe}});`;
++
++layer(RuntimeLive, { excludeTestServices: true })("General approval policies", (it) => {
++  it.effect(scenarios.hostedAccountToolPolicies.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Account policy target",
++          files: [
++            {
++              path: "index.ts",
++              content: `import {defineApp,defineProvider,secrets,query,mutation,object,string,router} from "apps";
++const service=defineProvider({name:"Account policy fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
++const read=query({input:object({account:string()})},async()=>({read:true}));
++const write=mutation({input:object({account:string()}),approval:()=>"user-approval"},async()=>({wrote:true}));
++export default defineApp({user:{accounts:{service}}},{tools:router({read,write})});`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed),
++          appPath = `${prefix}/apps/${app.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", appPath);
++            for (const [index, id] of accounts.entries())
++              yield* api.request(
++                index === 0 ? actors.owner : actors.member,
++                "DELETE",
++                `${prefix}/accounts/${id}`,
++              );
++          }).pipe(Effect.orDie),
++        );
++        const access = yield* body(
++          Schema.Struct({ revision: Schema.String }),
++          yield* api.request(actors.owner, "GET", `${appPath}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${appPath}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        for (const actor of [actors.owner, actors.member]) {
++          const connectionReply = yield* api.request(
++            actor,
++            "POST",
++            connectionsPath(appPath, "user", "service"),
++            { destination: { kind: "personal" } },
++          );
++          expect(connectionReply.status, JSON.stringify(connectionReply.body)).toBe(200);
++          const connection = yield* body(Resource, connectionReply);
++          const saved = yield* api.request(
++            actor,
++            "POST",
++            `${prefix}/connections/${connection.id}/submit`,
++            { method: "key", fields: { token: "synthetic" } },
++          );
++          expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++          accounts.push((yield* body(Resource, saved)).id);
++        }
++        const ownerAccount = accounts[0]!,
++          memberAccount = accounts[1]!,
++          path = `${prefix}/tool-policies`;
++        expect(
++          (yield* api.request(actors.owner, "POST", path, {
++            target: { kind: "app", app: app.id },
++            mode: "never-ask",
++          })).status,
++        ).toBe(200);
++        const call = (actor: typeof actors.owner, tool: string, account: string) =>
++          api.request(actor, "POST", `${appPath}/tools/call`, {
++            tool,
++            kind: tool === "read" ? "query" : "mutation",
++            input: { account },
++          });
++        expect((yield* call(actors.owner, "write", ownerAccount)).body).toEqual({ wrote: true });
++        // App management cannot waive another person's account; an input ID is not an account selection.
++        expect((yield* call(actors.member, "write", ownerAccount)).status).toBe(409);
++        expect(
++          (yield* api.request(actors.owner, "POST", path, {
++            target: { kind: "account", account: memberAccount },
++            mode: "never-ask",
++          })).status,
++        ).toBe(403);
++        const limitedReply = yield* api.request(actors.member, "POST", path, {
++          target: { kind: "tool", app: app.id, tool: "write", account: memberAccount },
++          mode: "never-ask",
++        });
++        expect(limitedReply.status, JSON.stringify(limitedReply.body)).toBe(200);
++        const limited = yield* body(Policy, limitedReply);
++        expect((yield* call(actors.member, "write", ownerAccount)).body).toEqual({ wrote: true });
++        expect(
++          (yield* api.request(actors.member, "POST", path, {
++            target: { kind: "tool", app: app.id, tool: "write" },
++            mode: "never-ask",
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.member, "PUT", `${path}/${limited.id}`, {
++            target: { kind: "tool", app: app.id, tool: "write", account: memberAccount },
++            mode: "always-ask",
++            revision: limited.revision,
++          })).status,
++        ).toBe(200);
++        expect((yield* call(actors.member, "write", ownerAccount)).status).toBe(409);
++        expect(
++          (yield* api.request(
++            actors.member,
++            "DELETE",
++            `${path}/${limited.id}?revision=${limited.revision + 1}`,
++          )).status,
++        ).toBe(200);
++        const ownRule = yield* api.request(actors.member, "POST", path, {
++          target: { kind: "account", account: memberAccount },
++          mode: "always-ask",
++        });
++        expect(ownRule.status, JSON.stringify(ownRule.body)).toBe(200);
++        expect((yield* call(actors.member, "read", ownerAccount)).status).toBe(409);
++        expect((yield* call(actors.owner, "read", memberAccount)).body).toEqual({ read: true });
++        const rule = yield* body(Policy, ownRule);
++        expect(
++          (yield* api.request(
++            actors.member,
++            "DELETE",
++            `${path}/${rule.id}?revision=${rule.revision}`,
++          )).status,
++        ).toBe(200);
++        expect((yield* call(actors.member, "read", ownerAccount)).body).toEqual({ read: true });
++      }),
++    ),
++  );
++  it.effect(scenarios.hostedToolPolicies.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Policy target",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const path = `${prefix}/tool-policies`;
++        const target = { kind: "app", app: app.id };
++        const call = (tool: string, title = "safe") =>
++          api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
++            tool,
++            kind: tool === "read" ? "query" : "mutation",
++            input: { title },
++          });
++        const save = (mode: string, policy?: typeof Policy.Type) =>
++          api.request(
++            actors.owner,
++            policy === undefined ? "POST" : "PUT",
++            policy === undefined ? path : `${path}/${policy.id}`,
++            { target, mode, ...(policy === undefined ? {} : { revision: policy.revision }) },
++          );
++        const workflowProbe = (workflow = "probe") =>
++          Effect.gen(function* () {
++            const started = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${app.id}/workflow-runs`,
++              { workflow, input: { title: "safe" } },
++            );
++            expect(started.status, JSON.stringify(started.body)).toBe(200);
++            const run = yield* body(Resource, started);
++            const result = yield* Effect.gen(function* () {
++              return yield* body(
++                Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) }),
++                yield* api.request(
++                  actors.owner,
++                  "GET",
++                  `${prefix}/apps/${app.id}/workflow-runs/${run.id}`,
++                ),
++              );
++            }).pipe(
++              Effect.repeat({
++                while: (result) => result.status === "queued" || result.status === "running",
++                schedule: Schedule.spaced("100 millis"),
++              }),
++              Effect.timeout("30 seconds"),
++            );
++            expect(result.status, JSON.stringify(result)).toBe("complete");
++            return result.output;
++          });
++        expect((yield* call("read")).body).toEqual({ read: "safe" });
++        expect((yield* call("write")).status).toBe(409);
++        const first = yield* save("always-ask");
++        expect(first.status, JSON.stringify(first.body)).toBe(200);
++        const always = yield* body(Policy, first);
++        // This query has no app approval callback. The host must still ask.
++        expect((yield* call("read")).status).toBe(409);
++        expect((yield* call("write")).status).toBe(409);
++        const scopedReply = yield* api.request(actors.owner, "POST", path, {
++          target: { kind: "tool", app: app.id, tool: "read" },
++          mode: "never-ask",
++          workflow: "probe",
++        });
++        expect(scopedReply.status, JSON.stringify(scopedReply.body)).toBe(200);
++        const scoped = yield* body(Policy, scopedReply);
++        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
++        expect(yield* workflowProbe("other")).toEqual({ blocked: true });
++        expect((yield* call("read")).status).toBe(409);
++        const scopeHistory = yield* api.request(
++          actors.owner,
++          "GET",
++          `${path}/${scoped.id}/history`,
++        );
++        expect(scopeHistory.body).toMatchObject({ items: [{ snapshot: { workflow: "probe" } }] });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${path}/${scoped.id}?revision=${scoped.revision}`,
++          )).status,
++        ).toBe(200);
++        expect(yield* workflowProbe()).toEqual({ blocked: true });
++        expect(
++          (yield* api.request(actors.member, "PUT", `${path}/${always.id}`, {
++            target,
++            mode: "never-ask",
++            revision: always.revision,
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.owner, "PUT", `${path}/${always.id}`, {
++            target,
++            mode: "never-ask",
++            revision: 0,
++          })).status,
++        ).toBe(409);
++        const neverReply = yield* save("never-ask", always);
++        expect(neverReply.status, JSON.stringify(neverReply.body)).toBe(200);
++        const never = yield* body(Policy, neverReply);
++        expect((yield* call("read")).body).toEqual({ read: "safe" });
++        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
++        expect((yield* call("denied")).status).not.toBe(200);
++        expect((yield* call("failed")).status).not.toBe(200);
++        const writesReply = yield* save("ask-writes", never);
++        expect(writesReply.status, JSON.stringify(writesReply.body)).toBe(200);
++        const writes = yield* body(Policy, writesReply);
++        expect((yield* call("read")).body).toEqual({ read: "safe" });
++        expect((yield* call("write")).status).toBe(409);
++        const specific = yield* api.request(actors.owner, "POST", path, {
++          target: { kind: "tool", app: app.id, tool: "write" },
++          mode: "never-ask",
++          inputSchema: {
++            type: "object",
++            properties: { title: { const: "safe" } },
++            required: ["title"],
++          },
++        });
++        expect(specific.status, JSON.stringify(specific.body)).toBe(200);
++        const narrower = yield* body(Policy, specific);
++        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++        expect((yield* call("write", "outside")).status).toBe(409);
++        yield* serverControl("restart");
++        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++        const revoked = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${path}/${narrower.id}?revision=${narrower.revision}`,
++        );
++        expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
++        expect((yield* call("write")).status).toBe(409);
++        const removed = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${path}/${writes.id}?revision=${writes.revision}`,
++        );
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        const disabled = yield* body(Policy, removed);
++        const history = yield* body(
++          History,
++          yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
++        );
++        expect(history.items.map((item) => item.action)).toEqual([
++          "created",
++          "updated",
++          "updated",
++          "revoked",
++        ]);
++        expect(history.items.map((item) => item.snapshot.revision)).toEqual([1, 2, 3, 4]);
++        expect(
++          history.items.every((item) => item.actor.length > 0 && item.actorName.length > 0),
++        ).toBe(true);
++        const restored = yield* save("never-ask", disabled);
++        expect(restored.status, JSON.stringify(restored.body)).toBe(200);
++        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++        const latest = yield* body(
++          History,
++          yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
++        );
++        expect(latest.items.map((item) => item.action)).toEqual([
++          "created",
++          "updated",
++          "updated",
++          "revoked",
++          "restored",
++        ]);
++        const invalid = yield* api.request(actors.owner, "POST", path, {
++          target,
++          mode: "never-ask",
++          inputSchema: { type: "invalid" },
++        });
++        expect(invalid.status).toBe(422);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 01985bab..664feeaf 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8712,6 +8712,59 @@ export const scenarios = plan({
+       local: na("This scenario exercises hosted service claims and organization inventory."),
+     },
+   },
++  selfEmailApprovalScopes: {
++    file: "self-email-approvals.spec.ts",
++    title:
++      "self-email scopes replace and revoke confirmations atomically while generic sends remain unavailable",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses a public SDK host with retained PostgreSQL storage."),
++      cloud: na("Uses a public SDK host with a synthetic personal identity."),
++    },
++  },
++  hostedAccountToolPolicies: {
++    fixtures: "actors",
++    file: "tool-policies.spec.ts",
++    title:
++      "account approval rules use saved selections and preserve each personal account owner's consent",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: na("Hosted personal account authority belongs to the product."),
++    },
++  },
++  workflowDependencyToolPolicy: {
++    fixtures: "actors",
++    file: "workflow-dependency-tool-policy.spec.ts",
++    title: "a workflow-scoped rule applies to a dependency call made by that workflow",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: na("Uses hosted policy evaluation; managed Cloud exercises WorkflowHost.execute."),
++    },
++  },
++  hostedToolPolicies: {
++    fixtures: "actors",
++    file: "tool-policies.spec.ts",
++    title:
++      "owner approval rules evaluate decoded native calls and retain edit revoke and restore history",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: na("General owner policies belong to the hosted product."),
++    },
++  },
++  hostedToolPolicyDraft: {
++    fixtures: "actors",
++    file: "tool-policy-draft.spec.ts",
++    title:
++      "approval rule drafts survive failed saves refreshed reads and a Requests tab round trip",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: na("The hosted Human in the loop page owns policy drafts."),
++    },
++  },
+   appCallWorkflow: {
+     file: "app-call-receipts.spec.ts",
+     title:
+diff --git a/e2e/tests/tool-policy-draft.spec.ts b/e2e/tests/tool-policy-draft.spec.ts
+new file mode 100644
+index 00000000..5a768abf
+--- /dev/null
++++ b/e2e/tests/tool-policy-draft.spec.ts
+@@ -0,0 +1,132 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Browser } from "../support/browser.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Approval policy drafts", (it) => {
++  it.effect(scenarios.hostedToolPolicyDraft.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Draft target",
++          files: [
++            {
++              path: "index.ts",
++              content: 'import {defineApp} from "apps"; export default defineApp({},{});',
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open Human in the loop", (page) =>
++          page.goto(`/org/${actors.organization.slug}/approvals`),
++        );
++        yield* browser.use("Open Rules", (page) =>
++          page.getByRole("tab", { name: "Rules", exact: true }).click(),
++        );
++        yield* browser.use("Start a rule", (page) =>
++          page.getByRole("button", { name: "New rule", exact: true }).click(),
++        );
++        yield* browser.use("Choose an app", (page) =>
++          page.getByRole("combobox", { name: "App", exact: true }).click(),
++        );
++        yield* browser.use("Select the owned app", (page) =>
++          page.getByRole("option", { name: "Draft target", exact: true }).click(),
++        );
++        yield* browser.use("Open the input constraint", (page) =>
++          page.getByText("Input constraint", { exact: true }).click(),
++        );
++        const draft = '{"type":"object","properties":{"title":{"const":"keep my draft"}}}';
++        yield* browser.use("Write the input constraint", (page) =>
++          page.getByRole("textbox", { name: "Input constraint JSON Schema" }).fill(draft),
++        );
++        const savedPath = new RegExp(`/api/organizations/[^/]+/tool-policies$`);
++        const failed = yield* holdQuery(savedPath, "fail", { method: "POST" });
++        yield* browser.use("Submit the draft", (page) =>
++          page.getByRole("button", { name: "Save rule", exact: true }).click(),
++        );
++        yield* failed.requested;
++        expect(
++          yield* browser.use("Saving disables another submit", (page) =>
++            page.getByRole("button", { name: "Saving…", exact: true }).isDisabled(),
++          ),
++        ).toBe(true);
++        yield* failed.release;
++        yield* browser.use("The failed save remains editable", (page) =>
++          page
++            .getByRole("button", { name: "Save rule", exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        const checkDraft = (phase: string) =>
++          Effect.gen(function* () {
++            expect(
++              yield* browser.use(`${phase}: constraint remains`, (page) =>
++                page.getByRole("textbox", { name: "Input constraint JSON Schema" }).inputValue(),
++              ),
++            ).toBe(draft);
++            expect(
++              yield* browser.use(`${phase}: target remains`, (page) =>
++                page.getByRole("combobox", { name: "App", exact: true }).textContent(),
++              ),
++            ).toContain("Draft target");
++          });
++        yield* checkDraft("After failed save");
++        yield* browser.use("Switch to Requests", (page) =>
++          page.getByRole("tab", { name: "Requests", exact: true }).click(),
++        );
++        yield* browser.use("Return to Rules", (page) =>
++          page.getByRole("tab", { name: "Rules", exact: true }).click(),
++        );
++        yield* checkDraft("After tab navigation");
++        const refresh = yield* holdQuery(savedPath, "continue");
++        yield* refreshVisiblePage;
++        yield* refresh.requested;
++        yield* checkDraft("During refreshed reads");
++        const settled = yield* browser.use("Watch the released policy read", (page) =>
++          Promise.resolve({
++            response: page.waitForResponse(
++              (response) =>
++                savedPath.test(new URL(response.url()).pathname) &&
++                response.request().method() === "GET" &&
++                response.ok(),
++            ),
++          }),
++        );
++        yield* refresh.release;
++        yield* browser.use("The refreshed policy read completed", () => settled.response);
++        yield* checkDraft("After refreshed reads");
++        yield* browser.use("Retry this exact draft", (page) =>
++          page.getByRole("button", { name: "Save rule", exact: true }).click(),
++        );
++        yield* browser.use("The saved draft closes", (page) =>
++          page
++            .getByRole("heading", { name: "New approval rule", exact: true })
++            .waitFor({ state: "hidden" }),
++        );
++        yield* browser.use("The saved rule is listed", (page) =>
++          page
++            .getByRole("list", { name: "Approval rules", exact: true })
++            .getByRole("heading", { name: "Draft target", exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        yield* browser.checkpoint("Saved rule after failed save and tab round trip");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/support/app-call-sdk.ts b/e2e/support/app-call-sdk.ts
+index f2a37fe5..dd0a6e9a 100644
+--- a/e2e/support/app-call-sdk.ts
++++ b/e2e/support/app-call-sdk.ts
+@@ -6,82 +6,85 @@ import { appsManifest } from "./apps-release.ts";
+ import { lockedNpmRegistry } from "./npm-registry.ts";
+ import { Target } from "./platform.ts";
+ const Ready = Schema.Struct({ port: Schema.Number });
+-export const appCallSdk = Effect.gen(function* () {
+-  const target = yield* Target;
+-  const fs = yield* FileSystem.FileSystem;
+-  const path = yield* Path.Path;
+-  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+-  const client = yield* HttpClient.HttpClient;
+-  const registry = yield* lockedNpmRegistry;
+-  const entry = path.join(target.directory, "app-call-sdk.ts");
+-  const directory = path.join(target.directory, "app-call-sdk");
+-  yield* fs.makeDirectory(directory, { recursive: true });
+-  yield* fs.writeFileString(
+-    entry,
+-    appCallSdkSource.replace(
+-      "INPUT",
++export const appCallSdkHost = (source: string, name: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const client = yield* HttpClient.HttpClient;
++    const registry = yield* lockedNpmRegistry;
++    const entry = path.join(target.directory, `${name}.ts`);
++    const directory = path.join(target.directory, name);
++    yield* fs.makeDirectory(directory, { recursive: true });
++    yield* fs.writeFileString(
++      entry,
++      source.replace(
++        "INPUT",
++        JSON.stringify({
++          directory,
++          npmRegistry: registry.url,
++          files: [
++            {
++              path: "index.ts",
++              content: 'import {defineApp} from "apps"; export default defineApp({},{});',
++            },
++            appsManifest,
++          ],
++        }) + " as const",
++      ),
++    );
++    const config = path.join(target.directory, `${name}-tsconfig.json`);
++    yield* fs.writeFileString(
++      config,
+       JSON.stringify({
+-        directory,
+-        npmRegistry: registry.url,
+-        files: [
+-          {
+-            path: "index.ts",
+-            content: 'import {defineApp} from "apps"; export default defineApp({},{});',
+-          },
+-          appsManifest,
+-        ],
+-      }) + " as const",
+-    ),
+-  );
+-  const config = path.join(target.directory, "app-call-sdk-tsconfig.json");
+-  yield* fs.writeFileString(
+-    config,
+-    JSON.stringify({
+-      extends: path.resolve("tsconfig.json"),
+-      compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
+-      files: [entry],
+-      include: [],
+-      exclude: [],
+-    }),
+-  );
+-  const checked = yield* processes.exitCode(
+-    ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
+-      stdout: "inherit",
+-      stderr: "inherit",
+-    }),
+-  );
+-  if (checked !== 0) return yield* Effect.die("Public app-call SDK host failed its typecheck");
+-  let childScope = yield* Scope.make();
+-  let origin = "";
+-  yield* Effect.addFinalizer(() => Scope.close(childScope, Exit.void));
+-  const start = Effect.gen(function* () {
+-    const child = yield* processes
+-      .spawn(ChildProcess.make("node", [entry], { stdout: "pipe", stderr: "inherit" }))
+-      .pipe(Scope.provide(childScope));
+-    const line = yield* child.stdout.pipe(
+-      Stream.decodeText(),
+-      Stream.splitLines,
+-      Stream.filter((line) => line.startsWith('{"port":')),
+-      Stream.runHead,
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
+     );
+-    if (Option.isNone(line)) return yield* Effect.die("SDK host exited before listening");
+-    const ready = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line.value);
+-    origin = `http://127.0.0.1:${ready.port}`;
+-  });
+-  yield* start;
+-  return {
+-    restart: Effect.gen(function* () {
+-      yield* Scope.close(childScope, Exit.void);
+-      childScope = yield* Scope.make();
+-      yield* start;
+-    }),
+-    request: (route: string, data: unknown) =>
+-      Effect.gen(function* () {
+-        const request = yield* HttpClientRequest.bodyJson(data)(
+-          HttpClientRequest.post(origin + "/_fixture/" + route),
+-        );
+-        const response = yield* client.execute(request);
+-        return { status: response.status, body: yield* response.json };
++    const checked = yield* processes.exitCode(
++      ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++        stdout: "inherit",
++        stderr: "inherit",
+       }),
+-  };
+-});
++    );
++    if (checked !== 0) return yield* Effect.die("Public app-call SDK host failed its typecheck");
++    let childScope = yield* Scope.make();
++    let origin = "";
++    yield* Effect.addFinalizer(() => Scope.close(childScope, Exit.void));
++    const start = Effect.gen(function* () {
++      const child = yield* processes
++        .spawn(ChildProcess.make("node", [entry], { stdout: "pipe", stderr: "inherit" }))
++        .pipe(Scope.provide(childScope));
++      const line = yield* child.stdout.pipe(
++        Stream.decodeText(),
++        Stream.splitLines,
++        Stream.filter((line) => line.startsWith('{"port":')),
++        Stream.runHead,
++      );
++      if (Option.isNone(line)) return yield* Effect.die("SDK host exited before listening");
++      const ready = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line.value);
++      origin = `http://127.0.0.1:${ready.port}`;
++    });
++    yield* start;
++    return {
++      restart: Effect.gen(function* () {
++        yield* Scope.close(childScope, Exit.void);
++        childScope = yield* Scope.make();
++        yield* start;
++      }),
++      request: (route: string, data: unknown) =>
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.bodyJson(data)(
++            HttpClientRequest.post(origin + "/_fixture/" + route),
++          );
++          const response = yield* client.execute(request);
++          return { status: response.status, body: yield* response.json };
++        }),
++    };
++  });
++
++export const appCallSdk = appCallSdkHost(appCallSdkSource, "app-call-sdk");
+diff --git a/e2e/support/self-email-sdk-source.ts b/e2e/support/self-email-sdk-source.ts
+new file mode 100644
+index 00000000..df91d492
+--- /dev/null
++++ b/e2e/support/self-email-sdk-source.ts
+@@ -0,0 +1,87 @@
++/** Real public SDK host with a synthetic personal mail account and transactional audit sink. */
++export const selfEmailSdkSource = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as Runtime from "@effect/platform-node/NodeRuntime";
++import { nativeRepositories } from "@executor-js/app-source/node";
++import { createExecutor, makeExecutorStorage, OwnerId, AppId, AppCallsHost, CurrentActor,
++  ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, type Executor } from "@executor-js/sdk/core";
++import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
++import { memoryRegistry } from "@executor-js/sdk/testing";
++import { Console, Deferred, Effect, Layer, Path, Redacted, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { pgliteLayer } from "fumadb-effect/pglite";
++import { createServer } from "node:http";
++const input = INPUT;
++Runtime.runMain(Effect.scoped(Effect.gen(function* () {
++  const path = yield* Path.Path;
++  const database = yield* Layer.build(pgliteLayer({dataDir:path.join(input.directory,"postgres")}));
++  const sql = yield* SqlClient.SqlClient.pipe(Effect.provideContext(database));
++  const storage = yield* makeExecutorStorage({provider:"postgresql"}).pipe(Effect.provideContext(database));
++  yield* storage.migrate;
++  yield* sql\`create table if not exists fixture_confirmation_history (sequence bigint generated always as identity, action text not null)\`;
++  const secret = Redacted.make("c".repeat(64));
++  const blobs = filesystemBlobStore({directory:path.join(input.directory,"blobs")});
++  const ready = yield* Deferred.make<Executor>();
++  const runtime = yield* workerdApps({directory:path.join(input.directory,"workerd"),blobs,
++    executor:Deferred.await(ready),npmRegistry:input.npmRegistry,encryptionKey:secret});
++  const owner = OwnerId.make("self-email-owner");
++  // This fixture is the product host. Its verified synthetic identity is separate from app input.
++  const hooks = workflowApprovalHooks({
++    configuration: () => Effect.succeed({revision:"owner-r1",enabled:true}),
++    personalEmailAccount: value => Effect.gen(function* () {
++      const sdk = yield* Deferred.await(ready);
++      const target = yield* sdk.apps.source({app:AppId.make(value.target)});
++      return {owner:"self-email-owner",recipient:"owner@example.test",targetVersion:target.id,inspectedCompose:true};
++    }).pipe(Effect.mapError(()=>new StorageError())),
++  });
++  let failAudit = false;
++  const executor = yield* createExecutor({database:storage,secret,blobs,
++    appCalls:{...hooks,confirmationChanged:event => Effect.gen(function* () {
++      const action = event.current === undefined ? "cleared" : event.previous === undefined ? "installed" : "replaced";
++      yield* sql\`insert into fixture_confirmation_history (action) values (\${action})\`;
++      if (failAudit) return yield* new StorageError();
++    }).pipe(Effect.mapError(()=>new StorageError()))},
++    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:runtime.runtime,
++    workflows:runtime.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
++  yield* Deferred.succeed(ready,executor);
++  const setup = Effect.gen(function* () {
++    const target = (yield* executor.apps.deploy({owner,name:"Synthetic personal mail",files:[
++      {path:"index.ts",content:'import {defineApp,defineProvider,secrets,mutation,object,string,json,router} from "apps"; const mail=defineProvider({name:"Synthetic personal mail",auth:{key:secrets({label:"Key",fields:object({token:string()})})}}); const send=mutation({input:json(),approval:()=>"user-approval"},async()=>({sent:true})); export default defineApp({accounts:{mail}},{tools:router({send})});'},input.files[1],
++    ]})).app;
++    const provider = target.requirements.accounts.mail;
++    if (provider === undefined) return yield* Effect.die("Missing synthetic mail provider");
++    const account = yield* executor.managedAccounts.add({owner,provider:provider.provider,method:"key",fields:Redacted.make({token:"synthetic"})});
++    const source = (yield* executor.apps.deploy({owner,name:"Self-email workflow",files:[
++      {path:"index.ts",content:'import {defineApp,query,mutation,object,boolean,string,json,router} from "apps"; const configure=mutation({input:object({deliveryEnabled:boolean(),deliveryScope:string()}),approval:()=>"user-approval"},async(_ctx,input)=>({revision:"owner-r1",...input})); const invoke=query({input:object({target:string(),payload:json()})},async(ctx,input)=>ctx.apps.call({connection:"mail",target:input.target,tool:"send",kind:"mutation",input:input.payload})); export default defineApp({dependencies:{mail:{scope:"user",configuration:{tool:"configure",policy:{envelope:"self-email",workflow:"notify",step:"send"}},tools:{send:{kind:"mutation"}}}}},{tools:router({configure,invoke})});'},input.files[1],
++    ]})).app;
++    const connection = yield* executor.appConnections.save({app:source.id,owner,dependency:"mail",scope:"user",target:target.id,
++      revision:0,accounts:{app:{mail:[account.id]}}});
++    return {source:source.id,target:target.id,account:account.id,connection:connection.id};
++  });
++  const route = <A,I>(name:string,schema:Schema.Codec<A,I>,run:(value:A)=>Effect.Effect<unknown,unknown>) =>
++    HttpRouter.add("POST",\`/_fixture/\${name}\`,Effect.gen(function* () {
++      const req = yield* HttpServerRequest.HttpServerRequest;
++      const value = yield* req.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema)));
++      return yield* run(value).pipe(Effect.provideService(CurrentActor,"self-email-owner"),
++        Effect.flatMap(value=>HttpServerResponse.json(value)),Effect.catch(error=>HttpServerResponse.json(Schema.is(ToolCallFailed)(error)?{failure:error.failure}:{failed:true},{status:409})));
++    }).pipe(Effect.orDie));
++  const routes = Layer.mergeAll(
++    route("setup",Schema.Null,()=>setup),
++    route("configure",Schema.Struct({app:AppId,scope:Schema.String}),value=>executor.tools.call({app:value.app,tool:ToolName.make("configure"),kind:"mutation",input:{deliveryEnabled:true,deliveryScope:value.scope}})),
++    route("resume",ToolInputs.resume,value=>executor.tools.resume(value)),
++    route("list",Schema.Struct({app:AppId}),value=>executor[AppCallsHost].confirmations.list({...value,owner})),
++    route("revoke",Schema.Struct({app:AppId,revision:Schema.Int,fingerprint:Schema.String}),value=>executor[AppCallsHost].confirmations.revoke({...value,owner,dependency:"mail",scope:"user"})),
++    route("call",Schema.Struct({app:AppId,target:AppId,account:Schema.String,to:Schema.String}),value=>executor.tools.call({app:value.app,tool:ToolName.make("invoke"),kind:"query",input:{target:value.target,payload:{account:value.account,to:[value.to],cc:[],bcc:[],subject:"Synthetic",body:"hello"}}})),
++    route("audit",Schema.Null,()=>sql\`select action from fixture_confirmation_history order by sequence\`),
++    route("fail-audit",Schema.Boolean,value=>Effect.sync(()=>{failAudit=value;return null;})),
++  );
++  const services = yield* Layer.build(HttpRouter.serve(routes,{disableLogger:true,disableListenLog:true}).pipe(
++    Layer.provideMerge(NodeHttpServer.layer(createServer,{host:"127.0.0.1",port:0}))));
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Expected TCP");
++  yield* Console.log(JSON.stringify({port:server.address.port}));
++  return yield* Effect.never;
++})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
++`;
+diff --git a/e2e/tests/self-email-approvals.spec.ts b/e2e/tests/self-email-approvals.spec.ts
+new file mode 100644
+index 00000000..81a8ee14
+--- /dev/null
++++ b/e2e/tests/self-email-approvals.spec.ts
+@@ -0,0 +1,125 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { appCallSdkHost } from "../support/app-call-sdk.ts";
++import { selfEmailSdkSource } from "../support/self-email-sdk-source.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { scenarios } from "../test-plan.ts";
++const Confirmation = Schema.Struct({
++  fingerprint: Schema.String,
++  connection: Schema.Struct({ revision: Schema.Int }),
++});
++const List = Schema.Struct({ items: Schema.Array(Confirmation) });
++layer(TestLive, { excludeTestServices: true })("Self-email approvals", (it) => {
++  it.effect(scenarios.selfEmailApprovalScopes.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const sdk = yield* appCallSdkHost(selfEmailSdkSource, "self-email-sdk");
++        const setup = yield* sdk.request("setup", null);
++        expect(setup.status, JSON.stringify(setup.body)).toBe(200);
++        const ids = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ source: Schema.String, target: Schema.String, account: Schema.String }),
++        )(setup.body);
++        const scope = [
++          {
++            workflow: "notify",
++            step: "send",
++            connection: "mail",
++            target: ids.target,
++            tool: "send",
++            account: ids.account,
++            to: ["owner@example.test"],
++            cc: [],
++            bcc: [],
++          },
++        ];
++        const configure = (value: unknown) =>
++          Effect.gen(function* () {
++            const result = yield* sdk.request("configure", {
++              app: ids.source,
++              scope: JSON.stringify(value),
++            });
++            expect(result.status, JSON.stringify(result.body)).toBe(200);
++            const pending = yield* Schema.decodeUnknownEffect(
++              Schema.Struct({
++                status: Schema.Literal("approval-required"),
++                requestId: Schema.String,
++              }),
++            )(result.body);
++            return yield* sdk.request("resume", {
++              requestId: pending.requestId,
++              response: { action: "accept" },
++            });
++          });
++        const list = () =>
++          Effect.flatMap(sdk.request("list", { app: ids.source }), (result) =>
++            Schema.decodeUnknownEffect(List)(result.body),
++          );
++        const mismatch = [{ ...scope[0], to: ["someone-else@example.test"] }];
++        expect((yield* configure(mismatch)).status).toBe(200);
++        expect((yield* list()).items).toHaveLength(0);
++        expect((yield* configure(scope)).status).toBe(200);
++        const first = (yield* list()).items;
++        expect(first).toHaveLength(1);
++        const original = first[0]!;
++        expect((yield* configure(scope)).status).toBe(200);
++        const replaced = (yield* list()).items[0]!;
++        expect(replaced.connection.revision).toBe(original.connection.revision);
++        expect(replaced.fingerprint).not.toBe(original.fingerprint);
++        expect(
++          (yield* sdk.request("revoke", {
++            app: ids.source,
++            revision: original.connection.revision,
++            fingerprint: original.fingerprint,
++          })).status,
++        ).toBe(409);
++        yield* sdk.request("fail-audit", true);
++        expect(
++          (yield* sdk.request("revoke", {
++            app: ids.source,
++            revision: replaced.connection.revision,
++            fingerprint: replaced.fingerprint,
++          })).status,
++        ).toBe(409);
++        expect((yield* list()).items[0]?.fingerprint).toBe(replaced.fingerprint);
++        expect((yield* sdk.request("audit", null)).body).toEqual([
++          { action: "installed" },
++          { action: "replaced" },
++        ]);
++        yield* sdk.request("fail-audit", false);
++        expect((yield* configure(mismatch)).status).toBe(200);
++        expect((yield* list()).items).toHaveLength(0);
++        expect((yield* sdk.request("audit", null)).body).toEqual([
++          { action: "installed" },
++          { action: "replaced" },
++          { action: "cleared" },
++        ]);
++        expect((yield* configure(scope)).status).toBe(200);
++        // Confirmation is saved, but this generic mutation is deliberately still unavailable.
++        for (const to of ["owner@example.test", "someone-else@example.test"]) {
++          const sent = yield* sdk.request("call", {
++            app: ids.source,
++            target: ids.target,
++            account: ids.account,
++            to,
++          });
++          expect(sent.status, JSON.stringify(sent.body)).toBe(409);
++          expect(sent.body).toMatchObject({
++            failure: { errorName: "AppCallFailed", code: "effects_unavailable" },
++          });
++        }
++        yield* sdk.restart;
++        expect((yield* list()).items).toHaveLength(1);
++        const current = (yield* list()).items[0]!;
++        expect(
++          (yield* sdk.request("revoke", {
++            app: ids.source,
++            revision: current.connection.revision,
++            fingerprint: current.fingerprint,
++          })).status,
++        ).toBe(200);
++        expect((yield* list()).items).toHaveLength(0);
++      }),
++    ),
++  );
++});
+diff --git a/apps/hosted/web/src/implementation/pages/tool-policy-workflow-permissions.tsx b/apps/hosted/web/src/implementation/pages/tool-policy-workflow-permissions.tsx
+new file mode 100644
+index 00000000..0b85df5f
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/tool-policy-workflow-permissions.tsx
+@@ -0,0 +1,160 @@
++import { useState } from "react";
++import { useAtomSet } from "@effect/atom-react";
++import { Exit } from "effect";
++import type { AppConfirmationView } from "@executor-js/sdk/core";
++import type { WorkflowPolicyChange } from "@executor-js/hosted-server/tool-policies";
++import { Button } from "@executor-js/ui/components/button";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { appError } from "../../contracts/errors.ts";
++import { revokeWorkflowPolicyAtom } from "../../contracts/tool-policies.ts";
++import { ToolPolicyHistory } from "./tool-policy-history.tsx";
++
++const object = (value: unknown): Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : {};
++const text = (value: unknown) => (typeof value === "string" ? value : undefined);
++export function WorkflowPermissions({
++  confirmations,
++  changes,
++  appLabel,
++}: {
++  readonly confirmations: readonly AppConfirmationView[];
++  readonly changes: readonly (typeof WorkflowPolicyChange.Type)[];
++  readonly appLabel: (id: string) => string;
++}) {
++  if (confirmations.length === 0 && changes.length === 0) return null;
++  return (
++    <>
++      <h2 className="mt-2 text-sm font-medium">Workflow permissions</h2>
++      <p className="text-sm text-muted-foreground">
++        These permissions came from an approved workflow configuration. Current delivery settings,
++        versions and accounts are checked again before a send.
++      </p>
++      <ul className="divide-y rounded-md border" aria-label="Workflow permissions">
++        {confirmations.map((view) => (
++          <WorkflowRule key={view.connection.id} view={view} label={appLabel(view.app)} />
++        ))}
++        {changes
++          .filter(
++            (change) =>
++              !confirmations.some((view) => `confirmation:${view.connection.id}` === change.id),
++          )
++          .map((change) => (
++            <ArchivedWorkflowRule
++              key={change.id}
++              id={change.id}
++              label={appLabel(text(change.snapshot.app) ?? "Workflow")}
++              action={change.action}
++            />
++          ))}
++      </ul>
++    </>
++  );
++}
++
++function WorkflowRule({
++  view,
++  label,
++}: {
++  readonly view: AppConfirmationView;
++  readonly label: string;
++}) {
++  const { organization } = useOrganizationRoute();
++  const revoke = useAtomSet(revokeWorkflowPolicyAtom(organization), { mode: "promiseExit" });
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<string>();
++  const [history, setHistory] = useState(false);
++  const value = view.confirmation.value;
++  const declaration = object(value.declaration);
++  return (
++    <li className="p-4">
++      <div className="flex flex-wrap items-start justify-between gap-3">
++        <div className="min-w-0">
++          <h3 className="break-words text-sm font-medium">
++            {label}
++            {" · "}
++            {text(declaration.workflow) ?? view.connection.dependency}
++          </h3>
++          <p className="mt-1 break-words text-sm text-muted-foreground">
++            Saved self-email permission
++            {typeof value.recipient === "string" ? ` to ${value.recipient}` : ""}
++          </p>
++          <p className="mt-1 break-words text-xs text-muted-foreground">
++            Step: {text(declaration.step) ?? "Unknown"}
++            {" · Account: "}
++            {text(value.account) ?? "Unknown"}
++          </p>
++        </div>
++        <div className="flex gap-1">
++          <Button
++            size="sm"
++            variant="outline"
++            disabled={pending}
++            onClick={async () => {
++              setPending(true);
++              setError(undefined);
++              const result = await revoke({
++                app: view.app,
++                dependency: view.connection.dependency,
++                scope: view.connection.scope,
++                revision: view.connection.revision,
++                fingerprint: view.fingerprint,
++              });
++              setPending(false);
++              if (Exit.isFailure(result)) setError(appError(result.cause));
++            }}
++          >
++            {pending ? "Revoking…" : "Revoke"}
++          </Button>
++          <Button
++            size="sm"
++            variant="ghost"
++            aria-expanded={history}
++            onClick={() => setHistory(!history)}
++          >
++            History
++          </Button>
++        </div>
++      </div>
++      {error && (
++        <p role="alert" className="mt-2 text-sm text-destructive">
++          {error}
++        </p>
++      )}
++      {history && <ToolPolicyHistory id={`confirmation:${view.connection.id}`} />}
++    </li>
++  );
++}
++function ArchivedWorkflowRule({
++  id,
++  label,
++  action,
++}: {
++  readonly id: string;
++  readonly label: string;
++  readonly action: string;
++}) {
++  const [history, setHistory] = useState(false);
++  return (
++    <li className="p-4">
++      <div className="flex items-center justify-between gap-3">
++        <div className="min-w-0">
++          <h3 className="break-words text-sm font-medium">{label}</h3>
++          <p className="mt-1 text-sm text-muted-foreground">
++            {action === "cleared" ? "Revoked workflow permission" : "Saved workflow permission"}
++          </p>
++        </div>
++        <Button
++          size="sm"
++          variant="ghost"
++          aria-expanded={history}
++          onClick={() => setHistory(!history)}
++        >
++          History
++        </Button>
++      </div>
++      {history && <ToolPolicyHistory id={id} />}
++    </li>
++  );
++}
+diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
+index 0250df7b..bcf31f0e 100644
+--- a/packages/sdk/src/implementation/workflows.ts
++++ b/packages/sdk/src/implementation/workflows.ts
+@@ -1,3 +1,5 @@
++import { bindToolPolicy } from "./tool-policy.ts";
++import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
+ import { makeWorkflowInputs } from "./workflow-inputs.ts";
+ import { CurrentActor } from "../contracts/executor.ts";
+ /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
+@@ -126,6 +128,7 @@ export const makeWorkflowRuns = (
+   declarations: Declarations,
+   backend?: WorkflowRuntime,
+   reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
++  standingPolicy?: ToolPolicyHook,
+ ) => {
+   const db = database(storage);
+   const read = (run: WorkflowRunId, app?: AppId) =>
+@@ -626,7 +629,7 @@ export const makeWorkflowRuns = (
+         const row = yield* read(input.run, input.app);
+         if (row.actor !== actor) return yield* failure("not_found");
+       });
+-    return {
++    const result: WorkflowHostControls = {
+       start: (input) =>
+         parse(
+           StartWorkflow,
+@@ -652,6 +655,9 @@ export const makeWorkflowRuns = (
+           within(input).pipe(Effect.andThen(terminate(input))),
+         ),
+     };
++    return standingPolicy === undefined
++      ? result
++      : bindToolPolicy(result, inherited, standingPolicy);
+   }
+   return {
+     controls,
+diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
+index 3786359a..6b0e5ff3 100644
+--- a/packages/sdk/src/implementation/app-calls.ts
++++ b/packages/sdk/src/implementation/app-calls.ts
+@@ -159,6 +159,7 @@ export const makeAppCalls = (options: {
+             row.authorizer === "local" ? undefined : row.authorizer,
+           ),
+           Effect.provideService(AppCallDepth, depth + 1),
++          Effect.provideService(AppCallWorkflow, identity.workflow),
+           Effect.provideService(AppCallProtection, {
+             source: {
+               app: app.id,
+diff --git a/e2e/tests/workflow-dependency-tool-policy.spec.ts b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+new file mode 100644
+index 00000000..7c767d4a
+--- /dev/null
++++ b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+@@ -0,0 +1,127 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Rule = Schema.Struct({ id: Schema.String, revision: Schema.Int });
++const Run = Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) });
++layer(RuntimeLive, { excludeTestServices: true })("Workflow dependency approval policies", (it) => {
++  it.effect(scenarios.workflowDependencyToolPolicy.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(apps, (id) =>
++            api.request(actors.owner, "DELETE", `${prefix}/apps/${id}`),
++          ).pipe(Effect.orDie),
++        );
++        const deploy = (name: string, source: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [{ path: "index.ts", content: source }, appsManifest],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(Resource, response);
++            apps.push(app.id);
++            return app.id;
++          });
++        const target = yield* deploy(
++          "Dependency policy target",
++          `import {defineApp,query,object,string,router} from "apps";
++const input=object({message:string()});
++const open=query({input},async(_ctx,value)=>value);
++const guarded=query({input,approval:()=>"user-approval"},async(_ctx,value)=>value);
++export default defineApp({},{tools:router({open,guarded})});`,
++        );
++        const source = yield* deploy(
++          "Workflow dependency caller",
++          `import {defineApp,query,workflow,object,string,router} from "apps";
++const input=object({target:string(),tool:string()});
++const invoke=query({input},async(ctx,value)=>ctx.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}));
++const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.do("dependency",{retries:{limit:0,delay:0}},step=>step.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}))};}catch{return {blocked:true};}});
++export default defineApp({dependencies:{remote:{scope:"user",tools:{open:{kind:"query"},guarded:{kind:"query"}}}}},{tools:router({invoke}),workflows:{probe,other:probe}});`,
++        );
++        expect(
++          (yield* api.request(actors.owner, "PUT", `${prefix}/apps/${source}/connections/remote`, {
++            scope: "user",
++            target,
++            revision: 0,
++          })).status,
++        ).toBe(200);
++        const probe = (workflow: string, tool: string) =>
++          Effect.gen(function* () {
++            const started = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/apps/${source}/workflow-runs`,
++              { workflow, input: { target, tool } },
++            );
++            expect(started.status, JSON.stringify(started.body)).toBe(200);
++            const run = yield* body(Resource, started);
++            const result = yield* Effect.gen(function* () {
++              return yield* body(
++                Run,
++                yield* api.request(
++                  actors.owner,
++                  "GET",
++                  `${prefix}/apps/${source}/workflow-runs/${run.id}`,
++                ),
++              );
++            }).pipe(
++              Effect.repeat({
++                while: (run) => run.status === "queued" || run.status === "running",
++                schedule: Schedule.spaced("100 millis"),
++              }),
++              Effect.timeout("30 seconds"),
++            );
++            expect(result.status, JSON.stringify(result)).toBe("complete");
++            return result.output;
++          });
++        const ordinary = (tool: string) =>
++          api.request(actors.owner, "POST", `${prefix}/apps/${source}/tools/call`, {
++            tool: "invoke",
++            kind: "query",
++            input: { target, tool },
++          });
++        const policy = (tool: string, mode: string) =>
++          Effect.gen(function* () {
++            const saved = yield* api.request(actors.owner, "POST", `${prefix}/tool-policies`, {
++              target: { kind: "tool", app: target, tool },
++              workflow: "probe",
++              mode,
++            });
++            expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++            return yield* body(Rule, saved);
++          });
++        // A matching always-ask rule must stop a normally approved dependency query.
++        const asks = yield* policy("open", "always-ask");
++        expect(yield* probe("probe", "open")).toEqual({ blocked: true });
++        expect(yield* probe("other", "open")).toEqual({ result: { message: "same arguments" } });
++        expect((yield* ordinary("open")).body).toEqual({ message: "same arguments" });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${prefix}/tool-policies/${asks.id}?revision=${asks.revision}`,
++          )).status,
++        ).toBe(200);
++        expect(yield* probe("probe", "open")).toEqual({ result: { message: "same arguments" } });
++        // A matching never-ask rule satisfies the target ask only for this workflow.
++        yield* policy("guarded", "never-ask");
++        expect(yield* probe("probe", "guarded")).toEqual({ result: { message: "same arguments" } });
++        expect(yield* probe("other", "guarded")).toEqual({ blocked: true });
++        expect((yield* ordinary("guarded")).status).not.toBe(200);
++      }),
++    ),
++  );
++});

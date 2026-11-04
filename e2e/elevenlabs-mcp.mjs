@@ -57,7 +57,7 @@ export const proveElevenLabsMcp = ({
       (client) => Effect.promise(() => client.close()),
     );
     for (const [name, accountId, expected] of [
-      ["fixture_read", token, { transport: "rest", marker: "retained-token" }],
+      ["fixture.read", token, { transport: "rest", marker: "retained-token" }],
       ["list_voices", oauth, { transport: "mcp", marker: "list_voices" }],
     ]) {
       const search = yield* Effect.promise(() =>

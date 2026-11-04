@@ -141,7 +141,7 @@ const program = Effect.gen(function* () {
   });
   const call = (tool, accountId) =>
     request("POST", `${path}/tools/call`, { tool, input: { accountId, input: {} } });
-  check("token works before upgrade", yield* call("fixture_read", token.id), {
+  check("token works before upgrade", yield* call("fixture.read", token.id), {
     transport: "rest",
     marker: "retained-token",
   });
@@ -159,7 +159,7 @@ const program = Effect.gen(function* () {
     updated.requirements.accounts.signIn.cardinality,
     "many",
   );
-  check("token works with no OAuth account", yield* call("fixture_read", token.id), {
+  check("token works with no OAuth account", yield* call("fixture.read", token.id), {
     transport: "rest",
     marker: "retained-token",
   });
@@ -189,13 +189,13 @@ const program = Effect.gen(function* () {
     );
   }
   const tools = yield* request("GET", `${path}/tools/index`);
-  for (const name of ["fixture_read", "fixture_write", "read_project", "delete_project"])
+  for (const name of ["fixture.read", "fixture.write", "read_project", "delete_project"])
     check(
       `discover ${name}`,
       tools.items.some((item) => item.name === name),
       true,
     );
-  check("token still works beside OAuth", yield* call("fixture_read", token.id), {
+  check("token still works beside OAuth", yield* call("fixture.read", token.id), {
     transport: "rest",
     marker: "retained-token",
   });
@@ -209,7 +209,7 @@ const program = Effect.gen(function* () {
   });
   check("OAuth tool refuses token account", wrong.status, 422);
   for (const [tool, accountId] of [
-    ["fixture_write", token.id],
+    ["fixture.write", token.id],
     ["delete_project", oauth.id],
   ]) {
     const refused = yield* response("POST", `${path}/tools/call`, {
