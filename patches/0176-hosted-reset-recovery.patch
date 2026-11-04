@@ -3,14 +3,29 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
 +++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
 @@ -1 +1,2 @@
 +import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
- /** The executor and the services every cloud Worker shares, including app pages. */
-@@ -74,2 +75,6 @@
+ import { cloudHostedRoutes } from "./hosted-routes.ts";
+@@ -78,2 +79,6 @@
      Layer.succeed(
 +      AccountResetBackend,
 +      Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
 +    ),
 +    Layer.succeed(
        PoolUsageBackend,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -1 +1,2 @@
++import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+@@ -221,2 +222,8 @@
+       return Layer.mergeAll(
++        Layer.succeed(
++          AccountResetBackend,
++          Option.isSome(modelSigningKey)
++            ? { key: modelSigningKey.value, origin: modelOrigin }
++            : undefined,
++        ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
@@ -146,11 +161,11 @@ new file mode 100644
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
-@@ -38,2 +38,3 @@
+@@ -39,2 +39,3 @@
  import { HostedTools } from "./tools.ts";
 +import { HostedAccountResets } from "./account-resets.ts";
  import { HostedSkills } from "./skills.ts";
-@@ -189,2 +190,3 @@
+@@ -191,2 +192,3 @@
      HostedMcpConnections,
 +    HostedAccountResets,
      HostedFeedback,
@@ -339,7 +354,7 @@ diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/s
 @@ -1 +1,2 @@
 +import { hostedAccountResetHandlers } from "./account-resets.ts";
  import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
-@@ -99,2 +100,3 @@
+@@ -101,2 +102,3 @@
    hostedMcpConnectionHandlers,
 +  hostedAccountResetHandlers,
    hostedFeedbackHandlers,
@@ -396,18 +411,3 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
 +    AccountResetUnavailable: ({ message }) => message,
 +    AccountResetRefused: ({ message }) => message,
      PoolUsageUnavailable: ({ message }) => message,
-diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
---- a/apps/hosted/self-host/src/implementation/executor-services.ts
-+++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -1 +1,2 @@
-+import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
- import { poolModels } from "@executor-js/hosted-server/pool-models";
-@@ -221,2 +222,8 @@
-       return Layer.mergeAll(
-+        Layer.succeed(
-+          AccountResetBackend,
-+          Option.isSome(modelSigningKey)
-+            ? { key: modelSigningKey.value, origin: modelOrigin }
-+            : undefined,
-+        ),
-         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
