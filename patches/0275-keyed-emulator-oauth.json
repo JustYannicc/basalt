@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-keyed-emulator-oauth",
+  "file": "0275-keyed-emulator-oauth.patch",
+  "content_sha256": "5167ed8f0509708f8d15c4ef99fba3c40522e79b5ff4ec83399b3497f592e74e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
