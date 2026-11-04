@@ -132,6 +132,7 @@ const fixture = <A>(
         const sql = yield* SqlClient.SqlClient;
         for (const statement of [
           "create table organization (id text primary key, metadata text)",
+          "create table hosted_organization_removal (organization_id text primary key)",
           'create table "user" (id text primary key, name text, email text, "emailVerified" boolean)',
           'create table member (id text, "organizationId" text, "userId" text, role text)',
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
