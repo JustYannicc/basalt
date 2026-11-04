@@ -1,11 +1,11 @@
 diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
 new file mode 100644
-index 000000000..4b61d9a22
+index 000000000..04d68914c
 --- /dev/null
 +++ b/apps/hosted/testing/management-provisioning.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,110 @@
 +/** Commit notifications for readiness in a runner-owned disposable database. */
-+import type { Pool } from "pg";
++import type { Pool, PoolClient } from "pg";
 +import { Schema } from "effect";
 +
 +const channel = "e2e_management_provisioned";
@@ -39,50 +39,79 @@ index 000000000..4b61d9a22
 +  user: string,
 +  signal: AbortSignal,
 +) => {
-+  const client = await database.connect();
++  let client: PoolClient | undefined;
++  let released = false;
 +  let revision = 0;
 +  let wake = () => {};
 +  let disconnected = false;
++  let interrupt = () => {};
++  const interrupted = new Promise<never>((_, reject) => {
++    interrupt = () => reject(new ManagementProvisioningFailed());
++  });
++  // An already-aborted signal can reject before the first operation subscribes.
++  void interrupted.catch(() => {});
++  const release = (discard: boolean) => {
++    if (client !== undefined && !released) {
++      released = true;
++      client.release(discard);
++    }
++  };
++  const abort = () => {
++    release(true);
++    interrupt();
++  };
 +  const changed = () => {
 +    revision++;
 +    wake();
 +  };
 +  const failed = () => {
 +    disconnected = true;
-+    changed();
++    abort();
 +  };
-+  client.on("notification", changed);
-+  client.on("error", failed);
-+  signal.addEventListener("abort", changed);
++  const until = <A>(work: () => Promise<A>) => {
++    if (signal.aborted || disconnected) throw new ManagementProvisioningFailed();
++    return Promise.race([work(), interrupted]);
++  };
++  signal.addEventListener("abort", abort, { once: true });
 +  try {
++    const acquired = await until(() =>
++      database.connect().then((value) => {
++        // pg cannot remove a queued checkout. Dispose it if cancellation won the race.
++        if (signal.aborted) {
++          value.release(true);
++          throw new ManagementProvisioningFailed();
++        }
++        client = value;
++        return value;
++      }),
++    );
++    acquired.on("notification", changed);
++    acquired.on("error", failed);
 +    // Subscribe before reading; a completion during the read also advances the revision.
-+    await client.query(`listen ${channel}`);
++    await until(() => acquired.query(`listen ${channel}`));
 +    for (;;) {
-+      if (signal.aborted || disconnected) throw new ManagementProvisioningFailed();
 +      const observed = revision;
 +      const [state] = Schema.decodeUnknownSync(Readiness)(
-+        (await client.query(managementReadiness, [organization, user])).rows,
++        (await until(() => acquired.query(managementReadiness, [organization, user]))).rows,
 +      );
 +      if (state === undefined) throw new ManagementProvisioningFailed();
-+      if (state.ready) return;
++      if (state.ready) break;
 +      if (revision !== observed) continue;
-+      await new Promise<void>((resolve) => {
-+        wake = resolve;
-+      });
++      await until(
++        () =>
++          new Promise<void>((resolve) => {
++            wake = resolve;
++          }),
++      );
 +    }
++    await until(() => acquired.query(`unlisten ${channel}`));
++    if (signal.aborted || disconnected) throw new ManagementProvisioningFailed();
++    release(false);
 +  } finally {
-+    client.off("notification", changed);
-+    client.off("error", failed);
-+    signal.removeEventListener("abort", changed);
-+    if (disconnected) client.release(true);
-+    else {
-+      try {
-+        await client.query(`unlisten ${channel}`);
-+        client.release();
-+      } catch {
-+        client.release(true);
-+      }
-+    }
++    release(true);
++    client?.off("notification", changed);
++    client?.off("error", failed);
++    signal.removeEventListener("abort", abort);
 +  }
 +};
 diff --git a/apps/hosted/testing/scenario-server.ts b/apps/hosted/testing/scenario-server.ts
