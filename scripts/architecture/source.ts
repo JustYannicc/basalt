@@ -71,7 +71,7 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
 // Parser-directed leaves retain template tails and regex bodies while excluding comments.
 function bindingStructure(expression: ts.Expression, source: ts.SourceFile): string {
   const visit = (node: ts.Node): unknown => {
-    const children = node.getChildren(source);
+    const children = node.getChildren(source).filter((child) => !ts.isJSDoc(child));
     return children.length > 0
       ? [node.kind, children.map(visit)]
       : [node.kind, node.getText(source)];
@@ -82,11 +82,18 @@ function bindingStructure(expression: ts.Expression, source: ts.SourceFile): str
 function declaredBindingStructure(expression: string): string | undefined {
   const parsed = ts.createSourceFile(
     "binding.ts",
-    `${expression}.fetch()`,
+    `${expression}\n.fetch()`,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TS,
   );
+  // The pinned parser records recovery diagnostics here; never compare a recovered tree.
+  if (
+    !("parseDiagnostics" in parsed) ||
+    !Array.isArray(parsed.parseDiagnostics) ||
+    parsed.parseDiagnostics.length !== 0
+  )
+    return undefined;
   const statement = parsed.statements[0];
   if (
     parsed.statements.length !== 1 ||
@@ -95,7 +102,14 @@ function declaredBindingStructure(expression: string): string | undefined {
   )
     return undefined;
   const call = statement.expression;
-  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression))
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isPropertyAccessExpression(call.expression) ||
+    call.expression.name.text !== "fetch" ||
+    call.expression.name.getStart(parsed) !== expression.length + 2 ||
+    call.arguments.length !== 0 ||
+    call.end !== parsed.end
+  )
     return undefined;
   return bindingStructure(call.expression.expression, parsed);
 }

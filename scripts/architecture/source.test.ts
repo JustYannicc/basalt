@@ -435,6 +435,71 @@ test.each([
   ]);
 });
 
+test("trailing declaration comments preserve the exact receiver and dynamic-host refusals", () => {
+  const caller = module("gateway", "src/router.ts", {
+    bindings: ["container.getTcpPort(8327) // selected port=runtime"],
+  });
+  const same = sourceDependencies(
+    fixture({
+      "src/router.ts": "container.getTcpPort(8327).fetch(request);",
+    }),
+    [caller],
+    [],
+  );
+  expect(same.errors).toEqual([]);
+  expect(same.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+  const different = sourceDependencies(
+    fixture({
+      "src/router.ts": "container.fetch(`https://${destination}/v1`);",
+    }),
+    [caller],
+    [],
+  );
+  expect(different.dependencies).toEqual([]);
+  expect(different.errors).toEqual([
+    "src/router.ts:1: Unmodelled fetch binding: container",
+    "src/router.ts:1: Outside URL has a dynamic host",
+  ]);
+});
+
+test.each(["container.getTcpPort(8327) /*", "container.getTcpPort(8327", "container.\n// broken"])(
+  "malformed binding declarations cannot suppress host errors: %s",
+  (declared) => {
+    const result = sourceDependencies(
+      fixture({
+        "src/router.ts": "container.fetch(`https://${destination}/v1`);",
+      }),
+      [module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] })],
+      [],
+    );
+    expect(result.dependencies).toEqual([]);
+    expect(result.errors).toEqual([
+      "src/router.ts:1: Unmodelled fetch binding: container",
+      "src/router.ts:1: Outside URL has a dynamic host",
+    ]);
+  },
+);
+
+test.each([
+  ["select({port:8327})", "select({ /** transport */ port:8327 })"],
+  ["select({port:8327})", "select({\n /** transport */\n port:8327 })"],
+  ["select(`pool${({port:8327}).port}`)", "select(`pool${({ /** transport */ port:8327 }).port}`)"],
+  [
+    "select(`pool${({port:8327}).port}`)",
+    "select(`pool${({\n /** transport */\n port:8327 }).port}`)",
+  ],
+])("attached JSDoc does not change transport identity: %s", (declared, commented) => {
+  const result = sourceDependencies(
+    fixture({
+      "src/router.ts": `${commented}.fetch(\`https://\${destination}/v1\`);`,
+    }),
+    [module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] })],
+    [],
+  );
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+});
+
 test("declared runtime code outside conventional folders participates in source checks", () => {
   const root = fixture({
     "brand.ts": "fetch('https://unmodelled.invalid/v1');",
