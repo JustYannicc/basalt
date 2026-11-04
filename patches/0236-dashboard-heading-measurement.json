@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-dashboard-heading-measurement",
+  "file": "0236-dashboard-heading-measurement.patch",
+  "content_sha256": "0dc494d1ac91f18fe3f35c9f1e54fad7a9ca764738304e1b843cadd91f96aa87",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

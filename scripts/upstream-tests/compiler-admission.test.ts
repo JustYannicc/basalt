@@ -8,6 +8,10 @@ import {
   compileWithinDeadline,
   requestCompile,
 } from "../../.upstream/apps/hosted/cloud/src/implementation/compiler-request.ts";
+import { AppOperationError } from "../../.upstream/packages/app-management/src/contracts/api.ts";
+import { describeAppFailure } from "../../.upstream/packages/app-management/src/cli.ts";
+import { diagnostic } from "../../.upstream/packages/mcp/src/implementation/diagnostics.ts";
+import { compilerPhases } from "../../.upstream/apps/hosted/cloud/src/implementation/compiler-phases.ts";
 
 type Advance = (milliseconds: number) => Effect.Effect<void>;
 const run = (context: TestContext, program: (advance: Advance) => Effect.Effect<void, unknown>) =>
@@ -203,3 +207,60 @@ test("client cancellation releases its queued FIFO ticket", (context) =>
       assert.equal(compiledAfterDisconnect, false);
     }),
   ));
+
+test("a stalled compile replies with its timeout after retaining the stalled dependency phase", (context) => {
+  const phases: string[] = [];
+  context.mock.method(console, "log", (line: string) => {
+    const record = JSON.parse(line);
+    if (record.type === "executor.compiler.phase") phases.push(record.phase);
+  });
+  return run(context, (advance) =>
+    Effect.gen(function* () {
+      const { phase } = yield* compilerPhases(
+        [{ path: "index.ts", content: "export default {};" }],
+        [],
+        "compiler-fixture",
+      );
+      const admission = makeBuildAdmission(1, "50 seconds");
+      const response = yield* admission(
+        compileWithinDeadline(
+          Effect.sync(() => phase("dependencies")).pipe(Effect.andThen(Effect.never)),
+        ),
+        phase,
+      ).pipe(
+        Effect.tapCause(() => Effect.sync(() => phase("error"))),
+        Effect.result,
+        Effect.tap(() => Effect.sync(() => phase("replied"))),
+        Effect.forkChild,
+      );
+      yield* advance(50_000);
+      const result = yield* Fiber.join(response);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.ok(Schema.is(RuntimeBuildFailed)(result.failure));
+      assert.deepEqual(phases, [
+        "received",
+        "admitted",
+        "dependencies",
+        "released",
+        "error",
+        "replied",
+      ]);
+    }),
+  );
+});
+
+test("public app operations, CLI and MCP preserve busy capacity as a recoverable 503", () => {
+  const busy = new BuildBusy();
+  const codec = Schema.toCodecJson(AppOperationError);
+  const encoded = Schema.encodeSync(codec)(busy);
+  const decoded = Schema.decodeUnknownSync(codec)(encoded);
+  assert.ok(Schema.is(BuildBusy)(decoded));
+  const cli = describeAppFailure(decoded);
+  assert.equal(cli?.code, "BuildBusy");
+  assert.equal(cli?.status, 503);
+  assert.equal(cli?.recovery?.action, busy.recovery.action);
+  const mcp = JSON.parse(diagnostic(decoded));
+  assert.equal(mcp.code, "BuildBusy");
+  assert.equal(mcp.status, 503);
+  assert.equal(mcp.recovery.action, busy.recovery.action);
+});
