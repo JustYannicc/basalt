@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    accountForms = part "Account forms" {
+      description "The active sign-in method owns its fields and errors. Blocked alternatives appear below that form in a visible Other sign-in methods group and never repeat the selected method's refusal."
+      metadata { code ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx" }
+    }
+  }
+}

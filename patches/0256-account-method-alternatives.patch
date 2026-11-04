@@ -1,0 +1,57 @@
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index 9a5bd530706a5471d12a19fc7348230551f446ac..513d1f69de4b59048a52092ec5fd4ae8ef67dc1c 100644
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -187,24 +187,6 @@ export function AccountForm<A, E>({
+           </Select>
+         </label>
+       )}
+-      {!account && methods.some(([name]) => blocked(name) !== undefined) && (
+-        <ul
+-          aria-label="Methods not available here"
+-          className="grid gap-1 text-xs leading-relaxed text-muted-foreground"
+-        >
+-          {methods.flatMap(([name]) => {
+-            const reason = blocked(name);
+-            return reason === undefined
+-              ? []
+-              : [
+-                  <li key={name}>
+-                    <span className="font-medium text-foreground/80">{labels.get(name)}</span>.{" "}
+-                    {reason}
+-                  </li>,
+-                ];
+-          })}
+-        </ul>
+-      )}
+       {blockedReason !== undefined || (method === "" && methods.length > 0) ? (
+         <p className="setup-notice py-[12px] px-[14px] border border-border rounded-[7px] text-muted-foreground bg-muted text-[13px] my-[8px] mx-0">
+           {blockedReason ?? "No sign-in method can be connected here yet."}
+@@ -273,6 +255,27 @@ export function AccountForm<A, E>({
+           This provider needs a custom credential form.
+         </p>
+       )}
++      {!account && methods.some(([name]) => name !== method && blocked(name) !== undefined) && (
++        <section
++          aria-label="Other sign-in methods"
++          className="grid gap-2 border-t border-border pt-4"
++        >
++          <h3 className="text-xs font-medium text-foreground">Other sign-in methods</h3>
++          <ul className="grid gap-1 text-xs leading-relaxed text-muted-foreground">
++            {methods.flatMap(([name]) => {
++              const reason = blocked(name);
++              return name === method || reason === undefined
++                ? []
++                : [
++                    <li key={name}>
++                      <span className="font-medium text-foreground/80">{labels.get(name)}</span>.{" "}
++                      {reason}
++                    </li>,
++                  ];
++            })}
++          </ul>
++        </section>
++      )}
+     </form>
+   );
+ }
