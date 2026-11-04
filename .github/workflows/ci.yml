@@ -454,7 +454,8 @@ jobs:
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
@@ -713,7 +714,8 @@ jobs:
             .generated/ci-flakes/**
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/physical-state-digests.ndjson
             .upstream/.local/e2e/**/physical-provisioning-completed.json
             .upstream/.local/e2e/**/report/**
@@ -1179,6 +1181,7 @@ jobs:
         run: |
           bunx vitest run --config e2e/alchemy-dev-output.config.ts
           bunx vitest run --config e2e/cloud-app-listener.config.ts
+          bunx vitest run --config e2e/emulator-failures.config.ts
       - name: Check the pool acceptance runner
         run: node --test scripts/pool-acceptance/*.test.ts
       - name: Check the provider table against the pinned pool backend
