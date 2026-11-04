@@ -68,17 +68,36 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   return errors;
 }
 
-// Compare syntax tokens so formatting and comments cannot change a modelled transport.
-function bindingTokens(expression: string): string {
-  const scanner = ts.createScanner(
+// Parser-directed leaves retain template tails and regex bodies while excluding comments.
+function bindingStructure(expression: ts.Expression, source: ts.SourceFile): string {
+  const visit = (node: ts.Node): unknown => {
+    const children = node.getChildren(source);
+    return children.length > 0
+      ? [node.kind, children.map(visit)]
+      : [node.kind, node.getText(source)];
+  };
+  return JSON.stringify(visit(expression));
+}
+
+function declaredBindingStructure(expression: string): string | undefined {
+  const parsed = ts.createSourceFile(
+    "binding.ts",
+    `${expression}.fetch()`,
     ts.ScriptTarget.Latest,
     true,
-    ts.LanguageVariant.Standard,
-    expression,
+    ts.ScriptKind.TS,
   );
-  const tokens: string[] = [];
-  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) tokens.push(scanner.getTokenText());
-  return JSON.stringify(tokens);
+  const statement = parsed.statements[0];
+  if (
+    parsed.statements.length !== 1 ||
+    statement === undefined ||
+    !ts.isExpressionStatement(statement)
+  )
+    return undefined;
+  const call = statement.expression;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression))
+    return undefined;
+  return bindingStructure(call.expression.expression, parsed);
 }
 
 function fetchBinding(
@@ -89,13 +108,13 @@ function fetchBinding(
   if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "fetch")
     return undefined;
   const receiver = call.expression.expression;
-  const names = [receiver.getText(source)];
-  if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
-  const candidates = names.map(bindingTokens);
+  const receivers = [receiver];
+  if (ts.isCallExpression(receiver)) receivers.push(receiver.expression);
+  const candidates = receivers.map((expression) => bindingStructure(expression, source));
   return module.bindings.find((binding) => {
     const name = binding.split("=")[0]!;
     return [name, `env.${name}`, `this.env.${name}`].some((candidate) =>
-      candidates.includes(bindingTokens(candidate)),
+      candidates.includes(declaredBindingStructure(candidate) ?? ""),
     );
   });
 }

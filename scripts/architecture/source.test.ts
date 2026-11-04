@@ -398,6 +398,43 @@ test("bound transports survive formatting while retaining exact arguments and li
   ]);
 });
 
+test("super transports retain their parsed receiver kind", () => {
+  const result = sourceDependencies(
+    fixture({
+      "src/router.ts":
+        "class Child extends Parent { send() { return super.fetch(`http://pool${path}`); } }",
+    }),
+    [module("gateway", "src/router.ts", { bindings: ["super=runtime"] })],
+    [],
+  );
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+});
+
+test.each([
+  ["select(`pool${id} a`)", "select(`pool${id}a`)"],
+  ["select(/a b/)", "select(/a  b/)"],
+])("bound transport literals retain parser structure: %s", (declared, different) => {
+  const caller = module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] });
+  const same = sourceDependencies(
+    fixture({ "src/router.ts": `${declared}.fetch(request);` }),
+    [caller],
+    [],
+  );
+  expect(same.errors).toEqual([]);
+  expect(same.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+  const result = sourceDependencies(
+    fixture({ "src/router.ts": `${different}.fetch(\`https://\${destination}/v1\`);` }),
+    [caller],
+    [],
+  );
+  expect(result.dependencies).toEqual([]);
+  expect(result.errors).toEqual([
+    `src/router.ts:1: Unmodelled fetch binding: ${different}`,
+    "src/router.ts:1: Outside URL has a dynamic host",
+  ]);
+});
+
 test("declared runtime code outside conventional folders participates in source checks", () => {
   const root = fixture({
     "brand.ts": "fetch('https://unmodelled.invalid/v1');",
