@@ -197,10 +197,13 @@ test("storage-only migration keeps exact-ref classification unchanged and ignore
   await assert.rejects(classifyRefs(root, head, commit(root)), /Missing or orphan/);
 });
 
-
 test("replacement provenance preserves its original digest and pin and rejects incomplete records", () => {
   const original = patchManifest.patches[0]!;
-  const replacement = { ...original, rebased_from: "a".repeat(64), rebased_from_pin: "b".repeat(40) };
+  const replacement = {
+    ...original,
+    rebased_from: "a".repeat(64),
+    rebased_from_pin: "b".repeat(40),
+  };
   const file = original.file.replace(/\.patch$/, ".json");
   assert.deepEqual(parsePatchRecord(JSON.stringify(replacement), file), replacement);
   for (const invalid of [
@@ -208,9 +211,9 @@ test("replacement provenance preserves its original digest and pin and rejects i
     { ...replacement, rebased_from_pin: undefined },
     { ...replacement, rebased_from_pin: "main" },
     { ...replacement, rebased_from: original.content_sha256 },
-  ]) assert.throws(() => parsePatchRecord(JSON.stringify(invalid), file));
+  ])
+    assert.throws(() => parsePatchRecord(JSON.stringify(invalid), file));
 });
-
 
 test("filesystem loading verifies archived replacement bytes and identity", (context) => {
   const root = makeReleaseRoot();
@@ -225,10 +228,15 @@ test("filesystem loading verifies archived replacement bytes and identity", (con
   writeFileSync(join(archive, record), JSON.stringify(original));
   const nextBytes = Buffer.concat([originalBytes, Buffer.from("\n")]);
   writeFileSync(join(root, "patches", original.file), nextBytes);
-  writeFileSync(join(root, "patches", record), JSON.stringify({
-    ...original, content_sha256: sha256PatchContent(nextBytes),
-    rebased_from: original.content_sha256, rebased_from_pin: pin,
-  }));
+  writeFileSync(
+    join(root, "patches", record),
+    JSON.stringify({
+      ...original,
+      content_sha256: sha256PatchContent(nextBytes),
+      rebased_from: original.content_sha256,
+      rebased_from_pin: pin,
+    }),
+  );
   assert.equal(readPatchManifest(root).patches[0]!.rebased_from, original.content_sha256);
   writeFileSync(join(archive, original.file), "changed");
   assert.throws(() => readPatchManifest(root), /provenance mismatch/);

@@ -20,14 +20,21 @@ export function readPatchManifest(root: string): PatchManifestV3 {
   const headerPath = join(root, patchManifestPath);
   if (!lstatSync(headerPath).isFile()) throw new Error("Patch header must be a regular file");
   const source = readFileSync(headerPath, "utf8");
-  const files = Object.fromEntries(readdirSync(join(root, "patches"))
-    .filter((file) => /\.(patch|json)$/.test(file)).map((file) => {
-      const path = join(root, "patches", file);
-      const regular = lstatSync(path).isFile();
-      return [file, { regular, content: regular ? readFileSync(path) : "" }];
-    }));
+  const files = Object.fromEntries(
+    readdirSync(join(root, "patches"))
+      .filter((file) => /\.(patch|json)$/.test(file))
+      .map((file) => {
+        const path = join(root, "patches", file);
+        const regular = lstatSync(path).isFile();
+        return [file, { regular, content: regular ? readFileSync(path) : "" }];
+      }),
+  );
   const manifest = materializePatchManifest(source, files);
-  if (manifest.pool_carries) assertPoolCarryManifestContent(manifest, readFileSync(join(root, manifest.pool_carries.manifest)));
+  if (manifest.pool_carries)
+    assertPoolCarryManifestContent(
+      manifest,
+      readFileSync(join(root, manifest.pool_carries.manifest)),
+    );
   for (const patch of manifest.patches) {
     if (patch.rebased_from === undefined) continue;
     const directory = join(root, "patches/archive", patch.rebased_from_pin!);
@@ -37,8 +44,12 @@ export function readPatchManifest(root: string): PatchManifestV3 {
       throw new Error(`Archived carry must be regular files: ${patch.file}`);
     const digest = createHash("sha256").update(readFileSync(originalPath)).digest("hex");
     const original = JSON.parse(readFileSync(recordPath, "utf8"));
-    if (digest !== patch.rebased_from || original.content_sha256 !== digest ||
-      original.identity !== patch.identity || original.file !== patch.file)
+    if (
+      digest !== patch.rebased_from ||
+      original.content_sha256 !== digest ||
+      original.identity !== patch.identity ||
+      original.file !== patch.file
+    )
       throw new Error(`Archived carry provenance mismatch: ${patch.file}`);
   }
   return manifest;
@@ -66,7 +77,9 @@ export async function decidePatchRemovals(
       decisions.push({
         ...base,
         remove: false,
-        reason: patch.remove_with ? "overlay-retirement-proof-unavailable" : "overlay-does-not-auto-retire",
+        reason: patch.remove_with
+          ? "overlay-retirement-proof-unavailable"
+          : "overlay-does-not-auto-retire",
       });
       continue;
     }
@@ -76,7 +89,9 @@ export async function decidePatchRemovals(
     }
 
     const pullNumber = patch.upstream_pull_request;
-    const pull = pulls.get(pullNumber) ?? api.get<PullRequest>(`repos/${manifest.repository}/pulls/${pullNumber}`);
+    const pull =
+      pulls.get(pullNumber) ??
+      api.get<PullRequest>(`repos/${manifest.repository}/pulls/${pullNumber}`);
     pulls.set(pullNumber, pull);
     try {
       const detail = await pull;
@@ -85,12 +100,17 @@ export async function decidePatchRemovals(
         continue;
       }
       const key = `${detail.merge_commit_sha}:${candidateCommit}`;
-      const ancestor = ancestors.get(key) ?? api.compare(manifest.repository, detail.merge_commit_sha, candidateCommit)
-        .then((comparison) => comparison.status === "ahead" || comparison.status === "identical");
+      const ancestor =
+        ancestors.get(key) ??
+        api
+          .compare(manifest.repository, detail.merge_commit_sha, candidateCommit)
+          .then((comparison) => comparison.status === "ahead" || comparison.status === "identical");
       ancestors.set(key, ancestor);
-      decisions.push(await ancestor
-        ? { ...base, remove: true, reason: "merged-commit-in-candidate" }
-        : { ...base, remove: false, reason: "merge-commit-not-in-candidate" });
+      decisions.push(
+        (await ancestor)
+          ? { ...base, remove: true, reason: "merged-commit-in-candidate" }
+          : { ...base, remove: false, reason: "merge-commit-not-in-candidate" },
+      );
     } catch {
       decisions.push({ ...base, remove: false, reason: "upstream-proof-unavailable" });
     }
@@ -101,11 +121,14 @@ export async function decidePatchRemovals(
 export function activePatchFiles(root: string): string[] {
   const directory = join(root, "patches");
   if (!lstatExists(directory)) return [];
-  return readdirSync(directory).filter((file) => file.endsWith(".patch")).sort().map((file) => {
-    if (!PATCH_FILE.test(file) || !lstatSync(join(directory, file)).isFile())
-      throw new Error(`Carried patch is not a regular file: ${file}`);
-    return file;
-  });
+  return readdirSync(directory)
+    .filter((file) => file.endsWith(".patch"))
+    .sort()
+    .map((file) => {
+      if (!PATCH_FILE.test(file) || !lstatSync(join(directory, file)).isFile())
+        throw new Error(`Carried patch is not a regular file: ${file}`);
+      return file;
+    });
 }
 
 function lstatExists(path: string): boolean {
