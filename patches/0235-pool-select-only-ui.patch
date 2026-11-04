@@ -1,3 +1,43 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+index 2378d1b..a669950 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -1,5 +1,14 @@
+ import { createFileRoute } from "@tanstack/react-router";
++import { parseAddAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { AddAppPage } from "@executor-js/hosted-web/pages/add-app";
+ 
+ /** App selection and installation belong to Apps, as in local. */
+-export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({ component: AddAppPage });
++export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
++  validateSearch: parseAddAppSearch,
++  component: Page,
++});
++
++function Page() {
++  const { entry } = Route.useSearch();
++  return <AddAppPage entry={entry} />;
++}
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+index 2378d1b..a669950 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -1,5 +1,14 @@
+ import { createFileRoute } from "@tanstack/react-router";
++import { parseAddAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { AddAppPage } from "@executor-js/hosted-web/pages/add-app";
+ 
+ /** App selection and installation belong to Apps, as in local. */
+-export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({ component: AddAppPage });
++export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
++  validateSearch: parseAddAppSearch,
++  component: Page,
++});
++
++function Page() {
++  const { entry } = Route.useSearch();
++  return <AddAppPage entry={entry} />;
++}
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
 index cf582b6..6c3bb54 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
@@ -83,18 +123,43 @@ index b4612a3..26cd124 100644
      AccountAcquisitionUnavailable: () =>
        "This account connection is temporarily unavailable. Retry after the host restores it.",
      AccessConflict: ({ reason }) =>
+diff --git a/apps/hosted/web/src/contracts/navigation.ts b/apps/hosted/web/src/contracts/navigation.ts
+index 282af23..78855a9 100644
+--- a/apps/hosted/web/src/contracts/navigation.ts
++++ b/apps/hosted/web/src/contracts/navigation.ts
+@@ -41,6 +41,15 @@ export function parseAccountsSearch(search: Record<string, unknown>): {
+   };
+ }
+ 
++/** Add app can open on one catalog entry, such as the provider app a pool points to. */
++export function parseAddAppSearch(search: Record<string, unknown>): {
++  readonly entry?: string | undefined;
++} {
++  return {
++    entry: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.entry)),
++  };
++}
++
+ /** History marks only automatic root restoration; explicit links keep their own targets. */
+ export const OrganizationResume = Schema.Struct({
+   organization: OrganizationId,
 diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-index efa60d9..dcd3d3e 100644
+index efa60d9..b8b5a0d 100644
 --- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 +++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-@@ -1,5 +1,5 @@
+@@ -1,15 +1,17 @@
  import { AppProviderFailed } from "@executor-js/sdk";
 -import { Cause, Option, Schema } from "effect";
 +import { Cause, Match, Option, Schema } from "effect";
  import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
  import { CompactFailure, ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
-@@ -10,6 +10,7 @@ import { DashboardProvider } from "@executor-js/ui/dashboard/context";
+ import { ConnectionFailed, hasConnectionFailure } from "@executor-js/utils/connection-failure";
+-import type { ReactNode } from "react";
++import { createContext, useContext, useEffect, type ReactNode } from "react";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
+ import { Link } from "@tanstack/react-router";
+ import { DashboardProvider } from "@executor-js/ui/dashboard/context";
  import type {
    AppLinkProps,
    AccountLinkProps,
@@ -102,7 +167,7 @@ index efa60d9..dcd3d3e 100644
    FailureProps,
  } from "@executor-js/ui/contracts/dashboard";
  import { Alert } from "@executor-js/ui/components/alert";
-@@ -21,6 +22,7 @@ import { useOrganizationRoute } from "./organization.tsx";
+@@ -21,6 +23,7 @@ import { useOrganizationRoute } from "./organization.tsx";
  import { appError } from "../../contracts/apps.ts";
  import type { HostedError } from "../../contracts/errors.ts";
  import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
@@ -110,33 +175,50 @@ index efa60d9..dcd3d3e 100644
  
  const catalogIcons = catalogIconsAtom(catalogAtom);
  /** Organization-aware atoms stay inside the hosted product. */
-@@ -52,10 +54,35 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
+@@ -52,10 +55,52 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
      </Link>
    );
  };
-+// The catalog has no page per entry, so a provider app is added from the catalog list.
-+const CatalogLink = ({ entry: _entry, ...props }: CatalogLinkProps) => {
++const CatalogLink = ({ entry, ...props }: CatalogLinkProps) => {
 +  const { slug: organizationSlug } = useOrganizationRoute();
-+  return <Link to="/org/$organizationSlug/apps/add" params={{ organizationSlug }} {...props} />;
++  return (
++    <Link
++      to="/org/$organizationSlug/apps/add"
++      params={{ organizationSlug }}
++      search={{ entry }}
++      {...props}
++    />
++  );
 +};
 +const connectElsewhere = Match.type<HostedError>().pipe(
 +  Match.tag("ProviderAppConnectionRequired", (error) => Option.some(error)),
 +  Match.orElse(() => Option.none()),
 +);
++/**
++ * Set by a connection flow: the host refused it for good because the account belongs on a provider
++ * app. The flow closes its form and shows where to go instead.
++ */
++export const ConnectionRefusedContext = createContext<
++  ((destination: ProviderAccountDestination) => void) | undefined
++>(undefined);
  /** Hosted failures keep auth and transport details out of display components. */
  export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
    const brand = useProductBrand();
++  const refused = useContext(ConnectionRefusedContext);
    const error = Cause.findErrorOption(cause);
-+  // A form opened before this app stopped connecting accounts: retrying can't succeed, so the form
-+  // offers the provider app instead. Elsewhere the error reads like any other.
-+  const elsewhere = Option.flatMap(error, connectElsewhere);
-+  if (layout === "compact" && Option.isSome(elsewhere))
++  // A form opened before this app stopped connecting accounts can never succeed here: its flow
++  // closes, and wherever the error shows it offers the provider app, never a retry.
++  const elsewhere = Option.getOrUndefined(Option.flatMap(error, connectElsewhere));
++  useEffect(() => {
++    if (elsewhere !== undefined) refused?.(elsewhere.destination);
++  }, [elsewhere, refused]);
++  if (elsewhere !== undefined)
 +    return (
 +      <CompactFailure title="Connect this account in its provider app">
 +        <div>
 +          This app only picks accounts that are already connected.{" "}
 +          <ProviderDestination
-+            destination={elsewhere.value.destination}
++            destination={elsewhere.destination}
 +            provider="provider"
 +            verb="Connect"
 +          />
@@ -146,7 +228,7 @@ index efa60d9..dcd3d3e 100644
    if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
      return (
        <ProviderErrorNotice
-@@ -115,8 +142,15 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+@@ -115,8 +160,15 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
  }
  /** Shared views bind independently of access checks and sidebar metadata. */
  export function HostedDashboard({ children }: { readonly children: ReactNode }) {
@@ -163,8 +245,28 @@ index efa60d9..dcd3d3e 100644
        {children}
      </DashboardProvider>
    );
+diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
+index 8aa97a2..41d1692 100644
+--- a/apps/hosted/web/src/implementation/pages/add-app.tsx
++++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
+@@ -8,13 +8,14 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ /** Catalog apps install into the same organization-owned app records. */
+-export function AddAppPage() {
++export function AddAppPage({ entry }: { readonly entry?: string | undefined } = {}) {
+   const atoms = useDashboardAtoms();
+   useAtomMount(atoms.catalog);
+   const { slug: organizationSlug } = useOrganizationRoute();
+   const navigate = useNavigate();
+   return (
+     <Catalog
++      entry={entry}
+       query={atoms.catalog}
+       Failure={HostedFailure}
+       mutation={atoms.install}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 7105f19..b971fe6 100644
+index 7105f19..5853e11 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -21,9 +21,22 @@ import {
@@ -192,7 +294,18 @@ index 7105f19..b971fe6 100644
  import { Button } from "@executor-js/ui/components/button";
  import { Input } from "@executor-js/ui/components/input";
  import {
-@@ -69,6 +82,7 @@ export function AppAccounts({
+@@ -34,7 +47,9 @@ import {
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+ import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { ConnectionRefusedContext, HostedFailure } from "../components/dashboard-bindings.tsx";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
++import { DialogDescription, DialogFooter, DialogTitle } from "@executor-js/ui/components/dialog";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+ import { HostedAccountForm, OAuthReturnContext } from "./connect-account.tsx";
+ import { useOAuthHandoff } from "./loopback-oauth.tsx";
+@@ -69,6 +84,7 @@ export function AppAccounts({
    userLinks,
    canManage,
    accounts,
@@ -200,7 +313,7 @@ index 7105f19..b971fe6 100644
    redirectUri,
  }: {
    readonly app: App;
-@@ -80,6 +94,8 @@ export function AppAccounts({
+@@ -80,6 +96,8 @@ export function AppAccounts({
    readonly canManage: boolean;
    /** Every account the caller can use in this organization. */
    readonly accounts: readonly AccountSummary[];
@@ -209,13 +322,14 @@ index 7105f19..b971fe6 100644
    readonly redirectUri: string;
  }) {
    const { organization } = useOrganizationRoute();
-@@ -107,6 +123,23 @@ export function AppAccounts({
+@@ -107,6 +125,21 @@ export function AppAccounts({
            reported.value.native.find((entry) => entry.requirement === requirement)?.name,
        }
      : undefined;
-+  // A failed read keeps no stale answer: until the host answers again nothing offers a connection.
++  // Only a settled read counts: while it loads again, or after it failed, a cached answer offers
++  // no connection.
 +  const connections: RequirementConnections =
-+    Option.isSome(reported) && !AsyncResult.isFailure(methodQuery.result)
++    methodsReady && Option.isSome(reported)
 +      ? {
 +          state: "ready",
 +          of: (requirement) =>
@@ -223,20 +337,23 @@ index 7105f19..b971fe6 100644
 +        }
 +      : { state: "pending" };
 +  // The host marks provider apps; nothing is assumed while its read loads or after it failed.
-+  const providerApp =
-+    Option.isSome(reported) && !AsyncResult.isFailure(methodQuery.result)
-+      ? reported.value.providerApp
-+      : null;
++  const providerApp = methodsReady && Option.isSome(reported) ? reported.value.providerApp : null;
 +  const connectsHere = (slot: string) =>
 +    connections.state === "ready" && connections.of(slot)?.canConnect === true;
 +  const brand = useProductBrand();
    const viewer = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)))?.user.id;
    const deployed = app.activeVersion !== null;
    const copiedPackage = app.copiedFrom?.name;
-@@ -139,9 +172,18 @@ export function AppAccounts({
+@@ -139,9 +172,24 @@ export function AppAccounts({
      readonly account?: AccountSummary | undefined;
    }>();
    const [renaming, setRenaming] = useState<AccountSummary["id"]>();
++  // Set when the host refused the open connection for good; its form gives way to the destination.
++  const [refused, setRefused] = useState<ProviderAccountDestination>();
++  const closeConnection = () => {
++    setConnection(undefined);
++    setRefused(undefined);
++  };
 +  const [importing, setImporting] = useState<{
 +    readonly slot: string;
 +    readonly requirement: AccountRequirement;
@@ -253,7 +370,7 @@ index 7105f19..b971fe6 100644
    const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
      catalogEntry?.connectionNotices?.filter(
        (notice) => notice.providerName === requirement.definition.name,
-@@ -150,14 +192,25 @@ export function AppAccounts({
+@@ -150,14 +198,25 @@ export function AppAccounts({
    // account's credentials needs use of the account.
    const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
    // An account the app signed in itself can't take new credentials: connect another, remove this.
@@ -282,7 +399,7 @@ index 7105f19..b971fe6 100644
      const requirement = app.requirements.accounts[slot];
      if (requirement !== undefined)
        setConnection({ scope, slot, requirement, method: account.method, account });
-@@ -174,13 +227,26 @@ export function AppAccounts({
+@@ -174,13 +233,26 @@ export function AppAccounts({
      link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
      unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
      connect: (slot, requirement) => {
@@ -310,7 +427,7 @@ index 7105f19..b971fe6 100644
      connecting: connectionDisabled,
      onUnlinked: (account) => void unused.check(account),
    });
-@@ -217,7 +283,7 @@ export function AppAccounts({
+@@ -217,7 +289,7 @@ export function AppAccounts({
              (usable(account) || removable(links, slot, account)) && (
                <LinkedAccountMenu
                  label={account.label || "Unnamed account"}
@@ -319,7 +436,7 @@ index 7105f19..b971fe6 100644
                  unlink={
                    removable(links, slot, account)
                      ? unlinkAccountAtom({
-@@ -236,7 +302,8 @@ export function AppAccounts({
+@@ -236,7 +308,8 @@ export function AppAccounts({
                    </DropdownMenuItem>
                  )}
                  {usable(account) &&
@@ -329,7 +446,7 @@ index 7105f19..b971fe6 100644
                    !hostProvisioned(requirement, account) && (
                      <DropdownMenuItem
                        disabled={connectionDisabled}
-@@ -249,24 +316,46 @@ export function AppAccounts({
+@@ -249,24 +322,46 @@ export function AppAccounts({
                    )}
                </LinkedAccountMenu>
              ),
@@ -389,7 +506,7 @@ index 7105f19..b971fe6 100644
        {!methodsReady && (
          <div className="mb-4">
            {AsyncResult.isFailure(methodQuery.result) ? (
-@@ -308,10 +397,23 @@ export function AppAccounts({
+@@ -308,10 +403,23 @@ export function AppAccounts({
                ))
            : [],
        )}
@@ -413,7 +530,7 @@ index 7105f19..b971fe6 100644
          Failure={HostedFailure}
          appAccounts={scopeAccounts(
            "app",
-@@ -322,6 +424,24 @@ export function AppAccounts({
+@@ -322,32 +430,77 @@ export function AppAccounts({
          )}
          yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
        />
@@ -438,6 +555,81 @@ index 7105f19..b971fe6 100644
        {unused.prompt}
        <ConnectionModal
          open={connection !== undefined}
+-        busy={connecting}
+-        onClose={() => setConnection(undefined)}
++        busy={connecting && refused === undefined}
++        onClose={closeConnection}
+       >
+-        {connection && (
+-          <AppConnectionDialogContent
+-            app={app}
+-            scope={connection.scope}
+-            slot={connection.slot}
+-            requirement={connection.requirement}
+-            method={connection.method}
+-            connectionNotices={noticesFor(connection.requirement)}
+-            oauthDeferrals={catalogEntry?.oauthDeferrals}
+-            redirectUri={redirectUri}
+-            account={connection.account}
+-            unavailable={(method) =>
+-              methodsReady
+-                ? methods?.unavailable(connection.slot, method)
+-                : "Sign-in methods are unavailable. Retry loading them."
+-            }
+-            onPendingChange={setConnecting}
+-            onSaved={() => setConnection(undefined)}
+-          />
+-        )}
++        {connection && refused !== undefined ? (
++          <>
++            <DialogTitle>Connect this account in its provider app</DialogTitle>
++            <DialogDescription>
++              {appDisplayName(app, brand)} only picks accounts that are already connected.
++            </DialogDescription>
++            <p className="text-sm">
++              <ProviderDestination
++                destination={refused}
++                provider={connection.requirement.definition.name}
++                verb="Connect"
++                origin={{ app: app.id, name: appDisplayName(app, brand) }}
++              />
++            </p>
++            <DialogFooter>
++              <Button variant="outline" onClick={closeConnection}>
++                Close
++              </Button>
++            </DialogFooter>
++          </>
++        ) : connection ? (
++          <ConnectionRefusedContext
++            value={(destination) => {
++              setConnecting(false);
++              setRefused(destination);
++            }}
++          >
++            <AppConnectionDialogContent
++              app={app}
++              scope={connection.scope}
++              slot={connection.slot}
++              requirement={connection.requirement}
++              method={connection.method}
++              connectionNotices={noticesFor(connection.requirement)}
++              oauthDeferrals={catalogEntry?.oauthDeferrals}
++              redirectUri={redirectUri}
++              account={connection.account}
++              unavailable={(method) =>
++                methodsReady
++                  ? methods?.unavailable(connection.slot, method)
++                  : "Sign-in methods are unavailable. Retry loading them."
++              }
++              onPendingChange={setConnecting}
++              onSaved={closeConnection}
++            />
++          </ConnectionRefusedContext>
++        ) : null}
+       </ConnectionModal>
+       {renaming && (
+         <HostedAccountDialog id={renaming} dialog="edit" onClose={() => setRenaming(undefined)} />
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 index 84a59f1..becf70d 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
@@ -459,13 +651,16 @@ index 84a59f1..becf70d 100644
                  />
                </div>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index cd2813a..9e58e34 100644
+index cd2813a..bb67323 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -23,6 +23,10 @@ import { Button } from "@executor-js/ui/components/button";
+@@ -22,7 +22,12 @@ import { Cause, Match, Option, Exit, Schema } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
  import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
  import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
- import { HostedFailure } from "../components/dashboard-bindings.tsx";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { ConnectionRefusedContext, HostedFailure } from "../components/dashboard-bindings.tsx";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
 +import { useQuery } from "@executor-js/ui/dashboard/context";
 +import { ProviderDestination } from "@executor-js/ui/dashboard/provider-accounts";
 +import { AsyncResult } from "effect/reactivity";
@@ -473,7 +668,7 @@ index cd2813a..9e58e34 100644
  import { AccountForm } from "@executor-js/ui/dashboard/account-form";
  import {
    InteractiveSignIn,
-@@ -48,7 +52,9 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+@@ -48,7 +53,9 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
  import { RegisterServiceClient } from "./oauth-clients.tsx";
  
  // The dialog owns catalog guidance; both normal and loopback forms read the same value.
@@ -484,7 +679,7 @@ index cd2813a..9e58e34 100644
  
  /**
   * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
-@@ -91,6 +97,47 @@ export function ConnectionFields({
+@@ -91,6 +98,63 @@ export function ConnectionFields({
      leave: () => (started.current ? cancel() : Promise.resolve()),
    };
    const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
@@ -494,6 +689,8 @@ index cd2813a..9e58e34 100644
 +  const target = Option.getOrUndefined(policy.data)?.connections.find(
 +    (entry) => entry.requirement === connection.target.requirement,
 +  );
++  // Set when the host refused this connection for good; the form gives way to the destination.
++  const [refused, setRefused] = useState<ProviderAccountDestination>();
 +  const back = (
 +    <Button asChild variant="outline">
 +      <Link
@@ -505,6 +702,20 @@ index cd2813a..9e58e34 100644
 +      </Link>
 +    </Button>
 +  );
++  if (refused !== undefined)
++    return (
++      <>
++        <p className="text-sm">
++          This app only picks accounts that are already connected.{" "}
++          <ProviderDestination
++            destination={refused}
++            provider={connection.provider.definition.name}
++            verb="Connect"
++          />
++        </p>
++        {back}
++      </>
++    );
 +  if (connection.state.status === "pending" && !handoff.active && target?.canConnect !== true)
 +    return AsyncResult.isFailure(policy.result) ? (
 +      <HostedFailure cause={policy.result.cause} retry={policy.refresh} layout="compact" />
@@ -532,7 +743,7 @@ index cd2813a..9e58e34 100644
    if (connection.state.status !== "pending" && !handoff.active)
      return (
        <>
-@@ -99,15 +146,7 @@ export function ConnectionFields({
+@@ -99,15 +163,7 @@ export function ConnectionFields({
              ? "Account connected."
              : "This connection has expired. Start a new connection from the app."}
          </p>
@@ -549,6 +760,77 @@ index cd2813a..9e58e34 100644
        </>
      );
    return (
+@@ -115,37 +171,39 @@ export function ConnectionFields({
+       {handoff.step}
+       {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
+       <div className={handoff.active ? "hidden" : "contents"}>
+-        <HostedAccountForm
+-          provider={connection.provider}
+-          site={connection.target.site}
+-          app={connection.checkable ? connection.target.app : undefined}
+-          {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+-          redirectUri={connection.redirectUri}
+-          initialMethod={initialMethod}
+-          manualClient={manualClient}
+-          setupQuery={(method) =>
+-            connectionOAuthSetupAtom({ organization, connection: connection.id, method })
+-          }
+-          submit={submit}
+-          start={startOAuth}
+-          interactive={interactive}
+-          onSaved={onSaved}
+-          {...(onPendingChange ? { onPendingChange } : {})}
+-          onAuthorized={(value) =>
+-            handoff.open(
+-              {
+-                organization,
+-                organizationSlug,
+-                connection: connection.id,
+-                app: connection.target.app,
+-                redirectUri: value.redirectUri,
+-                ...(connection.reconnectAccount ? { reconnect: true } : {}),
+-                manualClient: value.manualClient,
+-              },
+-              value,
+-            )
+-          }
+-        />
++        <ConnectionRefusedContext value={setRefused}>
++          <HostedAccountForm
++            provider={connection.provider}
++            site={connection.target.site}
++            app={connection.checkable ? connection.target.app : undefined}
++            {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
++            redirectUri={connection.redirectUri}
++            initialMethod={initialMethod}
++            manualClient={manualClient}
++            setupQuery={(method) =>
++              connectionOAuthSetupAtom({ organization, connection: connection.id, method })
++            }
++            submit={submit}
++            start={startOAuth}
++            interactive={interactive}
++            onSaved={onSaved}
++            {...(onPendingChange ? { onPendingChange } : {})}
++            onAuthorized={(value) =>
++              handoff.open(
++                {
++                  organization,
++                  organizationSlug,
++                  connection: connection.id,
++                  app: connection.target.app,
++                  redirectUri: value.redirectUri,
++                  ...(connection.reconnectAccount ? { reconnect: true } : {}),
++                  manualClient: value.manualClient,
++                },
++                value,
++              )
++            }
++          />
++        </ConnectionRefusedContext>
+       </div>
+     </>
+   );
 diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 new file mode 100644
 index 0000000..8090e5d
@@ -895,10 +1177,10 @@ index 6e703cb..129a404 100644
      legacyStorage: true,
 diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
 new file mode 100644
-index 0000000..ec6ae08
+index 0000000..96a1b84
 --- /dev/null
 +++ b/e2e/tests/pool-select-only-ui.spec.ts
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,220 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -911,6 +1193,7 @@ index 0000000..ec6ae08
 +import { legacyStorage } from "../support/legacy-storage.ts";
 +import { providerAccountProduct } from "../support/provider-account-product.ts";
 +import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 +import { poolSelectionUi } from "../support/provider-apps-ui.ts";
 +import { serverControl } from "../support/server-control.ts";
 +import { scenarios } from "../test-plan.ts";
@@ -984,6 +1267,33 @@ index 0000000..ec6ae08
 +        const openai = yield* install("OpenAI");
 +
 +        yield* poolSelectionUi({ pool, poolName, providerName: "OpenAI" });
++
++        // A cached policy being read again is not an answer: Connect waits for the settled read.
++        yield* openThroughBrowser(
++          "Open the OpenAI app's accounts",
++          `/org/${actors.organization.slug}/apps/${openai}?view=accounts`,
++        );
++        yield* browser.use("The settled policy offers Connect", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++        );
++        const refresh = yield* holdQuery(
++          [actors.organization.slug, actors.organization.id].map(
++            (organization) => `/api/organizations/${organization}/apps/${openai}/accounts/methods`,
++          ),
++          "continue",
++        );
++        yield* refreshVisiblePage;
++        yield* refresh.requested;
++        expect(
++          yield* browser.use("A policy being read again offers no Connect", (page) =>
++            page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* refresh.release;
++        yield* browser.use("Connect returns once the read settles", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++        );
++        yield* browser.checkpoint("Connect waits for a settled policy read");
 +
 +        // A key saved on the provider app is offered in the pool, and unticking it keeps it saved.
 +        const created = yield* api.request(
@@ -1068,6 +1378,21 @@ index 0000000..ec6ae08
 +          ),
 +        ).toBe(0);
 +        yield* browser.checkpoint("Pool without a provider app links to the catalog");
++        yield* browser.use("Go to the catalog for the OpenAI app", (page) =>
++          page.getByRole("link", { name: "Add the OpenAI app to connect accounts" }).click(),
++        );
++        yield* browser.use("The catalog opens on the OpenAI entry", (page) =>
++          page.getByRole("button", { name: "Show all apps", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Only the OpenAI entry is listed", (page) =>
++            Promise.all([
++              page.getByText("OpenAI", { exact: true }).count(),
++              page.getByText("Anthropic", { exact: true }).count(),
++            ]),
++          ),
++        ).toEqual([1, 0]);
++        yield* browser.checkpoint("Catalog opens on the provider app the pool named");
 +        yield* openInApp(
 +          "Leave the pool before cleanup",
 +          `/org/${actors.organization.slug}/connect`,
@@ -1525,6 +1850,67 @@ index 5a22555..51e8e92 100644
      return exit;
    };
    return (
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 972f42b..1e4b219 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -83,7 +83,10 @@ export function CatalogPage<E, IE>({
+   inventory,
+   open,
+   onInstalled,
++  entry: initialEntry,
+ }: QueryProps<readonly CatalogEntry[], E> & {
++  /** Opens on this one catalog entry, such as the provider app a pool sent the person to add. */
++  readonly entry?: string | undefined;
+   /** The install command for one catalog entry; each row has its own. */
+   readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
+   readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
+@@ -159,9 +162,11 @@ export function CatalogPage<E, IE>({
+   const renaming = conflict !== undefined && adding.has(conflict.entry.id);
+   const retry = useAtomRefresh(query);
+   const [search, setSearch] = useState("");
++  const [only, setOnly] = useState(initialEntry);
++  const focused = only === undefined ? undefined : all.find((entry) => entry.id === only);
+   const term = search.trim().toLowerCase();
+   // Name matches come first; the rest keep the feed's order.
+-  const entries = all
++  const matches = all
+     .filter((entry) =>
+       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
+         .toLowerCase()
+@@ -171,6 +176,7 @@ export function CatalogPage<E, IE>({
+       (a, b) =>
+         Number(!a.name.toLowerCase().includes(term)) - Number(!b.name.toLowerCase().includes(term)),
+     );
++  const entries = focused === undefined ? matches : [focused];
+   const visible = useIncrementalList(entries.length, term, 50);
+   return (
+     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
+@@ -185,10 +191,23 @@ export function CatalogPage<E, IE>({
+         {action}
+       </div>
+       <div className="list-toolbar flex flex-wrap items-center gap-[10px_16px] mb-4">
+-        <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
++        <SearchInput
++          autoFocus
++          value={search}
++          onChange={(value) => {
++            setOnly(undefined);
++            setSearch(value);
++          }}
++          placeholder="Search apps…"
++        />
+         <span className="muted text-muted-foreground">
+           {entries.length.toLocaleString("en-US")} apps
+         </span>
++        {focused !== undefined && (
++          <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
++            Show all apps
++          </Button>
++        )}
+       </div>
+       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
+       {failure && conflict === undefined && <InstallFailure cause={failure} />}
 diff --git a/packages/ui/src/implementation/dashboard/provider-accounts.tsx b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
 new file mode 100644
 index 0000000..3009a60
