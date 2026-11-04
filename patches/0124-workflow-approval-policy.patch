@@ -1,8 +1,394 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -148,6 +148,7 @@
+           publishing,
+         },
+         hooks: lifecycle.hooks,
++        appCalls: lifecycle.appCalls,
+         acquisition,
+         models: poolModels(
+           poolSigningKey,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -131,6 +131,7 @@
+           `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry,
+         hooks: lifecycle.hooks,
++        appCalls: lifecycle.appCalls,
+         oauth: {
+           httpClient: egress.client,
+           clientName: (yield* productBrandConfig).name,
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,4 +1,5 @@
+-import {requireAppAccess} from "./resource-policy.ts";
++import { hostedWorkflowApprovals } from "./workflow-app-approvals.ts";
++import { requireAppAccess } from "./resource-policy.ts";
+ import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { GroupDatabase } from "../contracts/groups.ts";
+@@ -879,6 +880,7 @@
+   });
+   return {
+     hooks,
++    appCalls: hostedWorkflowApprovals(executor, yield* SqlClient.SqlClient),
+     /** Let the hooks reach the executor they were created for. */
+     attach: (instance: Executor) =>
+       Effect.sync(() => {
+diff --git a/apps/hosted/server/src/implementation/workflow-app-approvals.ts b/apps/hosted/server/src/implementation/workflow-app-approvals.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/workflow-app-approvals.ts
+@@ -0,0 +1,81 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import {
++  AppId,
++  StorageError,
++  ToolName,
++  workflowApprovalHooks,
++  type Executor,
++} from "@executor-js/sdk/core";
++
++// Full inspected structured Gmail compose source. Changes require a new envelope review.
++const structuredGmailSource = "895ce27492bff5270ea3a1101c585fe5e5849e07fe78821c2eb1a4ea1338878e";
++const Identity = Schema.Struct({ owner: Schema.NonEmptyString, recipient: Schema.NonEmptyString });
++const Settings = Schema.Struct({
++  revision: Schema.NonEmptyString,
++  deliveryEnabled: Schema.Boolean,
++  current: Schema.Boolean,
++});
++
++/** Hosted identity and source checks are shared by self-host and Cloud. Local has no registered
++ * identity resolver, so it retains ordinary target approval behavior.
++ */
++export const hostedWorkflowApprovals = (
++  executor: Effect.Effect<Executor, StorageError>,
++  sql: SqlClient.SqlClient,
++) =>
++  workflowApprovalHooks({
++    configuration: (event) =>
++      Effect.gen(function* () {
++        const sdk = yield* executor;
++        const source = "source" in event ? event.source : event;
++        const result = yield* sdk.tools.call({
++          app: source.app,
++          version: source.version,
++          tool: ToolName.make("settings"),
++          kind: "query",
++          input: {},
++        });
++        if (
++          result.status !== "completed" ||
++          result.toolError === true ||
++          !Schema.is(Settings)(result.value) ||
++          !result.value.current
++        )
++          return undefined;
++        return { revision: result.value.revision, enabled: result.value.deliveryEnabled };
++      }).pipe(Effect.mapError(() => new StorageError())),
++    personalEmailAccount: (input) =>
++      Effect.gen(function* () {
++        const rows = yield* sql`select a.personal_user_id as owner, u.email as recipient
++        from hosted_account_access a
++        join "user" u on u.id = a.personal_user_id and u."emailVerified" = true
++        join member m on m."userId" = u.id and m."organizationId" = a.organization_id
++        join hosted_app_access s on s.id = ${input.source} and s.organization_id = a.organization_id
++        join hosted_app_access t on t.id = ${input.target} and t.organization_id = a.organization_id
++        where a.account_id = ${input.account} and a.kind = 'personal'`;
++        if (rows.length !== 1) return undefined;
++        const identity = yield* Schema.decodeUnknownEffect(Identity)(rows[0]);
++        const sdk = yield* executor;
++        const source = yield* sdk.apps.source({ app: AppId.make(input.target) });
++        const files: Array<[string, string]> = [];
++        for (const file of source.files) {
++          if (!("content" in file) || "encoding" in file) return undefined;
++          files.push([file.path, file.content]);
++        }
++        files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
++        const digest = yield* Effect.tryPromise({
++          try: () =>
++            crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++          catch: () => new StorageError(),
++        });
++        const hash = Array.from(new Uint8Array(digest), (byte) =>
++          byte.toString(16).padStart(2, "0"),
++        ).join("");
++        return {
++          ...identity,
++          targetVersion: source.id,
++          inspectedCompose: hash === structuredGmailSource,
++        };
++      }).pipe(Effect.mapError(() => new StorageError())),
++  });
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -1,4 +1,8 @@
+ /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
++export {
++  workflowApprovalHooks,
++  type WorkflowApprovalHost,
++} from "./implementation/workflow-approval-hooks.ts";
+ export * from "./contracts/index.ts";
+ export { createExecutor, createRemoteExecutor } from "./implementation/create.ts";
+ export { httpEventSender } from "./implementation/event-sender.ts";
+diff --git a/packages/sdk/src/implementation/workflow-approval-hooks.ts b/packages/sdk/src/implementation/workflow-approval-hooks.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-approval-hooks.ts
+@@ -0,0 +1,243 @@
++import { Clock, Effect, Schema } from "effect";
++import type {
++  AppCallHooks,
++  AppApprovedConfiguration,
++  AppProtectedDispatch,
++  AppConfigurationAttachment,
++} from "../contracts/app-calls.ts";
++import { StorageError } from "../contracts/shared.ts";
++import { workflowApproval } from "./workflow-approval.ts";
++
++const Declaration = Schema.Struct({
++  envelope: Schema.Literal("self-email"),
++  workflow: Schema.NonEmptyString,
++  step: Schema.NonEmptyString,
++  expiresAt: Schema.optionalKey(Schema.Number),
++});
++const Attachment = Schema.Struct({
++  declaration: Declaration,
++  account: Schema.NonEmptyString,
++  owner: Schema.NonEmptyString,
++  recipient: Schema.NonEmptyString,
++  targetVersion: Schema.NonEmptyString,
++});
++const ConfigureInput = Schema.Struct({
++  deliveryEnabled: Schema.Boolean,
++  deliveryScope: Schema.optionalKey(Schema.String),
++});
++const Scope = Schema.Array(
++  Schema.Struct({
++    workflow: Schema.String,
++    step: Schema.String,
++    connection: Schema.String,
++    target: Schema.String,
++    tool: Schema.String,
++    account: Schema.String,
++    to: Schema.Array(Schema.String),
++    cc: Schema.Array(Schema.String),
++    bcc: Schema.Array(Schema.String),
++  }),
++);
++const approvedScopes = (input: typeof ConfigureInput.Type): typeof Scope.Type => {
++  if (input.deliveryScope === undefined) return [];
++  try {
++    const value: unknown = JSON.parse(input.deliveryScope);
++    return Schema.is(Scope)(value) ? value : [];
++  } catch {
++    return [];
++  }
++};
++
++/** Product-owned facts. Resolve these from current access, verified identity and audited target
++ * code, never from the source app's policy JSON or an account's app-reported health metadata.
++ */
++export interface WorkflowApprovalHost {
++  readonly configuration: (
++    event: AppApprovedConfiguration | AppProtectedDispatch,
++  ) => Effect.Effect<
++    { readonly revision: string; readonly enabled: boolean } | undefined,
++    StorageError
++  >;
++  readonly personalEmailAccount: (input: {
++    readonly account: string;
++    readonly target: string;
++    readonly source: string;
++  }) => Effect.Effect<
++    | {
++        readonly owner: string;
++        readonly recipient: string;
++        readonly targetVersion: string;
++        readonly inspectedCompose: boolean;
++      }
++    | undefined,
++    StorageError
++  >;
++}
++
++/** Adapt only SDK-issued configuration and postdecoded dispatch events. Registration belongs
++ * to the product, which supplies live personal-account authority and inspected target support.
++ */
++export const workflowApprovalHooks = (host: WorkflowApprovalHost): AppCallHooks => ({
++  configurationApproved: (event) =>
++    Effect.gen(function* () {
++      const state = yield* host.configuration(event);
++      const attachments: AppConfigurationAttachment[] = [];
++      if (
++        state === undefined ||
++        !Schema.is(ConfigureInput)(event.input) ||
++        event.input.deliveryEnabled !== state.enabled
++      )
++        return { approvedBy: event.actor, attachments };
++      const scopes = approvedScopes(event.input);
++      for (const connection of event.connections) {
++        const configuration = connection.declaration.configuration;
++        if (
++          configuration?.tool !== event.tool ||
++          !Schema.is(Declaration)(configuration.policy) ||
++          connection.declaration.tools.send?.kind !== "mutation"
++        )
++          continue;
++        const base = {
++          connection: connection.id,
++          revision: connection.revision,
++          configurationRevision: state.revision,
++        };
++        // A confirmed disable clears existing permission even if the account is no longer eligible.
++        if (!state.enabled) {
++          attachments.push({ ...base, value: null });
++          continue;
++        }
++        const selected = connection.accountVersions;
++        const account = selected[0];
++        if (!connection.enabled || selected.length !== 1 || account === undefined) continue;
++        const identity = yield* host.personalEmailAccount({
++          account: account.account,
++          target: connection.target,
++          source: event.app,
++        });
++        if (identity === undefined || !identity.inspectedCompose || identity.owner !== event.actor)
++          continue;
++        const scope = scopes.filter((scope) => scope.connection === connection.dependency);
++        if (
++          scope.length !== 1 ||
++          !scope.some(
++            (scope) =>
++              scope.workflow === configuration.policy.workflow &&
++              scope.step === configuration.policy.step &&
++              scope.target === connection.target &&
++              scope.tool === "send" &&
++              scope.account === account.account &&
++              scope.to.length === 1 &&
++              scope.to[0] === identity.recipient &&
++              scope.cc.length === 0 &&
++              scope.bcc.length === 0,
++          )
++        )
++          continue;
++        attachments.push({
++          ...base,
++          value: {
++            declaration: configuration.policy,
++            account: account.account,
++            owner: identity.owner,
++            recipient: identity.recipient,
++            targetVersion: identity.targetVersion,
++          },
++        });
++      }
++      return { approvedBy: event.actor, attachments };
++    }),
++  protectedDispatch: (event) =>
++    Effect.gen(function* () {
++      const confirmation = event.confirmation;
++      const workflow = event.source.workflow;
++      const policy = event.declaration.configuration?.policy;
++      if (
++        confirmation === undefined ||
++        workflow === undefined ||
++        workflow.stepId.length === 0 ||
++        event.target.tool !== "send" ||
++        !event.connection.enabled ||
++        !Schema.is(Declaration)(policy) ||
++        !Schema.is(Attachment)(confirmation.value)
++      )
++        return "user-approval";
++      const account = event.target.accountVersions[0];
++      const confirmedAccount = confirmation.accountVersions[0];
++      if (
++        event.target.accountVersions.length !== 1 ||
++        confirmation.accountVersions.length !== 1 ||
++        account === undefined ||
++        confirmedAccount === undefined ||
++        account.account !== confirmedAccount.account ||
++        account.owner !== confirmedAccount.owner ||
++        account.credentialGeneration !== confirmedAccount.credentialGeneration ||
++        !Number.isSafeInteger(account.credentialGeneration) ||
++        account.credentialGeneration < 0 ||
++        confirmation.value.account !== account.account
++      )
++        return "user-approval";
++      const identity = yield* host.personalEmailAccount({
++        account: account.account,
++        target: event.target.app,
++        source: event.source.app,
++      });
++      const state = yield* host.configuration(event);
++      if (
++        identity === undefined ||
++        !identity.inspectedCompose ||
++        state === undefined ||
++        identity.targetVersion !== event.target.version ||
++        confirmation.value.targetVersion !== event.target.version
++      )
++        return "user-approval";
++      const value = confirmation.value;
++      const accountRevision = JSON.stringify([
++        account.account,
++        account.owner,
++        account.credentialGeneration,
++      ]);
++      const binding = {
++        source: event.source.app,
++        sourceVersion: event.source.version,
++        configurationRevision: state.revision,
++        connectionRevision: event.connection.revision,
++        target: event.target.app,
++        targetVersion: event.target.version,
++        tool: event.target.tool,
++        account: account.account,
++        accountRevision,
++        owner: identity.owner,
++        recipient: identity.recipient,
++      };
++      return workflowApproval({
++        declaration: { ...policy, connection: event.connection.dependency },
++        binding,
++        confirmation: {
++          declaration: { ...value.declaration, connection: event.connection.dependency },
++          binding: {
++            ...binding,
++            sourceVersion: confirmation.sourceVersion,
++            targetVersion: confirmation.targetVersion,
++            connectionRevision: confirmation.connectionRevision,
++            configurationRevision: confirmation.configurationRevision,
++            owner: value.owner,
++            recipient: value.recipient,
++          },
++          approvedBy: confirmation.approvedBy,
++        },
++        now: yield* Clock.currentTimeMillis,
++        deliveryEnabled: state.enabled,
++        accessAllowed: true,
++        accountOwner: identity.owner,
++        verifiedOwnerRecipient: identity.recipient,
++        envelope: "self-email",
++        workflow: { name: workflow.name, step: workflow.step, run: workflow.run },
++        kind: event.target.kind,
++        decodedInput: event.decodedInput,
++        appPolicy: event.appPolicy,
++      }) === "approved"
++        ? "approved"
++        : "user-approval";
++    }),
++});
 diff --git a/packages/sdk/src/implementation/workflow-approval.ts b/packages/sdk/src/implementation/workflow-approval.ts
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/workflow-approval.ts
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,110 @@
 +import { selfEmailEnvelope } from "./workflow-email-envelope.ts";
 +
 +/** Source-owned declaration. A host must validate it before recording owner confirmation. */
@@ -53,19 +439,32 @@ new file mode 100644
 +}
 +
 +const sameDeclaration = (a: WorkflowApprovalDeclaration, b: WorkflowApprovalDeclaration) =>
-+  a.workflow === b.workflow && a.step === b.step && a.connection === b.connection &&
-+  a.envelope === b.envelope && a.expiresAt === b.expiresAt;
++  a.workflow === b.workflow &&
++  a.step === b.step &&
++  a.connection === b.connection &&
++  a.envelope === b.envelope &&
++  a.expiresAt === b.expiresAt;
 +
 +const bindingKeys = [
-+  "source", "sourceVersion", "configurationRevision", "connectionRevision", "target",
-+  "targetVersion", "tool", "account", "accountRevision", "owner", "recipient",
++  "source",
++  "sourceVersion",
++  "configurationRevision",
++  "connectionRevision",
++  "target",
++  "targetVersion",
++  "tool",
++  "account",
++  "accountRevision",
++  "owner",
++  "recipient",
 +] as const;
 +
 +/** Evaluate after target decoding and app policy, before receipt reservation or submission.
 + * This pure result is not a trusted approval token. The dispatch host owns granting authority.
 + */
-+export const workflowApproval = (evidence: WorkflowApprovalEvidence):
-+  "approved" | "denied" | "user-approval" | "failed" => {
++export const workflowApproval = (
++  evidence: WorkflowApprovalEvidence,
++): "approved" | "denied" | "user-approval" | "failed" => {
 +  const { declaration, binding, confirmation, workflow } = evidence;
 +  if (!evidence.accessAllowed) return "denied";
 +  // A declaration only satisfies an ask. App denial and callback failure remain authoritative.
@@ -76,26 +475,35 @@ new file mode 100644
 +    !Number.isFinite(evidence.now) ||
 +    (declaration.expiresAt !== undefined &&
 +      (!Number.isFinite(declaration.expiresAt) || evidence.now >= declaration.expiresAt)) ||
-+    declaration.workflow.length === 0 || declaration.step.length === 0 ||
-+    declaration.connection.length === 0 || workflow.run.length === 0 ||
-+    workflow.name !== declaration.workflow || workflow.step !== declaration.step ||
++    declaration.workflow.length === 0 ||
++    declaration.step.length === 0 ||
++    declaration.connection.length === 0 ||
++    workflow.run.length === 0 ||
++    workflow.name !== declaration.workflow ||
++    workflow.step !== declaration.step ||
 +    !sameDeclaration(declaration, confirmation.declaration)
-+  ) return "user-approval";
++  )
++    return "user-approval";
 +  if (
-+    !Number.isSafeInteger(binding.connectionRevision) || binding.connectionRevision < 1 ||
++    !Number.isSafeInteger(binding.connectionRevision) ||
++    binding.connectionRevision < 1 ||
 +    bindingKeys.some((key) => binding[key] !== confirmation.binding[key] || binding[key] === "") ||
-+    binding.owner !== evidence.accountOwner || confirmation.approvedBy !== evidence.accountOwner ||
-+    evidence.verifiedOwnerRecipient !== binding.recipient || evidence.kind !== "mutation" ||
-+    declaration.envelope !== "self-email" || evidence.envelope !== "self-email" ||
++    binding.owner !== evidence.accountOwner ||
++    confirmation.approvedBy !== evidence.accountOwner ||
++    evidence.verifiedOwnerRecipient !== binding.recipient ||
++    evidence.kind !== "mutation" ||
++    declaration.envelope !== "self-email" ||
++    evidence.envelope !== "self-email" ||
 +    !selfEmailEnvelope(evidence.decodedInput, binding.account, binding.recipient)
-+  ) return "user-approval";
++  )
++    return "user-approval";
 +  return "approved";
 +};
 diff --git a/packages/sdk/src/implementation/workflow-email-envelope.ts b/packages/sdk/src/implementation/workflow-email-envelope.ts
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/workflow-email-envelope.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,24 @@
 +/** The inspected structured compose operation only. Raw MIME and reply operations never qualify. */
 +export const selfEmailEnvelope = (input: unknown, account: string, recipient: string): boolean => {
 +  if (input === null || typeof input !== "object" || Array.isArray(input)) return false;
@@ -115,6 +523,8 @@ new file mode 100644
 +  if (typeof value.body !== "string" || (value.html !== undefined && value.html !== false))
 +    return false;
 +  if (value.replyAll !== undefined && value.replyAll !== false) return false;
-+  return value.subject === undefined ||
-+    (typeof value.subject === "string" && !/[\r\n]/.test(value.subject));
++  return (
++    value.subject === undefined ||
++    (typeof value.subject === "string" && !/[\r\n]/.test(value.subject))
++  );
 +};
