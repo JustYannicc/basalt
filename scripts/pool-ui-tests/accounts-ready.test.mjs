@@ -134,6 +134,7 @@ function instrument() {
   // What the page showed when each fresh view request left, to prove the retained view committed first.
   const followUps = [];
   Reflect.set(window, "followUps", followUps);
+  Reflect.set(window, "contextSends", 0);
   const send = window.fetch.bind(window);
   window.fetch = (input, init) => {
     const shown = document.body?.textContent ?? "";
@@ -147,6 +148,8 @@ function instrument() {
     try {
       const operation = text === null ? null : JSON.parse(text);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
+      if (operation?.name === "computerContext")
+        Reflect.set(window, "contextSends", Reflect.get(window, "contextSends") + 1);
     } catch {}
     return send(input, init);
   };
@@ -468,6 +471,23 @@ test(
               await share.waitFor();
               const initial = contextReads;
               assert.equal(initial, 2, "StrictMode's initial context reads have completed");
+              const quiet = async (expected, message) => {
+                await page.evaluate(
+                  () =>
+                    new Promise((resolve) =>
+                      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                    ),
+                );
+                await frame.evaluate(() =>
+                  fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+                );
+                assert.equal(
+                  await frame.evaluate(() => Reflect.get(window, "contextSends")),
+                  expected,
+                  message,
+                );
+                assert.equal(contextReads, expected, message);
+              };
               const host = async (active) => {
                 await frame.evaluate(() => {
                   Reflect.set(window, "hostActiveSeen", undefined);
@@ -498,7 +518,7 @@ test(
               };
               await host(false);
               await clock.runFor(9 * minute);
-              assert.equal(contextReads, initial, "A retained hidden pool makes no context reads");
+              await quiet(initial, "A retained hidden pool makes no context reads");
               await host(true);
               await share
                 .and(frame.locator(`[href="${parentOrigin}/share/context-${initial + 1}"]`))
@@ -516,11 +536,7 @@ test(
                 document.dispatchEvent(new Event("visibilitychange"));
               });
               await clock.runFor(9 * minute);
-              assert.equal(
-                contextReads,
-                initial + 1,
-                "A hidden browser tab makes no context reads",
-              );
+              await quiet(initial + 1, "A hidden browser tab makes no context reads");
               await frame.evaluate(() => {
                 Object.defineProperty(document, "visibilityState", {
                   configurable: true,
@@ -539,11 +555,7 @@ test(
               await host(false);
               await clock.runFor(minute);
               await host(true);
-              assert.equal(
-                contextReads,
-                initial + 2,
-                "A short hidden interval keeps the current link",
-              );
+              await quiet(initial + 2, "A short hidden interval keeps the current link");
             },
             { clock: true, viewport: { width, height: 960 } },
           );
