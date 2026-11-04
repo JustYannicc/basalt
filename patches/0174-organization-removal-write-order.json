@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-organization-removal-write-order",
+  "file": "0174-organization-removal-write-order.patch",
+  "content_sha256": "23f6c8e9ab41af36b764f54909472007e146f830c31a3af2e49f5e4a9a412c33",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true
+}

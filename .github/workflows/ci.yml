@@ -528,6 +528,7 @@ jobs:
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/postgres.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
