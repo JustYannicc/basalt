@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      accountKindDisplay "Connection kind is display-only. Exact immutable legacy provider IDs and method names may supply missing kind hints; explicit declarations, including unknown or conflicting offerings, take precedence. Compatibility never changes provider definitions, credential identity, account links or authorization."
+    }
+  }
+}
