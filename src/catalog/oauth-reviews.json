@@ -1,0 +1,5521 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "entry": "21risk",
+      "package": "@executor.sh/21risk",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for 21RISK yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "2chat",
+      "package": "@executor.sh/2chat",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for 2chat yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "8x8",
+      "package": "@executor.sh/8x8",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for 8x8 yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "acuityscheduling",
+      "package": "@executor.sh/acuityscheduling",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Acuity Scheduling yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "addressfinder",
+      "package": "@executor.sh/addressfinder",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Addressfinder yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "adroll",
+      "package": "@executor.sh/adroll",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for AdRoll yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "agentcard",
+      "package": "@executor.sh/agentcard",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Agentcard yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "agilitycms",
+      "package": "@executor.sh/agilitycms",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Agility CMS yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ahrefs",
+      "package": "@executor.sh/ahrefs",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ahrefs yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "aircall",
+      "package": "@executor.sh/aircall",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Aircall yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "airops",
+      "package": "@executor.sh/airops",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for AirOps yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "airtable",
+      "package": "@executor.sh/airtable",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Airtable yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "airwallex",
+      "package": "@executor.sh/airwallex",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Airwallex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "aleads",
+      "package": "@executor.sh/aleads",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for A-Leads yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "alpaca",
+      "package": "@executor.sh/alpaca",
+      "methods": {
+        "paperOAuth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Alpaca yet. You can connect with your own OAuth app."
+        },
+        "liveOAuth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Alpaca yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "alphavantage",
+      "package": "@executor.sh/alphavantage",
+      "sourceSha256": "c7a3ab3752e62d303ddfca0682210098d602a626028557399e41855609d562ea",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "dcr",
+          "metadata": "https://mcp.alphavantage.co/.well-known/oauth-authorization-server",
+          "metadataSha256": "c53b56029a1c08f7d981c64bd0f8d0900fb18a0cdcb91d6126d9569ad563b017"
+        }
+      }
+    },
+    {
+      "entry": "amplitude",
+      "package": "@executor.sh/amplitude",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Amplitude yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "anakinio",
+      "package": "@executor.sh/anakinio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Anakin yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "anarlog",
+      "package": "@executor.sh/anarlog",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Anarlog yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "anvil",
+      "package": "@executor.sh/anvil",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Anvil yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "anydb",
+      "package": "@executor.sh/anydb",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for AnyDB yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "apaleo",
+      "package": "@executor.sh/apaleo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Apaleo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "apify",
+      "package": "@executor.sh/apify",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Apify yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "apiverve",
+      "package": "@executor.sh/apiverve",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for APIVerve yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "arena",
+      "package": "@executor.sh/arena",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Are.na yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "asana",
+      "package": "@executor.sh/asana",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Asana yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "astronomer",
+      "package": "@executor.sh/astronomer",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Astronomer yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "atlassian",
+      "package": "atlassian",
+      "sourceSha256": "dc38c616d5af979f24264dde2ad93298968384fb5e84d5a7b066c96ea1707342",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "atlassian",
+          "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "attio",
+      "package": "@executor.sh/attio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Attio yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "audioscrape",
+      "package": "@executor.sh/audioscrape",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Audioscrape yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "autobound",
+      "package": "@executor.sh/autobound",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Autobound yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "autodesk",
+      "package": "@executor.sh/autodesk",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Autodesk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "autosana",
+      "package": "@executor.sh/autosana",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Autosana yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "availity",
+      "package": "@executor.sh/availity",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Availity yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "aweber",
+      "package": "@executor.sh/aweber",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for AWeber yet. You can connect with your own OAuth app."
+        },
+        "restOauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for AWeber yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "aws",
+      "package": "aws",
+      "sourceSha256": "b47c8e9cbb18c05d2d3e8d7d344af500232b25acaa93f16dcca7d66a05050c6e",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "dcr",
+          "metadata": "https://us-east-1.oauth.signin.aws/.well-known/oauth-authorization-server",
+          "metadataSha256": "608120a97f05525e4ee05dbfcb3da4b8e20f5685c1a546b45c3a7baa73bfa11e"
+        }
+      }
+    },
+    {
+      "entry": "axiom",
+      "package": "@executor.sh/axiom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Axiom yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "azure-blob-storage",
+      "package": "@executor.sh/azure-blob-storage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Azure Blob Storage yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "azure-devops",
+      "package": "@executor.sh/azure-devops",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Azure DevOps yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "azure-monitor-activity-log",
+      "package": "@executor.sh/azure-monitor-activity-log",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Azure Monitor Activity Log yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bandwidth",
+      "package": "@executor.sh/bandwidth",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bandwidth yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "baremetrics",
+      "package": "@executor.sh/baremetrics",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Baremetrics yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "basecamp",
+      "package": "@executor.sh/basecamp",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Basecamp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "battlenet",
+      "package": "@executor.sh/battlenet",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Battle.net yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "beehiiv",
+      "package": "@executor.sh/beehiiv",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for beehiiv yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "betterstack",
+      "package": "@executor.sh/betterstack",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Better Stack yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bingwebmastertools",
+      "package": "@executor.sh/bingwebmastertools",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bing Webmaster Tools yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bitbucket",
+      "package": "@executor.sh/bitbucket",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bitbucket yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bitly",
+      "package": "@executor.sh/bitly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bitly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bitquery",
+      "package": "@executor.sh/bitquery",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bitquery yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "blackbaud",
+      "package": "@executor.sh/blackbaud",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Blackbaud yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bolcom",
+      "package": "@executor.sh/bolcom",
+      "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for bol.com yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "boldsign",
+      "package": "@executor.sh/boldsign",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for BoldSign yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "bolna",
+      "package": "@executor.sh/bolna",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bolna yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "boondmanager",
+      "package": "@executor.sh/boondmanager",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for BoondManager yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "box",
+      "package": "@executor.sh/box",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Box yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "braingraph",
+      "package": "@executor.sh/braingraph",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for BrainGraph yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "braze",
+      "package": "@executor.sh/braze",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Braze yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "breeze",
+      "package": "@executor.sh/breeze",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Breeze yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "brevo",
+      "package": "@executor.sh/brevo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Brevo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "brex",
+      "package": "@executor.sh/brex",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Brex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "brightdata",
+      "package": "@executor.sh/brightdata",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Bright Data yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "browserless",
+      "package": "@executor.sh/browserless",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Browserless yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "buffer",
+      "package": "@executor.sh/buffer",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Buffer yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "builderio",
+      "package": "@executor.sh/builderio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Builder.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "builtwith",
+      "package": "@executor.sh/builtwith",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for BuiltWith yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cal",
+      "package": "@executor.sh/cal",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cal.com yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "calendly",
+      "package": "@executor.sh/calendly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Calendly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "callingly",
+      "package": "@executor.sh/callingly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Callingly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "candid",
+      "package": "@executor.sh/candid",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Candid yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "candis",
+      "package": "@executor.sh/candis",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Candis yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "canva",
+      "package": "@executor.sh/canva",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Canva yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "capsulecrm",
+      "package": "@executor.sh/capsulecrm",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Capsule CRM yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "capturekit",
+      "package": "@executor.sh/capturekit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for CaptureKit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "carbon-voice",
+      "package": "@executor.sh/carbon-voice",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Carbon Voice yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cashfree",
+      "package": "@executor.sh/cashfree",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cashfree yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "certifier",
+      "package": "@executor.sh/certifier",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Certifier yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "chartmogul",
+      "package": "@executor.sh/chartmogul",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ChartMogul yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "chatwork",
+      "package": "@executor.sh/chatwork",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Chatwork yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "checkcherry",
+      "package": "@executor.sh/checkcherry",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Check Cherry yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "checkhq",
+      "package": "@executor.sh/checkhq",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Check yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "checks-operator",
+      "package": "checks-operator",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Production checks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "checks-personal",
+      "package": "checks-personal",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for My connection checks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "checks-pool-owner",
+      "package": "checks-pool-owner",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for My pool checks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "chilipiper",
+      "package": "@executor.sh/chilipiper",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Chili Piper yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "circleback",
+      "package": "@executor.sh/circleback",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Circleback yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "clay",
+      "package": "@executor.sh/clay",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Clay yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cleverreach",
+      "package": "@executor.sh/cleverreach",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for CleverReach yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "clickhouse",
+      "package": "@executor.sh/clickhouse",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ClickHouse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "clickup",
+      "package": "@executor.sh/clickup",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ClickUp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "clio-manage",
+      "package": "@executor.sh/clio-manage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Clio Manage yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Clio Manage yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Clio Manage yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Clio Manage yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "close",
+      "package": "@executor.sh/close",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Close yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cloudbeds",
+      "package": "@executor.sh/cloudbeds",
+      "methods": {
+        "OAuth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cloudbeds yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cloudconvert",
+      "package": "@executor.sh/cloudconvert",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for CloudConvert yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cloudflare",
+      "package": "@executor.sh/cloudflare",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cloudflare yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cloudinary",
+      "package": "@executor.sh/cloudinary",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cloudinary yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "cloudlayer",
+      "package": "@executor.sh/cloudlayer",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Cloudlayer yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "coinbase",
+      "package": "@executor.sh/coinbase",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Coinbase yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "coinbase-wallet",
+      "package": "@executor.sh/coinbase-wallet",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Coinbase Wallet yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "commercelayer",
+      "package": "@executor.sh/commercelayer",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Commerce Layer yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "commonroom",
+      "package": "@executor.sh/commonroom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Common Room yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "companycam",
+      "package": "@executor.sh/companycam",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for CompanyCam yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "confluence",
+      "package": "@executor.sh/confluence",
+      "methods": {
+        "OAuth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Confluence yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "connecteam",
+      "package": "@executor.sh/connecteam",
+      "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Connecteam yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "consensus",
+      "package": "@executor.sh/consensus",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Consensus yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "constantcontact",
+      "package": "@executor.sh/constantcontact",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Constant Contact yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "contaazul",
+      "package": "@executor.sh/contaazul",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Conta Azul yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "contentdrips",
+      "package": "@executor.sh/contentdrips",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Contentdrips yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "contentful",
+      "package": "@executor.sh/contentful",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Contentful yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "contentsquare",
+      "package": "@executor.sh/contentsquare",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Contentsquare yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "convex",
+      "package": "@executor.sh/convex",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Convex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "conveyor",
+      "package": "@executor.sh/conveyor",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Conveyor yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "copyleaks",
+      "package": "@executor.sh/copyleaks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Copyleaks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "coros",
+      "package": "@executor.sh/coros",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for COROS yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "craft",
+      "package": "@executor.sh/craft",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Craft yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "crowdin",
+      "package": "@executor.sh/crowdin",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Crowdin yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "customjs",
+      "package": "@executor.sh/customjs",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for CustomJS yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dart",
+      "package": "@executor.sh/dart",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dart yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "data247",
+      "package": "@executor.sh/data247",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Data247 yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "databox",
+      "package": "@executor.sh/databox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Databox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "datadog",
+      "package": "@executor.sh/datadog",
+      "methods": {
+        "oauthUs1": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthUs3": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthUs5": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthEu1": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthAp1": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthAp2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        },
+        "oauthUk1": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Datadog yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dentally",
+      "package": "@executor.sh/dentally",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dentally yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "descript",
+      "package": "@executor.sh/descript",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Descript yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "devolens",
+      "package": "@executor.sh/devolens",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Devolens yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dialpad",
+      "package": "@executor.sh/dialpad",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dialpad yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "digitalocean",
+      "package": "@executor.sh/digitalocean",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DigitalOcean yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "digits",
+      "package": "@executor.sh/digits",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Digits yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "discord",
+      "package": "@executor.sh/discord",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Discord yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "docsautomator",
+      "package": "@executor.sh/docsautomator",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DocsAutomator yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "docsbotai",
+      "package": "@executor.sh/docsbotai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DocsBot AI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "docusign",
+      "package": "@executor.sh/docusign",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DocuSign yet. You can connect with your own OAuth app."
+        },
+        "sandbox": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DocuSign yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dodopayments",
+      "package": "@executor.sh/dodopayments",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dodo Payments yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "domo",
+      "package": "@executor.sh/domo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Domo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dope-security",
+      "package": "@executor.sh/dope-security",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for dope.security yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "drchrono",
+      "package": "@executor.sh/drchrono",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DrChrono yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dribbble",
+      "package": "@executor.sh/dribbble",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dribbble yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dropbox",
+      "package": "@executor.sh/dropbox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dropbox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dropboxsign",
+      "package": "@executor.sh/dropboxsign",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dropbox Sign yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dropcontact",
+      "package": "@executor.sh/dropcontact",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dropcontact yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "dub",
+      "package": "@executor.sh/dub",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Dub yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ebay",
+      "package": "@executor.sh/ebay",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for eBay yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "echtpost",
+      "package": "@executor.sh/echtpost",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for EchtPost yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "egnyte",
+      "package": "@executor.sh/egnyte",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Egnyte yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "emailable",
+      "package": "@executor.sh/emailable",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Emailable yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "emarsys",
+      "package": "@executor.sh/emarsys",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Emarsys yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "employment-hero",
+      "package": "@executor.sh/employment-hero",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Employment Hero yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "envoy",
+      "package": "@executor.sh/envoy",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Envoy yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "eodhdapis",
+      "package": "@executor.sh/eodhdapis",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for EODHD APIs yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "era",
+      "package": "@executor.sh/era",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Era yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "eraser",
+      "package": "@executor.sh/eraser",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Eraser yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "esignatures",
+      "package": "@executor.sh/esignatures",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for eSignatures yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "esputnik",
+      "package": "@executor.sh/esputnik",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for eSputnik yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "eventbrite",
+      "package": "@executor.sh/eventbrite",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Eventbrite yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "exactonline",
+      "package": "@executor.sh/exactonline",
+      "methods": {
+        "oauthNl": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthCom": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthBe": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthDe": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthFr": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthUk": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        },
+        "oauthEs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exact Online yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "excel",
+      "package": "@executor.sh/excel",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Excel yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "exist",
+      "package": "@executor.sh/exist",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Exist yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "extrovert",
+      "package": "@executor.sh/extrovert",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Extrovert yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "facebook",
+      "package": "@executor.sh/facebook",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Facebook yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "factorial",
+      "package": "@executor.sh/factorial",
+      "methods": {
+        "oauth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Factorial yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fairing",
+      "package": "@executor.sh/fairing",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fairing yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fanvue",
+      "package": "@executor.sh/fanvue",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fanvue yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fathom",
+      "package": "@executor.sh/fathom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fathom yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fellow",
+      "package": "@executor.sh/fellow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fellow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "felt",
+      "package": "@executor.sh/felt",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Felt yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fibery",
+      "package": "@executor.sh/fibery",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fibery yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "figma",
+      "package": "@executor.sh/figma",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Figma yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "filloutforms",
+      "package": "@executor.sh/filloutforms",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fillout Forms yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "firebase",
+      "package": "@executor.sh/firebase",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Firebase yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "firefish",
+      "package": "@executor.sh/firefish",
+      "methods": {
+        "customApi": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Firefish yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fitbit",
+      "package": "@executor.sh/fitbit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fitbit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fortnox",
+      "package": "@executor.sh/fortnox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fortnox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "freeagent",
+      "package": "@executor.sh/freeagent",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for FreeAgent yet. You can connect with your own OAuth app."
+        },
+        "sandbox": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for FreeAgent yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "freshbooks",
+      "package": "@executor.sh/freshbooks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for FreshBooks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "front",
+      "package": "@executor.sh/front",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Front yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fullstory",
+      "package": "@executor.sh/fullstory",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Fullstory yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "fuseai",
+      "package": "@executor.sh/fuseai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for FuseAI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gamma",
+      "package": "@executor.sh/gamma",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gamma yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gemini",
+      "package": "@executor.sh/gemini",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gemini yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "getresponse",
+      "package": "@executor.sh/getresponse",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for GetResponse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "github",
+      "package": "@executor.sh/github",
+      "sourceSha256": "71e08511da6d6cc15c35d9fc5669516661c3e70b0095a4d5d96d93047a2f2ff6",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "github-oauth",
+          "message": "Shared sign-in for GitHub is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gitlab",
+      "package": "@executor.sh/gitlab",
+      "sourceSha256": "c4d21c48ecf96d7b147e86f4ec8931c4306a3241b98b32e1a565cf3dc9e2e6de",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "gitlab",
+          "message": "GitLab.com sign-in is not configured on this host. For a self-managed GitLab site, use an OAuth app registered on that site."
+        }
+      }
+    },
+    {
+      "entry": "glasp",
+      "package": "@executor.sh/glasp",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Glasp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "glide",
+      "package": "@executor.sh/glide",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Glide yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "globalping",
+      "package": "@executor.sh/globalping",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Globalping yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gmail",
+      "package": "@executor.sh/gmail",
+      "sourceSha256": "4e55f6f6c716b8837179b32802d75dc4c2b3979d8570ccda8794da49e34fa76e",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Gmail is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gocardless",
+      "package": "@executor.sh/gocardless",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for GoCardless yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gong",
+      "package": "@executor.sh/gong",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gong yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google",
+      "package": "@executor.sh/google",
+      "sourceSha256": "f314543dc5550de7c3f8a9b29e2291c32244bdde1e6c7614430f754e98cdec88",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-admin",
+      "package": "@executor.sh/google-admin",
+      "sourceSha256": "4013e97b5789524374000a6455931dc3fbd4ecfc9b36453cd7c0b46ae55256ba",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Admin is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-ads",
+      "package": "@executor.sh/google-ads",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Ads yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-analytics",
+      "package": "@executor.sh/google-analytics",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Analytics yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-apps-script",
+      "package": "@executor.sh/google-apps-script",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Apps Script yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-bigquery",
+      "package": "@executor.sh/google-bigquery",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google BigQuery yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-calendar",
+      "package": "@executor.sh/google-calendar",
+      "sourceSha256": "7cbeed43eb8c8acc8de6578198119578e1cc0a8e9d8ac94c72dc82865aaa26a3",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Calendar is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-chat",
+      "package": "@executor.sh/google-chat",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Chat yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-classroom",
+      "package": "@executor.sh/google-classroom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Classroom yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-cloud-vision",
+      "package": "@executor.sh/google-cloud-vision",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Cloud Vision yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-contacts",
+      "package": "@executor.sh/google-contacts",
+      "sourceSha256": "beef2266d467aa6c39e5deb72c7ee7b177131e7e522e74dc067efe79dab2aef7",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Contacts is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-data-studio",
+      "package": "@executor.sh/google-data-studio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Data Studio yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-docs",
+      "package": "@executor.sh/google-docs",
+      "sourceSha256": "8e140f0caf012dac7af6a23313b3341b7346bd0a96bbfc1cad8e5115b4b7dd85",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Docs is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-drive",
+      "package": "@executor.sh/google-drive",
+      "sourceSha256": "fed254135f99943a7749f3c6c4886268a1378b476921bf551939b98dbdcf9d7d",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Drive is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-forms",
+      "package": "@executor.sh/google-forms",
+      "sourceSha256": "b54b3b973a2f247ed0c74e6708a3ca5b7f92b45189d2441867db5c34ec05ce31",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Forms is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-meet",
+      "package": "@executor.sh/google-meet",
+      "sourceSha256": "ed253a1a5299913630aef742f91b7400c964f581850790593680384209ff6e8a",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Meet is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-photos",
+      "package": "@executor.sh/google-photos",
+      "sourceSha256": "cc19a001530c73755671ecfca8ccdf747a1584aae9918c7e0ed04c74b18de5d6",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Photos is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-search-console",
+      "package": "@executor.sh/google-search-console",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Google Search Console yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-sheets",
+      "package": "@executor.sh/google-sheets",
+      "sourceSha256": "993e63f5e21c917c5da4654728e0fc0f4f8e23720a7f99454bd8e265f0eb0921",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Sheets is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-slides",
+      "package": "@executor.sh/google-slides",
+      "sourceSha256": "87ed21b24c8506e105ba7bd37934dabdb68e3b9c4bcc2ef5f909ccd7ca99ab48",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Slides is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "google-tasks",
+      "package": "@executor.sh/google-tasks",
+      "sourceSha256": "4e80615c50ec00479f46c46be60d592cf857287aa17e68cd2ac5e1a95c923c12",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "google",
+          "message": "Shared sign-in for Google Tasks is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gorgias",
+      "package": "@executor.sh/gorgias",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gorgias yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "grain",
+      "package": "@executor.sh/grain",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Grain yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "granola",
+      "package": "@executor.sh/granola",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Granola yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "greenhouse",
+      "package": "@executor.sh/greenhouse",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Greenhouse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "greptile",
+      "package": "@executor.sh/greptile",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Greptile yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "grist",
+      "package": "@executor.sh/grist",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Grist yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gumroad",
+      "package": "@executor.sh/gumroad",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gumroad yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "gusto",
+      "package": "@executor.sh/gusto",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Gusto yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "happyscribe",
+      "package": "@executor.sh/happyscribe",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Happy Scribe yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "harvest",
+      "package": "@executor.sh/harvest",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Harvest yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "helpdesk",
+      "package": "@executor.sh/helpdesk",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HelpDesk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "helpscout",
+      "package": "@executor.sh/helpscout",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Help Scout yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "heyzine",
+      "package": "@executor.sh/heyzine",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Heyzine yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hibob",
+      "package": "@executor.sh/hibob",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HiBob yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "higgsfield",
+      "package": "@executor.sh/higgsfield",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Higgsfield yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "highlevel",
+      "package": "@executor.sh/highlevel",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HighLevel yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hitpay",
+      "package": "@executor.sh/hitpay",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HitPay yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hjarni",
+      "package": "@executor.sh/hjarni",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Hjarni yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "honcho",
+      "package": "@executor.sh/honcho",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Honcho yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "honeybadger",
+      "package": "@executor.sh/honeybadger",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Honeybadger yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "honeycomb",
+      "package": "@executor.sh/honeycomb",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Honeycomb yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hover",
+      "package": "@executor.sh/hover",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Hover yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "htmlcsstoimage",
+      "package": "@executor.sh/htmlcsstoimage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HTML/CSS to Image yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hubspot",
+      "package": "@executor.sh/hubspot",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for HubSpot yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "hubstaff",
+      "package": "@executor.sh/hubstaff",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Hubstaff yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "huggingface",
+      "package": "@executor.sh/huggingface",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Hugging Face yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "imagekitio",
+      "package": "@executor.sh/imagekitio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ImageKit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "imejisio",
+      "package": "@executor.sh/imejisio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Imejis.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "inistate",
+      "package": "@executor.sh/inistate",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Inistate yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "intercom",
+      "package": "@executor.sh/intercom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Intercom yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ironclad",
+      "package": "@executor.sh/ironclad",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ironclad yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ironclad yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jam",
+      "package": "@executor.sh/jam",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Jam yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jamie",
+      "package": "@executor.sh/jamie",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Jamie yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jentic",
+      "package": "@executor.sh/jentic",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Jentic yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jira",
+      "package": "@executor.sh/jira",
+      "methods": {
+        "OAuth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Jira yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jobadder",
+      "package": "@executor.sh/jobadder",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for JobAdder yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "jobber",
+      "package": "@executor.sh/jobber",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Jobber yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "judgeme",
+      "package": "@executor.sh/judgeme",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Judge.me yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "justworks",
+      "package": "@executor.sh/justworks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Justworks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "kaggle",
+      "package": "@executor.sh/kaggle",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Kaggle yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "keap",
+      "package": "@executor.sh/keap",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Keap yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "keyword",
+      "package": "@executor.sh/keyword",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Keyword.com yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "kit",
+      "package": "@executor.sh/kit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Kit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "klaviyo",
+      "package": "@executor.sh/klaviyo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Klaviyo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "knack",
+      "package": "@executor.sh/knack",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Knack yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "knocommerce",
+      "package": "@executor.sh/knocommerce",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Kno Commerce yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "launchdarkly",
+      "package": "@executor.sh/launchdarkly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for LaunchDarkly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "leadfeeder",
+      "package": "@executor.sh/leadfeeder",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Leadfeeder yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "leadiq",
+      "package": "@executor.sh/leadiq",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for LeadIQ yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "legal-data-hunter",
+      "package": "@executor.sh/legal-data-hunter",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Legal Data Hunter yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "lever",
+      "package": "@executor.sh/lever",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Lever yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "linear",
+      "package": "@executor.sh/linear",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Linear yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "linkedin",
+      "package": "@executor.sh/linkedin",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for LinkedIn yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "linkedinads",
+      "package": "@executor.sh/linkedinads",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for LinkedIn Ads yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "linkhut",
+      "package": "@executor.sh/linkhut",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Linkhut yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "linkly",
+      "package": "@executor.sh/linkly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Linkly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "listrak",
+      "package": "@executor.sh/listrak",
+      "methods": {
+        "apiClient": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Listrak yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "liveswitch",
+      "package": "@executor.sh/liveswitch",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for LiveSwitch yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "lokalise",
+      "package": "@executor.sh/lokalise",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Lokalise yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "longbridge",
+      "package": "@executor.sh/longbridge",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Longbridge yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "lovable",
+      "package": "@executor.sh/lovable",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Lovable yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "loyverse",
+      "package": "@executor.sh/loyverse",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Loyverse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "lucid",
+      "package": "@executor.sh/lucid",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Lucid yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "magic-patterns",
+      "package": "@executor.sh/magic-patterns",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Magic Patterns yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "magicslides",
+      "package": "@executor.sh/magicslides",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MagicSlides yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mailchimp",
+      "package": "@executor.sh/mailchimp",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mailchimp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mailerlite",
+      "package": "@executor.sh/mailerlite",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MailerLite yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mailsoftly",
+      "package": "@executor.sh/mailsoftly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mailsoftly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "make",
+      "package": "@executor.sh/make",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Make yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "manus",
+      "package": "@executor.sh/manus",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Manus yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mapbox",
+      "package": "@executor.sh/mapbox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mapbox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "marcopolo",
+      "package": "@executor.sh/marcopolo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MarcoPolo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "matterport",
+      "package": "@executor.sh/matterport",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Matterport yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "memberstack",
+      "package": "@executor.sh/memberstack",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Memberstack yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mercury",
+      "package": "@executor.sh/mercury",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mercury yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mermaid-chart",
+      "package": "@executor.sh/mermaid-chart",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mermaid Chart yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "metaads",
+      "package": "@executor.sh/metaads",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Meta Ads yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "microsoft-teams",
+      "package": "@executor.sh/microsoft-teams",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Microsoft Teams yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "microsoft-todo",
+      "package": "@executor.sh/microsoft-todo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Microsoft To Do yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "microsoftpowerbi",
+      "package": "@executor.sh/microsoftpowerbi",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Microsoft Power BI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "midpage",
+      "package": "@executor.sh/midpage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Midpage yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mimecast",
+      "package": "@executor.sh/mimecast",
+      "methods": {
+        "application": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mimecast yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mintlify",
+      "package": "@executor.sh/mintlify",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mintlify yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "miro",
+      "package": "@executor.sh/miro",
+      "sourceSha256": "0042bec617a9c5a1d341f08f0931c568c4da6dfed424c1d9af0b378759502f3d",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "miro",
+          "message": "Shared sign-in for Miro is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mixpanel",
+      "package": "@executor.sh/mixpanel",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mixpanel yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mobbin",
+      "package": "@executor.sh/mobbin",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mobbin yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "modem",
+      "package": "@executor.sh/modem",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Modem yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mollie",
+      "package": "@executor.sh/mollie",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mollie yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "monday",
+      "package": "@executor.sh/monday",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Monday yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "moneybird",
+      "package": "@executor.sh/moneybird",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Moneybird yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mongodb",
+      "package": "@executor.sh/mongodb",
+      "methods": {
+        "serviceAccount": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MongoDB yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "moz",
+      "package": "@executor.sh/moz",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Moz yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mrscraper",
+      "package": "@executor.sh/mrscraper",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MrScraper yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "mural",
+      "package": "@executor.sh/mural",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Mural yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "myob",
+      "package": "@executor.sh/myob",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for MYOB yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "neetoform",
+      "package": "@executor.sh/neetoform",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for NeetoForm yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "neo4j",
+      "package": "@executor.sh/neo4j",
+      "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Neo4j yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "neon",
+      "package": "@executor.sh/neon",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Neon yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ngram",
+      "package": "@executor.sh/ngram",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ngram yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "noloco",
+      "package": "@executor.sh/noloco",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Noloco yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "nooks",
+      "package": "@executor.sh/nooks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Nooks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "northbeam",
+      "package": "@executor.sh/northbeam",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Northbeam yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "notebooklm",
+      "package": "@executor.sh/notebooklm",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for NotebookLM yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "notion",
+      "package": "@executor.sh/notion",
+      "sourceSha256": "e089345d9439a4f05472538e096d95d0ea04c0834e41df65dcf05989e33a66f5",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "notion",
+          "message": "Shared sign-in for Notion is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "nusiiproposals",
+      "package": "@executor.sh/nusiiproposals",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Nusii proposals yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "octagon",
+      "package": "@executor.sh/octagon",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Octagon yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "omnisend",
+      "package": "@executor.sh/omnisend",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Omnisend yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "onedrive",
+      "package": "@executor.sh/onedrive",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OneDrive yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "onenote",
+      "package": "@executor.sh/onenote",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OneNote yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "onesignal",
+      "package": "@executor.sh/onesignal",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OneSignal yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "oneup",
+      "package": "@executor.sh/oneup",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OneUp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "onlysocial",
+      "package": "@executor.sh/onlysocial",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OnlySocial yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "onshape",
+      "package": "@executor.sh/onshape",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Onshape yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "opengraphio",
+      "package": "@executor.sh/opengraphio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OpenGraph.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "opnform",
+      "package": "@executor.sh/opnform",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for OPNForm yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "optum-real",
+      "package": "@executor.sh/optum-real",
+      "methods": {
+        "sandbox": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Optum Real yet. You can connect with your own OAuth app."
+        },
+        "production": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Optum Real yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ordinal",
+      "package": "@executor.sh/ordinal",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ordinal yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "orshot",
+      "package": "@executor.sh/orshot",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Orshot yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "osu",
+      "package": "@executor.sh/osu",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for osu! yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "otter",
+      "package": "@executor.sh/otter",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Otter.ai yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "oura",
+      "package": "@executor.sh/oura",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Oura yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "outline",
+      "package": "@executor.sh/outline",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Outline yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "outlook",
+      "package": "@executor.sh/outlook",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Outlook yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "outreach",
+      "package": "@executor.sh/outreach",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Outreach yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pagerduty",
+      "package": "@executor.sh/pagerduty",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PagerDuty yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pandadoc",
+      "package": "@executor.sh/pandadoc",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PandaDoc yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "parma",
+      "package": "@executor.sh/parma",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Parma yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "particl",
+      "package": "@executor.sh/particl",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Particl yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "paychex",
+      "package": "@executor.sh/paychex",
+      "methods": {
+        "apiApp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Paychex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "payfit",
+      "package": "@executor.sh/payfit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PayFit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "paypal",
+      "package": "@executor.sh/paypal",
+      "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PayPal yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pendo",
+      "package": "@executor.sh/pendo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pendo yet. You can connect with your own OAuth app."
+        },
+        "serviceAccount": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pendo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "perigon",
+      "package": "@executor.sh/perigon",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Perigon yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "perk",
+      "package": "@executor.sh/perk",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Perk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "personio",
+      "package": "@executor.sh/personio",
+      "methods": {
+        "machine": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Personio yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "piloterr",
+      "package": "@executor.sh/piloterr",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Piloterr yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pingboard",
+      "package": "@executor.sh/pingboard",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pingboard yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pinterest",
+      "package": "@executor.sh/pinterest",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pinterest yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pipedream",
+      "package": "@executor.sh/pipedream",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pipedream yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pipedrive",
+      "package": "@executor.sh/pipedrive",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pipedrive yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "plaid",
+      "package": "@executor.sh/plaid",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Plaid yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "planetscale",
+      "package": "@executor.sh/planetscale",
+      "methods": {
+        "oauth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PlanetScale yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "planning-center-online",
+      "package": "@executor.sh/planning-center-online",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Planning Center yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pleo",
+      "package": "@executor.sh/pleo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pleo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pocketsmith",
+      "package": "@executor.sh/pocketsmith",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PocketSmith yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "podium",
+      "package": "@executor.sh/podium",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Podium yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "polar-signals",
+      "package": "@executor.sh/polar-signals",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Polar Signals yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "posthog",
+      "package": "@executor.sh/posthog",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for PostHog yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "postiz",
+      "package": "@executor.sh/postiz",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Postiz yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "postman",
+      "package": "@executor.sh/postman",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Postman yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "prisma",
+      "package": "@executor.sh/prisma",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Prisma yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "prismic",
+      "package": "@executor.sh/prismic",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Prismic yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "procore",
+      "package": "@executor.sh/procore",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Procore yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "productboard",
+      "package": "@executor.sh/productboard",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Productboard yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "prospeo",
+      "package": "@executor.sh/prospeo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Prospeo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pushbullet",
+      "package": "@executor.sh/pushbullet",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pushbullet yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pushpay-chms",
+      "package": "@executor.sh/pushpay-chms",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pushpay ChMS yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "pylon",
+      "package": "@executor.sh/pylon",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Pylon yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "quickbooks",
+      "package": "@executor.sh/quickbooks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for QuickBooks yet. You can connect with your own OAuth app."
+        },
+        "sandbox": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for QuickBooks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "quickbooks-time",
+      "package": "@executor.sh/quickbooks-time",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for QuickBooks Time yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "quicknode",
+      "package": "@executor.sh/quicknode",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Quicknode yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "quintadb",
+      "package": "@executor.sh/quintadb",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for QuintaDB yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "railway",
+      "package": "@executor.sh/railway",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Railway yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "raindrop",
+      "package": "@executor.sh/raindrop",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Raindrop.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ramp",
+      "package": "@executor.sh/ramp",
+      "methods": {
+        "clientCredentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ramp yet. You can connect with your own OAuth app."
+        },
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ramp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "read-ai",
+      "package": "@executor.sh/read-ai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Read AI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "readwise-reader",
+      "package": "@executor.sh/readwise-reader",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Readwise Reader yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "reapit",
+      "package": "@executor.sh/reapit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Reapit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "reddit",
+      "package": "@executor.sh/reddit",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Reddit yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "redditads",
+      "package": "@executor.sh/redditads",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Reddit Ads yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "reteno",
+      "package": "@executor.sh/reteno",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Reteno yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ringcentral",
+      "package": "@executor.sh/ringcentral",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for RingCentral yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "rkvst",
+      "package": "@executor.sh/rkvst",
+      "methods": {
+        "appRegistration": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for DataTrails (RKVST) yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "roam",
+      "package": "@executor.sh/roam",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Roam yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "robinhood",
+      "package": "@executor.sh/robinhood",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Robinhood yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "roboflow",
+      "package": "@executor.sh/roboflow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Roboflow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "rootly",
+      "package": "@executor.sh/rootly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Rootly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "rydoo",
+      "package": "@executor.sh/rydoo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Rydoo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sage",
+      "package": "@executor.sh/sage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sage yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "salesforce",
+      "package": "@executor.sh/salesforce",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Salesforce yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "salesloft",
+      "package": "@executor.sh/salesloft",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Salesloft yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "salesmsg",
+      "package": "@executor.sh/salesmsg",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Salesmsg yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sanity",
+      "package": "@executor.sh/sanity",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sanity yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "scavio",
+      "package": "@executor.sh/scavio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Scavio yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "schwab",
+      "package": "@executor.sh/schwab",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Charles Schwab yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "scorecard",
+      "package": "@executor.sh/scorecard",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Scorecard yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "scrapegraphai",
+      "package": "@executor.sh/scrapegraphai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ScrapeGraphAI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "scrapfly",
+      "package": "@executor.sh/scrapfly",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Scrapfly yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "scrollstash",
+      "package": "@executor.sh/scrollstash",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ScrollStash yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "segmetrics",
+      "package": "@executor.sh/segmetrics",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SegMetrics yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sellsy",
+      "package": "@executor.sh/sellsy",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sellsy yet. You can connect with your own OAuth app."
+        },
+        "machine": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sellsy yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "semrush",
+      "package": "@executor.sh/semrush",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Semrush yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sender",
+      "package": "@executor.sh/sender",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sender yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sendfox",
+      "package": "@executor.sh/sendfox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SendFox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sendpulse",
+      "package": "@executor.sh/sendpulse",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SendPulse yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sentry",
+      "package": "@executor.sh/sentry",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sentry yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "servicem8",
+      "package": "@executor.sh/servicem8",
+      "methods": {
+        "oauth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ServiceM8 yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sevenio",
+      "package": "@executor.sh/sevenio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Seven.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sharepoint",
+      "package": "@executor.sh/sharepoint",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SharePoint yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "shippo",
+      "package": "@executor.sh/shippo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Shippo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sideshow",
+      "package": "@executor.sh/sideshow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sideshow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "signnow",
+      "package": "@executor.sh/signnow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SignNow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "simplescraper",
+      "package": "@executor.sh/simplescraper",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Simplescraper yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sitespeakai",
+      "package": "@executor.sh/sitespeakai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SiteSpeakAI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "slack",
+      "package": "@executor.sh/slack",
+      "sourceSha256": "07e7d65517cd5f7af76dd13ae7cd21f121233c03c26c00b5dd46c27c1e258fe4",
+      "methods": {
+        "user": {
+          "kind": "hosted",
+          "client": "slack-rest",
+          "message": "Shared sign-in for Slack is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "slite",
+      "package": "@executor.sh/slite",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Slite yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "smartsheet",
+      "package": "@executor.sh/smartsheet",
+      "methods": {
+        "OAuth2": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Smartsheet yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "snapchat",
+      "package": "@executor.sh/snapchat",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Snapchat yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "softr",
+      "package": "@executor.sh/softr",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Softr yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "sophos-central",
+      "package": "@executor.sh/sophos-central",
+      "methods": {
+        "credentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Sophos Central yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "soundcloud",
+      "package": "@executor.sh/soundcloud",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SoundCloud yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "spendesk",
+      "package": "@executor.sh/spendesk",
+      "methods": {
+        "credentials": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Spendesk yet. You can connect with your own OAuth app."
+        },
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Spendesk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "splice",
+      "package": "@executor.sh/splice",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Splice yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "splitwise",
+      "package": "@executor.sh/splitwise",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Splitwise yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "spotify",
+      "package": "@executor.sh/spotify",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Spotify only allows a few test users for new apps, so for now you connect it with your own Spotify developer app."
+        }
+      }
+    },
+    {
+      "entry": "square",
+      "package": "@executor.sh/square",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Square yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "squarespace",
+      "package": "@executor.sh/squarespace",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Squarespace yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "stackai",
+      "package": "@executor.sh/stackai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for StackAI yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "stackexchange",
+      "package": "@executor.sh/stackexchange",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Stack Exchange yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "statista",
+      "package": "@executor.sh/statista",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Statista yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "strava",
+      "package": "@executor.sh/strava",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Strava yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "stytch",
+      "package": "@executor.sh/stytch",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Stytch yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "supabase",
+      "package": "@executor.sh/supabase",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Supabase yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "superhuman",
+      "package": "@executor.sh/superhuman",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Superhuman yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "surecontact",
+      "package": "@executor.sh/surecontact",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SureContact yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "surveymonkey",
+      "package": "@executor.sh/surveymonkey",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for SurveyMonkey yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "swoogo",
+      "package": "@executor.sh/swoogo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Swoogo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "synthesize-bio",
+      "package": "@executor.sh/synthesize-bio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Synthesize Bio yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "tailscale",
+      "package": "@executor.sh/tailscale",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Tailscale yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "tapclicks",
+      "package": "@executor.sh/tapclicks",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for TapClicks yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "teamleader",
+      "package": "@executor.sh/teamleader",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Teamleader Focus yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "telnyx",
+      "package": "@executor.sh/telnyx",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Telnyx yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "thanksio",
+      "package": "@executor.sh/thanksio",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Thanks.io yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "theorg",
+      "package": "@executor.sh/theorg",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for The Org yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "thoughtspot",
+      "package": "@executor.sh/thoughtspot",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ThoughtSpot yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "thrivecart",
+      "package": "@executor.sh/thrivecart",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ThriveCart yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ticket-tailor",
+      "package": "@executor.sh/ticket-tailor",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Ticket Tailor yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ticktick",
+      "package": "@executor.sh/ticktick",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for TickTick yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "timely",
+      "package": "@executor.sh/timely",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Timely yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "todoist",
+      "package": "@executor.sh/todoist",
+      "sourceSha256": "0d74e668114d1756931606b84557ee221c96107caf5e8aa95b09c2ac50dd6065",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "todoist",
+          "message": "Shared sign-in for Todoist is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "tomba",
+      "package": "@executor.sh/tomba",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Tomba yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "toneden",
+      "package": "@executor.sh/toneden",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ToneDen yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "transporeon-carrier",
+      "package": "@executor.sh/transporeon-carrier",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Transporeon Carrier Interface yet. You can connect with your own OAuth app."
+        },
+        "oauthTest": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Transporeon Carrier Interface yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "trello",
+      "package": "@executor.sh/trello",
+      "sourceSha256": "3fe21638184d3e1834db19caadc889d9e2822a5f5498c0485a99ed834b8531a9",
+      "methods": {
+        "oauth": {
+          "kind": "hosted",
+          "client": "trello",
+          "message": "Shared sign-in for Trello is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "tremendous",
+      "package": "@executor.sh/tremendous",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Tremendous yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "trigify",
+      "package": "@executor.sh/trigify",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Trigify yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "triplewhale",
+      "package": "@executor.sh/triplewhale",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Triple Whale yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "trustpilot",
+      "package": "@executor.sh/trustpilot",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Trustpilot yet. You can connect with your own OAuth app."
+        },
+        "machine": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Trustpilot yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "tumblr",
+      "package": "@executor.sh/tumblr",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Tumblr yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "turso",
+      "package": "@executor.sh/turso",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Turso yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "twenty",
+      "package": "@executor.sh/twenty",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Twenty yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "twitch",
+      "package": "@executor.sh/twitch",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Twitch yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "twitter",
+      "package": "@executor.sh/twitter",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for X yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "typeform",
+      "package": "@executor.sh/typeform",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Typeform yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "uber",
+      "package": "@executor.sh/uber",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Uber yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "uplisting",
+      "package": "@executor.sh/uplisting",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Uplisting yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "v0",
+      "package": "@executor.sh/v0",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for v0 yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "vantage",
+      "package": "@executor.sh/vantage",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Vantage yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "vercel",
+      "package": "@executor.sh/vercel",
+      "sourceSha256": "7c04d0498f5cfbec44207993979e7bbe6fa0e6c686a5331343f11c65447adc8a",
+      "methods": {
+        "oauth": {
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://vercel.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "930d42443e3c1075b7fb53f9983e117d83c46e751365373fd7638c324cc4d4b6"
+        }
+      }
+    },
+    {
+      "entry": "vibe",
+      "package": "@executor.sh/vibe",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Vibe yet. You can connect with your own OAuth app."
+        },
+        "serverToServer": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Vibe yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "vibe-prospecting",
+      "package": "@executor.sh/vibe-prospecting",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Vibe Prospecting yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "videoask",
+      "package": "@executor.sh/videoask",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for VideoAsk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "vidiq",
+      "package": "@executor.sh/vidiq",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for vidIQ yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "vimeo",
+      "package": "@executor.sh/vimeo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Vimeo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wakatime",
+      "package": "@executor.sh/wakatime",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for WakaTime yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wati",
+      "package": "@executor.sh/wati",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wati yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wati yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wave-accounting",
+      "package": "@executor.sh/wave-accounting",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wave Accounting yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wealthbox",
+      "package": "@executor.sh/wealthbox",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wealthbox yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "webex",
+      "package": "@executor.sh/webex",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Webex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "webflow",
+      "package": "@executor.sh/webflow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Webflow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "whatsapp",
+      "package": "@executor.sh/whatsapp",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for WhatsApp yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "whoop",
+      "package": "@executor.sh/whoop",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for WHOOP yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "whop",
+      "package": "@executor.sh/whop",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Whop yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wildapricot",
+      "package": "@executor.sh/wildapricot",
+      "methods": {
+        "apiKey": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for WildApricot yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "windsorai",
+      "package": "@executor.sh/windsorai",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Windsor.ai yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wiseagent",
+      "package": "@executor.sh/wiseagent",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wise Agent yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wispr-flow",
+      "package": "@executor.sh/wispr-flow",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wispr Flow yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wistia",
+      "package": "@executor.sh/wistia",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wistia yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "withpica",
+      "package": "@executor.sh/withpica",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for withPICA yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wix",
+      "package": "@executor.sh/wix",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wix yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "woodpeckerco",
+      "package": "@executor.sh/woodpeckerco",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Woodpecker yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wordpresscom",
+      "package": "@executor.sh/wordpresscom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for WordPress.com yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "workable",
+      "package": "@executor.sh/workable",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Workable yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "wrike",
+      "package": "@executor.sh/wrike",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Wrike yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "xero",
+      "package": "@executor.sh/xero",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Xero yet. You can connect with your own OAuth app."
+        },
+        "machine": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Xero yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "yahoo",
+      "package": "@executor.sh/yahoo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Yahoo yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "yandex",
+      "package": "@executor.sh/yandex",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Yandex yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "ynab",
+      "package": "@executor.sh/ynab",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for YNAB yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "youtube",
+      "package": "@executor.sh/youtube",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for YouTube yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zapier",
+      "package": "@executor.sh/zapier",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zapier yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zendesk",
+      "package": "zendesk",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click Zendesk sign-in across companies yet. You can connect with an OAuth app from your own Zendesk account."
+        }
+      }
+    },
+    {
+      "entry": "zenefits",
+      "package": "@executor.sh/zenefits",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zenefits yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zeplin",
+      "package": "@executor.sh/zeplin",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zeplin yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zero",
+      "package": "@executor.sh/zero",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zero yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zigpoll",
+      "package": "@executor.sh/zigpoll",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zigpoll yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zoho",
+      "package": "@executor.sh/zoho",
+      "sourceSha256": "eda26772308990e20bed4759cde82c703d997896bd8a48ecbec51865ee35769a",
+      "methods": {
+        "oauthUs": {
+          "kind": "hosted",
+          "client": "zoho-us",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "hosted",
+          "client": "zoho-eu",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "hosted",
+          "client": "zoho-in",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "hosted",
+          "client": "zoho-au",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "hosted",
+          "client": "zoho-jp",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "hosted",
+          "client": "zoho-ca",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "hosted",
+          "client": "zoho-sa",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "hosted",
+          "client": "zoho-cn",
+          "message": "Shared sign-in for Zoho CRM is not configured on this host. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohobigin",
+      "package": "@executor.sh/zohobigin",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Bigin yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohobooks",
+      "package": "@executor.sh/zohobooks",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthAe": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Books yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohodesk",
+      "package": "@executor.sh/zohodesk",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthAe": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthSg": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Desk yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohoinventory",
+      "package": "@executor.sh/zohoinventory",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Inventory yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohoinvoice",
+      "package": "@executor.sh/zohoinvoice",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Invoice yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zohomail",
+      "package": "@executor.sh/zohomail",
+      "methods": {
+        "oauthUs": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthEu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthIn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthAu": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthJp": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthCa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthSa": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthAe": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        },
+        "oauthCn": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoho Mail yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zoom",
+      "package": "@executor.sh/zoom",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for Zoom yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
+      "entry": "zoominfo",
+      "package": "@executor.sh/zoominfo",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for ZoomInfo yet. You can connect with your own OAuth app."
+        }
+      }
+    }
+  ]
+}

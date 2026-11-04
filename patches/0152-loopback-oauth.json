@@ -1,0 +1,9 @@
+{
+  "identity": "executor-loopback-oauth",
+  "file": "0152-loopback-oauth.patch",
+  "content_sha256": "9bb9539f0e25be383be0fde61120e18d6d829dd547990d56f40d9f3812d88d2d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

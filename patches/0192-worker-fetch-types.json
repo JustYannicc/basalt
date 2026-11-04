@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-worker-fetch-types",
+  "file": "0192-worker-fetch-types.patch",
+  "content_sha256": "d3ec4c3a2788c9d4bfc88877bcbb20da09a0f9a2eceb72acdca924d67f0331e3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

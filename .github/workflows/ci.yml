@@ -12,6 +12,39 @@ env:
   E2E_BUN_VERSION: 1.4.2
 
 jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.jobs.outputs.jobs }}
+      hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
+      boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
+      boat_jobs_csv: ${{ steps.jobs.outputs.boat_jobs_csv }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Select affected heavy jobs
+        id: jobs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-update') }}
+        run: |
+          if [ "$FULL_SUITE" = true ]; then
+            node scripts/ci/select-jobs.ts --all
+          else
+            node scripts/ci/select-jobs.ts
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-selection
+          path: .generated/ci/selection.json
+          include-hidden-files: true
+          if-no-files-found: error
   cpa-pipeline:
     runs-on: ubuntu-latest
     steps:
@@ -40,6 +73,8 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-mobile')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -56,6 +91,8 @@ jobs:
       - run: bun run --cwd clients/mobile export:ios
       - run: bun run --cwd clients/mobile export:android
   client-desktop:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-desktop')
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -87,6 +124,8 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'client-native-product')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -116,6 +155,8 @@ jobs:
             .generated/native-mobile-*/failure*.txt
           if-no-files-found: warn
   vercel-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'vercel-sign-in')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -141,6 +182,8 @@ jobs:
             .generated/vercel-sign-in/ci/failure.txt
           if-no-files-found: warn
   slack-health:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'slack-health')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -170,6 +213,8 @@ jobs:
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
   catalog-compat:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'catalog-compat')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -200,7 +245,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',host-managed-accounts,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -236,7 +282,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^Pool creation preserves retained pools|^catalog instances keep every service family reachable|^app model bindings delegate one pool|^app model requests preserve refusals|^native pool usage (renders|preserves)"
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^Pool creation preserves retained pools|^catalog instances keep every service family reachable|^app model bindings delegate one pool|^app model requests preserve refusals|^native pool usage (renders|preserves)|^Catalog OAuth deferrals"
           --workers 1
       - name: Verify bounded per-account usage through the public host API
         working-directory: .upstream
@@ -255,6 +301,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   host-managed-accounts-local:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-local')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -289,6 +337,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   host-managed-accounts-cloud:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-cloud')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
@@ -320,7 +370,7 @@ jobs:
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies' --workers 1
+        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs' --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -335,6 +385,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   google-account-recovery:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'google-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -375,7 +427,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',oauth-account-regressions,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'oauth-account-regressions')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -410,7 +463,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',pool-account-recovery,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-account-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -451,6 +505,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   sso-service-binding:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'sso-service-binding')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -482,7 +538,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -532,7 +589,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-migrations,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-migrations')
     runs-on: ubuntu-latest
     timeout-minutes: 14
     steps:
@@ -570,7 +628,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',production-ops-identity,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-ops-identity')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -629,7 +688,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',compiler-diagnostics,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'compiler-diagnostics')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -662,6 +722,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   human-in-the-loop:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'human-in-the-loop')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -707,7 +769,8 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',contributed-accounts,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'contributed-accounts')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -748,6 +811,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'contributed-account-recipes')
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
@@ -779,6 +844,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'personal-data-reporting')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -818,6 +885,8 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-inventory')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -838,16 +907,22 @@ jobs:
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
+      - name: Verify banked reset recovery with a synthetic provider
+        run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pool-inventory-e2e
           path: |
+            .generated/pool-reset-checks/**/report.json
+            .generated/pool-reset-checks/**/failure.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   dashboard-batch:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'dashboard-batch')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -908,7 +983,40 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+  aws-connectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Prepare the pinned synthetic runtime
+        working-directory: .upstream
+        run: |
+          bun run e2e:prepare
+          node scripts/build-basalt-framework.ts
+      - name: Install Chromium for the hosted AWS paste proof
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Exercise AWS sign-in and tools through the real runtime
+        run: node scripts/check-aws.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aws-hosted-paste-ui
+          path: .generated/aws-proof/run-*/aws-*.png
+          if-no-files-found: warn
+          include-hidden-files: true
   gitlab-connectors:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'gitlab-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -941,6 +1049,8 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
   mcp-apps:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'mcp-apps')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -977,21 +1087,8 @@ jobs:
             .upstream/.local/e2e/**/report/**
           include-hidden-files: true
           if-no-files-found: warn
-  check:
+  fast:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17.7-alpine
-        env:
-          POSTGRES_USER: fixture_root
-          POSTGRES_DB: postgres
-          POSTGRES_PASSWORD: fixture-only
-        ports: [5432:5432]
-        options: >-
-          --health-cmd "pg_isready -U fixture_root"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1001,8 +1098,24 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.4
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
+      - name: Format and lint changed source and carry targets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci/style.ts
+      - name: Check workflow syntax
+        run: |
+          curl --fail --silent --show-error --location https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz --output "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+      - name: Check app conventions
+        run: |
+          node scripts/app-lint/prepare-host.mjs
+          npm run lint:apps
+          npm run check:app-lint
       - name: Architecture format and validation
         run: |
           npm run architecture:format
@@ -1012,12 +1125,12 @@ jobs:
           npm run architecture:model
           npm run architecture:typecheck
       - run: npm run check
+      - name: Check every catalog OAuth method has a reviewed connection path
+        run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries
         run: |
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
-      - name: Build documentation without Google font requests
-        run: node scripts/docs-fonts/check.ts
       - name: Verify Cloud startup diagnostics and app listeners
         working-directory: .upstream
         run: |
@@ -1062,10 +1175,43 @@ jobs:
           git diff --exit-code -- architecture/gen
           test -z "$(git ls-files --others --exclude-standard architecture/gen)"
           npm run architecture:validate
+      - name: Typecheck Basalt against public source exports
+        run: node scripts/typecheck.ts --source
       - name: Architecture fitness functions
         env:
           ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: npm run architecture:test
+      - name: Typecheck the patched upstream the way upstream checks itself
+        run: npm run typecheck:upstream
+
+  pool-runtime:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'pool-runtime')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: fixture_root
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: fixture-only
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
       - name: Free runner disk before pool builds
         run: |
           echo "Runner disk before cleanup (bytes)"
@@ -1107,18 +1253,95 @@ jobs:
           docker builder prune --all --force
           echo "Runner disk after pool cleanup (bytes)"
           df -B1 /
-      - run: npm run check:upstream
-        env:
-          MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+
+  production-build:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'production-build')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
       - run: npm run build
       - run: npm run check:build
       - name: Check every Worker's startup CPU and size against Cloudflare's limits
         run: npm run check:startup
       - run: npm run typecheck
-      # Upstream's own typecheck over the patched tree, so carried patches meet upstream's rules
-      # (including its Effect diagnostics), not just the slice Basalt's typecheck covers.
-      - name: Typecheck the patched upstream the way upstream checks itself
-        run: npm run typecheck:upstream
+
+  docs-build:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'docs-build')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build documentation without Google font requests
+        run: node scripts/docs-fonts/check.ts
+
+  upstream-contracts:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'upstream-contracts')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: fixture_root
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: fixture-only
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: npm run check:upstream
+        env:
+          MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+
+  check:
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, boat-bundle, boat-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Require every selected job and every fast check to pass
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+          CI_JOBS: ${{ needs.select.outputs.jobs }}
+          CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
+        run: node scripts/ci/gate.ts
       - name: Capture the checked pull request merge result
         if: >-
           github.event_name == 'pull_request' &&
@@ -1140,7 +1363,8 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    if: ${{ !contains(format(',{0},', vars.BASALT_CI_BOAT_JOBS), ',account-acquisition,') }}
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'account-acquisition')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1171,7 +1395,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh"
+          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall"
           --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
@@ -1184,7 +1408,8 @@ jobs:
           if-no-files-found: warn
 
   boat-bundle:
-    if: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+    needs: select
+    if: needs.select.outputs.boat_jobs != '[]'
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -1210,7 +1435,7 @@ jobs:
       - name: Run every selected suite and retain its resource measurements
         id: bundle
         env:
-          BASALT_CI_BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          BASALT_CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs_csv }}
           BASALT_CI_BOAT_SHARD: ${{ matrix.shard }}
           BASALT_CI_BOAT_MAX_PARALLEL: ${{ vars.BASALT_CI_BOAT_MAX_PARALLEL }}
           BASALT_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -1226,13 +1451,13 @@ jobs:
 
   boat-check:
     if: ${{ always() }}
-    needs: boat-bundle
+    needs: [select, boat-bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every enabled Boat bundle to pass
         env:
-          BOAT_ENABLED: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+          BOAT_ENABLED: ${{ needs.select.outputs.boat_jobs != '[]' }}
           BOAT_RESULT: ${{ needs.boat-bundle.result }}
         run: |
           if [ "$BOAT_ENABLED" = "true" ] && [ "$BOAT_RESULT" != "success" ]; then

@@ -1,4 +1,6 @@
+import { servedFrameworkVersion } from "../../framework-release.ts";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { poolFrameworkVersion } from "../../scripts/pool-app-bundle.ts";
 import type { Feed } from "./feed.ts";
@@ -40,7 +42,10 @@ const publisher: typeof fetch = async (input) => {
 };
 
 test("the catalog serves the framework release Basalt's compiler ships", () => {
-  assert.equal(catalog.framework, poolFrameworkVersion);
+  assert.equal(catalog.framework, servedFrameworkVersion);
+  assert.equal(poolFrameworkVersion, servedFrameworkVersion);
+  const pool = JSON.parse(readFileSync(new URL("../../apps/pool/package.json", import.meta.url), "utf8"));
+  assert.equal(pool.dependencies.apps, servedFrameworkVersion);
 });
 
 /** Each package the catalog serves that does not declare the served framework, and what it declares. */
