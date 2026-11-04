@@ -985,6 +985,8 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   aws-connectors:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'aws-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1327,7 +1329,7 @@ jobs:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
 
   check:
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
