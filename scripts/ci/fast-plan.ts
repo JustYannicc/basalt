@@ -10,22 +10,24 @@ function environment(value: unknown, context: FastContext): Record<string, strin
   if (value === undefined) return {};
   if (!object(value)) throw new Error("Fast environment must be a mapping");
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => {
-      if (typeof entry !== "string" && typeof entry !== "number" && typeof entry !== "boolean")
-        throw new Error(`Unsupported fast environment value: ${key}`);
-      const text = String(entry);
-      const known: Record<string, string> = {
-        "${{ github.event.pull_request.base.sha || github.event.before }}": context.base,
-        "${{ github.event.pull_request.head.sha || github.sha }}": context.head,
-        "${{ github.event.pull_request.base.sha }}": context.base,
-        "${{ needs.select.outputs.base_sha }}": context.base,
-      };
-      if (text.includes("${{")) {
-        if (!(text in known)) throw new Error(`Unsupported fast environment expression: ${key}`);
-        return [key, known[text]!];
-      }
-      return [key, text];
-    }),
+    Object.entries(value)
+      .filter(([, entry]) => entry !== "${{ github.token }}")
+      .map(([key, entry]) => {
+        if (typeof entry !== "string" && typeof entry !== "number" && typeof entry !== "boolean")
+          throw new Error(`Unsupported fast environment value: ${key}`);
+        const text = String(entry);
+        const known: Record<string, string> = {
+          "${{ github.event.pull_request.base.sha || github.event.before }}": context.base,
+          "${{ github.event.pull_request.head.sha || github.sha }}": context.head,
+          "${{ github.event.pull_request.base.sha }}": context.base,
+          "${{ needs.select.outputs.base_sha }}": context.base,
+        };
+        if (text.includes("${{")) {
+          if (!(text in known)) throw new Error(`Unsupported fast environment expression: ${key}`);
+          return [key, known[text]!];
+        }
+        return [key, text];
+      }),
   );
 }
 
