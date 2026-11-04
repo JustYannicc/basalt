@@ -20,7 +20,13 @@ interface Attempt {
   settled?: boolean;
   observed?: string[];
   state?: string;
-  started?: { session: string; url: string; code?: string; expiresAt: number; paste?: { label: string } };
+  started?: {
+    session: string;
+    url: string;
+    code?: string;
+    expiresAt: number;
+    paste?: { label: string };
+  };
   result?: { state: "connected"; ref: string } | { state: "failed"; message: string };
 }
 interface Storage {
@@ -63,11 +69,21 @@ export class HomeAccountAcquisitions {
     if (request.method !== "POST") return new Response(null, { status: 405 });
     let value;
     try {
-      value = await acquisitionAssertion(request, this.signingKey, this.previousSigningKey, this.now());
-    } catch { return Response.json({ error: "acquisition_forbidden" }, { status: 403 }); }
+      value = await acquisitionAssertion(
+        request,
+        this.signingKey,
+        this.previousSigningKey,
+        this.now(),
+      );
+    } catch {
+      return Response.json({ error: "acquisition_forbidden" }, { status: 403 });
+    }
 
     try {
-      const attempts = await acquisitionStep("state", () => this.storage.get<Record<string, Attempt>>(storageKey)) ?? {};
+      const attempts =
+        (await acquisitionStep("state", () =>
+          this.storage.get<Record<string, Attempt>>(storageKey),
+        )) ?? {};
       const owner = String(value.owner);
       if (value.action === "remove") {
         const ref = text(value.reference);
@@ -79,16 +95,31 @@ export class HomeAccountAcquisitions {
       if (value.action === "start") {
         const provider = text(value.provider);
         if (!provider || !providers.some((entry) => entry.id === provider)) return unavailable();
-        const prior = Object.values(attempts).find((entry) => entry.owner === owner && entry.operation === value.operation);
-        if (prior) return prior.provider === provider && prior.started ? this.reply(prior.started) : unavailable();
+        const prior = Object.values(attempts).find(
+          (entry) => entry.owner === owner && entry.operation === value.operation,
+        );
+        if (prior)
+          return prior.provider === provider && prior.started
+            ? this.reply(prior.started)
+            : unavailable();
         for (const [id, entry] of Object.entries(attempts))
           if (entry.settled && entry.expires <= this.now()) delete attempts[id];
-        if (Object.keys(attempts).length >= 200 || Object.values(attempts).filter((entry) => !entry.result || !entry.settled).length >= 16) return unavailable();
+        if (
+          Object.keys(attempts).length >= 200 ||
+          Object.values(attempts).filter((entry) => !entry.result || !entry.settled).length >= 16
+        )
+          return unavailable();
         const session = crypto.randomUUID();
-        const before = (await this.credentials(request.signal)).flatMap((row) => text(row.id) ?? []);
+        const before = (await this.credentials(request.signal)).flatMap(
+          (row) => text(row.id) ?? [],
+        );
         const attempt: Attempt = {
-          owner, provider, operation: String(value.operation), expires: this.now() + ttl,
-          marker: await acquisitionStep("attribution", () => this.attribution.begin()), before,
+          owner,
+          provider,
+          operation: String(value.operation),
+          expires: this.now() + ttl,
+          marker: await acquisitionStep("attribution", () => this.attribution.begin()),
+          before,
           ...(text(value.reconnect) ? { reconnect: String(value.reconnect) } : {}),
         };
         attempts[session] = attempt;
@@ -96,24 +127,41 @@ export class HomeAccountAcquisitions {
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         await this.arm();
         const started = await acquisitionStep("oauth_start", async () => {
-          const started = await this.home.data(`/oauth/auth-url?provider=${encodeURIComponent(provider)}`, { signal: request.signal });
+          const started = await this.home.data(
+            `/oauth/auth-url?provider=${encodeURIComponent(provider)}`,
+            { signal: request.signal },
+          );
           if (!text(started.state) || !text(started.url)) return unavailable();
           return started;
         });
         attempt.state = String(started.state);
-        const callback = started.flow === "device" ? false
-          : started.flow === "browser" || started.flow === "callback" || callbackOrigin(String(started.url)) !== null;
-        const code = text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null);
+        const callback =
+          started.flow === "device"
+            ? false
+            : started.flow === "browser" ||
+              started.flow === "callback" ||
+              callbackOrigin(String(started.url)) !== null;
+        const code =
+          text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null);
         attempt.started = {
-          session, url: String(started.url), expiresAt: attempt.expires,
-          ...(code ? { code } : {}), ...(callback ? { paste: { label: "Callback URL" } } : {}),
+          session,
+          url: String(started.url),
+          expiresAt: attempt.expires,
+          ...(code ? { code } : {}),
+          ...(callback ? { paste: { label: "Callback URL" } } : {}),
         };
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         return this.reply(attempt.started);
       }
       const session = text(value.session);
       const attempt = session ? attempts[session] : undefined;
-      if (!attempt || attempt.owner !== owner || attempt.provider !== value.provider || !attempt.state) return unavailable();
+      if (
+        !attempt ||
+        attempt.owner !== owner ||
+        attempt.provider !== value.provider ||
+        !attempt.state
+      )
+        return unavailable();
       const state = attempt.state;
       if (value.action === "cancel") {
         if (attempt.result?.state === "connected") {
@@ -122,12 +170,18 @@ export class HomeAccountAcquisitions {
           const fresh = refs.filter((ref) => !attempt.before.includes(ref));
           if (fresh.length) {
             const membership = await this.home.allMembership(request.signal);
-            if (membership.members.some((member) => fresh.includes(member.auth_id))) return unavailable();
+            if (membership.members.some((member) => fresh.includes(member.auth_id)))
+              return unavailable();
             await this.remove(homeReference(fresh), request.signal);
           }
           attempt.result = { state: "failed", message: "Sign-in cancelled." };
         } else if (!attempt.result) {
-          const cancelled = await acquisitionStep("oauth_cancel", () => this.home.data(`/oauth/session?state=${encodeURIComponent(state)}`, { method: "DELETE", signal: request.signal }));
+          const cancelled = await acquisitionStep("oauth_cancel", () =>
+            this.home.data(`/oauth/session?state=${encodeURIComponent(state)}`, {
+              method: "DELETE",
+              signal: request.signal,
+            }),
+          );
           if (cancelled.cancelled !== true) {
             await this.progress(attempt, attempts, request.signal);
             // A completed attempt now has a retained ref; the next cancel can release it safely.
@@ -138,73 +192,126 @@ export class HomeAccountAcquisitions {
         await this.finish(attempt, attempts, request.signal);
         return this.reply(null);
       }
-      if (attempt.result) { await this.finish(attempt, attempts, request.signal); return this.reply(attempt.result); }
+      if (attempt.result) {
+        await this.finish(attempt, attempts, request.signal);
+        return this.reply(attempt.result);
+      }
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
         const callback = new URL(value.value);
         if (callback.searchParams.get("state") !== attempt.state) return unavailable();
-        await acquisitionStep("oauth_callback", () => this.home.data("/oauth/callback", { ...post({ provider: attempt.provider, redirect_url: value.value }), signal: request.signal }));
+        await acquisitionStep("oauth_callback", () =>
+          this.home.data("/oauth/callback", {
+            ...post({ provider: attempt.provider, redirect_url: value.value }),
+            signal: request.signal,
+          }),
+        );
       } else if (value.action !== "status") return unavailable();
       await this.progress(attempt, attempts, request.signal);
       return this.reply(attempt.result ?? { state: "waiting" });
     } catch (error) {
       const receipt = acquisitionReceipt(error);
       console.warn("POOL_ACQUISITION_FAILURE", JSON.stringify(receipt));
-      return Response.json({ error: "acquisition_unavailable", receipt }, { status: 503, headers: { "Cache-Control": "no-store" } });
+      return Response.json(
+        { error: "acquisition_unavailable", receipt },
+        { status: 503, headers: { "Cache-Control": "no-store" } },
+      );
     }
   }
 
   /** Capture Home's short-lived final answer even when the connection page is closed. */
   async tick(): Promise<void> {
-    const attempts = await acquisitionStep("state", () => this.storage.get<Record<string, Attempt>>(storageKey)) ?? {};
+    const attempts =
+      (await acquisitionStep("state", () =>
+        this.storage.get<Record<string, Attempt>>(storageKey),
+      )) ?? {};
     for (const attempt of Object.values(attempts)) {
       if (attempt.result && attempt.settled) continue;
-      try { await this.progress(attempt, attempts, AbortSignal.timeout(1_000)); }
-      catch { /* Retain the attempt and attribution marker for the next alarm. */ }
+      try {
+        await this.progress(attempt, attempts, AbortSignal.timeout(1_000));
+      } catch {
+        /* Retain the attempt and attribution marker for the next alarm. */
+      }
     }
     if (Object.values(attempts).some((entry) => !entry.result || !entry.settled)) await this.arm();
   }
 
   async keepAlive(): Promise<void> {
-    const attempts = await acquisitionStep("state", () => this.storage.get<Record<string, Attempt>>(storageKey)) ?? {};
+    const attempts =
+      (await acquisitionStep("state", () =>
+        this.storage.get<Record<string, Attempt>>(storageKey),
+      )) ?? {};
     if (Object.values(attempts).some((entry) => !entry.result || !entry.settled)) await this.arm();
   }
 
-  private progress(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+  private progress(
+    attempt: Attempt,
+    attempts: Record<string, Attempt>,
+    signal?: AbortSignal,
+  ): Promise<void> {
     return acquisitionStep("oauth_status", () => this.advance(attempt, attempts, signal));
   }
 
-  private async advance(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+  private async advance(
+    attempt: Attempt,
+    attempts: Record<string, Attempt>,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (attempt.result) return this.finish(attempt, attempts, signal);
     const state = attempt.state;
     if (attempt.expires <= this.now()) {
       // An unknown start is never repeated or assigned by a directory diff.
       attempt.observed = await this.currentProviderIds(attempt.provider, signal);
-      attempt.result = { state: "failed", message: "Sign-in expired before its account could be confirmed. Start again." };
+      attempt.result = {
+        state: "failed",
+        message: "Sign-in expired before its account could be confirmed. Start again.",
+      };
     } else if (state) {
-      const status = await acquisitionStep("oauth_status", () => this.home.data(`/oauth/status?state=${encodeURIComponent(state)}`, { signal }));
+      const status = await acquisitionStep("oauth_status", () =>
+        this.home.data(`/oauth/status?state=${encodeURIComponent(state)}`, { signal }),
+      );
       if (status.status === "wait") return;
       if (status.status === "error") {
         attempt.result = { state: "failed", message: "The provider sign-in failed or expired." };
       } else if (status.status === "ok") {
-        const ids = [...new Set([
-          ...(Array.isArray(status.auth_ids) ? status.auth_ids.filter((id): id is string => typeof id === "string" && id.length > 0) : []),
-          ...(text(status.auth_id) ? [String(status.auth_id)] : []),
-        ])];
+        const ids = [
+          ...new Set([
+            ...(Array.isArray(status.auth_ids)
+              ? status.auth_ids.filter(
+                  (id): id is string => typeof id === "string" && id.length > 0,
+                )
+              : []),
+            ...(text(status.auth_id) ? [String(status.auth_id)] : []),
+          ]),
+        ];
         // A directory diff cannot establish which global account this attempt acquired.
         if (ids.length === 0 || ids.length > 32) {
-          attempt.result = { state: "failed", message: "The sign-in did not return its exact credentials. No account was linked." };
+          attempt.result = {
+            state: "failed",
+            message: "The sign-in did not return its exact credentials. No account was linked.",
+          };
           return this.finish(attempt, attempts, signal);
         }
         attempt.observed = ids;
         const reconnect = attempt.reconnect === undefined ? [] : homeReferences(attempt.reconnect);
         if (ids.some((id) => attempt.before.includes(id) && !reconnect.includes(id))) {
-          attempt.result = { state: "failed", message: "This sign-in returned an existing account. Select its saved account instead." };
+          attempt.result = {
+            state: "failed",
+            message: "This sign-in returned an existing account. Select its saved account instead.",
+          };
           return this.finish(attempt, attempts, signal);
         }
         const credentials = await this.credentials(signal);
         await acquisitionStep("credentials", async () => {
-          if (!ids.every((id) => credentials.some((row) => row.id === id && (text(row.provider) ?? text(row.type)) === attempt.provider))) return unavailable();
+          if (
+            !ids.every((id) =>
+              credentials.some(
+                (row) =>
+                  row.id === id && (text(row.provider) ?? text(row.type)) === attempt.provider,
+              ),
+            )
+          )
+            return unavailable();
         });
         attempt.result = { state: "connected", ref: homeReference(ids) };
       } else return unavailable();
@@ -212,7 +319,11 @@ export class HomeAccountAcquisitions {
     if (attempt.result) await this.finish(attempt, attempts, signal);
   }
 
-  private async finish(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+  private async finish(
+    attempt: Attempt,
+    attempts: Record<string, Attempt>,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!attempt.settled && attempt.result?.state === "failed" && attempt.observed === undefined) {
       // A credential can outlive its final status. Exclude its provider's IDs before releasing a legacy diff.
       attempt.observed = await this.currentProviderIds(attempt.provider, signal);
@@ -220,13 +331,17 @@ export class HomeAccountAcquisitions {
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
     if (attempt.settled) return;
-    await acquisitionStep("attribution", () => this.attribution.settle(attempt.marker, attempt.observed ?? []));
+    await acquisitionStep("attribution", () =>
+      this.attribution.settle(attempt.marker, attempt.observed ?? []),
+    );
     attempt.settled = true;
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
   }
 
   private credentials(signal?: AbortSignal) {
-    return acquisitionStep("credentials", async () => rows((await this.home.data("/credentials", { signal })).files));
+    return acquisitionStep("credentials", async () =>
+      rows((await this.home.data("/credentials", { signal })).files),
+    );
   }
 
   private async currentProviderIds(provider: string, signal?: AbortSignal): Promise<string[]> {
@@ -239,18 +354,27 @@ export class HomeAccountAcquisitions {
   private async arm(): Promise<void> {
     const next = this.now() + 30_000;
     const alarm = await acquisitionStep("state", () => this.storage.getAlarm());
-    if (alarm === null || alarm > next) await acquisitionStep("state", () => this.storage.setAlarm(next));
+    if (alarm === null || alarm > next)
+      await acquisitionStep("state", () => this.storage.setAlarm(next));
   }
 
   private async remove(ref: string, signal?: AbortSignal): Promise<void> {
     const refs = homeReferences(ref);
     for (const id of refs) {
-      const response = await this.home.response(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE", signal });
+      const response = await this.home.response(`/credentials?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        signal,
+      });
       await response.body?.cancel();
       if (!response.ok && response.status !== 404) return unavailable();
     }
-    for (const member of (await this.home.allMembership(signal)).members.filter((member) => refs.includes(member.auth_id))) {
-      const removed = await this.home.response(`/channel-group-details/${member.id}`, { method: "DELETE", signal });
+    for (const member of (await this.home.allMembership(signal)).members.filter((member) =>
+      refs.includes(member.auth_id),
+    )) {
+      const removed = await this.home.response(`/channel-group-details/${member.id}`, {
+        method: "DELETE",
+        signal,
+      });
       await removed.body?.cancel();
       if (!removed.ok && removed.status !== 404) return unavailable();
     }
