@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hosted-reset-recovery",
   "file": "0176-hosted-reset-recovery.patch",
-  "content_sha256": "9fb23f2db4cd14b9e7873f0f36cf171bc3eec885915cf0e1e335f7b667670fce",
+  "content_sha256": "c2f0753a6006d01a5a812fad9fb0a9b24103526049ad3a9274c838efc87c949d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

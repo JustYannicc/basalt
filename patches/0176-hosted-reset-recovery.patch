@@ -396,3 +396,18 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
 +    AccountResetUnavailable: ({ message }) => message,
 +    AccountResetRefused: ({ message }) => message,
      PoolUsageUnavailable: ({ message }) => message,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -1 +1,2 @@
++import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+@@ -221,2 +222,8 @@
+       return Layer.mergeAll(
++        Layer.succeed(
++          AccountResetBackend,
++          Option.isSome(modelSigningKey)
++            ? { key: modelSigningKey.value, origin: modelOrigin }
++            : undefined,
++        ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
