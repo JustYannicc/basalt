@@ -1393,7 +1393,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh"
+          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall"
           --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
