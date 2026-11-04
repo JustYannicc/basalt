@@ -50,6 +50,12 @@ export const usage = query(
   async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),
 );
 
+export const capacity = query(
+  { description: "Measured weighted capacity history for pool managers. Missing observations remain gaps.", input: object({ days: number().optional() }) },
+  async (ctx: Context, { days }) => control<import("./capacity-contract.ts").PoolCapacityHistory>(ctx,
+    `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}`),
+);
+
 export const addLoginFile = mutation(
   {
     description: "Connect a subscription from a login file the pool backend exported",
@@ -102,7 +108,7 @@ const identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
 export default defineApp(requirements, {
-  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),
+  tools: router({ view, usage, capacity, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),
   // The pool Worker refuses every step unless the caller owns the pool.
   connect: {
     subscriptions: {

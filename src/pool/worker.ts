@@ -284,7 +284,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       if (response.ok) this.ctx.waitUntil(this.managementReady().catch(() => {}));
       return response;
     }
-    if (pathname === summaryPath) return this.usage.handle(request);
+    if (pathname === summaryPath || pathname === "/pool/v1/usage/capacity") return this.usage.handle(request);
     if (pathname === modelHistoryPath || pathname === modelImportPath) return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
       signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
       connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,

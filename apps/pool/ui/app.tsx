@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { Account, PoolView } from "../contract.ts";
+import type { PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
-import { AccountList } from "./accounts.tsx";
 import { poolOrigin, productName } from "../deployment.ts";
-import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
+import { Button, buttonClass, ExternalIcon, Problem, Segmented } from "./controls.tsx";
 import { Freshness } from "./freshness.tsx";
+import { ManagerOverview } from "./overview.tsx";
+import { useOverview, type RangeDays } from "./overview-data.ts";
 import { usePool } from "./pool-view.ts";
 import { Usage } from "./usage-view.tsx";
 
@@ -34,7 +35,8 @@ export function App({ api }: { api: PoolApi }) {
       window.parent.postMessage({ name, version: 2, snapshot: source === "snapshot" }, new URL(poolOrigin).origin);
   }, [view, measurable]);
   const now = useNow();
-  const [removeError, setRemoveError] = useState<string>();
+  const [days, setDays] = useState<RangeDays>(7);
+  const overview = useOverview(api, days);
   const [shareHref, setShareHref] = useState<string>();
   // Only the owner's context carries the share page; computers live on Connect. Its signed
   // intent lasts five minutes, so it is renewed well before that.
@@ -49,18 +51,8 @@ export function App({ api }: { api: PoolApi }) {
     return () => { live = false; clearInterval(timer); };
   }, [api]);
 
-  const remove = async (account: Account) => {
-    setRemoveError(undefined);
-    const result = await api.remove(account.id);
-    if (!result.ok) {
-      setRemoveError(result.message);
-      return false;
-    }
-    await reload();
-    return true;
-  };
-
   const count = view?.accounts.length ?? 0;
+  const labs = new Set(view?.accounts.map((account) => account.provider)).size;
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
@@ -69,6 +61,9 @@ export function App({ api }: { api: PoolApi }) {
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
         <div className="flex items-center gap-2">
+          {!overview.member && (
+            <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
+          )}
           {shareHref && (
             <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
               Share <ExternalIcon />
@@ -80,13 +75,13 @@ export function App({ api }: { api: PoolApi }) {
       <main className="flex-1 pb-16">
         <section className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 pt-10 pb-6">
           <div className="grid gap-1">
-            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Accounts</h1>
-            <p className="text-sm text-muted-foreground">
+            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Overview</h1>
+            <p className="text-sm text-muted-foreground text-pretty">
               {view === undefined
                 ? "Loading this pool…"
                 : count === 0
                   ? "No accounts yet."
-                  : `${count} ${count === 1 ? "account" : "accounts"} in this pool. Conversations stay on one account; new ones spread across them.`}
+                  : `${count} subscription ${count === 1 ? "account" : "accounts"} across ${labs} ${labs === 1 ? "lab" : "labs"}. Conversations stay on one account; new ones spread across them.`}
             </p>
           </div>
           {view !== undefined && (
@@ -102,33 +97,23 @@ export function App({ api }: { api: PoolApi }) {
             </Button>
           </div>
         )}
-        {removeError && (
-          <div className="mb-4">
-            <Problem>{removeError}</Problem>
-          </div>
-        )}
-
         {view === undefined ? (
           !error && <Skeleton />
-        ) : view.accounts.length === 0 ? (
-          <Empty view={view} />
         ) : (
           <>
-            <p className="mb-2 text-sm text-muted-foreground text-pretty">
-              {view.isOwner
-                ? connectHint
-                : "Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them."}
-            </p>
-            <AccountList
-              accounts={view.accounts}
-              providers={view.providers}
-              now={now}
-              canChange={view.isOwner}
-              onRemove={remove}
-            />
+            {view.accounts.length === 0 && <Empty view={view} />}
+            {overview.member ? (
+              <>
+                <p className="text-sm text-muted-foreground text-pretty">
+                  Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them.
+                </p>
+                <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />
+              </>
+            ) : (
+              <ManagerOverview data={overview} days={days} providers={view.providers} onRetry={() => void overview.reload()} />
+            )}
           </>
         )}
-        {view !== undefined && <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />}
       </main>
 
     </div>
@@ -147,7 +132,7 @@ function Empty({ view }: { view: PoolView }) {
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {view.isOwner
-            ? `Requests through this pool use the subscriptions you connect, and each one's limits and resets show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`
+            ? `Requests through this pool use the subscriptions you connect, and their capacity and usage show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`
             : "Its owner hasn't connected a subscription. Accounts show up here once they do."}
         </p>
       </div>

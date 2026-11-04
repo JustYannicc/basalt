@@ -168,6 +168,14 @@ export class PoolUsage {
       const permissions = await this.deps.permissions?.(claims.pool, caller);
       if (permissions !== undefined && !permissions.canUse) return fail(403, "unauthorized", "This pool is not available to you.");
       const canManage = permissions?.canManage ?? caller === claims.owner;
+      if (new URL(request.url).pathname === `${controlBasePath}/usage/capacity`) {
+        if (!canManage) return fail(403, "unauthorized", "Only a pool manager can read capacity history.");
+        const to = (this.deps.now?.() ?? new Date()).getTime();
+        const from = Math.floor((to - Number(raw) * 86_400_000) / 3_600_000) * 3_600_000;
+        return json({ from, to, points: await this.capacity.read(claims.pool, { from, to }),
+          estimate: { status: "unavailable", reason: "Collecting comparable weighted history. Pattern not known yet." },
+        });
+      }
       const members = canManage ? (await this.deps.audience(claims.pool)).slice(0, maxMembers) : [];
       return json(await this.summary(claims.pool, claims.owner, caller, Number(raw), members, canManage));
     } catch (error) { return failureResponse(error); }

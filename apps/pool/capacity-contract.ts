@@ -34,3 +34,10 @@ export interface CapacityHistoryPoint {
   readonly plans: readonly CapacityPlanHistory[];
 }
 
+
+export interface PoolCapacityHistory {
+  readonly from: number;
+  readonly to: number;
+  readonly points: readonly CapacityHistoryPoint[];
+  readonly estimate: { readonly status: "unavailable"; readonly reason: string };
+}
