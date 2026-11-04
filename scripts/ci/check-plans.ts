@@ -28,8 +28,8 @@ const inheritedKeys = new Set(
 );
 const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
 const known = new Map<string, string>();
-const files = readdirSync(".upstream/e2e/tests", { recursive: true }).filter((file) =>
-  /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file),
+const files = readdirSync(".upstream/e2e/tests", { recursive: true, encoding: "utf8" }).filter(
+  (file) => /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(file),
 );
 for (const [file, entry] of Object.entries(declarations.files)) {
   assert.ok(files.includes(file), "Declaration has no test file: " + file);

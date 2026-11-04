@@ -12,6 +12,8 @@
   ],
   "inputs": [
     ".upstream/apps/hosted/self-host/**",
+    ".upstream/apps/hosted/server/**",
+    ".upstream/packages/app-management/**",
     ".upstream/packages/app-registry/**",
     ".upstream/packages/apps/**",
     ".upstream/packages/sdk/**",
