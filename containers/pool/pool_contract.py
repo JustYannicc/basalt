@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import http.client
+import json
 import os
 import pathlib
 import socket
@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .billing_policy import provision_billing_policy
 
 HOME_URL = "http://127.0.0.1:8327"
 NODE_URL = "http://127.0.0.1:8317"
@@ -48,9 +49,11 @@ def boolean_env(name: str, default: bool) -> bool:
 def require_tmpfs(path: pathlib.Path) -> None:
     target = os.path.realpath(path)
     try:
-        lines = pathlib.Path("/proc/self/mountinfo").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = (
+            pathlib.Path("/proc/self/mountinfo")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
     except OSError as error:
         raise StartupError("cannot verify memory-backed secret storage") from error
     for line in lines:
@@ -256,7 +259,9 @@ def child_environment(
 def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
     return {
         "server": {"port": 8317, "commercial-mode": True},
-        "observability": {"logs": {"request-log": False, "debug": False, "logging-to-file": False}},
+        "observability": {
+            "logs": {"request-log": False, "debug": False, "logging-to-file": False}
+        },
         "routing": {
             "strategy": "round-robin",
             "session-affinity": True,
@@ -291,6 +296,15 @@ def apply_pool_config(management_key: str, allow_remote: bool) -> None:
     )
     if status != 200:
         raise StartupError(f"Home routing configuration failed (HTTP {status})")
+    provision_billing_policy(
+        lambda method, payload: request_json(
+            f"{HOME_URL}/v8/management/billing/settings",
+            method,
+            management_key,
+            payload,
+            timeout=10,
+        )
+    )
 
 
 def create_node_jwt(management_key: str) -> tuple[str, str]:

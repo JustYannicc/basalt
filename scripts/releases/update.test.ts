@@ -257,3 +257,21 @@ test("Home updates retain the pinned plugins' distinct login provider IDs", asyn
   assert.ok(providers);
   assert.ok(JSON.parse(providers).some((provider: { id: string }) => provider.id === "fixture-login"));
 });
+
+test("Home bumps refuse an absent or disabled unpriced-model policy before writing pins", async (context) => {
+  const root = makeReleaseRoot();
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const policyPath = join(root, "containers/pool/billing-settings.json");
+  const releasesPath = join(root, "containers/pool/releases.json");
+  const before = readFileSync(releasesPath, "utf8");
+  for (const policy of [{ allow_unpriced_models: false }, {}, { allow_unpriced_models: "true" }]) {
+    writeFileSync(policyPath, JSON.stringify(policy));
+    await assert.rejects(planUpdate(root, "home", fakeApi()), /explicit unpriced-model pool policy/);
+    assert.equal(readFileSync(releasesPath, "utf8"), before);
+  }
+  rmSync(policyPath);
+  await assert.rejects(planUpdate(root, "home", fakeApi()), /billing-settings.json/);
+  assert.equal(readFileSync(releasesPath, "utf8"), before);
+  writeFileSync(policyPath, '{"allow_unpriced_models":true}\n');
+  assert.equal((await planUpdate(root, "home", fakeApi())).candidatePins.home.tag, "v1.1.7");
+});

@@ -78,6 +78,7 @@ COPY supervisor.py /opt/pool/supervisor.py
 COPY child_signals.py /opt/pool/child_signals.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
+COPY billing_policy.py billing-settings.json /opt/pool/
 COPY readiness.py /opt/pool/readiness.py
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY healthcheck.py /opt/pool/healthcheck.py
