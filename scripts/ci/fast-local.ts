@@ -7,6 +7,7 @@ import { fastPlan, runFastSteps } from "./fast-plan.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const args = process.argv.slice(2);
+if (args[0] === "--") args.shift();
 let list = false,
   baseRef = "origin/main";
 for (let index = 0; index < args.length; index++) {

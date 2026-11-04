@@ -19,23 +19,31 @@ test("the complete local gate must enter heavy-slot before any preparation or ch
       join(directory, "heavy-slot"),
       'printf "%s\\n" "$HEAVY_SLOTS" "$@" > "$SLOT_RECEIPT"\nexit 23',
     );
-    const result = spawnSync(process.execPath, [script("fast-local.ts"), "--base", "origin/main"], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: directory,
-        HEAVY_SLOT_ACTIVE: "",
-        HEAVY_SLOTS: "",
-        SLOT_RECEIPT: receipt,
-      },
-    });
-    assert.equal(result.status, 23, result.stderr);
-    const [slots, node, entrypoint, ...args] = readFileSync(receipt, "utf8").trimEnd().split("\n");
-    assert.equal(slots, "6");
-    assert.equal(node, process.execPath);
-    assert.equal(entrypoint, script("fast-local.ts"));
-    assert.deepEqual(args, ["--base", "origin/main"]);
-    assert.equal(result.stdout, "");
+    for (const forwarded of [[], ["--"]]) {
+      const result = spawnSync(
+        process.execPath,
+        [script("fast-local.ts"), ...forwarded, "--base", "origin/main"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: directory,
+            HEAVY_SLOT_ACTIVE: "",
+            HEAVY_SLOTS: "",
+            SLOT_RECEIPT: receipt,
+          },
+        },
+      );
+      assert.equal(result.status, 23, result.stderr);
+      const [slots, node, entrypoint, ...args] = readFileSync(receipt, "utf8")
+        .trimEnd()
+        .split("\n");
+      assert.equal(slots, "6");
+      assert.equal(node, process.execPath);
+      assert.equal(entrypoint, script("fast-local.ts"));
+      assert.deepEqual(args, ["--base", "origin/main"]);
+      assert.equal(result.stdout, "");
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
