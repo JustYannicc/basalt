@@ -299,12 +299,12 @@ test("breaking changes count accounts that stop working and name why", () => {
     ),
     {
       reconnect: 2,
-      reasons: ["cardinality"],
+      reasons: ["added", "cardinality"],
     },
   );
   assert.deepEqual(breakingChanges([linked("a1"), linked("b1", "member-b")], many, crm), {
     reconnect: 0,
-    reasons: [],
+    reasons: ["added"],
   });
 });
 
@@ -644,8 +644,66 @@ test("new required slots and many-to-one slots hold the update back", async () =
     linked("b1", "member-b"),
   ]);
   assert.equal(narrowed.state.deploys, 0);
-  assert.deepEqual(held.record.offer.reasons, ["cardinality"]);
+  assert.deepEqual(held.record.offer.reasons, ["added", "cardinality"]);
   assert.equal(held.record.offer.reconnect, 1);
+});
+
+test("empty optional-to-required slots hold the comparison and sweep", async () => {
+  for (const scope of ["app", "user"]) {
+    const optional = { provider: "sign-in", scope, cardinality: "many" };
+    const before = { ...crm, signIn: optional };
+    const after = { ...crm, signIn: { ...optional, cardinality: "one" } };
+    const links = [linked("saved-token")];
+    assert.deepEqual(breakingChanges(links, before, after), { reconnect: 0, reasons: ["added"] });
+    const app = fixture({ accounts: before, built: after });
+    const outcome = await app.sweep(undefined, links);
+    assert.equal(outcome.deployed, false);
+    assert.equal(app.state.deploys, 0);
+    assert.deepEqual(outcome.record.offer.reasons, ["added"]);
+  }
+});
+
+test("a linked app account satisfies an optional-to-required transition", async () => {
+  const optional = { provider: "sign-in", scope: "app", cardinality: "many" };
+  const before = { ...crm, signIn: optional };
+  const after = { ...crm, signIn: { ...optional, cardinality: "one" } };
+  const links = [
+    linked("saved-token"),
+    {
+      requirement: "signIn",
+      provider: "sign-in",
+      scope: "app",
+      subject: null,
+      account: "shared-sign-in",
+    },
+  ];
+  assert.deepEqual(breakingChanges(links, before, after), { reconnect: 0, reasons: [] });
+  const app = fixture({ accounts: before, built: after });
+  const outcome = await app.sweep(undefined, links);
+  assert.equal(outcome.deployed, true);
+  assert.equal(app.state.deploys, 1);
+  assert.equal(outcome.record.offer, undefined);
+});
+
+test("one member's account cannot satisfy a new required slot for other callers", async () => {
+  const optional = { provider: "sign-in", scope: "user", cardinality: "many" };
+  const before = { ...crm, signIn: optional };
+  const after = { ...crm, signIn: { ...optional, cardinality: "one" } };
+  const links = [
+    linked("saved-token"),
+    {
+      requirement: "signIn",
+      provider: "sign-in",
+      scope: "user",
+      subject: "member-a",
+      account: "only-member-a",
+    },
+  ];
+  assert.deepEqual(breakingChanges(links, before, after), { reconnect: 0, reasons: ["added"] });
+  const app = fixture({ accounts: before, built: after });
+  const outcome = await app.sweep(undefined, links);
+  assert.equal(outcome.deployed, false);
+  assert.equal(app.state.deploys, 0);
 });
 
 test("a touched copy is offered, never deployed", async () => {

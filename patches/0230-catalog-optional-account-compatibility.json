@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-optional-account-compatibility",
   "file": "0230-catalog-optional-account-compatibility.patch",
-  "content_sha256": "705eda6b1508eb7f33dd3d21f47165418a1c6c5c1526eaf5a2d7c3797b835bde",
+  "content_sha256": "9161f11a637f45a092a052a358ad64bc2c77bd03c31051951670059482f888e9",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
