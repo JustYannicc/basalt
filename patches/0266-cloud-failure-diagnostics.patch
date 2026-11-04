@@ -20,7 +20,7 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
  import { createHmac, timingSafeEqual } from "node:crypto";
  import { createServer, request } from "node:http";
 +import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
- 
+
  const access = "/pool/v1/access";
  const acquisition = "/pool/v1/account-acquisitions";
 @@ -12,6 +24,15 @@
@@ -37,7 +37,7 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
 +  code: Schema.optional(TransportDiagnostic.fields.code),
 +  errno: TransportDiagnostic.fields.errno,
  });
- 
+
  /** The outer pool service is external to the Cloud Worker, including for its own-origin callbacks. */
 @@ -121,27 +142,58 @@
      const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
@@ -111,7 +111,7 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
  import { Target } from "./platform.ts";
  import { roleHost } from "./role-hosts.ts";
 +import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
- 
+
  export const BaseUrl = Schema.String.check(
    Schema.makeFilter((value) => {
 @@ -225,6 +226,8 @@
@@ -216,13 +216,13 @@ diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener
  import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
 -import { freePort, holdPort } from "../support/ports.ts";
 +import { freePort, holdPort, refusingPort } from "../support/ports.ts";
- 
+
  // Node fetch replaces a custom Host header, so use native HTTP to test host preservation.
  layer(NodeHttpClient.layerNodeHttp, { excludeTestServices: true })("Cloud app listeners", (it) => {
 @@ -72,6 +75,54 @@
      }).pipe(Effect.scoped),
    );
- 
+
 +  for (const upstreamResponse of [false, true]) {
 +    it.effect(
 +      `pool forwarding distinguishes ${upstreamResponse ? "an upstream 502" : "a refused connection"} in retained evidence`,
@@ -291,7 +291,7 @@ diff --git a/e2e/tests/emulator-failures.spec.ts b/e2e/tests/emulator-failures.s
 @@ -206,6 +210,48 @@
      }),
    );
- 
+
 +  it.effect("a disconnected emulator retains a closed transport code without request secrets", () =>
 +    Effect.gen(function* () {
 +      const { origin } = yield* stub;

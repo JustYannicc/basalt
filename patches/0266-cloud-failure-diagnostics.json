@@ -1,7 +1,7 @@
 {
   "identity": "basalt-cloud-failure-diagnostics",
   "file": "0266-cloud-failure-diagnostics.patch",
-  "content_sha256": "5790ef0049011e850a8ce5c24dff97dcd493d0f74223346b93960b58a2f96a42",
+  "content_sha256": "283af7066b497d15a2ceb1f3cf2abc60e39ff371eddb3aa7290b78bf833a652c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
