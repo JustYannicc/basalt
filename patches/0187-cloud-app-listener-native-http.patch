@@ -1,0 +1,20 @@
+diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener.spec.ts
+index b4f617d3..e43b79b4 100644
+--- a/e2e/tests/cloud-app-listener.spec.ts
++++ b/e2e/tests/cloud-app-listener.spec.ts
+@@ -1,11 +1,13 @@
++import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+-import { FetchHttpClient, HttpClient } from "effect/http";
++import { HttpClient } from "effect/http";
+ import { cloudAppListener } from "../support/cloud-app-listener.ts";
+ import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
+ import { freePort, holdPort } from "../support/ports.ts";
+ 
+-layer(FetchHttpClient.layer, { excludeTestServices: true })("Cloud app listeners", (it) => {
++// Node fetch replaces a custom Host header, so use native HTTP to test host preservation.
++layer(NodeHttpClient.layerNodeHttp, { excludeTestServices: true })("Cloud app listeners", (it) => {
+   it.effect("serves the held origin despite an occupied earlier allocation", () =>
+     Effect.gen(function* () {
+       const stalePort = yield* freePort;

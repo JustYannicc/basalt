@@ -12,10 +12,10 @@
     "openapi.ts": "98dcc378f4fbf5e14acf3aa03f09979cde9fc76aede3f27d052c75a080ff5059",
     "transport.ts": "8ea342f9cc0085a4bb789d49b410d6c990c78db6fca81bb16709dd092252cf39",
     "specifications.ts": "ad591591e9f6d06df6e0e513cfd4b9b90d9490aa1e1581e317558f7dbc3112df",
-    "api-coverage.json": "8811053d7885c0b5cdeee1702ef4558d8990d24e9b2170a250b6f7463431f149",
+    "api-coverage.json": "8fc598469ca18fdc35feb053edc7c1bbf237af22922c44cb9ea868658024154f",
     "README.md": "4b8c82e23da6464bb255381dafafb97863fb7fa049f68c52d5ef32a0a0d5138f"
   },
-  "snapshotSha256": "e33d12618f882849cd3b9dca91e121e9cdeeb1a221ab8cc01b1026ef723d8adb",
+  "snapshotSha256": "f3a1622ae0b564d6f10d2ae12b6db2f8823372bf2caebdacff156b44878a90e9",
   "publicSource": {
     "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
     "files": {
@@ -25,7 +25,7 @@
   },
   "localPatch": {
     "path": "source.patch",
-    "sha256": "f2c122bca8af2c7c33a6631675d46b0db5277d9be854ab0d6e36d1b3d57f5ad4"
+    "sha256": "6870f66f35d84b741ef3752267f9584620fcafe59309c6193807ec03c5323860"
   },
   "capabilities": {
     "checkedAt": "2026-10-31",
@@ -109,8 +109,8 @@
     "hostedGranularRegistrationVerified": false,
     "apis": {
       "jira": {
-        "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
-        "sha256": "30d96390297b247d3e734110a689c9314209021b00badacea12fdf2a34f97ad4",
+        "url": "https://app.signalbox.run/catalog/openapi/atlassian/5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72.json",
+        "sha256": "5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72",
         "declaredOperations": 630,
         "retainedOperations": 595,
         "scopes": [
@@ -120,11 +120,13 @@
           "read:jira-user",
           "read:jira-work",
           "write:jira-work"
-        ]
+        ],
+        "vendorUrl": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+        "asset": "public/catalog/openapi/atlassian/5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72.json"
       },
       "serviceManagement": {
-        "url": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
-        "sha256": "511d6e039a28c094e7a369dc3f17b7dbd6d067ba6e2071d6c2b86d939f8d0e17",
+        "url": "https://app.signalbox.run/catalog/openapi/atlassian/81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797.json",
+        "sha256": "81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797",
         "declaredOperations": 75,
         "retainedOperations": 73,
         "scopes": [
@@ -138,7 +140,9 @@
           "read:user:jira",
           "write:requesttype:jira-service-management",
           "write:servicedesk-request"
-        ]
+        ],
+        "vendorUrl": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
+        "asset": "public/catalog/openapi/atlassian/81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797.json"
       },
       "confluence": {
         "url": "https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
