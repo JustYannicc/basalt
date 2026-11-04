@@ -25,10 +25,28 @@ index 4ee1a68..ef50bd1 100644
      />
    );
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-index 10c8bac..df8326e 100644
+index 10c8bac..d925f28 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-@@ -127,16 +127,14 @@ export function AccountsPage({
+@@ -21,6 +21,8 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
+ import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { inventoryAtom } from "../../contracts/organization.ts";
++import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
++import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
+ 
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ 
+@@ -40,6 +42,8 @@ export function AccountsPage({
+   const directory = useQuery(resourceDirectoryAtom(organization));
+   const inventory = useQuery(resourceInventoryAtom(organization));
+   const setup = useQuery(inventoryAtom(organization));
++  // Rows read the saved-account list; the inventory still drives grouping, apps and access.
++  const savedRows = useQuery(savedAccountRowsAtom({ organization }));
+ 
+   const [dialog, setDialog] = useState<{
+     account: AccountId;
+@@ -127,16 +131,20 @@ export function AccountsPage({
              ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
              : undefined;
            return (
@@ -48,14 +66,29 @@ index 10c8bac..df8326e 100644
            );
          }}
 +        accountPlan={(account) => <HostedAccountPlan account={account} />}
++        accountRow={(account) => {
++          const saved = Option.isSome(savedRows.data)
++            ? savedRows.data.value.find((row) => row.id === account.id)
++            : undefined;
++          return saved === undefined ? undefined : accountRowFromSaved(saved);
++        }}
          accountDetails={(account, apps) => (
            <HostedAccountObservations
              account={account}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 28e67e8..6756099 100644
+index 28e67e8..2ada3eb 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -50,7 +50,7 @@ import {
+@@ -32,6 +32,8 @@ import {
+   ConnectionNotices,
+ } from "./connection-dialog.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
++import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
++import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+ import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./connect-account.tsx";
+@@ -50,7 +52,7 @@ import {
  } from "../../contracts/accounts.ts";
  import type { HostedError } from "../../contracts/errors.ts";
  import { HostedAccountDialog } from "./account-actions.tsx";
@@ -64,16 +97,41 @@ index 28e67e8..6756099 100644
  import { catalogAtom } from "../../contracts/api.ts";
  
  /**
-@@ -198,7 +198,8 @@ export function AppAccounts({
+@@ -84,6 +86,14 @@ export function AppAccounts({
+   const catalog = useQuery(catalogAtom);
+   const canUse = Option.isSome(data) && data.value.canUse;
+   const methodQuery = useQuery(appMethodsAtom({ organization, app: app.id }));
++  // Rows read the organization's saved-account list; choices and links stay on the app's reads.
++  const savedRows = useQuery(savedAccountRowsAtom({ organization }));
++  const accountRow = (account: AccountSummary) => {
++    const saved = Option.isSome(savedRows.data)
++      ? savedRows.data.value.find((row) => row.id === account.id)
++      : undefined;
++    return saved === undefined ? undefined : accountRowFromSaved(saved);
++  };
+   const reported = methodQuery.data;
+   const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
+   const methods: RequirementMethods | undefined = Option.isSome(reported)
+@@ -198,7 +208,9 @@ export function AppAccounts({
              : { contribute: editing(scope), readOnly }),
            // Only accounts the caller can use; a shared account's own policy decides its usage.
            accountDetails: (account) =>
 -            usable(account) && <HostedAccountObservations account={account} app={app} plan />,
 +            usable(account) && <HostedAccountObservations account={account} app={app} />,
 +          accountPlan: (account) => usable(account) && <HostedAccountPlan account={account} />,
++          accountRow,
            accountMenu: (account, slot, requirement, linked) =>
              linked &&
              (usable(account) || removable(links, slot, account)) && (
+@@ -250,7 +262,7 @@ export function AppAccounts({
+               </Button>
+             ),
+         }
+-      : { links, viewer, readOnly };
++      : { links, viewer, readOnly, accountRow };
+   const notDeployed = "Deploy this app to link accounts.";
+   return (
+     <>
 diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 index b12eaeb..870fdb4 100644
 --- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
@@ -174,10 +232,10 @@ index 0000000..9e6303a
 +    menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
 +  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index d8cc1e3..c50f597 100644
+index 05352a4..67095f4 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8948,6 +8948,17 @@ export const scenarios = plan({
+@@ -9017,6 +9017,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows."),
      },
    },
@@ -197,14 +255,21 @@ index d8cc1e3..c50f597 100644
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
 new file mode 100644
-index 0000000..82b605c
+index 0000000..6684d27
 --- /dev/null
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,442 @@
 +/** Account rows are compact two-line rows: aligned columns, health in a word, actions in the menu. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
 +import type { Page } from "playwright";
++import { body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { IdentityAccount } from "../support/account-identity-product.ts";
++import { Resource } from "../support/contracts.ts";
 +import { Browser } from "../support/browser.ts";
 +import { Evidence } from "../support/evidence.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -212,6 +277,78 @@ index 0000000..82b605c
 +import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
 +import { accountRow, openRowMenu } from "../support/account-rows.ts";
 +import { scenarios } from "../test-plan.ts";
++
++/**
++ * An OAuth account the host verified through the issuer, from an app that requests scopes, so its
++ * row has both a verified identity and requested access.
++ */
++const verifiedOAuthAccount = (
++  fixture: Pick<Effect.Success<ReturnType<typeof observationFixture>>, "api" | "actors" | "prefix">,
++) =>
++  Effect.gen(function* () {
++    const { api, actors, prefix } = fixture;
++    const http = yield* HttpClient.HttpClient,
++      issuer = yield* accountIdentityIssuer;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Verified fixture",
++      files: [
++        appsManifest,
++        {
++          path: "index.ts",
++          content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service=defineProvider({name:"Verified fixture",auth:{oauth:oauth2(${JSON.stringify({ authorizationUrl: issuer.origin + "/authorize", tokenUrl: issuer.origin + "/token", scopes: ["read", "write"], tokenEndpointAuthMethod: "none", identity: { issuer: issuer.origin, name: "Fixture identity" } })})}});
++export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})}));`,
++        },
++      ],
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = (yield* body(Resource, deployed)).id;
++    const appPath = `${prefix}/apps/${app}`;
++    const connection = (yield* body(
++      Resource,
++      yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
++    )).id;
++    const start = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection}/oauth/start`,
++      { method: "oauth", client: { clientId: "compact-rows-client" } },
++    );
++    expect(start.status, JSON.stringify(start.body)).toBe(200);
++    const { authorizationUrl } = yield* body(
++      Schema.Struct({ authorizationUrl: Schema.String }),
++      start,
++    );
++    const callbackUrl = yield* Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* HttpClient.withScope(http).get(authorizationUrl);
++        if (response.headers.location === undefined)
++          return yield* Effect.die("Issuer omitted callback");
++        return response.headers.location;
++      }),
++    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++    const completed = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection}/oauth/complete`,
++      { callbackUrl },
++    );
++    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++    const account = yield* body(IdentityAccount, completed);
++    expect(account.identity, "the issuer verified the sign-in").toBeDefined();
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* api.request(actors.owner, "DELETE", appPath);
++        yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`);
++      }).pipe(Effect.orDie),
++    );
++    expect(
++      (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, {
++        label: "Verified mail",
++      })).status,
++    ).toBe(200);
++    return account;
++  });
 +
 +const box = (page: Page, label: string, selector: string) =>
 +  accountRow(page, label)
@@ -291,6 +428,9 @@ index 0000000..82b605c
 +        );
 +        expect(checkOf(yield* rejected.detail())).toContain('"credentials_rejected"');
 +
++        // An OAuth row with a host-verified identity and requested scopes.
++        const verifiedAccount = yield* verifiedOAuthAccount(plain);
++
 +        // A reporter with nothing retained, refreshed only from its row menu.
 +        const driver = yield* acquisitionFixture();
 +        const { account: reporter } = yield* driver.create(driver.actors.owner, {
@@ -309,16 +449,20 @@ index 0000000..82b605c
 +        const accounts = `/org/${plain.actors.organization.slug}/accounts`;
 +        const ready = (page: Page) =>
 +          Promise.all([
-+            accountRow(page, "Plain mail").locator('[data-health-state="healthy"]').waitFor(),
++            // App checks stay on each app's dot; Health reads only the account's own check.
++            accountRow(page, "Plain mail")
++              .locator('[role="img"][data-check-status="healthy"]')
++              .waitFor(),
 +            accountRow(page, "Rejected mail")
-+              .locator('[data-health-state="credentials_rejected"]')
++              .locator('[role="img"][data-check-status="credentials_rejected"]')
 +              .waitFor(),
 +            accountRow(page, "Outdated mail")
-+              .locator('[data-health-state="not-rechecked"]')
++              .locator('[role="img"][data-check-current="false"]')
 +              .waitFor(),
 +            accountRow(page, "Usage account").locator('[data-reading="requests"]').waitFor(),
 +            accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
 +            accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
++            accountRow(page, "Verified mail").locator("[data-account-verified]").first().waitFor(),
 +          ]);
 +        yield* browser.login(plain.actors.owner);
 +        const surfaces = [
@@ -376,15 +520,24 @@ index 0000000..82b605c
 +                accountRow(page, "Plain mail").locator("[data-reading]").count(),
 +                accountRow(page, "Rejected mail").locator("[data-reading]").count(),
 +                accountRow(page, "Plain mail").locator("[data-account-identity]").innerText(),
-+                page.locator("[data-account-verified]").count(),
++                accountRow(page, "Plain mail").locator("[data-account-verified]").count(),
 +                accountRow(page, "Plain mail").locator("[data-account-name]").innerText(),
-+                accountRow(page, "Outdated mail").locator("[data-account-health-cell]").innerText(),
++                page
++                  .locator(".inventory-row")
++                  .filter({ hasText: /Plain mail|Rejected mail|Outdated mail/ })
++                  .locator("[data-account-health-cell]")
++                  .count(),
 +                accountRow(page, "Rejected mail")
-+                  .getByRole("link", { name: /^Needs re-auth/ })
++                  .getByRole("link", { name: /^Rejected fixture/ })
 +                  .getAttribute("href"),
 +                accountRow(page, "Usage account")
 +                  .getByRole("button", { name: "Refresh", exact: true })
 +                  .count(),
++                accountRow(page, "Verified mail").evaluate(
++                  (row) => row.getBoundingClientRect().height,
++                ),
++                accountRow(page, "Verified mail").locator("[data-account-verified]").count(),
++                accountRow(page, "Verified mail").locator(".requested-access").count(),
 +              ]),
 +            ),
 +        );
@@ -399,17 +552,21 @@ index 0000000..82b605c
 +          reported,
 +          verified,
 +          title,
-+          notRechecked,
++          connectorHealth,
 +          reauth,
 +          inlineRefresh,
++          verifiedHeight,
++          verifiedMarks,
++          collapsedAccess,
 +        ] = wide;
 +        // A plain row is about 48 to 52px; a usage band adds roughly one more row's height.
-+        for (const height of [plainHeight, outdatedHeight]) {
++        for (const height of [plainHeight, outdatedHeight, verifiedHeight]) {
 +          expect(height).toBeGreaterThanOrEqual(44);
 +          expect(height).toBeLessThanOrEqual(56);
 +        }
-+        expect(usageHeight).toBeGreaterThan(plainHeight);
-+        expect(usageHeight - plainHeight).toBeLessThanOrEqual(90);
++        // One usage cell is about 50px, plus the band's gap under the line.
++        expect(usageHeight - plainHeight).toBeGreaterThanOrEqual(36);
++        expect(usageHeight - plainHeight).toBeLessThanOrEqual(66);
 +        // No offering selector yet, so Type stays blank instead of guessing from the method.
 +        expect(types.length).toBeGreaterThan(0);
 +        expect(types.every((text) => text.trim() === "")).toBe(true);
@@ -419,10 +576,59 @@ index 0000000..82b605c
 +        // A reported email is muted secondary text with no verified mark.
 +        expect(title).toBe("Plain mail");
 +        expect(reported).toBe("reported@example.test");
-+        expect(verified, "only a host-verified identity carries the check mark").toBe(0);
-+        expect(notRechecked).toBe("Not rechecked");
++        expect(verified, "a reported email never carries the check mark").toBe(0);
++        expect(verifiedMarks, "the host-verified identity carries the check mark").toBe(1);
++        // Requested access opens with the row's Details, never as its own line.
++        expect(collapsedAccess).toBe(0);
++        // A connector has no check of its own, so Health stays empty instead of claiming one.
++        expect(connectorHealth).toBe(0);
++        // A rejected app check is the red dot on the chip that opens that app's accounts.
 +        expect(reauth).toContain(rejected.app.id);
 +        expect(inlineRefresh, "Refresh moved into the row menu").toBe(0);
++        // On the app's own tab, its current rejection is the row's one inline recovery.
++        const appRejection = yield* browser.use("Open the rejected app's accounts", (page) => {
++          const row = page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .getByRole("listitem")
++            .filter({ hasText: "Rejected mail" });
++          return page
++            .goto(`/org/${plain.actors.organization.slug}/apps/${rejected.app.id}?view=accounts`)
++            .then(() => row.locator('[data-health-state="credentials_rejected"]').waitFor())
++            .then(() =>
++              Promise.all([
++                row.locator("[data-account-health-cell]").innerText(),
++                row
++                  .locator("[data-account-health-cell]")
++                  .getByRole("button", { name: "Reconnect", exact: true })
++                  .count(),
++              ]),
++            );
++        });
++        expect(appRejection[0]).toContain("Needs re-auth");
++        expect(appRejection[1]).toBe(1);
++        const access = yield* browser.use("Open the OAuth row's Details", (page) =>
++          page
++            .goto(accounts)
++            .then(() => ready(page))
++            .then(() => openRowMenu(page, accountRow(page, "Verified mail"), "Verified mail"))
++            .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() => {
++              const shown = accountRow(page, "Verified mail").locator(".requested-access");
++              return shown.waitFor().then(() =>
++                Promise.all([
++                  shown.evaluate((element) => element.getBoundingClientRect().left),
++                  accountRow(page, "Verified mail")
++                    .locator("[data-account-name]")
++                    .evaluate((element) => element.getBoundingClientRect().left),
++                ]),
++              );
++            }),
++        );
++        expect(
++          Math.abs(access[0] - access[1]),
++          "Details align with the account name",
++        ).toBeLessThanOrEqual(1);
++        expect(verifiedAccount.identity).toBeDefined();
 +
 +        // The phone layout: logo, name and menu on the first line, the cells wrap under it.
 +        const phone = yield* browser.use("Measure the rows at 390px", (page) =>
@@ -435,7 +641,7 @@ index 0000000..82b605c
 +                page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
 +                box(page, "Plain mail", "[data-account-name]"),
 +                box(page, "Plain mail", "[data-account-row-menu] button"),
-+                box(page, "Plain mail", "[data-account-health-cell]"),
++                box(page, "Plain mail", ".app-references"),
 +                page.locator(".inventory-header").isVisible(),
 +              ]),
 +            ),
@@ -980,7 +1186,7 @@ index 217ba58..7110fc8 100644
      <span className="inline-flex w-full min-w-0 flex-col items-start gap-1 text-[12px] text-foreground/80">
        <span className="inline-flex items-center gap-2">
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index a711e92..2c18a4e 100644
+index a711e92..7f0bed0 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -2,7 +2,7 @@ import type { AccountObservationRecord, App } from "@executor-js/sdk";
@@ -1236,16 +1442,17 @@ index a711e92..2c18a4e 100644
            <ObservationDetails
              id={`${details}-readings`}
              reports={inspected?.reports ?? []}
-@@ -194,7 +273,7 @@ function PlanTags({ view }: { readonly view: AccountObservationsView }) {
+@@ -194,7 +273,8 @@ function PlanTags({ view }: { readonly view: AccountObservationsView }) {
      <span
        key={label}
        data-account-plan
 -      className="rounded border px-1.5 py-0.5 text-[10px] text-foreground"
-+      className="rounded-sm border px-1.5 text-[11px] leading-4.5 whitespace-nowrap text-foreground"
++      title={label}
++      className="max-w-full truncate rounded-sm border px-1.5 text-[11px] leading-4.5 text-foreground"
      >
        {label}
      </span>
-@@ -218,8 +297,10 @@ const unreadLabel = (report?: AccountObservationRecord) =>
+@@ -218,8 +298,10 @@ const unreadLabel = (report?: AccountObservationRecord) =>
  function UsageFact<E>({
    result,
    retry,
@@ -1258,7 +1465,7 @@ index a711e92..2c18a4e 100644
    now,
    format,
    detailsOnly = false,
-@@ -227,15 +308,15 @@ function UsageFact<E>({
+@@ -227,15 +309,15 @@ function UsageFact<E>({
  }: {
    readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
    readonly retry: () => void;
@@ -1278,7 +1485,7 @@ index a711e92..2c18a4e 100644
    const view = Option.getOrUndefined(AsyncResult.value(result));
    const line = "flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5";
    if (view === undefined)
-@@ -254,15 +335,6 @@ function UsageFact<E>({
+@@ -254,15 +336,6 @@ function UsageFact<E>({
    });
    const unread = !detailsOnly && view.reports.length === 0 && view.hasUsageReporter === true;
    if (reports.length === 0 && !unread) return null;
@@ -1294,7 +1501,7 @@ index a711e92..2c18a4e 100644
    const action = (
      <Button
        variant="outline"
-@@ -296,7 +368,6 @@ function UsageFact<E>({
+@@ -296,7 +369,6 @@ function UsageFact<E>({
                data-usage-source={report.source.id}
                data-usage-unread={read === undefined ? "" : undefined}
              >
@@ -1302,7 +1509,7 @@ index a711e92..2c18a4e 100644
                <span>Usage from {report.source.label}</span>
                <span aria-hidden>·</span>
                {read === undefined ? (
-@@ -323,7 +394,7 @@ function UsageFact<E>({
+@@ -323,7 +395,7 @@ function UsageFact<E>({
            </div>
          );
        })}
@@ -1313,13 +1520,11 @@ index a711e92..2c18a4e 100644
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 new file mode 100644
-index 0000000..fb257b5
+index 0000000..1f93325
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
-@@ -0,0 +1,221 @@
-+import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
-+import { HugeiconsIcon } from "@hugeicons/react";
-+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -0,0 +1,164 @@
++import type { AccountDriverHealth, AppId } from "@executor-js/sdk";
 +import type { ReactNode } from "react";
 +import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboard.ts";
 +import { shortMoment } from "../components/local-time.tsx";
@@ -1327,11 +1532,10 @@ index 0000000..fb257b5
 +import { cn } from "../lib/utils.ts";
 +import { describeAccountCheck } from "./account-health.tsx";
 +import type { AccountRowBinding } from "./account-row.tsx";
-+import { useDashboard } from "./context.tsx";
 +
 +type Check = NonNullable<AccountDriverHealth["check"]>;
 +
-+/** What the Health column says, worst first. */
++/** What the Health column says. */
 +export type AccountRowHealth =
 +  | { readonly kind: "needs-sign-in" }
 +  | { readonly kind: "unavailable" }
@@ -1340,29 +1544,21 @@ index 0000000..fb257b5
 +      readonly check: Check;
 +      /** The app that reported it; absent for the account's own sign-in check. */
 +      readonly app?: AppId | undefined;
-+      readonly count: number;
 +    }
 +  | { readonly kind: "not-checked" }
 +  /** Nothing can check the account, so the cell stays empty. */
 +  | { readonly kind: "no-check" };
 +
-+const severity: readonly AccountCheckStatus[] = [
-+  "credentials_rejected",
-+  "tools_unavailable",
-+  "forbidden",
-+  "upstream_unavailable",
-+  "check_failed",
-+  "healthy",
-+];
-+
 +/**
-+ * One state for the account from its sign-in, its own driver check and each binding's app check.
-+ * Current results outrank outdated ones, problems outrank health, and the driver outranks an app
-+ * with the same result. An outdated result reads as not rechecked, never as the current state.
++ * The account's state from its grant and its own sign-in check, `health.driver`. App checks stay
++ * on their app's binding; only `own`, the one app a page is about, stands in when the account has
++ * no driver check of its own. Nothing is aggregated, a missing check stays missing, and a saved
++ * grant never reads as healthy. An outdated result reads as not rechecked.
 + */
 +export const accountRowHealth = (
 +  account: AccountSummary,
 +  bindings: readonly AccountRowBinding[],
++  own?: AccountRowBinding,
 +): AccountRowHealth => {
 +  const signIns = [account.signIn, ...bindings.map((binding) => binding.signIn)].filter(
 +    (signIn) => signIn !== undefined,
@@ -1371,23 +1567,11 @@ index 0000000..fb257b5
 +    return { kind: "needs-sign-in" };
 +  if (signIns.some((signIn) => signIn.state === "unavailable")) return { kind: "unavailable" };
 +  const driver = account.health?.driver;
-+  const results = [
-+    ...(driver?.check == null ? [] : [{ check: driver.check, app: undefined }]),
-+    ...bindings.flatMap((binding) =>
-+      binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
-+    ),
-+  ];
-+  for (const current of [true, false])
-+    for (const status of severity) {
-+      const matching = results.filter(
-+        (result) => result.check.current === current && result.check.status === status,
-+      );
-+      const [first] = matching;
-+      if (first !== undefined) return { kind: "check", ...first, count: matching.length };
-+    }
-+  const checkable =
-+    driver?.checkable === true || bindings.some((binding) => binding.check?.checkable === true);
-+  return checkable ? { kind: "not-checked" } : { kind: "no-check" };
++  if (driver?.check != null) return { kind: "check", check: driver.check };
++  if (own?.check?.check != null) return { kind: "check", check: own.check.check, app: own.app };
++  return driver?.checkable === true || own?.check?.checkable === true
++    ? { kind: "not-checked" }
++    : { kind: "no-check" };
 +};
 +
 +const dots = {
@@ -1403,26 +1587,19 @@ index 0000000..fb257b5
 +  muted: "text-muted-foreground",
 +};
 +
-+/**
-+ * The account's health in a few words. A current rejection is the row's one inline recovery:
-+ * `recover` when the page has it, else a link to the app that rejected the sign-in.
-+ */
++/** The account's health in a few words; a current rejection shows `recover`, the row's one recovery. */
 +export function AccountHealthCell({
 +  health,
 +  appName,
 +  recover,
-+  link = false,
 +  unavailableLabel = "Account unavailable",
 +}: {
 +  readonly health: AccountRowHealth;
 +  readonly appName: (app: AppId) => string;
 +  readonly recover?: ReactNode;
-+  /** Link a rejection to its app's accounts, where the account is reconnected. */
-+  readonly link?: boolean;
 +  readonly unavailableLabel?: string;
 +}) {
 +  const format = useDisplayFormat();
-+  const { AppLink } = useDashboard();
 +  const cell = "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
 +  const dot = (tone: keyof typeof dots, hollow = false) => (
 +    <span
@@ -1458,9 +1635,9 @@ index 0000000..fb257b5
 +        Not checked
 +      </span>
 +    );
-+  const { check, app, count } = health;
++  const { check, app } = health;
 +  const { label, tone } = describeAccountCheck(check.status);
-+  const where = app === undefined ? "Sign-in" : count > 1 ? `${count} apps` : appName(app);
++  const where = app === undefined ? "Sign-in" : appName(app);
 +  const when = formatMoment(new Date(check.checkedAt), format, shortMoment);
 +  const title = check.current
 +    ? `${label} · ${where} · checked ${when}${check.message === undefined ? "" : `\n${check.message}`}`
@@ -1497,33 +1674,6 @@ index 0000000..fb257b5
 +    </>
 +  );
 +  const rejected = check.status === "credentials_rejected";
-+  if (rejected && recover === undefined && link && app !== undefined)
-+    return (
-+      <span
-+        className={cell}
-+        title={title}
-+        data-account-health-cell
-+        data-health-state={state}
-+        {...marks}
-+        suppressHydrationWarning
-+      >
-+        <AppLink
-+          app={app}
-+          view="accounts"
-+          className="-ml-1 inline-flex items-center gap-1.5 rounded-sm px-1 py-0.5 hover:bg-destructive/10"
-+          aria-label={`Needs re-auth. Reconnect in ${appName(app)}`}
-+        >
-+          {content}
-+          <HugeiconsIcon
-+            icon={ArrowUpRight01Icon}
-+            size={11}
-+            strokeWidth={2}
-+            aria-hidden
-+            className="text-destructive"
-+          />
-+        </AppLink>
-+      </span>
-+    );
 +  return (
 +    <span
 +      className={cn(cell, rejected && recover !== undefined && "flex-wrap")}
@@ -1540,10 +1690,10 @@ index 0000000..fb257b5
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
 new file mode 100644
-index 0000000..2599688
+index 0000000..6845279
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,414 @@
 +/**
 + * The compact account row: one aligned line of identity, type, plan, health and who uses the
 + * account, then full-width bands such as usage. The row renders from `AccountRowInput`, which maps
@@ -1556,6 +1706,7 @@ index 0000000..2599688
 +import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
 +import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
 +import { cn } from "../lib/utils.ts";
++import { AccountLogo } from "./account-health.tsx";
 +
 +/** One app or pool using the account, with that consumer's own sign-in state and check. */
 +export interface AccountRowBinding {
@@ -1574,25 +1725,67 @@ index 0000000..2599688
 +  readonly bindings: readonly AccountRowBinding[];
 +}
 +
-+/** Today's adapter: an inventory identity group, whose bindings are separate saved accounts. */
++/** A row of the host's saved-account list: the saved account at the root, keyed by its ID. */
++export interface SavedAccountRowInput extends AccountSummary {
++  readonly offering?: string | undefined;
++  readonly bindings: readonly {
++    readonly app: AppId;
++    readonly signIn?: AccountSummary["signIn"];
++  }[];
++}
++
++/**
++ * The host's saved-account row. Each binding reads its app's own check record; one dot per app,
++ * however many scopes link the account there.
++ */
++export const accountRowFromSaved = (row: SavedAccountRowInput): AccountRowInput => ({
++  account: row,
++  ...(row.offering === undefined ? {} : { offering: row.offering }),
++  bindings: [...new Map(row.bindings.map((binding) => [binding.app, binding])).values()].map(
++    (binding) => ({
++      id: row.id,
++      app: binding.app,
++      ...(binding.signIn === undefined ? {} : { signIn: binding.signIn }),
++      check: row.health?.apps.find((entry) => entry.app === binding.app),
++    }),
++  ),
++});
++
++/** One display group's rows as one input: its first account, with every member's bindings. */
++export const accountRowGroup = (rows: readonly AccountRowInput[]): AccountRowInput | undefined => {
++  const [first] = rows;
++  if (first === undefined) return undefined;
++  const seen = new Set<string>();
++  return {
++    ...first,
++    bindings: rows
++      .flatMap((row) => row.bindings)
++      .filter((binding) => {
++        const key = `${binding.id}:${binding.app}`;
++        if (seen.has(key)) return false;
++        seen.add(key);
++        return true;
++      }),
++  };
++};
++
++/** For hosts without the saved-account list: an account and its inventory links. */
 +export const accountRowFromInventory = (
 +  inventory: Inventory,
 +  account: AccountSummary,
-+  bindings: readonly AccountSummary[],
 +): AccountRowInput => {
 +  const links = [...inventory.links, ...(inventory.appLinks ?? [])];
 +  return {
 +    account,
-+    bindings: bindings.flatMap((binding) =>
-+      links
-+        .filter((link) => link.account === binding.id)
-+        .map((link) => ({
-+          id: binding.id,
-+          app: link.app,
-+          ...(binding.signIn === undefined ? {} : { signIn: binding.signIn }),
-+          check: binding.health?.apps.find((entry) => entry.app === link.app),
-+        })),
-+    ),
++    // One binding per app, however many scopes link the account there.
++    bindings: [
++      ...new Set(links.filter((link) => link.account === account.id).map((link) => link.app)),
++    ].map((app) => ({
++      id: account.id,
++      app,
++      ...(account.signIn === undefined ? {} : { signIn: account.signIn }),
++      check: account.health?.apps.find((entry) => entry.app === app),
++    })),
 +  };
 +};
 +
@@ -1618,6 +1811,9 @@ index 0000000..2599688
 +  readonly setDetails: (open: boolean) => void;
 +  readonly usage: AccountRowUsage | undefined;
 +  readonly setUsage: (usage: AccountRowUsage | undefined) => void;
++  /** Row content that only Details shows, such as requested access or the description. */
++  readonly extra: boolean;
++  readonly setExtra: (present: boolean) => void;
 +}
 +
 +const AccountRowContext = createContext<AccountRowState | undefined>(undefined);
@@ -1629,9 +1825,10 @@ index 0000000..2599688
 +  const [menu, setMenu] = useState(false);
 +  const [details, setDetails] = useState(false);
 +  const [usage, setUsage] = useState<AccountRowUsage>();
++  const [extra, setExtra] = useState(false);
 +  const value = useMemo(
-+    () => ({ menu, setMenu, details, setDetails, usage, setUsage }),
-+    [menu, details, usage],
++    () => ({ menu, setMenu, details, setDetails, usage, setUsage, extra, setExtra }),
++    [menu, details, usage, extra],
 +  );
 +  return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
 +}
@@ -1652,11 +1849,33 @@ index 0000000..2599688
 +  return null;
 +}
 +
++/**
++ * Content shown under the row only while its Details are open. A row without its own menu has no
++ * Details, so it keeps the content in view unless `inline` is false.
++ */
++export function AccountRowDetails({
++  children,
++  inline = true,
++}: {
++  readonly children: ReactNode;
++  readonly inline?: boolean;
++}) {
++  const row = useAccountRow();
++  const setExtra = row?.setExtra;
++  useEffect(() => {
++    if (setExtra === undefined) return;
++    setExtra(true);
++    return () => setExtra(false);
++  }, [setExtra]);
++  const shown = row === undefined || (row.menu ? row.details : inline);
++  return shown ? children : null;
++}
++
 +/** The row's own actions at the top of its menu: refreshing usage and opening details. */
 +export function AccountRowMenuItems() {
 +  const row = useAccountRow();
-+  if (row?.usage === undefined) return null;
-+  const { refresh, pending, disabledReason } = row.usage;
++  if (row === undefined || (row.usage === undefined && !row.extra)) return null;
++  const { refresh, pending = false, disabledReason } = row.usage ?? {};
 +  return (
 +    <>
 +      {refresh !== undefined && (
@@ -1692,7 +1911,7 @@ index 0000000..2599688
 +/** Columns: [choice] · logo · account · type · plan · health · used by · menu. */
 +export const accountRowGrid = (lead: boolean) =>
 +  cn(
-+    "grid items-center gap-x-3 [&_.provider-icon]:size-6 [&_.provider-icon]:rounded-md [&_[data-slot=account-avatar]]:size-6 [&_[data-slot=account-avatar]]:rounded-md",
++    "grid items-center gap-x-3",
 +    lead
 +      ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
 +      : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
@@ -1820,10 +2039,7 @@ index 0000000..2599688
 +          ? undefined
 +          : { text: reported, verified: false };
 +  return (
-+    <div
-+      className="grid min-w-0 leading-[1.3] @max-[640px]/account-rows:self-start"
-+      {...(account.description ? { title: account.description } : {})}
-+    >
++    <div className="grid min-w-0 leading-[1.3] @max-[640px]/account-rows:self-start">
 +      <span className="flex min-w-0 items-center gap-1.5">
 +        <strong
 +          className="min-w-0 truncate text-[13px] font-medium"
@@ -1866,26 +2082,57 @@ index 0000000..2599688
 +    </span>
 +  );
 +}
++
++/** The account's own description, for its Details. */
++export function AccountRowDescription({ account }: { readonly account: AccountSummary }) {
++  if (!account.description) return null;
++  return (
++    <p
++      className="account-description min-w-0 text-[12px] whitespace-pre-line text-muted-foreground wrap-anywhere"
++      data-account-description
++    >
++      {account.description}
++    </p>
++  );
++}
++
++/** The compact logo, named for assistive technology and on hover, since Type can be blank. */
++export function AccountRowLogo({ account }: { readonly account: AccountSummary }) {
++  const name = account.providerName ?? account.identity?.name;
++  return (
++    <span
++      className="flex items-center"
++      {...(name === undefined ? {} : { role: "img", "aria-label": name, title: name })}
++    >
++      <AccountLogo account={account} compact />
++    </span>
++  );
++}
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index bc11018..196b586 100644
+index bc11018..7726291 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -1,19 +1,31 @@
+@@ -1,19 +1,36 @@
 -import { LocalTime, shortMoment } from "../components/local-time.tsx";
  import { PageFrame, PageHeader } from "./page.tsx";
  import { Option } from "effect";
  import { AccountRowsSkeleton } from "./loading.tsx";
 -import { AccountCheckDot, AccountIdentity, AccountLogo } from "./account-health.tsx";
-+import { AccountCheckDot, AccountLogo } from "./account-health.tsx";
++import { AccountCheckDot } from "./account-health.tsx";
 +import {
 +  AccountRowCells,
++  AccountRowDescription,
++  AccountRowDetails,
 +  AccountRowHeader,
++  AccountRowLogo,
 +  AccountRowMenu,
 +  AccountRowName,
 +  AccountRowProvider,
 +  OutsideAccountRow,
 +  accountRowBand,
 +  accountRowFromInventory,
++  accountRowGroup,
++  type AccountRowInput,
 +  accountRowGrid,
 +  accountRowType,
 +  accountRowsContainer,
@@ -1906,7 +2153,7 @@ index bc11018..196b586 100644
    accountGroups,
    accountTitle,
    bindingAccess,
-@@ -46,7 +58,10 @@ export function AccountsPage<E>({
+@@ -46,7 +63,15 @@ export function AccountsPage<E>({
      bindings: readonly AccountSummary[],
      inventory: Inventory,
    ) => ReactNode;
@@ -1914,26 +2161,33 @@ index bc11018..196b586 100644
    readonly accountMeta?: (account: AccountSummary) => ReactNode;
 +  /** The Plan column, such as the plan a usage source reported. */
 +  readonly accountPlan?: (account: AccountSummary) => ReactNode;
++  /**
++   * The host's saved-account row for an account, such as `accountRowFromSaved` of its saved-account
++   * list. Without one, or before it loads, the row reads the inventory.
++   */
++  readonly accountRow?: (account: AccountSummary) => AccountRowInput | undefined;
    /** A full-width block under the row, such as the account's usage, given the apps using it. */
    readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
    /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
-@@ -99,6 +114,7 @@ function AccountsList({
+@@ -99,6 +124,8 @@ function AccountsList({
    accountActions,
    identityActions,
    accountMeta,
 +  accountPlan,
++  accountRow,
    accountDetails,
    highlight,
    empty,
-@@ -118,6 +134,7 @@ function AccountsList({
+@@ -118,6 +145,8 @@ function AccountsList({
      inventory: Inventory,
    ) => ReactNode;
    readonly accountMeta?: (account: AccountSummary) => ReactNode;
 +  readonly accountPlan?: (account: AccountSummary) => ReactNode;
++  readonly accountRow?: (account: AccountSummary) => AccountRowInput | undefined;
    readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
    readonly highlight?: AccountId | undefined;
  }) {
-@@ -155,171 +172,139 @@ function AccountsList({
+@@ -155,171 +184,156 @@ function AccountsList({
            Try another label or provider.
          </Empty>
        ) : (
@@ -1960,7 +2214,12 @@ index bc11018..196b586 100644
 -            const serviceName =
 -              account.identity?.name ?? accountFamily(data, account)?.name ?? account.providerName;
              const access = bindingAccess(data, bindings);
-+            const row = accountRowFromInventory(data, account, bindings);
++            // Grouping is display only: every saved account keeps its own row input.
++            const row = accountRowGroup(
++              bindings.map(
++                (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
++              ),
++            )!;
 +            const appName = (id: string) => {
 +              const app = apps.find((item) => item.id === id);
 +              return app === undefined ? "an app" : appDisplayName(app, brand);
@@ -1975,17 +2234,7 @@ index bc11018..196b586 100644
 -                  : {})}
 -              >
 -                <div className="app-cell max-[740px]:col-span-2 [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
-+              <AccountRowProvider key={account.id}>
-+                <div
-+                  className={cn(
-+                    accountRowGrid(false),
-+                    "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
-+                  )}
-+                  {...(marked
-+                    ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
-+                    : {})}
-+                >
-                   <AccountLogo account={account} />
+-                  <AccountLogo account={account} />
 -
 -                  <div>
 -                    <strong>{title}</strong>
@@ -2023,6 +2272,17 @@ index bc11018..196b586 100644
 -                            <span aria-hidden>·</span>
 -                            <AccountIdentity info={info} />
 -                          </>
++              <AccountRowProvider key={account.id}>
++                <div
++                  className={cn(
++                    accountRowGrid(false),
++                    "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
++                  )}
++                  {...(marked
++                    ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
++                    : {})}
++                >
++                  <AccountRowLogo account={account} />
 +                  <AccountRowName
 +                    account={account}
 +                    title={accountTitle(account)}
@@ -2036,7 +2296,6 @@ index bc11018..196b586 100644
 +                      <AccountHealthCell
 +                        health={accountRowHealth(row.account, row.bindings)}
 +                        appName={appName}
-+                        link
 +                      />
 +                    }
 +                    usersLabel="Used by"
@@ -2146,9 +2405,6 @@ index bc11018..196b586 100644
 -                          strokeWidth={2}
 -                          aria-hidden
 -                          size={12}
--                        />
--                      </AppLink>
--                    ))
 +                  </AccountRowMenu>
 +                  {family !== undefined && (
 +                    <p
@@ -2162,6 +2418,29 @@ index bc11018..196b586 100644
 +                        ? "Reconnect it from an app to group it."
 +                        : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
 +                    </p>
++                  )}
++                  {account.description && (
++                    <AccountRowDetails>
++                      <div className={accountRowBand(false)}>
++                        <AccountRowDescription account={account} />
++                      </div>
++                    </AccountRowDetails>
++                  )}
++                  {access.length > 0 && (
++                    <AccountRowDetails>
++                      <div className={accountRowBand(false)}>
++                        <RequestedAccess
++                          apps={access.map(({ app, scopes, capabilities }) => ({
++                            id: app.id,
++                            name: appDisplayName(app, brand),
++                            scopes,
++                            capabilities,
++                          }))}
+                         />
+-                      </AppLink>
+-                    ))
++                      </div>
++                    </AccountRowDetails>
                    )}
 -                </div>
 -                <div className="flex items-center justify-end gap-2 max-[740px]:col-span-2 max-[740px]:col-start-1 max-[740px]:row-start-2 max-[740px]:justify-start max-[740px]:flex-wrap max-[740px]:pl-11.5">
@@ -2193,14 +2472,6 @@ index bc11018..196b586 100644
 -                        ))}
 -                      </PopoverContent>
 -                    </Popover>
-+                  <RequestedAccess
-+                    apps={access.map(({ app, scopes, capabilities }) => ({
-+                      id: app.id,
-+                      name: appDisplayName(app, brand),
-+                      scopes,
-+                      capabilities,
-+                    }))}
-+                  />
 +                  {accountDetails !== undefined && (
 +                    <div className={cn(accountRowBand(false), "empty:hidden")}>
 +                      {accountDetails(account, apps)}
@@ -2226,7 +2497,7 @@ index bc11018..196b586 100644
            })}
          </div>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 8529724..deed90c 100644
+index 8529724..dd97f26 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -6,14 +6,7 @@ import { Exit, Option, type Cause } from "effect";
@@ -2245,7 +2516,7 @@ index 8529724..deed90c 100644
  import {
    requirementMethods,
    type RequirementChoice,
-@@ -23,7 +16,6 @@ import {
+@@ -23,14 +16,30 @@ import {
  import {
    providerDisplayUrl,
    accountNeedsSignIn,
@@ -2253,12 +2524,16 @@ index 8529724..deed90c 100644
    type AccountDetail,
    type AccountSummary,
    type FailureProps,
-@@ -31,6 +23,19 @@ import {
+   type Query,
  } from "../../contracts/dashboard.ts";
  import { AppProviderIcon, ProviderIcon } from "./common.tsx";
- import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
+-import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
++import { AccountCheckResult } from "./account-health.tsx";
 +import {
 +  AccountRowCells,
++  AccountRowDescription,
++  AccountRowDetails,
++  AccountRowLogo,
 +  AccountRowMenu,
 +  AccountRowMenuItems,
 +  AccountRowMenuPresence,
@@ -2267,13 +2542,14 @@ index 8529724..deed90c 100644
 +  accountRowGrid,
 +  accountRowType,
 +  accountRowsContainer,
++  type AccountRowInput,
 +} from "./account-row.tsx";
 +import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
 +import { appDisplayName } from "../../contracts/product-brand.ts";
  import { EmptyState } from "./empty-state.tsx";
  import { Button } from "../components/button.tsx";
  import { Checkbox } from "../components/checkbox.tsx";
-@@ -132,6 +137,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -132,6 +141,7 @@ export function LinkedAccountMenu<A, E>({
    if (children === undefined && unlink === undefined) return null;
    return (
      <>
@@ -2281,7 +2557,7 @@ index 8529724..deed90c 100644
        <DropdownMenu>
          <DropdownMenuTrigger asChild>
            <Button
-@@ -145,6 +151,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -145,6 +155,7 @@ export function LinkedAccountMenu<A, E>({
            </Button>
          </DropdownMenuTrigger>
          <DropdownMenuContent align="end" className="min-w-44">
@@ -2289,16 +2565,31 @@ index 8529724..deed90c 100644
            {children}
            {children && unlink && <DropdownMenuSeparator />}
            {unlink && bound && (
-@@ -481,6 +488,8 @@ export interface ScopeAccounts<E> {
+@@ -481,6 +492,10 @@ export interface ScopeAccounts<E> {
    readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
    /** A block under each account the caller can use, such as its reported usage. */
    readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
 +  /** The Plan column of each account the caller can use, such as the plan its usage reports. */
 +  readonly accountPlan?: ((account: AccountSummary) => ReactNode) | undefined;
++  /** The host's saved-account row for an account; without one the row reads the link's account. */
++  readonly accountRow?: ((account: AccountSummary) => AccountRowInput | undefined) | undefined;
  }
  
  /**
-@@ -791,73 +800,59 @@ function RequirementView<E>({
+@@ -772,7 +787,11 @@ function RequirementView<E>({
+             {...props}
+             // A requirement the caller cannot change offers no account actions, as a read-only
+             // scope never did, even beside a contributed one.
+-            data={edit === undefined ? { links: data.links, viewer: data.viewer } : data}
++            data={
++              edit === undefined
++                ? { links: data.links, viewer: data.viewer, accountRow: data.accountRow }
++                : data
++            }
+             slot={slot}
+             requirement={requirement}
+             linked={linked}
+@@ -791,73 +810,57 @@ function RequirementView<E>({
    );
  }
  
@@ -2337,9 +2628,7 @@ index 8529724..deed90c 100644
 -      <AccountLogo account={account} compact />
 -      <span className="min-w-0 truncate font-medium" title={name} data-account-name>
 -        {name}
-+      <span className="flex items-center">
-+        <AccountLogo account={account} compact />
-       </span>
+-      </span>
 -      {secondary.map((value) => (
 -        <span
 -          key={value}
@@ -2350,6 +2639,7 @@ index 8529724..deed90c 100644
 -          {value}
 -        </span>
 -      ))}
++      <AccountRowLogo account={account} />
 +      <AccountRowName account={account} title={accountName(account)} tags={tags} />
      </>
    );
@@ -2408,7 +2698,7 @@ index 8529724..deed90c 100644
    );
  }
  
-@@ -908,12 +903,9 @@ function ReadOnlyChoices<E>({
+@@ -908,12 +911,9 @@ function ReadOnlyChoices<E>({
    const rows = shown.map((account) => {
      const provisioned = provisionedMethod(requirement, account);
      return (
@@ -2424,28 +2714,34 @@ index 8529724..deed90c 100644
              {plain ? (
                <RadioGroup.Item
                  value={account.id}
-@@ -927,27 +919,25 @@ function ReadOnlyChoices<E>({
+@@ -927,27 +927,32 @@ function ReadOnlyChoices<E>({
              )}
              <AccountRowIdentity
                account={account}
 -              credit={addedBy(data, slot, requirement, account.id)}
 -              actions={
 -                provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)
--              }
 +              tags={provisioned ? <ProvisionedTag /> : undefined}
-             />
++            />
 +            <AccountRowCells
 +              lead
-+              type={accountRowType(appAccountRow(app, account))}
++              type={accountRowType(appAccountRow(app, account, data.accountRow))}
 +              plan={provisioned ? undefined : data.accountPlan?.(account)}
-+              health={<AccountStatus app={app} account={account} />}
++              health={
++                <AccountStatus app={app} row={appAccountRow(app, account, data.accountRow)} />
+               }
 +              users={<AddedBy credit={addedBy(data, slot, requirement, account.id)} />}
-+            />
+             />
 +            <AccountRowMenu>
 +              {provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)}
 +            </AccountRowMenu>
 +            <div className={bandClass}>
 +              <AccountStatusNotes app={app} account={account} />
++              {account.description && (
++                <AccountRowDetails inline={false}>
++                  <AccountRowDescription account={account} />
++                </AccountRowDetails>
++              )}
 +            </div>
            </div>
 -          <span className="flex min-w-0 flex-wrap items-center gap-2.5">
@@ -2469,7 +2765,7 @@ index 8529724..deed90c 100644
      );
    });
    const list = (
-@@ -955,7 +945,7 @@ function ReadOnlyChoices<E>({
+@@ -955,7 +960,7 @@ function ReadOnlyChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -2478,7 +2774,7 @@ index 8529724..deed90c 100644
      >
        {rows}
      </ul>
-@@ -1118,7 +1108,7 @@ function EditableChoices<E>({
+@@ -1118,7 +1123,7 @@ function EditableChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -2487,7 +2783,15 @@ index 8529724..deed90c 100644
      >
        {rows}
      </ul>
-@@ -1242,22 +1232,22 @@ function ChoiceRow<E>({
+@@ -1226,6 +1231,7 @@ function ChoiceRow<E>({
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const id = useId();
+   const name = accountName(account);
++  const row = appAccountRow(app, account, data.accountRow);
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+   // Another person's contribution stays linked unless the host says the caller may remove it.
+   const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
+@@ -1242,22 +1248,22 @@ function ChoiceRow<E>({
      return exit;
    };
    return (
@@ -2525,7 +2829,7 @@ index 8529724..deed90c 100644
            {plain ? (
              <RadioGroup.Item
                id={id}
-@@ -1287,49 +1277,52 @@ function ChoiceRow<E>({
+@@ -1287,49 +1293,57 @@ function ChoiceRow<E>({
            <AccountRowIdentity
              account={account}
              labelFor={id}
@@ -2558,12 +2862,12 @@ index 8529724..deed90c 100644
 -                : data.reconnectAction?.(account, slot, requirement)
 +          <AccountRowCells
 +            lead
-+            type={accountRowType(appAccountRow(app, account))}
++            type={accountRowType(row)}
 +            plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
 +            health={
 +              <AccountStatus
 +                app={app}
-+                account={account}
++                row={row}
 +                reconnect={
 +                  hostProvisioned || automatic
 +                    ? undefined
@@ -2600,6 +2904,11 @@ index 8529724..deed90c 100644
 +              </p>
 +            )}
 +            <AccountStatusNotes app={app} account={account} />
++            {account.description && (
++              <AccountRowDetails inline={false}>
++                <AccountRowDescription account={account} />
++              </AccountRowDetails>
++            )}
 +          </div>
          </div>
 -      )}
@@ -2617,38 +2926,51 @@ index 8529724..deed90c 100644
    );
  }
  
-@@ -1413,49 +1406,54 @@ function RemoveAppBoundAccount({
+@@ -1413,49 +1427,64 @@ function RemoveAppBoundAccount({
    );
  }
  
 +/** This app's binding of the account, as the compact row reads it. */
-+const appAccountRow = (app: App, account: AccountSummary) => ({
-+  account,
-+  bindings: [
-+    {
-+      id: account.id,
-+      app: app.id,
-+      check: account.health?.apps.find((entry) => entry.app === app.id),
-+    },
-+  ],
-+});
-+
  /**
 - * An account's sign-in state, or this app's check of it. A current rejection offers the same
 - * reconnect as an expired sign-in; other failed checks say nothing about the credentials.
++ * This app's binding of the account, as the compact row reads it: the host's saved-account row
++ * when it has one, else the link's own account. Only this app's binding counts here.
++ */
++const appAccountRow = (
++  app: App,
++  account: AccountSummary,
++  resolve?: (account: AccountSummary) => AccountRowInput | undefined,
++): AccountRowInput => {
++  const saved = resolve?.(account);
++  const own = saved?.bindings.find((binding) => binding.app === app.id) ?? {
++    id: account.id,
++    app: app.id,
++    check: account.health?.apps.find((entry) => entry.app === app.id),
++  };
++  return {
++    account: saved?.account ?? account,
++    ...(saved?.offering === undefined ? {} : { offering: saved.offering }),
++    bindings: [own],
++  };
++};
++
++/**
 + * An account's sign-in state, or its check for this app or its own sign-in. A current rejection
 + * offers the same reconnect as an expired sign-in; other failed checks say nothing about the
 + * credentials.
   */
  function AccountStatus({
    app,
-   account,
+-  account,
 -  part,
++  row,
    reconnect,
  }: {
    readonly app: App;
-   readonly account: AccountSummary;
+-  readonly account: AccountSummary;
 -  readonly part: "header" | "details";
++  readonly row: AccountRowInput;
    readonly reconnect?: ReactNode;
  }) {
 -  if (accountNeedsSignIn(account) && part === "details") return null;
@@ -2662,7 +2984,6 @@ index 8529724..deed90c 100644
 -  if (account.signIn?.state === "unavailable")
 -    return <span className="text-xs text-sign-in-warning">Unavailable</span>;
 +  const brand = useProductBrand();
-+  const row = appAccountRow(app, account);
    return (
 -    <>
 -      <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
@@ -2671,7 +2992,7 @@ index 8529724..deed90c 100644
 -        reconnect}
 -    </>
 +    <AccountHealthCell
-+      health={accountRowHealth(row.account, row.bindings)}
++      health={accountRowHealth(row.account, row.bindings, row.bindings[0])}
 +      appName={() => appDisplayName(app, brand)}
 +      recover={reconnect}
 +      unavailableLabel="Unavailable"
@@ -2699,3 +3020,29 @@ index 8529724..deed90c 100644
 -  return <AccountCheckResult health={health} part={part} />;
 +  return <AccountCheckResult health={health} part="notes" />;
  }
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+index 2d32b68..803cdcc 100644
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -108,7 +108,7 @@ export function ProviderIcon({
+         "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+         large &&
+           "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+-        medium && "[&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
++        medium && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
+       )}
+       data-provider={brand?.key}
+       aria-hidden
+diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
+index 6d4f767..7064afb 100644
+--- a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
++++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
+@@ -43,7 +43,7 @@ export function RequestedAccess({
+ }) {
+   if (apps.length === 0) return null;
+   return (
+-    <details className="requested-access col-span-full min-w-0 pl-11.5 text-[12px] text-muted-foreground">
++    <details className="requested-access min-w-0 text-[12px] text-muted-foreground">
+       <summary className="w-fit cursor-pointer rounded-sm select-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring max-[740px]:flex max-[740px]:min-h-11 max-[740px]:items-center">
+         Requested access
+       </summary>
