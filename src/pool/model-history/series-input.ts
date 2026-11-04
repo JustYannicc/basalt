@@ -119,9 +119,9 @@ export interface SeriesCursor {
   key: string;
   at: string;
 }
-export async function cursorScope(input: PoolUsageSeriesInput, authority: SeriesAuthority) {
+export async function cursorScope(input: PoolUsageSeriesInput, authority: SeriesAuthority, personScope?: string) {
   const { after: _, ...query } = input;
-  return digest(JSON.stringify([query, authority]));
+  return digest(JSON.stringify([query, authority, personScope ?? null]));
 }
 export function readSeriesCursor(
   raw: string | undefined,

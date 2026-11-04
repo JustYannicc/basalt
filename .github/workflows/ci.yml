@@ -939,6 +939,8 @@ jobs:
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
+      - name: Verify the banked reset control in a browser with a synthetic provider
+        run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -946,6 +948,9 @@ jobs:
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
+            .generated/pool-reset-ui/**/report.json
+            .generated/pool-reset-ui/**/failure.json
+            .generated/pool-reset-ui/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**

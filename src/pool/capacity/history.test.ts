@@ -71,6 +71,29 @@ test("hourly totals keep weighted minimum and last with per-plan source-time ran
   assert.equal(JSON.stringify([...storage.values]).includes("private-account"), false);
 });
 
+test("five-hour measurements gate each account by its weekly balance and retain raw quota by plan", async () => {
+  const history = new CapacityHistory(new Memory());
+  const weeklyWindow = 7 * 24 * 60 * 60;
+  await history.observe("pool-a", {
+    at: start,
+    expected: [...expected(2), { provider: "claude", windowSeconds: weeklyWindow, accounts: 2 }],
+    readings: [
+      reading("private-account-a", 6, { plan: "Pro", full: 10, mode: "fixed", observedAt: start - 30_000 }),
+      reading("private-account-b", 7, { plan: "Max", full: 20, mode: "fixed", observedAt: start - 20_000 }),
+      reading("private-account-a", 0, { windowSeconds: weeklyWindow, mode: null, full: 100, observedAt: start - 30_000 }),
+      reading("private-account-b", 50, { windowSeconds: weeklyWindow, mode: null, full: 100, observedAt: start - 20_000 }),
+    ],
+  });
+
+  const point = (await history.read("pool-a")).find((entry) => entry.windowSeconds === 18_000)!;
+  assert.equal(point.minimum.remaining, 7);
+  assert.equal(point.minimum.full, 30);
+  assert.deepEqual(point.plans.map((plan) => [plan.plan, plan.minimum.remaining]), [["Max", 7], ["Pro", 0]]);
+  assert.equal(point.raw?.minimum.remaining, 13);
+  assert.deepEqual(point.raw?.plans.map((plan) => [plan.plan, plan.minimum.remaining]), [["Max", 7], ["Pro", 6]]);
+  assert.equal(point.usable?.remaining, 20);
+});
+
 test("mixed units validate provider/window cohort coverage before storing separate groups", async () => {
   const history = new CapacityHistory(new Memory());
   const absolute = reading("private-account-b", 70, {
@@ -120,6 +143,95 @@ test("unchanged source observations are deduplicated and older snapshots are rej
   assert.equal(points.length, 1);
   assert.equal(points[0]!.last.at, start);
 });
+
+test("an expected account with no comparable reading keeps the forecast exposure incomplete", async () => {
+  const storage = new Memory(), history = new CapacityHistory(storage);
+  const accountStates = ["private-account-a", "private-account-never-read"].map((account) => ({
+    account, provider: "claude", windowSeconds: 18_000, usable: true, bankedAvailable: null,
+  }));
+  await history.observe("pool-a", { at: start, expected: expected(2), accountStates, readings: [
+    reading("private-account-a", 4, { observedAt: start - 1_000 }),
+  ] });
+  await history.observe("pool-a", { at: start + 5 * 60_000, expected: expected(2), accountStates, readings: [
+    reading("private-account-a", 3, { observedAt: start + 5 * 60_000 - 1_000 }),
+  ] });
+  const demand = await history.demandData("pool-a");
+  assert.equal(demand.points.length, 1);
+  assert.equal(demand.points[0]!.membershipIncomplete, true);
+  assert.equal(demand.points[0]!.coverage, 0);
+  assert.equal(JSON.stringify([...storage.values]).includes("private-account-never-read"), false);
+});
+
+test("rolling expiry use is reconstructed from a persisted empty anchor and sample-time events", async () => {
+  const storage = new Memory();
+  const history = new CapacityHistory(storage);
+  const account = "private-rolling-account";
+  const accountStates = [{ account, provider: "claude", windowSeconds: 18_000, usable: true, bankedAvailable: null }];
+  const sample = (sourceAt: number, remaining: number): CapacityReading => reading(account, remaining, {
+    windowSeconds: 18_000, mode: "rolling", full: 100, resetAt: null,
+    observedAt: sourceAt, staleAt: sourceAt + 6 * 60_000, source: "reference-plan", revision: "rolling-r1",
+  });
+  const observe = (at: number, sourceAt: number, remaining: number) => history.observe("pool-a", {
+    at, expected: expected(1), accountStates, readings: [sample(sourceAt, remaining)],
+  });
+
+  await observe(start, start, 100); // The full window anchors a known empty-use queue.
+  await observe(start + 5 * 60_000, start + 5 * 60_000, 80); // 20 units were consumed.
+  await observe(start + 10 * 60_000, start + 5 * 60_000, 80); // An unchanged source sample preserves the chain.
+  const resumed = new CapacityHistory(storage); // The chain and its event journal survive a sampler restart.
+  for (let at = start + 15 * 60_000; at <= start + 5 * hour; at += 5 * 60_000)
+    await resumed.observe("pool-a", { at, expected: expected(1), accountStates, readings: [sample(at, 80)] });
+  // The sample interval covers the known expiry at +5:05 and 15 new units of use.
+  await resumed.observe("pool-a", {
+    at: start + 5 * hour + 10 * 60_000, expected: expected(1), accountStates,
+    readings: [sample(start + 5 * hour + 10 * 60_000, 85)],
+  });
+  const complete = await resumed.demandData("pool-a");
+  const group = Object.keys(complete.rollingComplete)[0]!;
+  const hashedAccount = Object.keys(complete.rollingComplete[group]!)[0]!;
+  assert.equal(complete.rollingComplete[group]![hashedAccount]!.complete, true);
+  assert.deepEqual(complete.rollingUse[group]![hashedAccount], [{ at: start + 5 * hour + 10 * 60_000, amount: 15 }]);
+
+  const unanchored = new CapacityHistory(new Memory());
+  const unanchoredAccount = "private-unanchored-rolling-account";
+  const unanchoredStates = [{ account: unanchoredAccount, provider: "claude", windowSeconds: 18_000, usable: true, bankedAvailable: null }];
+  await unanchored.observe("pool-b", {
+    at: start, expected: expected(1), accountStates: unanchoredStates,
+    readings: [sampleWithAccount(unanchoredAccount, start, 50)],
+  });
+  await unanchored.observe("pool-b", {
+    at: start + 5 * 60_000, expected: expected(1), accountStates: unanchoredStates,
+    readings: [sampleWithAccount(unanchoredAccount, start + 5 * 60_000, 45)],
+  });
+  const incomplete = await unanchored.demandData("pool-b");
+  const incompleteGroup = Object.keys(incomplete.rollingComplete)[0]!;
+  const incompleteAccount = Object.keys(incomplete.rollingComplete[incompleteGroup]!)[0]!;
+  assert.equal(incomplete.rollingComplete[incompleteGroup]![incompleteAccount]!.complete, false);
+  await unanchored.observe("pool-b", {
+    at: start + 10 * 60_000, expected: expected(1), accountStates: unanchoredStates,
+    readings: [sampleWithAccount(unanchoredAccount, start + 10 * 60_000, 100)],
+  });
+  const reanchored = await unanchored.demandData("pool-b");
+  assert.equal(reanchored.rollingComplete[incompleteGroup]![incompleteAccount]!.complete, true);
+
+  const conflicting = new CapacityHistory(new Memory());
+  const conflictingStates = [{ account, provider: "claude", windowSeconds: 18_000, usable: true, bankedAvailable: null }];
+  await conflicting.observe("pool-c", { at: start, expected: expected(1), accountStates: conflictingStates,
+    readings: [sampleWithAccount(account, start, 100)] });
+  await conflicting.observe("pool-c", { at: start + 5 * 60_000, expected: expected(1), accountStates: conflictingStates,
+    readings: [sampleWithAccount(account, start + 5 * 60_000, 80)] });
+  await conflicting.observe("pool-c", { at: start + 10 * 60_000, expected: expected(1), accountStates: conflictingStates,
+    readings: [sampleWithAccount(account, start + 5 * 60_000, 75)] });
+  const changedAtSameSource = await conflicting.demandData("pool-c");
+  const conflictingGroup = Object.keys(changedAtSameSource.rollingComplete)[0]!;
+  const conflictingAccount = Object.keys(changedAtSameSource.rollingComplete[conflictingGroup]!)[0]!;
+  assert.equal(changedAtSameSource.rollingComplete[conflictingGroup]![conflictingAccount]!.complete, false);
+});
+
+function sampleWithAccount(account: string, at: number, remaining: number): CapacityReading {
+  return reading(account, remaining, { windowSeconds: 18_000, mode: "rolling", full: 100, resetAt: null,
+    observedAt: at, staleAt: at + 6 * 60_000, source: "reference-plan", revision: "rolling-r1" });
+}
 
 test("weight policy changes append frozen values without rewriting earlier hours", async () => {
   const history = new CapacityHistory(new Memory()), firstAt = start, secondAt = start + hour;
