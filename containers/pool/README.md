@@ -107,3 +107,23 @@ Known limitation: the pinned backend does not expose a complete non-Codex speed-
 ## Compatibility caveat
 
 The selected Home release declares a CLIProxyAPI module dependency older than the separately pinned node release. Upstream publishes no compatibility matrix for this pair. The local Docker/PostgreSQL integration exercises bootstrap, a synthetic provider stream, affinity, spreading, quota failover and restart persistence with this pair. Real-subscription acceptance remains separate.
+
+## Recovery after a runtime Home failure
+
+After a healthy generation, an unexpected Home exit code 1 permits at most two
+replacement Home/node launches per supervisor lifetime, after 1 second and then
+5 seconds. A recovery episode has one 180-second deadline across teardown,
+backoff, management calls and health checks. A healthy interval never resets the
+launch budget. Startup failures, node failures, signal exits and policy fuses
+keep their existing terminal behavior. Recovery never imports an empty database.
+
+Readiness is false during replacement. Each replacement has a new boot identity
+and needs fresh native-policy and Home/node health; old probes cannot grant its
+lease. Requests in flight can fail. Recovery uses normal startup configuration
+and node enrollment, without changing Home/Node patches or request handling.
+
+`POOL_HOME_RECOVERY` records contain only the closed state `attempt`, `recovered`
+or `exhausted`, attempt number, delay seconds and elapsed milliseconds. Every
+failed child retains its normal exit receipt. Exhaustion leaves readiness false,
+emits `POOL_RUNTIME_FAILURE` and exits the container with code 1. The lifetime
+budget is in memory; a platform container replacement starts a new budget.
