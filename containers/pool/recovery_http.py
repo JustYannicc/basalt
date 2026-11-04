@@ -69,7 +69,7 @@ def request_with_deadline(
         sock.settimeout(remaining())
         response = connection.getresponse()
         chunks: list[bytes] = []
-        while True:
+        while not response.isclosed():
             sock.settimeout(remaining())
             chunk = response.read1(64 << 10)
             remaining()
