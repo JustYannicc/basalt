@@ -1,0 +1,69 @@
+{
+  "scenarios": {
+    "selfEmailApprovalScopes": {
+      "title": "self-email scopes replace and revoke confirmations atomically while generic sends remain unavailable",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses a public SDK host with retained PostgreSQL storage."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a public SDK host with a synthetic personal identity."
+        }
+      }
+    }
+  },
+  "runs": {
+    "selfEmailApprovalScopes": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/contracts/tool-policies.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/migrations.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policies.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policy-evaluation.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policy-handlers.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policy-schema.ts",
+    ".upstream/apps/hosted/server/src/implementation/tool-policy-store.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-app-approvals.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-confirmations.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/contracts/tool-policies.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/tool-policies.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/tool-policy-editor.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/tool-policy-history.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/tool-policy-workflow-permissions.tsx",
+    ".upstream/e2e/support/app-call-sdk.ts",
+    ".upstream/e2e/support/self-email-sdk-source.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/sdk/src/contracts/app-calls.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/contracts/index.ts",
+    ".upstream/packages/sdk/src/contracts/tool-policy.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/app-calls.ts",
+    ".upstream/packages/sdk/src/implementation/app-confirmations.ts",
+    ".upstream/packages/sdk/src/implementation/app-connections.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/tool-policy.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/workflow-approval-hooks.ts",
+    ".upstream/packages/sdk/src/implementation/workflow-approval.ts",
+    ".upstream/packages/sdk/src/implementation/workflow-email-envelope.ts",
+    ".upstream/packages/sdk/src/implementation/workflows.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/approvals.tsx"
+  ]
+}
