@@ -21,9 +21,19 @@ const phases = new Set([
   "report",
 ]);
 
-const kinds = new Set(["timeout", "module-resolution", "assertion", "syntax", "type", "unknown"]);
+const kinds = new Set([
+  "timeout",
+  "module-resolution",
+  "assertion",
+  "syntax",
+  "type",
+  "browser-launch",
+  "unknown",
+]);
 
 function failureKind(text: string) {
+  if (/browserType\.launch|Socket path too long|Failed to create socket directory/.test(text))
+    return "browser-launch";
   if (/(?:Cannot find (?:package|module)|ModuleNotFound|ERR_MODULE_NOT_FOUND)/.test(text))
     return "module-resolution";
   if (/AssertionError/.test(text)) return "assertion";
@@ -62,7 +72,10 @@ export function awsFailureSummary({
   const detected = failureKind(text);
   const retained =
     typeof recordedKind === "string" && kinds.has(recordedKind) ? recordedKind : "unknown";
-  const kind = timedOut === true ? "timeout" : (detected ?? retained);
+  const kind =
+    timedOut === true
+      ? "timeout"
+      : (detected ?? (retained === "unknown" && phase === "browser" ? "browser-launch" : retained));
   return {
     phase:
       typeof phase === "string" && phases.has(phase)
