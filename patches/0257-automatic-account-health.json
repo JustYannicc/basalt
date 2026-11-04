@@ -1,7 +1,7 @@
 {
   "identity": "basalt-automatic-account-health",
   "file": "0257-automatic-account-health.patch",
-  "content_sha256": "bb5b4c91795c074d43185abb9a196b72a798344c8a4c67b967cd34d25e56c4dc",
+  "content_sha256": "f53be7393ab4dfa0303469eb29035696aa7000cfaa32489c7ee1f690beb4b7e1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

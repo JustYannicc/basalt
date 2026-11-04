@@ -19,7 +19,8 @@ const fixture = Effect.gen(function* () {
     create table executor_providers(id text primary key, definition jsonb);
     create table executor_accounts(id text primary key, owner text, provider text, method text,
       credential_generation int, label text default '', description text, encrypted_credentials text default 'keep-me');
-    create table hosted_account_access(account_id text primary key, organization_id text, kind text, personal_user_id text);
+    create table hosted_account_access(account_id text primary key, organization_id text, kind text, personal_user_id text, audience text default 'everyone');
+    create table hosted_account_groups(account_id text, group_id text);
     create table executor_apps(id text primary key, owner text, active_deployment text);
     create table executor_deployments(id text primary key, requirements jsonb);
     create table hosted_app_account_links(app text, requirement text, account text, subject text, linked_by text, created_at timestamptz default now());
@@ -49,7 +50,7 @@ const fixture = Effect.gen(function* () {
       yield* sql`insert into executor_providers values (${provider}, ${JSON.stringify({ family: { id: family } })}::jsonb)`;
       yield* sql`insert into executor_accounts(id,owner,provider,method,credential_generation)
       values (${id}, 'organization:org', ${provider}, 'token', ${generation})`;
-      yield* sql`insert into hosted_account_access values (${id}, 'org', 'personal', 'owner')`;
+      yield* sql`insert into hosted_account_access(account_id,organization_id,kind,personal_user_id) values (${id}, 'org', 'personal', 'owner')`;
       yield* sql`insert into executor_apps values (${app}, 'organization:org', ${version})`;
       yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify({ accounts: { service: { provider, health: true } } })}::jsonb)
       on conflict(id) do update set requirements = excluded.requirements`;
@@ -70,5 +71,5 @@ const fixture = Effect.gen(function* () {
   return { sql, add, checked, queue: makeAccountRecheckQueue(sql) };
 });
 export const runRecheckFixture = <E>(
-  body: (f: Effect.Success<typeof fixture>) => Effect.Effect<void, E>,
+  body: (f: Effect.Success<typeof fixture>) => Effect.Effect<void, E, SqlClient.SqlClient>,
 ) => Effect.runPromise(fixture.pipe(Effect.flatMap(body), Effect.provide(PgLite.layer({}))));

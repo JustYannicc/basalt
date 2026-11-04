@@ -172,6 +172,7 @@ test("a rate-limited check defers every account in its provider family", () =>
       yield* f.sql`update hosted_account_rechecks set started_at=now()-interval '2 minutes'`;
       assert.deepEqual(yield* f.queue.claim("wait"), []);
       yield* f.sql`update hosted_account_rechecks set provider_next_at=now()-interval '1 second'`;
+      yield* f.sql`update hosted_account_recheck_families set next_at=now()-interval '1 second'`;
       const [next] = yield* f.queue.claim("after");
       assert.ok(next);
       assert.notEqual(next.account, target.account);
@@ -206,6 +207,7 @@ test("the admin readout reports only its organization and refuses ordinary membe
       for (const target of initial)
         yield* f.queue.finish(target.account, "before-move", "skipped", false);
       yield* f.sql`update hosted_account_rechecks set next_at=now()-interval '1 second', provider_next_at=now()-interval '1 second'`;
+      yield* f.sql`update hosted_account_recheck_families set next_at=now()-interval '1 second'`;
       yield* f.sql`insert into organization values ('other-org')`;
       yield* f.sql`insert into member values ('other-member','other-org','owner','owner')`;
       yield* f.sql`update hosted_account_access set organization_id='other-org' where account_id='acc_other-account'`;

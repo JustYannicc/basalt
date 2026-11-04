@@ -113,11 +113,13 @@ diff --git a/apps/hosted/server/src/implementation/account-recheck-authority.ts 
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-recheck-authority.ts
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,60 @@
 +import { Context, Effect } from "effect";
 +import type { Account } from "@executor-js/sdk/core";
 +import type { SqlClient } from "effect/sql";
 +import type { RecheckCandidate } from "./account-recheck-queue.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { linkedAccounts } from "./app-accounts.ts";
 +import { usableAppLinks } from "./app-link-policy.ts";
 +
 +/** Only the claimed check receives this capability; normal requests still require their actor. */
@@ -148,9 +150,27 @@ new file mode 100644
 +          where m."organizationId" = p.organization_id and m."userId" = p.personal_user_id))`;
 +    if (held.length !== 1) return new Set<Account["id"]>();
 +    if (target.app !== null) {
-+      const linked = yield* sql`select a.id from ${yield* usableAppLinks(sql, [target.app])}
-+        and a.id = ${target.account} limit 1`;
-+      if (linked.length !== 1) return new Set<Account["id"]>();
++      const subject = yield* CurrentUserId;
++      if (subject === undefined) {
++        const linked = yield* sql`select a.id from ${yield* usableAppLinks(sql, [target.app])}
++          and a.id = ${target.account} limit 1`;
++        if (linked.length !== 1) return new Set<Account["id"]>();
++      } else {
++        const permitted = yield* sql`select p.id from hosted_app_access p
++          join member m on m."organizationId" = p.organization_id and m."userId" = ${subject}
++          where p.id = ${target.app} and p.organization_id = ${target.organization}
++            and (p.audience = 'everyone' or (p.audience = 'private' and p.creator_id = ${subject})
++              or (p.audience = 'groups' and exists (
++                select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
++                where g.app_id = p.id and gm.member_id = m.id)))`;
++        if (
++          permitted.length !== 1 ||
++          !(yield* linkedAccounts(sql, { subject, apps: [target.app] })).some(
++            (link) => link.id === target.account,
++          )
++        )
++          return new Set<Account["id"]>();
++      }
 +    }
 +    return new Set([target.account]);
 +  });
@@ -158,7 +178,7 @@ diff --git a/apps/hosted/server/src/implementation/account-recheck-schema.ts b/a
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-recheck-schema.ts
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,31 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +
@@ -178,6 +198,13 @@ new file mode 100644
 +    finished_at timestamptz,
 +    outcome text not null check (outcome in ('running', 'healthy', 'failed', 'skipped'))
 +  )`;
++  // No account or organization foreign key: deleting either cannot reset a provider's rate limit.
++  yield* sql`create table if not exists hosted_account_recheck_families (
++    provider_key text primary key,
++    next_at timestamptz not null,
++    account_id text not null,
++    lease text not null
++  )`;
 +  yield* sql`create index if not exists hosted_account_rechecks_provider
 +    on hosted_account_rechecks(provider_key, started_at)`;
 +  yield* sql`create index if not exists hosted_account_rechecks_organization
@@ -187,7 +214,7 @@ diff --git a/apps/hosted/server/src/implementation/account-recheck-queue.ts b/ap
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-recheck-queue.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,149 @@
 +import { AccountId, AppId, OwnerId, StorageError } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -257,6 +284,8 @@ new file mode 100644
 +        left join hosted_account_rechecks q on q.account_id = t.account
 +        where (q.next_at is null or q.next_at <= now())
 +          and (q.lease_until is null or q.lease_until <= now())
++          and not exists (select 1 from hosted_account_recheck_families family
++            where family.provider_key = t.provider and family.next_at > now())
 +          and not exists (select 1 from hosted_account_rechecks recent
 +            where recent.provider_key = t.provider
 +              and (recent.provider_next_at > now() or recent.lease_until > now()))
@@ -289,28 +318,58 @@ new file mode 100644
 +        }),
 +      )
 +      .pipe(Effect.mapError(() => new StorageError()));
++  // The 55-second attempt ceiling plus 15 minutes remains reserved if completion is lost.
++  const start = (target: RecheckCandidate, lease: string) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          const held = yield* sql`select account_id from hosted_account_rechecks
++        where account_id = ${target.account} and lease = ${lease} and lease_until > now() for update`;
++          if (held.length !== 1) return false;
++          const reserved =
++            yield* sql`insert into hosted_account_recheck_families (provider_key, next_at, account_id, lease)
++        values (${target.provider}, now() + interval '16 minutes', ${target.account}, ${lease})
++        on conflict (provider_key) do update set next_at = excluded.next_at,
++          account_id = excluded.account_id, lease = excluded.lease
++        where hosted_account_recheck_families.next_at <= now()
++        returning provider_key`;
++          return reserved.length === 1;
++        }),
++      )
++      .pipe(Effect.mapError(() => new StorageError()));
 +  const finish = (
 +    account: AccountId,
 +    lease: string,
 +    outcome: "healthy" | "failed" | "skipped",
 +    retry: boolean,
-+    rateLimited = false,
++    cooldown = false,
 +  ) =>
-+    sql`update hosted_account_rechecks set lease = null, lease_until = null, finished_at = now(),
-+      next_at = now() + ${retry ? 15 * 60 : 60} * interval '1 second',
-+      provider_next_at = greatest(provider_next_at, now() + ${rateLimited ? 15 * 60 : 0} * interval '1 second'), outcome = ${outcome}
-+      where account_id = ${account} and lease = ${lease}`.pipe(
-+      Effect.asVoid,
-+      Effect.mapError(() => new StorageError()),
-+    );
-+  return { claim, finish };
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          const completed =
++            yield* sql`update hosted_account_rechecks set lease = null, lease_until = null, finished_at = now(),
++        next_at = now() + ${retry ? 15 * 60 : 60} * interval '1 second',
++        provider_next_at = now() + ${cooldown ? 15 * 60 : 60} * interval '1 second', outcome = ${outcome}
++        where account_id = ${account} and lease = ${lease} returning provider_key`;
++          for (const row of completed)
++            yield* sql`insert into hosted_account_recheck_families (provider_key, next_at, account_id, lease)
++          values (${row.provider_key}, now() + ${cooldown ? 15 * 60 : 60} * interval '1 second', ${account}, ${lease})
++          on conflict (provider_key) do update set next_at = excluded.next_at,
++            account_id = excluded.account_id, lease = excluded.lease
++          where hosted_account_recheck_families.next_at <= now()
++            or (hosted_account_recheck_families.account_id = ${account} and hosted_account_recheck_families.lease = ${lease})`;
++        }),
++      )
++      .pipe(Effect.mapError(() => new StorageError()));
++  return { claim, start, finish };
 +};
 diff --git a/apps/hosted/server/src/implementation/account-rechecks.ts b/apps/hosted/server/src/implementation/account-rechecks.ts
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-rechecks.ts
-@@ -0,0 +1,146 @@
-+import { AutomaticAccountCheck } from "./account-recheck-authority.ts";
+@@ -0,0 +1,159 @@
++import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
 +import { CurrentUserId } from "../contracts/auth.ts";
 +import { StorageError, type Executor } from "@executor-js/sdk/core";
 +import { Clock, Crypto, Effect, Result, Schema } from "effect";
@@ -336,9 +395,10 @@ new file mode 100644
 +      join member m on m."userId" = l.subject and m."organizationId" = ${target.organization}
 +      join hosted_app_access p on p.id = l.app and p.organization_id = m."organizationId"
 +      where l.app = ${app} and l.account = ${target.account} and
-+        (p.audience = 'everyone' or p.creator_id = l.subject or exists (
-+          select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
-+          where g.app_id = p.id and gm.member_id = m.id))
++        (p.audience = 'everyone' or (p.audience = 'private' and p.creator_id = l.subject)
++          or (p.audience = 'groups' and exists (
++            select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
++            where g.app_id = p.id and gm.member_id = m.id)))
 +      order by l.subject limit 16`;
 +    const subjects = yield* Schema.decodeUnknownEffect(Schema.Array(Subject))(rows);
 +    for (const { subject } of subjects) {
@@ -355,11 +415,15 @@ new file mode 100644
 +
 +type RecheckExecutor = { readonly accounts: Pick<Executor["accounts"], "health" | "check"> };
 +
-+const runOne = (sql: SqlClient.SqlClient, executor: RecheckExecutor, target: RecheckCandidate) =>
++const runOne = (
++  sql: SqlClient.SqlClient,
++  executor: RecheckExecutor,
++  target: RecheckCandidate,
++  lease: string,
++) =>
 +  Effect.gen(function* () {
 +    const subject = yield* stillLinked(sql, target);
-+    if (subject === undefined)
-+      return { outcome: "skipped" as const, retry: true, rateLimited: false };
++    if (subject === undefined) return { outcome: "skipped" as const, retry: true, cooldown: false };
 +    return yield* Effect.gen(function* () {
 +      const apps = target.app === null ? [] : [target.app];
 +      const before = yield* executor.accounts.health({
@@ -370,9 +434,17 @@ new file mode 100644
 +      const check = target.app === null ? before.driver?.check : before.apps[0]?.check;
 +      const now = yield* Clock.currentTimeMillis;
 +      if (check?.current === true && check.checkedAt.getTime() > now - 6 * 60 * 60_000)
-+        return { outcome: "skipped" as const, retry: false, rateLimited: false };
++        return { outcome: "skipped" as const, retry: false, cooldown: false };
 +      if (target.app === null && before.driver?.checkable !== true)
-+        return { outcome: "skipped" as const, retry: true, rateLimited: false };
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
++      const authorized = yield* automaticCheckAccounts(sql, [
++        { id: target.account, owner: target.owner },
++      ]);
++      if (
++        !authorized.has(target.account) ||
++        !(yield* makeAccountRecheckQueue(sql).start(target, lease))
++      )
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
 +      // The explicit SDK path owns diagnostics and persistence, including phase/tag/vendor reason.
 +      const health = yield* executor.accounts.check({
 +        owner: target.owner,
@@ -380,14 +452,14 @@ new file mode 100644
 +        apps,
 +      });
 +      const after = target.app === null ? health.driver?.check : health.apps[0]?.check;
++      const rateLimited = [health.driver?.check, ...health.apps.map((app) => app.check)].some(
++        (result) => result?.reason === "rate_limited",
++      );
 +      return {
-+        outcome: after?.status === "healthy" ? ("healthy" as const) : ("failed" as const),
-+        retry:
-+          after === null ||
-+          after === undefined ||
-+          !after.current ||
-+          after.reason === "rate_limited",
-+        rateLimited: after?.reason === "rate_limited",
++        outcome:
++          after?.status === "healthy" && !rateLimited ? ("healthy" as const) : ("failed" as const),
++        retry: after === null || after === undefined || !after.current || rateLimited,
++        cooldown: rateLimited,
 +      };
 +    }).pipe(Effect.provideService(CurrentUserId, subject ?? undefined));
 +  });
@@ -402,20 +474,20 @@ new file mode 100644
 +        targets,
 +        (target) =>
 +          Effect.gen(function* () {
-+            const result = yield* runOne(sql, executor, target).pipe(
++            const result = yield* runOne(sql, executor, target, run).pipe(
 +              Effect.provideService(AutomaticAccountCheck, { ...target, lease: run }),
 +              Effect.timeout(55_000),
 +              Effect.result,
 +            );
 +            const outcome = Result.isSuccess(result)
 +              ? result.success
-+              : { outcome: "failed" as const, retry: true, rateLimited: false };
++              : { outcome: "failed" as const, retry: true, cooldown: true };
 +            yield* queue.finish(
 +              target.account,
 +              run,
 +              outcome.outcome,
 +              outcome.retry,
-+              outcome.rateLimited,
++              outcome.cooldown,
 +            );
 +            yield* Effect.logInfo("Automatic account health recheck finished", {
 +              outcome: outcome.outcome,
@@ -476,16 +548,34 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,4 @@
-+import { automaticCheckAccounts } from "./account-recheck-authority.ts";
++import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
  import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
  import { requireAppAccess } from "./resource-policy.ts";
  import { requireOrganizationAppWrite } from "./organization-app-write.ts";
-@@ -454,7 +455,7 @@
+@@ -346,6 +347,15 @@
+       // it has no user accounts.
+       appResolving: (app, accounts, appUses) =>
+         Effect.gen(function* () {
++          const automatic = yield* AutomaticAccountCheck;
++          if (
++            automatic !== undefined &&
++            (automatic.app !== app.id ||
++              !(yield* automaticCheckAccounts(sql, [
++                { id: automatic.account, owner: automatic.owner },
++              ])).has(automatic.account))
++          )
++            return yield* new StorageError();
+           const user = yield* CurrentUserId;
+           const organization = yield* organizationOf(app.owner);
+           // The SDK resolved each account with its owner; only the product's policy is checked here.
+@@ -454,7 +464,9 @@
        accountsResolving: (accounts) =>
          Effect.gen(function* () {
            const user = yield* CurrentUserId;
 -          if (user === undefined) return yield* new StorageError();
-+          if (user === undefined) return yield* automaticCheckAccounts(sql, accounts);
++          if ((yield* AutomaticAccountCheck) !== undefined)
++            return yield* automaticCheckAccounts(sql, accounts);
++          if (user === undefined) return new Set<AccountId>();
            const owned = organizationAccounts(accounts);
            if (owned.length === 0) return new Set<AccountId>();
            // The SDK resolved each account with its owner; only the product's policy is checked here.
@@ -517,3 +607,51 @@ diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
  export { makeScheduledAuthority } from "./implementation/schedules.ts";
 +
 +export { runAccountRechecks } from "./implementation/account-rechecks.ts";
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -38,7 +38,7 @@
+ import { AppNotFound } from "../contracts/apps.ts";
+ import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
+ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
+-import { storedAccount } from "./accounts.ts";
++import { accountMetadata, storedAccount } from "./accounts.ts";
+ import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
+ import {
+@@ -186,6 +186,16 @@
+     acquisition,
+     { status: statusOf, message: messageOf },
+     recordObservation,
++    lifecycle === undefined
++      ? undefined
++      : (account) =>
++          lifecycle
++            .accountsResolving([accountMetadata(account)])
++            .pipe(
++              Effect.flatMap((allowed) =>
++                allowed.has(account.id) ? Effect.void : Effect.fail(new StorageError()),
++              ),
++            ),
+   );
+   /** One account's health from the apps that use it and its recorded checks. */
+   const project = (
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -28,6 +28,7 @@
+   recordObservation?: ReturnType<
+     typeof import("./account-observations.ts").makeAccountObservations
+   >["fromHealth"],
++  beforeCheck?: (account: StoredAccount) => Effect.Effect<void, StorageError>,
+ ) => {
+   const rows = (accounts: readonly DriverAccount[]) =>
+     query(() =>
+@@ -137,6 +138,7 @@
+         );
+         return;
+       }
++      if (beforeCheck !== undefined) yield* beforeCheck(account);
+       const outcome = yield* hook().pipe(
+         Effect.flatMap((value) =>
+           Schema.decodeUnknownEffect(AccountCheckResult)(value === undefined ? {} : value).pipe(
