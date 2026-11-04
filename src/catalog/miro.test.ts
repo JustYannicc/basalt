@@ -87,6 +87,6 @@ test("Miro carry preserves the full OpenAPI package and aligns the app scopes wi
   }
   const manifest = JSON.parse(carried.files.find((file: { path: string }) => file.path === "package.json")!.content);
   assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-  assert.equal(manifest.dependencies.apps, "0.0.1-beta.104-basalt.1");
+  assert.equal(manifest.dependencies.apps, "0.0.1-beta.104-basalt.2");
   assert.deepEqual(published.files.map((file: { path: string }) => file.path), carried.files.map((file: { path: string }) => file.path));
 });
