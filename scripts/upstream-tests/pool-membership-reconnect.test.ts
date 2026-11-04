@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -72,7 +73,7 @@ test("reconnect reserves an unchanged native app link before its new binding com
             "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text, created_at timestamptz)",
             "create unique index hosted_app_account_links_one on hosted_app_account_links (app, requirement, coalesce(subject, ''), account)",
             "create table executor_accounts (id text primary key, owner text, provider text, method text, credential_generation integer)",
-            "create table executor_account_acquisitions (account text primary key, owner text, provider text, method text, generation integer, driver text, driver_revision text, revision text, removal jsonb)",
+            "create table executor_account_acquisitions (account text primary key, owner text, provider text, method text, generation integer, driver text, driver_revision text, revision text, removal jsonb, mirror_ready boolean not null default true)",
             "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz)",
           ])
             yield* sql.unsafe(statement);
@@ -109,7 +110,7 @@ test("reconnect reserves an unchanged native app link before its new binding com
           yield* sql`insert into hosted_app_account_links values
             (${pool}, 'home', null, ${account}, 'owner', now())`;
           yield* sql`insert into executor_accounts values (${account}, ${owner}, ${provider}, 'apiKey', 3)`;
-          yield* sql`insert into executor_account_acquisitions values
+          yield* sql`insert into executor_account_acquisitions (account, owner, provider, method, generation, driver, driver_revision, revision, removal) values
             (${account}, ${owner}, ${provider}, 'apiKey', 3, 'basalt-home', 'home-r1', 'binding-r3', null)`;
           yield* sql`insert into executor_account_connections values
             ('saved-connection', ${owner}, ${JSON.stringify({ status: "completed", account: { id: account } })}, now())`;
@@ -180,7 +181,11 @@ test("reconnect reserves an unchanged native app link before its new binding com
             yield* sql`select credential_generation from executor_accounts where id = ${account}`,
             [{ credential_generation: 4 }],
           );
-        }).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<void, unknown, never>,
+        }).pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeCrypto.layer)) as Effect.Effect<
+          void,
+          unknown,
+          never
+        >,
       ),
     );
   } finally {
