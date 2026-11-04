@@ -517,7 +517,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues' --manual-cron --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues|^Cloud default reconciliation retains' --manual-cron --workers 1
       - name: Verify atomic pool setup with ordinary cron triggers
         timeout-minutes: 5
         working-directory: .upstream
