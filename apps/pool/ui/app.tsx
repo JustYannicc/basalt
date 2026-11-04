@@ -9,9 +9,6 @@ import { useOverview, type RangeDays } from "./overview-data.ts";
 import { usePool } from "./pool-view.ts";
 import { Usage } from "./usage-view.tsx";
 
-/** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
-const connectHint = "Connect subscriptions from this app's Accounts tab: choose Connect new account under Subscription.";
-
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -45,8 +42,10 @@ export function App({ api }: { api: PoolApi }) {
     let live = true;
     const read = () =>
       void api.computerContext().then((result) => {
-        if (live && result.ok) setShareHref(result.value.shareHref);
+        if (live && result.ok) {
+          setShareHref(result.value.shareHref);
           setAccountsHref(result.value.accountsHref);
+        }
       });
     read();
     const timer = setInterval(read, 4 * 60_000);

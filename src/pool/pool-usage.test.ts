@@ -312,3 +312,25 @@ test("the existing alarm persists weighted capacity without extra Home reads and
   await usage.observe();
   assert.equal((await new CapacityHistory(storage).read("pool-a")).length, 1);
 });
+
+test("capacity history requires the current manager and leaves absent readings empty", async () => {
+  const f = await fixture(async (_pool, user) => ({ canUse: user !== idle, canManage: user === b }));
+  const token = await signPoolToken(signingKey, claims);
+  const read = (user: string | null, authorization = token, days = "7") => f.usage.handle(new Request(
+    `https://pool.example.test/pool/v1/usage/capacity?days=${days}`,
+    { headers: { authorization: `Bearer ${authorization}`, ...(user === null ? {} : { [callerHeader]: user }) } },
+  ));
+  assert.equal((await read(b, "invalid")).status, 401);
+  assert.equal((await read(null)).status, 403);
+  assert.equal((await read(owner)).status, 403);
+  assert.equal((await read(idle)).status, 403);
+  assert.equal((await read(b, token, "31")).status, 400);
+  const response = await read(b);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    from: now.getTime() - 7 * 86_400_000, to: now.getTime(), points: [],
+    estimate: { status: "unavailable", reason: "Collecting comparable weighted history. Pattern not known yet." },
+  });
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.audienceCalls, []);
+});
