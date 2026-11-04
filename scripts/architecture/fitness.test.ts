@@ -10,6 +10,7 @@ import { readGeneratedInventory } from "./generated-inventory.ts";
 import { serviceArchitecture } from "../../src/router.ts";
 import { pipelineDependencies } from "./pipeline.ts";
 import { SourceWorkspace } from "./source-workspace.ts";
+import { repositoryArchitectureErrors } from "./carry-constraints.ts";
 
 const routerId: $ElementId = "basalt.router";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
@@ -166,4 +167,8 @@ test("kinds, tags and domain language match the glossary", () => {
       expect(hasVendor(edge.technology ?? ""), `${view.id}: ${edge.id}`).toBe(false);
   }
   expect(languageErrors(root)).toEqual([]);
+});
+
+test("PRs changing runtime or carries retain their architecture constraints", () => {
+  expect(repositoryArchitectureErrors(root, process.env.ARCHITECTURE_BASE_SHA)).toEqual([]);
 });

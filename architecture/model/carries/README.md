@@ -5,7 +5,7 @@ Each added or changed carry records its durable constraint in `<stem>.c4`, match
 Rename the file when renumbering a carry. On retirement, remove its constraint file
 and update any affected model responsibilities or relationships.
 
-Extend the affected element by its full name, for example:
+Each file contains exactly one model block extending the affected element by its full name, with exactly one `constraint` metadata entry. Its value is a non-empty JSON-quoted string. Use JSON escapes for quotes or newlines. For example:
 
 ```c4
 model {
@@ -23,5 +23,4 @@ to one shared description. Keep module responsibilities and structural relations
 in the area files. Existing prose can stay until its carry changes; put the updated
 constraint here instead of appending to a shared description.
 
-Fitness requires a changed matching file for each active carry changed by the PR.
-LikeC4 validation checks its syntax and element references.
+Fitness requires a changed matching file for each active carry changed by the PR. It validates the defined shape and non-empty statement of every existing carry file, including unchanged files. Deleting a constraint file while its carry remains active fails. Untouched legacy carries without per-carry files stay grandfathered. LikeC4 validation checks syntax and element references.
