@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index cf582b6..e1bb373 100644
+index cf582b6..00b7341 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
 @@ -23,6 +23,7 @@ import {
@@ -10,18 +10,18 @@ index cf582b6..e1bb373 100644
    type ApprovalRequestId,
  } from "@executor-js/sdk";
  import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
-@@ -251,6 +252,71 @@ export const removeAppAtom = (key: { organization: OrganizationReference; app: A
-  * connection. Completing a connection started from the app saves the account and links it to the
-  * requirement in the scope the dialog names.
-  */
+@@ -246,6 +247,71 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
+   renameApp(new AppKey(key));
+ export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+   removeApp(new AppKey(key));
++/** The importer's frozen wire methods; the host's `importMethods` decide which a form offers. */
++const ImportMethod = Schema.Literals(["codex", "claude"]);
++
 +/**
 + * Import an exported login file as a saved account, then link it to this app, as a new key is. One
 + * creation id per dialog: a retry after an uncertain answer returns the account the host already
 + * saved instead of a second one, and a failed link retries only the link.
 + */
-+/** The importer's frozen wire methods; the host's `importMethods` decide which a form offers. */
-+const ImportMethod = Schema.Literals(["codex", "claude"]);
-+
 +export function importLoginFileAtoms(key: {
 +  readonly organization: OrganizationReference;
 +  readonly app: AppId;
@@ -79,9 +79,9 @@ index cf582b6..e1bb373 100644
 +  );
 +}
 +
- export function appConnectionAtoms(key: {
-   readonly organization: OrganizationReference;
-   readonly app: AppId;
+ /**
+  * A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its
+  * connection. Completing a connection started from the app saves the account and links it to the
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index 1a8bd5e..ea1c9f4 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
@@ -96,7 +96,7 @@ index 1a8bd5e..ea1c9f4 100644
        "This account connection is temporarily unavailable. Retry after the host restores it.",
      AccessConflict: ({ reason }) =>
 diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-index efa60d9..11d93c2 100644
+index efa60d9..dcd3d3e 100644
 --- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 +++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 @@ -1,5 +1,5 @@
@@ -158,9 +158,11 @@ index efa60d9..11d93c2 100644
    if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
      return (
        <ProviderErrorNotice
-@@ -116,7 +143,12 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+@@ -115,8 +142,15 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+ }
  /** Shared views bind independently of access checks and sidebar metadata. */
  export function HostedDashboard({ children }: { readonly children: ReactNode }) {
++  const { slug } = useOrganizationRoute();
    return (
 -    <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>
 +    <DashboardProvider
@@ -168,6 +170,7 @@ index efa60d9..11d93c2 100644
 +      AppLink={AppLink}
 +      AccountLink={AccountLink}
 +      CatalogLink={CatalogLink}
++      workspace={slug}
 +    >
        {children}
      </DashboardProvider>
@@ -399,7 +402,7 @@ index 7105f19..0cbe457 100644
        <ConnectionModal
          open={connection !== undefined}
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index 84a59f1..113d90d 100644
+index 84a59f1..c2d787f 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -53,6 +53,8 @@ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
@@ -419,7 +422,7 @@ index 84a59f1..113d90d 100644
      account: {
        ...link.account,
        ...summaries.find((summary) => summary.id === link.account.id),
-@@ -203,6 +206,26 @@ export function AppDetailPage({
+@@ -203,6 +206,24 @@ export function AppDetailPage({
    });
    // Only callers who can use the app get its tab and its prewarmed frame.
    const screenApp = screenTab === "present" ? screenRecord : undefined;
@@ -435,30 +438,16 @@ index 84a59f1..113d90d 100644
 +    catalogEntries?.some(
 +      (entry) => entry.package === sourcePackage && entry.category === "AI providers",
 +    ) === true;
-+  const appTab = providerApp
-+    ? "present"
-+    : screenTab === "absent" &&
-+        sourcePackage !== undefined &&
-+        catalogEntries === undefined &&
-+        !AsyncResult.isFailure(catalog.result)
-+      ? "pending"
-+      : screenTab;
++  // The tab appears once the catalog answers; the default view never waits for it.
++  const appTab = providerApp ? "present" : screenTab;
++  const catalogPending =
++    sourcePackage !== undefined &&
++    catalogEntries === undefined &&
++    !AsyncResult.isFailure(catalog.result);
    // The layout keeps an opened app's document running across pages; losing the screen closes it.
    useEvictAppFrame(appId, screenTab === "absent");
    // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
-@@ -211,9 +234,9 @@ export function AppDetailPage({
-     view ??
-     (tool !== undefined
-       ? "tools"
--      : screenTab === "present"
-+      : appTab === "present"
-         ? "app"
--        : screenTab === "pending"
-+        : appTab === "pending"
-           ? undefined
-           : "overview");
-   const accessPendingReason = AsyncResult.isFailure(authority.result)
-@@ -260,7 +283,7 @@ export function AppDetailPage({
+@@ -260,7 +281,7 @@ export function AppDetailPage({
        app={screenRecord}
        view={selectedView}
        canInspectSource={canManage}
@@ -467,7 +456,7 @@ index 84a59f1..113d90d 100644
        sourceDisabledReason={sourceReason}
        back={
          <Link
-@@ -305,7 +328,35 @@ export function AppDetailPage({
+@@ -305,8 +326,38 @@ export function AppDetailPage({
        }
      >
        <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
@@ -502,15 +491,109 @@ index 84a59f1..113d90d 100644
 +          )
 +        ) : screenApp !== undefined ? (
            <AppScreen app={screenApp} active={selectedView === "app"} />
++        ) : selectedView === "app" && catalogPending ? (
++          pending
          ) : selectedView === "app" ? (
            <QueryResult
+             result={allResults({ access: authority.result, current: query.result })}
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index cd2813a..9e58e34 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -23,6 +23,10 @@ import { Button } from "@executor-js/ui/components/button";
+ import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
+ import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { ProviderDestination } from "@executor-js/ui/dashboard/provider-accounts";
++import { AsyncResult } from "effect/reactivity";
++import { appMethodsAtom } from "../../contracts/app-accounts.ts";
+ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+ import {
+   InteractiveSignIn,
+@@ -48,7 +52,9 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+ import { RegisterServiceClient } from "./oauth-clients.tsx";
+ 
+ // The dialog owns catalog guidance; both normal and loopback forms read the same value.
+-export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(undefined);
++export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(
++  undefined,
++);
+ 
+ /**
+  * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
+@@ -91,6 +97,47 @@ export function ConnectionFields({
+     leave: () => (started.current ? cancel() : Promise.resolve()),
+   };
+   const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
++  // A connection started before its app stopped connecting accounts, such as a pool's, must not
++  // reopen its form: until the target app's policy says it connects here, none is shown.
++  const policy = useQuery(appMethodsAtom({ organization, app: connection.target.app }));
++  const target = Option.getOrUndefined(policy.data)?.connections.find(
++    (entry) => entry.requirement === connection.target.requirement,
++  );
++  const back = (
++    <Button asChild variant="outline">
++      <Link
++        to="/org/$organizationSlug/apps/$appId"
++        params={{ organizationSlug, appId: connection.target.app }}
++        search={{ view: "accounts" }}
++      >
++        Back to app
++      </Link>
++    </Button>
++  );
++  if (connection.state.status === "pending" && !handoff.active && target?.canConnect !== true)
++    return AsyncResult.isFailure(policy.result) ? (
++      <HostedFailure cause={policy.result.cause} retry={policy.refresh} layout="compact" />
++    ) : Option.isNone(policy.data) ? (
++      <p role="status" className="text-sm text-muted-foreground">
++        Checking where this account connects…
++      </p>
++    ) : (
++      <>
++        <p className="text-sm">
++          This app only picks accounts that are already connected.{" "}
++          {target === undefined ? (
++            "Connect the account in its provider app instead."
++          ) : (
++            <ProviderDestination
++              destination={target.destination}
++              provider={connection.provider.definition.name}
++              verb="Connect"
++            />
++          )}
++        </p>
++        {back}
++      </>
++    );
+   if (connection.state.status !== "pending" && !handoff.active)
+     return (
+       <>
+@@ -99,15 +146,7 @@ export function ConnectionFields({
+             ? "Account connected."
+             : "This connection has expired. Start a new connection from the app."}
+         </p>
+-        <Button asChild variant="outline">
+-          <Link
+-            to="/org/$organizationSlug/apps/$appId"
+-            params={{ organizationSlug, appId: connection.target.app }}
+-            search={{ view: "accounts" }}
+-          >
+-            Back to app
+-          </Link>
+-        </Button>
++        {back}
+       </>
+     );
+   return (
 diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 new file mode 100644
-index 0000000..742429e
+index 0000000..1096185
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
-@@ -0,0 +1,181 @@
-+import { useEffect, useId, useState } from "react";
+@@ -0,0 +1,214 @@
++import { useEffect, useId, useMemo, useRef, useState } from "react";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { AsyncResult } from "effect/reactivity";
 +import { Exit, Option, Redacted, Schema } from "effect";
@@ -588,13 +671,18 @@ index 0000000..742429e
 +  const result = useAtomValue(run);
 +  const pending = AsyncResult.isWaiting(result);
 +  useEffect(() => onPendingChange(pending), [onPendingChange, pending]);
++  // Closing the form never leaves the page waiting on it.
++  useEffect(() => () => onPendingChange(false), [onPendingChange]);
 +  const [method, setMethod] = useState(methods[0]);
 +  const [text, setText] = useState("");
 +  const [label, setLabel] = useState("");
 +  const [fileName, setFileName] = useState<string>();
 +  const [oversized, setOversized] = useState(false);
++  const [unreadable, setUnreadable] = useState(false);
++  // Only the latest chosen file may fill the form.
++  const picked = useRef(0);
 +  const ids = { file: useId(), paste: useId(), label: useId() };
-+  const state = readable(text, oversized);
++  const state = useMemo(() => readable(text, oversized), [text, oversized]);
 +  const ready = method !== undefined && "file" in state && !pending;
 +  return (
 +    <form
@@ -607,7 +695,10 @@ index 0000000..742429e
 +          file: Redacted.make(state.file),
 +          label: label.trim() === "" ? undefined : label.trim(),
 +        }).then((exit) => {
-+          if (Exit.isSuccess(exit)) onDone();
++          if (Exit.isSuccess(exit)) {
++            onPendingChange(false);
++            onDone();
++          }
 +        });
 +      }}
 +    >
@@ -642,13 +733,38 @@ index 0000000..742429e
 +          onChange={(event) => {
 +            const file = event.currentTarget.files?.[0];
 +            if (file === undefined) return;
++            const turn = (picked.current += 1);
 +            setFileName(file.name);
 +            setOversized(file.size > maxBytes);
++            setUnreadable(false);
 +            setText("");
-+            if (file.size <= maxBytes) void file.text().then(setText);
++            if (file.size <= maxBytes)
++              void file.text().then(
++                (content) => turn === picked.current && setText(content),
++                () => turn === picked.current && setUnreadable(true),
++              );
 +          }}
 +        />
 +      </label>
++      {fileName !== undefined && (
++        <div>
++          <Button
++            type="button"
++            variant="link"
++            size="xs"
++            disabled={pending}
++            onClick={() => {
++              picked.current += 1;
++              setFileName(undefined);
++              setOversized(false);
++              setUnreadable(false);
++              setText("");
++            }}
++          >
++            Paste the contents instead
++          </Button>
++        </div>
++      )}
 +      {fileName === undefined && (
 +        <label htmlFor={ids.paste} className="grid gap-2 text-[13px] font-medium">
 +          Or paste its contents
@@ -674,9 +790,9 @@ index 0000000..742429e
 +          onChange={(event) => setLabel(event.currentTarget.value)}
 +        />
 +      </label>
-+      {state.problem !== undefined && (
++      {(unreadable || state.problem !== undefined) && (
 +        <p role="alert" className="text-sm text-destructive">
-+          {state.problem}
++          {unreadable ? "This file couldn't be read. Choose it again." : state.problem}
 +        </p>
 +      )}
 +      {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} layout="compact" />}
@@ -691,8 +807,21 @@ index 0000000..742429e
 +    </form>
 +  );
 +}
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+index 6ab4326..c9ca640 100644
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -105,6 +105,8 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+                   ? "OpenAI"
+                   : "Anthropic",
+             description: "Reusable model provider accounts for pools.",
++            // As the product catalog files them; the ordinary consumer is not a provider app.
++            ...(lab === "openai-tools" ? {} : { category: "AI providers" }),
+             auth: [{ method: lab.startsWith("openai") ? "codex" : "claude", kind: "interactive" }],
+             icons: [],
+             source: `apps/provider-${lab}.json`,
 diff --git a/e2e/support/provider-apps-ui.ts b/e2e/support/provider-apps-ui.ts
-index e2dbddf..74aed23 100644
+index e2dbddf..3998b20 100644
 --- a/e2e/support/provider-apps-ui.ts
 +++ b/e2e/support/provider-apps-ui.ts
 @@ -23,11 +23,12 @@ export const providerMethodsUi = (app: string) =>
@@ -786,8 +915,8 @@ index e2dbddf..74aed23 100644
 +        .getByRole("region", { name: input.providerName, exact: true })
 +        .waitFor({ state: "visible" }),
 +    );
-+    yield* openThroughBrowser("Open the provider app", `${apps}/${input.provider}`);
-+    yield* browser.use("The provider app opens on where its accounts are used", (page) =>
++    yield* openThroughBrowser("Open the provider app", `${apps}/${input.provider}?view=app`);
++    yield* browser.use("The provider app's App tab shows where its accounts are used", (page) =>
 +      page
 +        .getByRole("heading", { name: `Where your ${input.providerName} accounts are used` })
 +        .waitFor({ state: "visible" }),
@@ -799,15 +928,16 @@ index e2dbddf..74aed23 100644
 +    );
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b7..ce0fbe5 100644
+index a57b0b7..04117eb 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3532,6 +3532,17 @@ export const scenarios = plan({
+@@ -3532,6 +3532,18 @@ export const scenarios = plan({
        local: na("Uses hosted organization account policies."),
      },
    },
 +  poolSelectOnlyUi: {
 +    fixtures: "actors",
++    legacyStorage: true,
 +    file: "pool-select-only-ui.spec.ts",
 +    title:
 +      "Pools pick accounts saved on provider apps and send every connection to the provider app",
@@ -822,10 +952,10 @@ index a57b0b7..ce0fbe5 100644
      legacyStorage: true,
 diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
 new file mode 100644
-index 0000000..867c673
+index 0000000..887a4e8
 --- /dev/null
 +++ b/e2e/tests/pool-select-only-ui.spec.ts
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,177 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -951,11 +1081,10 @@ index 0000000..867c673
 +        yield* browser.use("Unticking says the key stays saved", (page) =>
 +          page.getByText(`Removed from ${poolName}`, { exact: true }).waitFor(),
 +        );
-+        expect(
-+          yield* browser.use("Unticking a saved key asks for no deletion", (page) =>
-+            page.getByRole("dialog", { name: /remove/i }).count(),
-+          ),
-+        ).toBe(0);
++        // A retiring unlink would ask first; a saved key goes straight back to an unticked row.
++        yield* browser.use("Unticking a saved key asks for no deletion", (page) =>
++          page.getByRole("checkbox", { name: "Work key", checked: false }).waitFor(),
++        );
 +        expect((yield* api.request(actors.owner, "GET", `${prefix}/accounts/${key}`)).status).toBe(
 +          200,
 +        );
@@ -1093,15 +1222,17 @@ index a6abe76..89fb7fa 100644
  export const requirementMethods = (requirement: AccountRequirement) =>
    Object.entries(requirement.definition.auth)
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index a2c5898..065e5ba 100644
+index a2c5898..1eea39b 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -191,6 +191,15 @@ export interface DashboardBindings {
+@@ -191,6 +191,17 @@ export interface DashboardBindings {
    readonly catalogIcons: Atom.Atom<CatalogIcons>;
    readonly AppLink: ComponentType<AppLinkProps>;
    readonly AccountLink: ComponentType<AccountLinkProps>;
 +  /** Opens where the catalog entry installs. Hosts without one name the app in words instead. */
 +  readonly CatalogLink?: ComponentType<CatalogLinkProps> | undefined;
++  /** The organization or workspace these links route within, so tab hand-offs never cross one. */
++  readonly workspace?: string | undefined;
 +}
 +
 +/** A catalog entry by its id, such as a provider app a pool points people to. */
@@ -1113,7 +1244,7 @@ index a2c5898..065e5ba 100644
  
  /** Token expiry needs user action only when the host cannot refresh it. */
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 5a22555..bca96f6 100644
+index 5a22555..51e8e92 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -9,7 +9,10 @@ import { RadioGroup } from "radix-ui";
@@ -1136,7 +1267,7 @@ index 5a22555..bca96f6 100644
  
  const provisionedOnly = (requirement: AccountRequirement) =>
    Object.keys(requirement.definition.auth).length > 0 &&
-@@ -415,6 +420,39 @@ const noMethodOpen = (
+@@ -415,6 +420,40 @@ const noMethodOpen = (
    return states.length > 0 && states.every((state) => state.reason !== undefined);
  };
  
@@ -1171,12 +1302,13 @@ index 5a22555..bca96f6 100644
 +  typeof connection === "object" &&
 +  !connection.canConnect &&
 +  !connection.canSelect &&
++  !provisionedOnly(requirement) &&
 +  editingFor(data, requirement) !== undefined;
 +
  /**
   * Who may change one requirement's links: an editor's `edit` covers the scope, `contribute` only
   * an app collection that opts in to member contributions.
-@@ -457,6 +495,13 @@ export interface LinkEditing<E> {
+@@ -457,6 +496,13 @@ export interface LinkEditing<E> {
    readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
    /** Connect a new account for the requirement; saving it links it. */
    readonly connect: (slot: string, requirement: AccountRequirement) => void;
@@ -1190,7 +1322,7 @@ index 5a22555..bca96f6 100644
    /** A connection is open or saving, so the other changes wait for it. */
    readonly connecting?: boolean | undefined;
    readonly onUnlinked?: ((account: AccountId) => void) | undefined;
-@@ -512,6 +557,7 @@ export function AppAccounts<E>({
+@@ -512,6 +558,7 @@ export function AppAccounts<E>({
    yourAccounts,
    accounts,
    methods,
@@ -1198,7 +1330,7 @@ index 5a22555..bca96f6 100644
    Failure,
  }: {
    readonly app: App;
-@@ -524,6 +570,11 @@ export function AppAccounts<E>({
+@@ -524,6 +571,11 @@ export function AppAccounts<E>({
     * method is offered, and the host still refuses one it can't run.
     */
    readonly methods?: RequirementMethods | undefined;
@@ -1210,7 +1342,7 @@ index 5a22555..bca96f6 100644
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
    useRevalidateChecks(
-@@ -573,6 +624,7 @@ export function AppAccounts<E>({
+@@ -573,6 +625,7 @@ export function AppAccounts<E>({
            data={appAccounts}
            accounts={accounts}
            methods={methods}
@@ -1218,7 +1350,7 @@ index 5a22555..bca96f6 100644
            showProvisionedProblems={repairs.app}
            Failure={Failure}
          />
-@@ -587,6 +639,7 @@ export function AppAccounts<E>({
+@@ -587,6 +640,7 @@ export function AppAccounts<E>({
            data={yourAccounts}
            accounts={accounts}
            methods={methods}
@@ -1226,7 +1358,7 @@ index 5a22555..bca96f6 100644
            showProvisionedProblems={repairs.user}
            Failure={Failure}
          />
-@@ -602,6 +655,7 @@ interface ScopeProps<E> {
+@@ -602,6 +656,7 @@ interface ScopeProps<E> {
    readonly data: ScopeAccounts<E>;
    readonly accounts: readonly AccountSummary[];
    readonly methods?: RequirementMethods | undefined;
@@ -1234,7 +1366,7 @@ index 5a22555..bca96f6 100644
    readonly Failure: ComponentType<FailureProps<E>>;
  }
  
-@@ -615,16 +669,22 @@ function LinkScope<E>({
+@@ -615,16 +670,22 @@ function LinkScope<E>({
    readonly description: string;
    readonly requirements: readonly RequirementEntry[];
  }) {
@@ -1261,7 +1393,7 @@ index 5a22555..bca96f6 100644
    const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-@@ -732,6 +792,7 @@ function RequirementView<E>({
+@@ -732,6 +793,7 @@ function RequirementView<E>({
    const managed = provisionedOnly(requirement);
    const label = requirement.definition.name.trim() || undefined;
    const native = props.methods?.native(slot);
@@ -1269,7 +1401,7 @@ index 5a22555..bca96f6 100644
    const states = methodStates(props.methods, slot, requirement);
    const open = states.filter((state) => state.reason === undefined);
    const blocked = states.length - open.length;
-@@ -757,6 +818,11 @@ function RequirementView<E>({
+@@ -757,6 +819,11 @@ function RequirementView<E>({
            {label !== undefined && (
              <p className="flex min-w-0 items-center gap-2 font-medium">
                <span className="truncate">{label}</span>
@@ -1281,7 +1413,7 @@ index 5a22555..bca96f6 100644
                {native !== undefined && (
                  <span
                    className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
-@@ -768,9 +834,13 @@ function RequirementView<E>({
+@@ -768,9 +835,13 @@ function RequirementView<E>({
              </p>
            )}
            <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
@@ -1297,7 +1429,7 @@ index 5a22555..bca96f6 100644
              <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">
                {methodsLine}
              </p>
-@@ -1026,6 +1096,7 @@ function EditableChoices<E>({
+@@ -1026,6 +1097,7 @@ function EditableChoices<E>({
    edit,
    accounts,
    methods,
@@ -1305,7 +1437,7 @@ index 5a22555..bca96f6 100644
    Failure,
  }: ScopeProps<E> & {
    readonly edit: LinkEditing<E>;
-@@ -1033,8 +1104,14 @@ function EditableChoices<E>({
+@@ -1033,8 +1105,14 @@ function EditableChoices<E>({
    readonly requirement: AccountRequirement;
    readonly linked: readonly AccountSummary[];
  }) {
@@ -1320,7 +1452,7 @@ index 5a22555..bca96f6 100644
    // A choice shows the page's own view of the account: its link's details, with sign-in state and
    // checks, or the caller's account list, which renames and reconnects keep current.
    const summarize = (account: Account): AccountSummary =>
-@@ -1058,13 +1135,21 @@ function EditableChoices<E>({
+@@ -1058,13 +1136,21 @@ function EditableChoices<E>({
                  },
                ]
              : choice.linked || accounts.some((item) => item.id === choice.account.id)
@@ -1344,7 +1476,7 @@ index 5a22555..bca96f6 100644
    );
    // The host's read decides contribution; until it arrives no control acts.
    const allowed = Option.isSome(loaded) && loaded.value.canContribute !== false;
-@@ -1075,8 +1160,7 @@ function EditableChoices<E>({
+@@ -1075,8 +1161,7 @@ function EditableChoices<E>({
    const bound = plain
      ? choices.find(
          (choice) =>
@@ -1354,16 +1486,17 @@ index 5a22555..bca96f6 100644
        )
      : undefined;
    // The only unlinked host choice left is the caller's own default credential: its row is the way
-@@ -1108,6 +1192,8 @@ function EditableChoices<E>({
+@@ -1108,6 +1193,9 @@ function EditableChoices<E>({
        edit={edit}
        data={data}
        blockedReason={methodBlocked(methods, slot, choice.account.method)}
 +      credentialScope={scopeOf(choice)}
++      saved={accounts.some((item) => item.id === choice.account.id)}
 +      selectionOnly={selectionOnly(connection)}
        Failure={Failure}
      />
    ));
-@@ -1154,6 +1240,19 @@ function EditableChoices<E>({
+@@ -1154,6 +1242,19 @@ function EditableChoices<E>({
          ))}
        {provisionedOnly(requirement) ? (
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
@@ -1383,7 +1516,7 @@ index 5a22555..bca96f6 100644
        ) : closedReasons.length > 0 ? (
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-unavailable>
            {closedReasons.join(" ")}
-@@ -1172,6 +1271,21 @@ function EditableChoices<E>({
+@@ -1172,6 +1273,21 @@ function EditableChoices<E>({
            Connect new account
          </Button>
        )}
@@ -1405,13 +1538,16 @@ index 5a22555..bca96f6 100644
        {replacingWithNew && bound !== undefined && (
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
-@@ -1202,7 +1316,13 @@ function ChoiceRow<E>({
+@@ -1202,7 +1318,16 @@ function ChoiceRow<E>({
    Failure,
    replaces,
    blockedReason,
 +  credentialScope,
 +  selectionOnly: selecting,
++  saved,
  }: {
++  /** The account is one of the caller's own, which stays listed after unlinking. */
++  readonly saved: boolean;
 +  /** The host's provenance for this account here, when it reports one. */
 +  readonly credentialScope?: RequirementChoice<AccountSummary>["credentialScope"];
 +  /** Accounts are connected elsewhere, so unlinking one only stops this app using it. */
@@ -1419,7 +1555,7 @@ index 5a22555..bca96f6 100644
    /** The app-bound account that selecting this one would retire. */
    readonly replaces?: string | undefined;
    /**
-@@ -1240,14 +1360,24 @@ function ChoiceRow<E>({
+@@ -1240,14 +1365,24 @@ function ChoiceRow<E>({
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
    const unusable = !linked && blockedReason !== undefined;
    // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
@@ -1436,7 +1572,7 @@ index 5a22555..bca96f6 100644
 -    else if (!next) edit.onUnlinked?.(account.id);
 +    else if (!next) {
 +      // The row stays listed unticked, so ticking it again is the undo.
-+      if (selecting && !appBound)
++      if (selecting && saved && !appBound)
 +        toast({
 +          title: `Removed from ${appDisplayName(app, brand)}`,
 +          description: `${name} stays saved in your accounts. Tick it to add it back.`,
@@ -1448,10 +1584,10 @@ index 5a22555..bca96f6 100644
    return (
 diff --git a/packages/ui/src/implementation/dashboard/provider-accounts.tsx b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
 new file mode 100644
-index 0000000..ac45156
+index 0000000..3009a60
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,226 @@
 +import { useEffect, useId, useState } from "react";
 +import { HugeiconsIcon } from "@hugeicons/react";
 +import { ArrowLeft02Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
@@ -1479,20 +1615,25 @@ index 0000000..ac45156
 + * The app a person left to connect an account, so the provider app can send them back once. Kept
 + * per tab; storage that throws or is empty just drops the way back.
 + */
-+const originKey = "executor:provider-account-origin";
++const originKey = "executor:provider-accounts:origin";
 +const Origin = Schema.Struct({ app: AppId, name: Schema.String });
 +type Origin = typeof Origin.Type;
-+const decodeOrigin = Schema.decodeUnknownOption(Schema.fromJsonString(Origin));
-+const rememberOrigin = (origin: Origin) => {
++// Stored with the workspace it was left from; app ids mean nothing in another one.
++const Stored = Schema.Struct({ ...Origin.fields, workspace: Schema.NullOr(Schema.String) });
++const decodeOrigin = Schema.decodeUnknownOption(Schema.fromJsonString(Stored));
++const rememberOrigin = (origin: Origin, workspace: string | undefined) => {
 +  try {
-+    sessionStorage.setItem(originKey, JSON.stringify(origin));
++    sessionStorage.setItem(originKey, JSON.stringify({ ...origin, workspace: workspace ?? null }));
 +  } catch {
 +    // Without storage the provider app shows no way back; the browser's own Back still works.
 +  }
 +};
-+const readOrigin = (): Origin | undefined => {
++const readOrigin = (workspace: string | undefined): Origin | undefined => {
 +  try {
-+    return Option.getOrUndefined(decodeOrigin(sessionStorage.getItem(originKey)));
++    const stored = Option.getOrUndefined(decodeOrigin(sessionStorage.getItem(originKey)));
++    return stored !== undefined && stored.workspace === (workspace ?? null)
++      ? { app: stored.app, name: stored.name }
++      : undefined;
 +  } catch {
 +    return undefined;
 +  }
@@ -1507,12 +1648,12 @@ index 0000000..ac45156
 +
 +/**
 + * The way back to the app that sent the person here to connect an account. It shows on the first
-+ * visit after that hand-off only, so a later visit or another organization never offers it.
++ * visit after that hand-off, in the same workspace, so a later visit never offers it.
 + */
 +export function ProviderReturnLink({ app }: { readonly app: App }) {
-+  const { AppLink } = useDashboard();
++  const { AppLink, workspace } = useDashboard();
 +  const [origin] = useState(() => {
-+    const value = readOrigin();
++    const value = readOrigin(workspace);
 +    return value !== undefined && value.app !== app.id ? value : undefined;
 +  });
 +  useEffect(forgetOrigin, []);
@@ -1544,7 +1685,8 @@ index 0000000..ac45156
 +  /** The app the person is in, remembered so the provider app can send them back. */
 +  readonly origin?: Origin | undefined;
 +}) {
-+  const { AppLink, CatalogLink } = useDashboard();
++  const { AppLink, CatalogLink, workspace } = useDashboard();
++  const remember = () => origin && rememberOrigin(origin, workspace);
 +  const arrow = <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={2} aria-hidden />;
 +  if (destination.kind === "unavailable") return <>{destination.reason}</>;
 +  if (destination.kind === "catalog")
@@ -1553,7 +1695,7 @@ index 0000000..ac45156
 +        Add the {provider} app, then {verb.toLowerCase()} the account there.
 +      </>
 +    ) : (
-+      <span onClickCapture={() => origin && rememberOrigin(origin)}>
++      <span onClickCapture={remember}>
 +        <CatalogLink entry={destination.entry} className={linkClass}>
 +          Add the {provider} app to {verb.toLowerCase()} {verb === "Connect" ? "accounts" : "it"}
 +          {arrow}
@@ -1563,7 +1705,7 @@ index 0000000..ac45156
 +  const [only, ...more] = destination.apps;
 +  if (only === undefined) return <>No {provider} app is available to you.</>;
 +  const link = (entry: typeof only, label: string) => (
-+    <span key={entry.app} onClickCapture={() => origin && rememberOrigin(origin)}>
++    <span key={entry.app} onClickCapture={remember}>
 +      <AppLink app={entry.app} view="accounts" className={linkClass}>
 +        {label}
 +        {arrow}
