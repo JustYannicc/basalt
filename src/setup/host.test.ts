@@ -105,6 +105,60 @@ test("Connections resolves the caller's own signed setup without issuing credent
   assert.equal(query.request.headers.get("authorization"), null);
 });
 
+test("Connections keeps the retained default after pools use app keys", async () => {
+  const intent = await signIntent(secret, {
+    pool: "pool-1", organization: "organization-1", owner: "user-1", user: "user-1", expiresAt: Date.now() + setupTtl,
+  });
+  const cases = [
+    { "other-pool": { app: "other-pool", owner: "other-user", primary: true }, "extra-pool": { app: "extra-pool", owner: "user-1", primary: false }, "pool-1": { app: "pool-1", owner: "user-1", primary: true } },
+    { "extra-pool": { app: "extra-pool", owner: "user-1", primary: false }, "user-1": { app: "pool-1" } },
+    { "pool-1": { app: "pool-1", owner: "user-1" } },
+  ];
+  for (const basaltPools of cases) {
+    const f = fixture({ tools: ({ path }) => path.endsWith("/organization/list")
+      ? json([{ id: "organization-1", metadata: JSON.stringify({ basaltPools }) }])
+      : path.endsWith("/data/query") ? json({ ok: true, value: { href: `${origin}/setup#intent=${encodeURIComponent(intent)}` } }) : undefined });
+    const response = await f.request("/setup/v1/context");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { intent });
+    assert.equal(f.calls.some(call => call.path.endsWith("/apps/pool-1/data/query")), true);
+    assert.equal(f.calls.some(call => call.path.includes("/apps/extra-pool/")), false);
+    assert.equal(f.calls.some(call => call.path.endsWith("/api-key/create")), false);
+  }
+});
+
+test("setup refuses ambiguous defaults and explicit ownership mismatches", async () => {
+  const cases = [
+    { a: { app: "a", owner: "user-1" }, b: { app: "b", owner: "user-1" } },
+    { a: { app: "a", owner: "user-1", primary: true }, b: { app: "b", owner: "user-1", primary: true } },
+    { "user-1": { app: "pool-1", owner: "other-user" } },
+  ];
+  for (const basaltPools of cases) {
+    const f = fixture({ tools: ({ path }) => path.endsWith("/organization/list")
+      ? json([{ id: "organization-1", metadata: { basaltPools } }]) : undefined });
+    assert.equal((await f.request("/setup/v1/context")).status, 409);
+    assert.equal(f.calls.some(call => call.path.includes("/apps/")), false);
+  }
+});
+
+test("an app-key default still needs its creator and retains the deleted pool's organization", async () => {
+  for (const status of [200, 403, 404]) {
+    const f = fixture({ pool: ({ path }) => path.endsWith("/validate")
+      ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined,
+      tools: ({ path }) => path.endsWith("/organization/list")
+      ? json([{ id: "organization-1", metadata: { basaltPools: { "pool-1": { app: "pool-1", owner: "user-1", primary: true } } } }])
+      : path.endsWith("/apps/pool-1/access") ? json({ creator: "other-user" }, status) : undefined });
+    const response = await f.create();
+    assert.equal(response.status, status === 200 ? 409 : 200);
+    const minted = f.calls.find(call => call.path.endsWith("/api-key/create"));
+    if (status === 200) assert.equal(minted, undefined);
+    else {
+      assert.deepEqual(minted?.input.metadata, { organization: "organization-1", scope: "tools" });
+      assert.equal(f.calls.find(call => call.path.endsWith("/links"))?.input.own, undefined);
+    }
+  }
+});
+
 test("Connections rejects untrusted setup targets and mismatched signed pool identities", async () => {
   const claims = { pool: "pool-1", organization: "organization-1", owner: "user-1", user: "user-1", expiresAt: Date.now() + setupTtl };
   const valid = await signIntent(secret, claims);
