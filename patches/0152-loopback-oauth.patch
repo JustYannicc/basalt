@@ -1,0 +1,763 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 28e67e8..a43d790 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -5,7 +5,7 @@ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+ import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+-import { use, useContext, useState } from "react";
++import { use, useContext, useState, type ReactNode } from "react";
+ import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult, AtomRegistry } from "effect/reactivity";
+ import { Effect, Option } from "effect";
+@@ -34,7 +34,8 @@ import {
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+-import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./connect-account.tsx";
++import { HostedAccountForm, OAuthReturnContext } from "./connect-account.tsx";
++import { useOAuthHandoff } from "./loopback-oauth.tsx";
+ import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
+ import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
+ import {
+@@ -558,6 +559,7 @@ function AppConnectionFields({
+   const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
++  const handoff = useOAuthHandoff({ provider: form.provider, onSaved, onPendingChange });
+   const fields = (selection: IdentityConsentSelection) => (
+     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
+       provider={form.provider}
+@@ -576,11 +578,10 @@ function AppConnectionFields({
+           : authorize({ ...selection, ...input })
+       }
+       interactive={interactive}
+-
+       onPendingChange={onPendingChange}
+       onSaved={onSaved}
+       onAuthorized={(value) =>
+-        openAccountOAuth(
++        handoff.open(
+           {
+             organization,
+             organizationSlug,
+@@ -591,13 +592,20 @@ function AppConnectionFields({
+             manualClient: value.manualClient,
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+-          value.authorizationUrl,
++          value,
+         )
+       }
+     />
+   );
+-  if (account !== undefined) return fields({});
+-  return (
++  // The form stays mounted behind a loopback step, so cancelling returns to where it was.
++  const withHandoff = (content: ReactNode) => (
++    <>
++      {handoff.step}
++      <div className={handoff.active ? "hidden" : "contents"}>{content}</div>
++    </>
++  );
++  if (account !== undefined) return withHandoff(fields({}));
++  return withHandoff(
+     <IdentityConsent
+       query={resourceInventoryAtom(organization)}
+       Failure={HostedFailure}
+@@ -616,7 +624,7 @@ function AppConnectionFields({
+           onSaved();
+           return;
+         }
+-        openAccountOAuth(
++        handoff.open(
+           {
+             organization,
+             organizationSlug,
+@@ -626,11 +634,11 @@ function AppConnectionFields({
+             manualClient: false,
+             ...(returnTo === undefined ? {} : { returnTo }),
+           },
+-          value.authorizationUrl,
++          value,
+         );
+       }}
+     >
+       {fields}
+-    </IdentityConsent>
++    </IdentityConsent>,
+   );
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index e3a9356..a32648d 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -34,9 +34,9 @@ import {
+   connectionOAuthSetupAtom,
+   startOAuthAtom,
+   submitConnectionAtom,
+-  PendingOAuth,
+   type OAuthReturn,
+ } from "../../contracts/apps.ts";
++import { useOAuthHandoff } from "./loopback-oauth.tsx";
+ import {
+   cancelInteractiveConnectionAtom,
+   interactiveConnectionStatusAtom,
+@@ -52,12 +52,6 @@ import { RegisterServiceClient } from "./oauth-clients.tsx";
+  */
+ export const OAuthReturnContext = createContext<OAuthReturn | undefined>(undefined);
+ 
+-/** Retain only the return context; OAuth state and credentials remain owned by the server. */
+-export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizationUrl: string) {
+-  sessionStorage.setItem("executor:hosted:oauth", JSON.stringify(pending));
+-  window.location.assign(authorizationUrl);
+-}
+-
+ /** Resume the existing request in a connection dialog without creating a new attempt. */
+ export function ConnectionFields({
+   connection,
+@@ -92,7 +86,8 @@ export function ConnectionFields({
+     // Runs in the form's step order, after any poll still answering.
+     leave: () => (started.current ? cancel() : Promise.resolve()),
+   };
+-  if (connection.state.status !== "pending")
++  const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
++  if (connection.state.status !== "pending" && !handoff.active)
+     return (
+       <>
+         <p className="text-sm">
+@@ -112,37 +107,43 @@ export function ConnectionFields({
+       </>
+     );
+   return (
+-    <HostedAccountForm
+-      provider={connection.provider}
+-      site={connection.target.site}
+-      app={connection.checkable ? connection.target.app : undefined}
+-      {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+-      redirectUri={connection.redirectUri}
+-      initialMethod={initialMethod}
+-      manualClient={manualClient}
+-      setupQuery={(method) =>
+-        connectionOAuthSetupAtom({ organization, connection: connection.id, method })
+-      }
+-      submit={submit}
+-      start={startOAuth}
+-      interactive={interactive}
+-      onSaved={onSaved}
+-      {...(onPendingChange ? { onPendingChange } : {})}
+-      onAuthorized={(value) =>
+-        openAccountOAuth(
+-          {
+-            organization,
+-            organizationSlug,
+-            connection: connection.id,
+-            app: connection.target.app,
+-            redirectUri: value.redirectUri,
+-            ...(connection.reconnectAccount ? { reconnect: true } : {}),
+-            manualClient: value.manualClient,
+-          },
+-          value.authorizationUrl,
+-        )
+-      }
+-    />
++    <>
++      {handoff.step}
++      {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
++      <div className={handoff.active ? "hidden" : "contents"}>
++        <HostedAccountForm
++          provider={connection.provider}
++          site={connection.target.site}
++          app={connection.checkable ? connection.target.app : undefined}
++          {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
++          redirectUri={connection.redirectUri}
++          initialMethod={initialMethod}
++          manualClient={manualClient}
++          setupQuery={(method) =>
++            connectionOAuthSetupAtom({ organization, connection: connection.id, method })
++          }
++          submit={submit}
++          start={startOAuth}
++          interactive={interactive}
++          onSaved={onSaved}
++          {...(onPendingChange ? { onPendingChange } : {})}
++          onAuthorized={(value) =>
++            handoff.open(
++              {
++                organization,
++                organizationSlug,
++                connection: connection.id,
++                app: connection.target.app,
++                redirectUri: value.redirectUri,
++                ...(connection.reconnectAccount ? { reconnect: true } : {}),
++                manualClient: value.manualClient,
++              },
++              value,
++            )
++          }
++        />
++      </div>
++    </>
+   );
+ }
+ 
+@@ -200,7 +201,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
+   >;
+   readonly onSaved: (account: Account) => void;
+-  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => void;
++  /** "navigating" keeps the action busy while the browser leaves; "done" keeps this page. */
++  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => "navigating" | "done";
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -353,10 +355,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+               }
+               onAuthorized={(value) => {
+                 refresh();
+-                if (value.status !== "completed") {
+-                  onAuthorized(value);
+-                  return "navigating";
+-                }
++                if (value.status !== "completed") return onAuthorized(value);
+                 saved(value.account);
+                 return "done";
+               }}
+diff --git a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+new file mode 100644
+index 0000000..7b25a2f
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+@@ -0,0 +1,209 @@
++import type { HostedError } from "../../contracts/errors.ts";
++import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
++import type { Account, Provider } from "@executor-js/sdk";
++import { useAtomSet } from "@effect/atom-react";
++import { useEffect, useState, type ReactNode } from "react";
++import { Cause, Exit, Redacted } from "effect";
++import { Button } from "@executor-js/ui/components/button";
++import { Input } from "@executor-js/ui/components/input";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { accountToNameAtom } from "../../contracts/accounts.ts";
++import { completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
++
++const pendingKey = "executor:hosted:oauth";
++const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
++
++/**
++ * Some providers only accept an HTTP loopback callback. Nothing listens there: the browser lands
++ * on a page that fails to load, and the person pastes that address back here.
++ */
++export const isLoopbackRedirect = (redirectUri: string) => {
++  try {
++    const url = new URL(redirectUri);
++    return url.protocol === "http:" && loopbackHosts.has(url.hostname);
++  } catch {
++    return false;
++  }
++};
++
++type SignIn = Pick<HostedOAuthSignIn, "authorizationUrl" | "expiresAt">;
++
++/**
++ * Hand an OAuth sign-in to the provider. A normal callback leaves this page and returns through
++ * `/oauth/callback`; a loopback callback opens sign-in in a new tab and keeps this page, which
++ * renders `step` in place of the form until the pasted address completes the connection. OAuth
++ * state and the verifier stay on the server; only the return context is kept here.
++ */
++export function useOAuthHandoff({
++  provider,
++  onSaved,
++  onPendingChange,
++}: {
++  readonly provider: Provider;
++  readonly onSaved: (account: Account) => void;
++  readonly onPendingChange?: ((pending: boolean) => void) | undefined;
++}) {
++  const [loopback, setLoopback] = useState<{
++    readonly pending: typeof PendingOAuth.Type;
++    readonly signIn: SignIn;
++  }>();
++  const open = (pending: typeof PendingOAuth.Type, signIn: SignIn): "navigating" | "done" => {
++    sessionStorage.setItem(pendingKey, JSON.stringify(pending));
++    if (!isLoopbackRedirect(pending.redirectUri)) {
++      window.location.assign(signIn.authorizationUrl);
++      return "navigating";
++    }
++    window.open(signIn.authorizationUrl, "_blank", "noopener,noreferrer");
++    setLoopback({ pending, signIn });
++    return "done";
++  };
++  const step: ReactNode = loopback && (
++    <LoopbackOAuthStep
++      key={loopback.pending.connection}
++      pending={loopback.pending}
++      signIn={loopback.signIn}
++      provider={provider}
++      onPendingChange={onPendingChange}
++      onCancel={() => setLoopback(undefined)}
++      onSaved={(account) => {
++        setLoopback(undefined);
++        onSaved(account);
++      }}
++    />
++  );
++  return { open, step, active: loopback !== undefined };
++}
++
++function LoopbackOAuthStep({
++  pending,
++  signIn,
++  provider,
++  onPendingChange,
++  onCancel,
++  onSaved,
++}: {
++  readonly pending: typeof PendingOAuth.Type;
++  readonly signIn: SignIn;
++  readonly provider: Provider;
++  readonly onPendingChange?: ((pending: boolean) => void) | undefined;
++  readonly onCancel: () => void;
++  readonly onSaved: (account: Account) => void;
++}) {
++  const complete = useAtomSet(
++    completeOAuthAtom({ organization: pending.organization, connection: pending.connection }),
++    { mode: "promiseExit" },
++  );
++  const requestName = useAtomSet(accountToNameAtom);
++  const [value, setValue] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [invalid, setInvalid] = useState(false);
++  const [error, setError] = useState<Cause.Cause<HostedError>>();
++  const [expired, setExpired] = useState(() => signIn.expiresAt.getTime() <= Date.now());
++  useEffect(() => {
++    if (expired) return;
++    const timer = window.setTimeout(
++      () => setExpired(true),
++      Math.max(0, signIn.expiresAt.getTime() - Date.now()),
++    );
++    return () => window.clearTimeout(timer);
++  }, [expired, signIn.expiresAt]);
++
++  // Catch an obviously wrong paste here; the server still validates the whole callback.
++  const matchesCallback = (pasted: string) => {
++    try {
++      const url = new URL(pasted);
++      const expected = new URL(pending.redirectUri);
++      return url.origin === expected.origin && url.pathname === expected.pathname;
++    } catch {
++      return false;
++    }
++  };
++  const submit = () => {
++    const pasted = value.trim();
++    if (busy || pasted === "") return;
++    if (!matchesCallback(pasted)) {
++      setInvalid(true);
++      return;
++    }
++    setInvalid(false);
++    setError(undefined);
++    setBusy(true);
++    onPendingChange?.(true);
++    void complete({ callbackUrl: Redacted.make(pasted), app: pending.app }).then((exit) => {
++      setBusy(false);
++      onPendingChange?.(false);
++      if (Exit.isFailure(exit)) return setError(exit.cause);
++      sessionStorage.removeItem(pendingKey);
++      // Reconnects keep their name; a new account is named once saved, as the redirect path does.
++      if (pending.reconnect !== true)
++        requestName({
++          organization: pending.organization,
++          account: exit.value.id,
++          saved: { account: exit.value, provider },
++        });
++      onSaved(exit.value);
++    });
++  };
++
++  if (expired && !busy)
++    return (
++      <div className="flex flex-col gap-4">
++        <p role="alert" className="text-sm text-muted-foreground">
++          This sign-in expired. Start again to get a new sign-in link.
++        </p>
++        <Button type="button" className="w-full" onClick={onCancel}>
++          Start again
++        </Button>
++      </div>
++    );
++  return (
++    <form
++      className="flex flex-col gap-4"
++      onSubmit={(event) => {
++        event.preventDefault();
++        submit();
++      }}
++    >
++      <p className="text-sm text-muted-foreground">
++        Sign in to {provider.definition.name} in the new tab. It ends on a page that won’t load:
++        copy that page’s full address and paste it here.
++      </p>
++      <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
++        Address of the page you landed on
++        <Input
++          autoComplete="off"
++          spellCheck={false}
++          inputMode="url"
++          placeholder={`${pending.redirectUri}?code=…`}
++          required
++          disabled={busy}
++          aria-invalid={invalid || error !== undefined}
++          value={value}
++          onChange={(event) => {
++            setValue(event.currentTarget.value);
++            setInvalid(false);
++          }}
++        />
++      </label>
++      {invalid && (
++        <p role="alert" className="text-xs leading-relaxed text-muted-foreground">
++          Paste the full address. It starts with {pending.redirectUri}.
++        </p>
++      )}
++      {error !== undefined && <HostedFailure cause={error} layout="compact" />}
++      <Button type="submit" className="w-full" disabled={busy || value.trim() === ""}>
++        {busy ? "Connecting…" : "Connect account"}
++      </Button>
++      <div className="flex items-center justify-between gap-3">
++        <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>
++          Cancel
++        </Button>
++        <Button variant="outline" asChild>
++          <a href={signIn.authorizationUrl} target="_blank" rel="noopener noreferrer">
++            Open sign-in page
++          </a>
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/packages/apps/src/contracts/protocols/23.ts b/packages/apps/src/contracts/protocols/23.ts
+index 712626f..4f072f5 100644
+--- a/packages/apps/src/contracts/protocols/23.ts
++++ b/packages/apps/src/contracts/protocols/23.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/24.ts b/packages/apps/src/contracts/protocols/24.ts
+index c64efaa..fbd9ee9 100644
+--- a/packages/apps/src/contracts/protocols/24.ts
++++ b/packages/apps/src/contracts/protocols/24.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/25.ts b/packages/apps/src/contracts/protocols/25.ts
+index e41abad..6e59a32 100644
+--- a/packages/apps/src/contracts/protocols/25.ts
++++ b/packages/apps/src/contracts/protocols/25.ts
+@@ -33,7 +33,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/oauth-26.ts b/packages/apps/src/contracts/protocols/oauth-26.ts
+new file mode 100644
+index 0000000..3af3d2c
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-26.ts
+@@ -0,0 +1,185 @@
++import { Schema } from "effect";
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
++
++export const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++export type OAuthClientAuth = typeof OAuthClientAuth.Type;
++/** Machine clients always authenticate; public clients cannot use the client-credentials grant. */
++export const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++/** Parameters the host sets on every authorization request; a declaration cannot replace them. */
++export const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++/** A protocol parameter only the host sets on the authorization request. */
++export type ReservedAuthorizationParam = (typeof reservedAuthorizationParams)[number];
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++/**
++ * Extra authorization request parameters, such as `access_type: "offline"`. RFC 6749 §3.1
++ * lets services define their own; the protocol and security parameters stay host-owned.
++ */
++export const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++/**
++ * A declared `authorizationUrl` may carry its own query (RFC 6749 §3.1 keeps it). Each parameter
++ * is declared once, in the URL or in `authorizationParams`, and never names a host-owned one.
++ */
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++/** How the token endpoint reads requests. RFC 6749 uses a form; some services want JSON. */
++export const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
++
++/**
++ * Where a service nests the grant in its token response, as a dot-separated member path. Slack
++ * returns a user token under `authed_user`. When `requiredOnExchange` is true, an authorization
++ * code response must include the nested access token; a complete top-level grant cannot replace it.
++ * Refresh responses keep the usual top-level fallback.
++ */
++export const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++export type OAuthTokenResponse = typeof OAuthTokenResponse.Type;
++
++/** Options for services that differ from RFC 6749 in how they read requests. */
++const tokenRequestOptions = {
++  /** Joins requested scopes; Linear wants `","`. Defaults to RFC 6749's space. */
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  /** Encoding of token requests. Defaults to `"form"`; Atlassian, ClickUp and Notion need `"json"`. */
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++
++const oauthOptions = {
++  ...tokenRequestOptions,
++  /**
++   * Read the grant from this nested member when the top-level response has no access token or no
++   * scope. `requiredOnExchange` makes the nested grant authoritative for authorization-code
++   * exchange while preserving top-level refresh responses. Slack's user tokens use
++   * `{ path: "authed_user" }`.
++   */
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  /**
++   * Service-defined authorization request parameters, such as Google's
++   * `{ access_type: "offline", prompt: "consent" }`. Host-owned protocol parameters
++   * (`state`, `scope`, `redirect_uri`, PKCE and the others in `reservedAuthorizationParams`)
++   * are rejected. A discovered endpoint's own query parameter of the same name is replaced.
++   */
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  /** Preference used only when a person enters a confidential BYO client. */
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  /** Omitted uses discovery; null explicitly suppresses the resource parameter. */
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  /** The host verifies this issuer's discovery and UserInfo before grouping accounts. */
++  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
++};
++
++/**
++ * OAuth endpoints and protocol choices. Omitted grant means authorization code; clients remain
++ * host-owned. Declared endpoints may name an RFC 7009 `revocationUrl`; discovery reads the
++ * server's `revocation_endpoint` metadata instead.
++ */
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    /** Its query is kept; it cannot set protocol parameters or repeat `authorizationParams`. */
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    /** Fetch this exact metadata document and verify its issuer against discovery. */
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
++export type OAuth2Config = typeof OAuth2Config.Type;
+diff --git a/packages/apps/src/contracts/protocols/oauth-before-identities.ts b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
+index 0f5f58d..939ebca 100644
+--- a/packages/apps/src/contracts/protocols/oauth-before-identities.ts
++++ b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
+@@ -1,5 +1,5 @@
+ import { Schema } from "effect";
+-import { OAuth2Config as Current } from "../provider.ts";
++import { OAuth2Config as Current } from "./oauth-26.ts";
+ 
+ const { identity: _discoveryIdentity, ...discovery } = Current.members[0].fields;
+ const { identity: _declaredIdentity, ...declared } = Current.members[1].fields;
+diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
+index 3b5400d..64779cc 100644
+--- a/packages/apps/src/contracts/provider.ts
++++ b/packages/apps/src/contracts/provider.ts
+@@ -125,6 +125,27 @@ const tokenRequestOptions = {
+ };
+ 
+ const oauthOptions = {
++  /** A provider-required browser callback; the cloud completes the pasted URL. */
++  loopbackRedirectUri: Schema.optionalKey(
++    Schema.String.check(
++      Schema.makeFilter((value) => {
++        try {
++          const url = new URL(value);
++          return (
++            url.protocol === "http:" &&
++            ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++            url.port !== "" &&
++            url.username === "" &&
++            url.password === "" &&
++            url.search === "" &&
++            url.hash === ""
++          );
++        } catch {
++          return false;
++        }
++      }),
++    ),
++  ),
+   ...tokenRequestOptions,
+   /**
+    * Read the grant from this nested member when the top-level response has no access token or no
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 16f11f9..74d8633 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -764,10 +764,26 @@ export const makeOAuth = (
+       if (declared === undefined || declared.type !== "oauth2")
+         return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+       const method = oauthMethodAtSite(declared, definition.site, input.site);
++      const callback =
++        method.grant === "client_credentials"
++          ? undefined
++          : (method.loopbackRedirectUri ?? input.redirectUri);
++      // Loopback callbacks are browser destinations, never cloud fetch destinations.
+       const redirect =
+-        method.grant === "client_credentials" || input.redirectUri === undefined
++        callback === undefined
+           ? undefined
+-          : parseEndpoint(input.redirectUri, options.urlPolicy);
++          : parseEndpoint(
++              callback,
++              method.grant !== "client_credentials" && method.loopbackRedirectUri !== undefined
++                ? defaultUrlPolicy
++                : options.urlPolicy,
++            );
++      if (
++        method.grant !== "client_credentials" &&
++        method.loopbackRedirectUri !== undefined &&
++        method.tokenEndpointAuthMethod !== "none"
++      )
++        return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+       if (
+         method.grant !== "client_credentials" &&
+         (redirect === undefined ||
+diff --git a/packages/apps/src/contracts/protocols/26.ts b/packages/apps/src/contracts/protocols/26.ts
+--- a/packages/apps/src/contracts/protocols/26.ts
++++ b/packages/apps/src/contracts/protocols/26.ts
+@@ -34,7 +34,8 @@
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";

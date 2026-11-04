@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "prepare:upstream": "node scripts/prepare-upstream.ts",
-    "check": "node --test src/catalog/*.test.ts src/catalog/recipes/*.test.ts src/*.test.ts src/pool/*.test.ts src/pool/capacity/*.test.ts src/tunnel/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/slack/*.test.mjs e2e/scale-test.test.mjs e2e/scale-verdict.test.mjs scripts/pool-tests/sharing-cleanup.test.ts",
+    "check": "node --test src/catalog/*.test.ts src/catalog/recipes/*.test.ts src/*.test.ts src/pool/*.test.ts src/pool/capacity/*.test.ts src/tunnel/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/pool-reset-fixture.test.mjs e2e/slack/*.test.mjs e2e/scale-test.test.mjs e2e/scale-verdict.test.mjs scripts/pool-tests/sharing-cleanup.test.ts",
     "typecheck": "node scripts/typecheck.ts",
     "typecheck:upstream": "bun run --cwd .upstream typecheck",
     "build": "node scripts/build.ts",
@@ -13,7 +13,7 @@
     "check:startup": "node --test scripts/worker-startup-tests/*.test.ts && node scripts/worker-startup.ts",
     "deploy": "node scripts/deploy.ts",
     "check:providers": "node scripts/pool-providers.ts --check",
-    "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
+    "check:upstream": "node --test scripts/upstream-tests/*.test.ts scripts/upstream-tests/*.test.mjs",
     "check:releases": "node --test scripts/releases/*.test.ts scripts/release-credentials/*.test.ts scripts/release-preview/*.test.ts scripts/release-merge/*.test.ts scripts/deploy-safety/*.test.ts scripts/deploy-main/*.test.ts scripts/preview/*.test.ts",
     "check:preview-auth": "node .upstream/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts && node scripts/preview-auth/tests/check.ts",
     "prove:releases": "node scripts/releases/simulate.ts",

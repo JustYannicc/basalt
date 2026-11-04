@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -16,7 +17,7 @@ test("GitLab serves the carried source without contacting the publisher", async 
     noFetch,
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), gitlabSource);
+  assert.deepEqual(await response.json(), JSON.parse(onServedFramework(JSON.stringify(gitlabSource))));
   const head = await handleCatalog(
     new Request("https://app.signalbox.run/catalog/apps/gitlab.json", { method: "HEAD" }),
     noFetch,

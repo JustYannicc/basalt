@@ -1,3 +1,4 @@
+import { resetProvider } from "./reset-provider.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { PoolControl } from "../../src/pool/attribution.ts";
@@ -7,6 +8,9 @@ import { Computers } from "../../src/pool/computers.ts";
 
 /** The production control API with only its external Home management service simulated. */
 export async function startPoolFixture(signingKey) {
+  let clockOffset = 0;
+  const now = () => Date.now() + clockOffset;
+  const resets = resetProvider(now);
   const values = new Map();
   const storage = {
     async get(key) {
@@ -25,6 +29,8 @@ export async function startPoolFixture(signingKey) {
     groups = new Map(),
     members = new Map();
   let sequence = 0;
+  let acquisition;
+  const connections = new Map();
   const sends = [];
   const users = new Map();
   const accessCalls = [];
@@ -34,6 +40,24 @@ export async function startPoolFixture(signingKey) {
   const home = async (path, init) => {
     const url = new URL(path, "http://synthetic-home.test");
     const route = url.pathname.replace("/v8/management", "");
+    const resetReply = await resets.home(route, init, url);
+    if (resetReply !== undefined) return resetReply;
+    if (route === "/oauth/auth-url" && acquisition) {
+      const state = `synthetic-state-${++sequence}`;
+      connections.set(state, acquisition);
+      return Response.json({
+        state,
+        url: "https://synthetic-provider.invalid/device",
+        flow: "device",
+        user_code: "SYNTHETIC",
+      });
+    }
+    if (route === "/oauth/status") {
+      const pending = connections.get(url.searchParams.get("state"));
+      if (!pending) return Response.json({ status: "error" });
+      fixture.seedReset(pending.pool, pending.id, pending.provider);
+      return Response.json({ status: "ok", auth_id: pending.id });
+    }
     if (route === "/users") {
       if (init?.method === "POST") {
         const user = JSON.parse(init.body);
@@ -42,7 +66,18 @@ export async function startPoolFixture(signingKey) {
       }
       return Response.json({ users: [...users.values()] });
     }
+    if (route === "/credentials/fields" && init?.method === "PATCH") {
+      const body = JSON.parse(init.body);
+      const file = files.get(body.id);
+      if (!file) return Response.json({}, { status: 404 });
+      files.set(body.id, { ...file, websockets: body.websockets === true });
+      return Response.json({ status: "ok" });
+    }
     if (route === "/credentials") {
+      if (init?.method === "POST" && acquisition) {
+        fixture.seedReset(acquisition.pool, acquisition.id, acquisition.provider);
+        return Response.json({ name: `${acquisition.id}.json` });
+      }
       if (init?.method === "DELETE") {
         const removal = removals.get(url.searchParams.get("id"));
         if (removal) {
@@ -94,7 +129,8 @@ export async function startPoolFixture(signingKey) {
       return Response.json({ items: [...readings.values()].map((row) => row.credential) });
     throw new Error(`Unsupported synthetic Home operation: ${route}`);
   };
-  const control = new PoolControl(storage, { signingKey, home, audience: async () => [] });
+  const dependencies = { signingKey, home, audience: async () => [], now: () => new Date(now()) };
+  let control = new PoolControl(storage, dependencies);
   const computers = new Computers({
     storage,
     signingKey,
@@ -115,7 +151,9 @@ export async function startPoolFixture(signingKey) {
       const access = request.url === "/pool/v1/access";
       const handler = access
         ? (request) => computers.access(request)
-        : (request) => control.handle(request);
+        : request.url.endsWith("/pool/v1/account-acquisitions")
+          ? (request) => control.acquire(request)
+          : (request) => control.handle(request);
       const result = await handler(
         new Request(`http://127.0.0.1${request.url}`, {
           method: request.method,
@@ -134,10 +172,26 @@ export async function startPoolFixture(signingKey) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  return {
+  const fixture = {
+    prepareAcquisition(pool, id, provider = "codex") {
+      acquisition = { pool, id, provider };
+    },
     origin: `http://127.0.0.1:${server.address().port}`,
     sends,
     accessCalls,
+    resets,
+    advance(ms) {
+      clockOffset += ms;
+    },
+    restart() {
+      control = new PoolControl(storage, dependencies);
+    },
+    seedReset(pool, id, provider = "codex", count = 2) {
+      this.seed(pool, id);
+      files.set(id, { id, provider, disabled: false });
+      resets.seed(id, provider, count);
+      readings.get(id).reset_credits = resets.balances(id);
+    },
     seed(
       pool,
       id,
@@ -208,6 +262,7 @@ export async function startPoolFixture(signingKey) {
       readings.delete(id);
     },
     async stop() {
+      resets.stop();
       for (const removal of removals.values()) removal.release();
       removals.clear();
       for (const timer of timers) {
@@ -222,4 +277,5 @@ export async function startPoolFixture(signingKey) {
       );
     },
   };
+  return fixture;
 }

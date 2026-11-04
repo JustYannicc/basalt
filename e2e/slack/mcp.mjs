@@ -9,7 +9,6 @@ const textOf = (value) => JSON.stringify(value?.structuredContent ?? value?.cont
 const slackPostCount = (mock) => mock.observations().api.filter((item) => item.operation === "chat.postMessage").length;
 const slackApiCount = (mock) => mock.observations().api.length;
 const channel = "C000000001";
-const syntheticUserToken = (actor) => `xoxp-synthetic-${actor}`;
 
 function toolItem(items, parts, operation) {
   const item = items?.find((candidate) => {
@@ -156,6 +155,17 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
         ownerPostAccountId = postAccountId;
       }
 
+      const profileSearch = yield* Effect.promise(() => callMcp(client, { name: "search", arguments: { query: "users.profile.get" } }));
+      const profileTool = toolItem(profileSearch.structuredContent?.items ?? [], ["profile", "get"], "users.profile.get");
+      const profileDescription = yield* Effect.promise(() => callMcp(client, { name: "describe", arguments: { paths: [profileTool.path] } }));
+      const describedProfile = toolItem(profileDescription.structuredContent?.items ?? [], ["profile", "get"], "described users.profile.get");
+      check(!/\btoken\s*[?:]/.test(describedProfile.signature), "Slack profile discovery exposed a credential input");
+      const profileRead = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
+        calls: { path: profileTool.path, input: { accountId: ownAccount, input: {} } },
+      } }));
+      check(operationSucceeded(profileRead) && textOf(profileRead).includes(`"display_name":"${index === 0 ? "Synthetic Owner" : "Synthetic Member"}"`),
+        "Slack profile read failed without a caller-supplied token");
+
       const historyInput = { accountId: historyAccountId, input: { query: { channel } } };
       const read = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
         calls: { path: currentHistory, input: historyInput },
@@ -190,7 +200,6 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
         input: {
           contentType: "application/x-www-form-urlencoded",
           body: { channel, text: `synthetic_forbidden_${index}_post` },
-          headers: { token: syntheticUserToken(index === 0 ? "member" : "owner") },
         },
       };
       const apiBeforePeerWrite = slackApiCount(mock);
@@ -224,7 +233,6 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       input: {
         contentType: "application/x-www-form-urlencoded",
         body: { channel, text: "synthetic_owner_post" },
-        headers: { token: syntheticUserToken("owner") },
       },
     };
     const callsBeforeApproval = slackPostCount(mock);
@@ -281,7 +289,6 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       historyAccountId: ownerHistoryAccountId,
       postAccountId: ownerPostAccountId,
       peerAccountId: memberAccount,
-      userToken: syntheticUserToken("owner"),
       marker: "synthetic_owner_history",
       peerMarker: "synthetic_member_history",
       channel,
