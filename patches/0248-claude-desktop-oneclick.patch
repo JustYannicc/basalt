@@ -1,10 +1,10 @@
 diff --git a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
-index a439227..18bf578 100644
+index a439227..6311869 100644
 --- a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
 @@ -1,4 +1,4 @@
 -import { useState } from "react";
-+import { useEffect, useRef, useState } from "react";
++import { useRef, useState } from "react";
  import { Button } from "@executor-js/ui/components/button";
  import { AssistantGuideSteps, EndpointField } from "@executor-js/ui/dashboard/connect";
  import { PoolSelect } from "./computer-quick-setup.tsx";
@@ -19,7 +19,7 @@ index a439227..18bf578 100644
   */
  
  /** The fields the in-app configuration window writes, as its exported JSON config names them. */
-@@ -46,87 +46,127 @@ export function ClaudeDesktopSetup({
+@@ -46,87 +46,126 @@ export function ClaudeDesktopSetup({
    readonly server: string;
    readonly mcpUrl: string;
  }) {
@@ -39,12 +39,11 @@ index a439227..18bf578 100644
 +          computer.state === "revoked" ||
 +          computer.state === "removed"),
 +    );
-+  useEffect(() => {
-+    if (revoked || setup.view === undefined) setIssued(undefined);
-+  }, [revoked, setup.view]);
++  if (issued !== undefined && (revoked || setup.view === undefined)) setIssued(undefined);
 +  const [manualOpen, setManualOpen] = useState(false);
 +  const issuing = useRef(false);
-+  const current = !revoked && issued?.pool === setup.pool ? issued?.key : undefined;
++  const current =
++    setup.view !== undefined && !revoked && issued?.pool === setup.pool ? issued?.key : undefined;
    const [busy, setBusy] = useState(false);
    const [problem, setProblem] = useState<string>();
 -  const create = async () => {
