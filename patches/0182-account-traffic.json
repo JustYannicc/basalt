@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-traffic",
   "file": "0182-account-traffic.patch",
-  "content_sha256": "2467db162f82815ebb898cd58cbfbea34cf90c211fbcee75370f7086cf4cb851",
+  "content_sha256": "6e8a12935328a86a4b11a7e801ed7314853074b5d53e121418a0460a651d1fed",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
