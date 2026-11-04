@@ -69,7 +69,7 @@ try {
       "--test-name",
       process.env.BASALT_ADOPTION_PROOF_PATTERN ?? "^Cloud provider adoption",
       "--workers",
-      "1",
+      "2",
     ],
     {
       cwd: `${root}/.upstream`,

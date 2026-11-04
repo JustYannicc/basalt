@@ -275,7 +275,7 @@ index a8c60164a..403c05772 100644
 +    return { app, account: link.account };
    });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b767..ad6acce91 100644
+index a57b0b767..9c8bfef53 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -279,6 +279,7 @@ export const scenarios = plan({
@@ -294,30 +294,39 @@ index a57b0b767..ad6acce91 100644
      deferOnboarding: true,
      file: "provider-adoption.spec.ts",
      title:
-@@ -2489,6 +2491,7 @@ export const scenarios = plan({
+@@ -2489,8 +2491,9 @@ export const scenarios = plan({
    },
    providerAdoptionLocks: {
      fixtures: "actors",
 +    managementApps: ["owner", "admin"],
      deferOnboarding: true,
-     file: "provider-adoption.spec.ts",
+-    file: "provider-adoption.spec.ts",
++    file: "provider-adoption-locks.spec.ts",
      title: "Cloud provider adoption orders authority before concurrent unlink",
-@@ -2500,6 +2503,7 @@ export const scenarios = plan({
+     targets: {
+       cloud: managedCloud,
+@@ -2500,8 +2503,9 @@ export const scenarios = plan({
    },
    providerAdoptionForeign: {
      fixtures: "actors",
 +    managementApps: ["owner", "admin"],
      deferOnboarding: true,
-     file: "provider-adoption.spec.ts",
+-    file: "provider-adoption.spec.ts",
++    file: "provider-adoption-locks.spec.ts",
      title: "Cloud provider adoption refuses foreign locks in a blocked plan",
-@@ -2511,6 +2515,7 @@ export const scenarios = plan({
+     targets: {
+       cloud: managedCloud,
+@@ -2511,8 +2515,9 @@ export const scenarios = plan({
    },
    providerAdoptionAccountDelete: {
      fixtures: "actors",
 +    managementApps: ["owner", "admin"],
      deferOnboarding: true,
-     file: "provider-adoption.spec.ts",
+-    file: "provider-adoption.spec.ts",
++    file: "provider-adoption-locks.spec.ts",
      title: "Cloud provider adoption refuses a busy concurrent account delete",
+     targets: {
+       cloud: managedCloud,
 @@ -2522,6 +2527,7 @@ export const scenarios = plan({
    },
    providerAdoptionPurge: {
@@ -326,6 +335,64 @@ index a57b0b767..ad6acce91 100644
      deferOnboarding: true,
      file: "provider-adoption.spec.ts",
      title: "Cloud provider adoption refuses a busy organization purge",
+diff --git a/e2e/tests/provider-adoption-locks.spec.ts b/e2e/tests/provider-adoption-locks.spec.ts
+new file mode 100644
+index 000000000..df8283798
+--- /dev/null
++++ b/e2e/tests/provider-adoption-locks.spec.ts
+@@ -0,0 +1,20 @@
++import { layer } from "@effect/vitest";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import {
++  proveConcurrentUnlink,
++  proveConcurrentAccountDelete,
++  proveForeignPlanLocks,
++} from "../support/provider-adoption-locks.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Provider adoption lock boundaries", (it) => {
++  it.effect(scenarios.providerAdoptionLocks.title, (context) =>
++    withHostedCase(context, proveConcurrentUnlink),
++  );
++  it.effect(scenarios.providerAdoptionAccountDelete.title, (context) =>
++    withHostedCase(context, proveConcurrentAccountDelete),
++  );
++  it.effect(scenarios.providerAdoptionForeign.title, (context) =>
++    withHostedCase(context, proveForeignPlanLocks),
++  );
++});
+diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
+index dc3664410..9fae5e314 100644
+--- a/e2e/tests/provider-adoption.spec.ts
++++ b/e2e/tests/provider-adoption.spec.ts
+@@ -5,11 +5,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { productionOpsClient } from "../support/production-ops-client.ts";
+ import { providerAdoptionFixture } from "../support/provider-adoption-fixture.ts";
+ import { DryRun, Plan, proveAdoptionRefusals } from "../support/provider-adoption-refusals.ts";
+-import {
+-  proveConcurrentUnlink,
+-  proveConcurrentAccountDelete,
+-  proveForeignPlanLocks,
+-} from "../support/provider-adoption-locks.ts";
+ import { proveConcurrentOrganizationPurge } from "../support/provider-adoption-purge.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -30,15 +25,6 @@ const Snapshot = Schema.Array(
+ );
+ 
+ layer(HostedLive, { excludeTestServices: true })("Existing provider adoption", (it) => {
+-  it.effect(scenarios.providerAdoptionLocks.title, (context) =>
+-    withHostedCase(context, proveConcurrentUnlink),
+-  );
+-  it.effect(scenarios.providerAdoptionAccountDelete.title, (context) =>
+-    withHostedCase(context, proveConcurrentAccountDelete),
+-  );
+-  it.effect(scenarios.providerAdoptionForeign.title, (context) =>
+-    withHostedCase(context, proveForeignPlanLocks),
+-  );
+   it.effect(scenarios.providerAdoptionPurge.title, (context) =>
+     withHostedCase(context, proveConcurrentOrganizationPurge),
+   );
 diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 index 0cc983db2..42595dc19 100644
 --- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
