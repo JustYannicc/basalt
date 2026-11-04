@@ -78,7 +78,7 @@ function registry(
       new Headers(init.headers).get("Authorization"),
       `Basic ${Buffer.from("fixture:synthetic-pull-token").toString("base64")}`,
     );
-    const target = decodeURIComponent(url.pathname);
+    const target = url.pathname;
     if (target === `/v2/fixture/pool/blobs/${configDigest}`)
       return new Response(options.corrupt === "config" ? `${config} ` : config, {
         status: options.configStatus ?? 200,
