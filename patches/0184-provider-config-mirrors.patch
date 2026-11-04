@@ -2687,10 +2687,10 @@ index 0000000..8a54a7c
 +});
 diff --git a/e2e/tests/pool-retained-defaults.spec.ts b/e2e/tests/pool-retained-defaults.spec.ts
 new file mode 100644
-index 0000000..0e7711f
+index 0000000..f091e79
 --- /dev/null
 +++ b/e2e/tests/pool-retained-defaults.spec.ts
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,253 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
@@ -2820,7 +2820,7 @@ index 0000000..0e7711f
 +          return yield* Effect.die("Missing retained declaration");
 +        requirements = deployment.requirements;
 +        const before = yield* rows(
-+          `select id from executor_deployments where app = $1 order by id`,
++          `select id from executor_deployments where code = (select code from executor_apps where id = $1) order by id`,
 +          [app.id],
 +        );
 +        const dispatch = (expected: "succeeded" | "queued") =>
@@ -2865,7 +2865,10 @@ index 0000000..0e7711f
 +            (yield* body(App, yield* api.request(actors.owner, "GET", path))).activeVersion,
 +          ).toBe(app.activeVersion);
 +          expect(
-+            yield* rows(`select id from executor_deployments where app = $1 order by id`, [app.id]),
++            yield* rows(
++              `select id from executor_deployments where code = (select code from executor_apps where id = $1) order by id`,
++              [app.id],
++            ),
 +          ).toEqual(before);
 +          const serving = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
 +            tool: "selected",
@@ -2918,7 +2921,10 @@ index 0000000..0e7711f
 +          ]),
 +        ).toEqual([{ version: app.activeVersion }]);
 +        expect(
-+          yield* rows(`select id from executor_deployments where app = $1 order by id`, [app.id]),
++          yield* rows(
++            `select id from executor_deployments where code = (select code from executor_apps where id = $1) order by id`,
++            [app.id],
++          ),
 +        ).toEqual(before);
 +        yield* rows(`update executor_deployments set requirements = $1::json where id = $2`, [
 +          requirements,

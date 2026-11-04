@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-catalog-optional-account-compatibility",
+  "file": "0230-catalog-optional-account-compatibility.patch",
+  "content_sha256": "9161f11a637f45a092a052a358ad64bc2c77bd03c31051951670059482f888e9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

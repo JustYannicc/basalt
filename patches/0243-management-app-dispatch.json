@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-management-app-dispatch",
+  "file": "0243-management-app-dispatch.patch",
+  "content_sha256": "49142c1ea564e218c76e3f2d70276e295f0f5b2f320a7d41fe24821c4d6fbb7d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

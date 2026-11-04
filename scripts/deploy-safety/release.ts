@@ -1,12 +1,28 @@
 import { appendFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, productionCommitContaining, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
+import {
+  classifyCurrentRelease,
+  classifyManualRollbackCandidate,
+  currentCommit,
+  latestProductionBase,
+  productionCommitContaining,
+  verifyFreshManualRollbackReport,
+  verifyFreshReport,
+  gitRepositoryRoot,
+} from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
 import { releaseBackup, type SupersededRelease } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
-import { executeManualRollback, executeRelease, productionManualRollbackDependencies, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
+import {
+  executeManualRollback,
+  executeRelease,
+  productionManualRollbackDependencies,
+  productionReleaseDependencies,
+  resolveCandidateSourceRoot,
+  type ReleaseMode,
+} from "./release-runner.ts";
 import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleaseCliOptions = { [key: string]: string };
@@ -29,12 +45,19 @@ async function main(args: string[]): Promise<void> {
 
   if (command === "already-live") {
     const candidate = required(options, "--candidate").trim().toLowerCase();
-    if (!/^[a-f0-9]{40}$/.test(candidate)) throw new SafetyGateError("The release candidate must be a full commit SHA");
+    if (!/^[a-f0-9]{40}$/.test(candidate))
+      throw new SafetyGateError("The release candidate must be a full commit SHA");
     const live = await productionCommitContaining(candidate);
     if (live)
-      process.stderr.write(`::notice::${candidate} is already live: the last successful production deployment, ${live}, contains it\n`);
+      process.stderr.write(
+        `::notice::${candidate} is already live: the last successful production deployment, ${live}, contains it\n`,
+      );
     writeActionOutputs({ already_live: String(live !== undefined) });
-    print({ candidate, alreadyLive: live !== undefined, ...(live ? { productionGitCommit: live } : {}) });
+    print({
+      candidate,
+      alreadyLive: live !== undefined,
+      ...(live ? { productionGitCommit: live } : {}),
+    });
     return;
   }
 
@@ -47,11 +70,17 @@ async function main(args: string[]): Promise<void> {
       deployable,
       manualRequired: plan.manualRequired,
       latestDeploymentState: plan.ledger.state,
-      ...(plan.ledger.state === "ready" && plan.ledger.superseded ? { supersededDeployment: plan.ledger.superseded } : {}),
+      ...(plan.ledger.state === "ready" && plan.ledger.superseded
+        ? { supersededDeployment: plan.ledger.superseded }
+        : {}),
+      ...(plan.ledger.state === "ready" && plan.ledger.supersededAttempts
+        ? { supersededDeployments: plan.ledger.supersededAttempts }
+        : {}),
     };
     noteRollForward(
       plan.ledger.state === "ready" ? plan.ledger.superseded : undefined,
       plan.ledger.state === "unresolved" ? plan.ledger.supersedeRefusal : undefined,
+      plan.ledger.state === "ready" ? plan.ledger.supersededAttempts : undefined,
     );
     writeActionOutputs({
       deployable: String(deployable),
@@ -70,8 +99,11 @@ async function main(args: string[]): Promise<void> {
     const candidate = candidateCheckout(options).commit;
     const plan = await classifyManualRollbackCandidate(candidate);
     if (plan.ledger.state === "uninitialized")
-      throw new SafetyGateError("Rollback report requires the current production deployment record");
-    const deploymentState = plan.ledger.state === "ready" ? "success" : plan.ledger.deploymentStatus;
+      throw new SafetyGateError(
+        "Rollback report requires the current production deployment record",
+      );
+    const deploymentState =
+      plan.ledger.state === "ready" ? "success" : plan.ledger.deploymentStatus;
     writeActionOutputs({
       base_git_commit: plan.report.base.gitCommit,
       candidate_git_commit: plan.report.candidate.gitCommit,
@@ -89,11 +121,15 @@ async function main(args: string[]): Promise<void> {
     const candidate = candidateCheckout(options).commit;
     const plan = await verifyFreshReport(parseReportFile(required(options, "--report")), candidate);
     requireManualDispatchIfRisky(plan.manualRequired);
-    const result = await new PlanetScaleSafety(requirePlanetScaleEnvironment())
-      .ensureBackup(plan.report, plan.ledger.state === "uninitialized");
+    const result = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).ensureBackup(
+      plan.report,
+      plan.ledger.state === "uninitialized",
+    );
     writeActionOutputs({
       database_backup_state: result.state,
-      ...(result.state === "ready" ? { database_backup_id: result.backupId, database_backup_name: result.backupName } : {}),
+      ...(result.state === "ready"
+        ? { database_backup_id: result.backupId, database_backup_name: result.backupName }
+        : {}),
       report_digest: reportDigest(plan.report),
     });
     print(result);
@@ -101,7 +137,10 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (command === "inspect-workflows") {
-    const plan = await verifyFreshReport(parseReportFile(required(options, "--report")), candidateCheckout(options).commit);
+    const plan = await verifyFreshReport(
+      parseReportFile(required(options, "--report")),
+      candidateCheckout(options).commit,
+    );
     const snapshot = await inspectWorkflowChange(plan.report, requireCloudflareEnvironment());
     const statusCounts: Record<string, number> = {};
     for (const instance of snapshot.unresolved)
@@ -132,10 +171,17 @@ async function main(args: string[]): Promise<void> {
       print({ manualRestoreRequired: false, reason: "database-unchanged" });
       return;
     }
-    const target = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).manualRollbackTarget(plan.report, releaseBackup(plan.ledger));
+    const target = await new PlanetScaleSafety(
+      requirePlanetScaleEnvironment(),
+    ).manualRollbackTarget(plan.report, releaseBackup(plan.ledger));
     // Optional here so the target can be read before restoring; the rollback workflow always passes it.
-    if (options["--restored-backup"] !== undefined) assertRestoredBackup(options["--restored-backup"], target.backupName);
-    writeActionOutputs({ manual_restore_required: "true", rollback_backup_id: target.backupId, rollback_backup_name: target.backupName });
+    if (options["--restored-backup"] !== undefined)
+      assertRestoredBackup(options["--restored-backup"], target.backupName);
+    writeActionOutputs({
+      manual_restore_required: "true",
+      rollback_backup_id: target.backupId,
+      rollback_backup_name: target.backupName,
+    });
     print(target);
     return;
   }
@@ -144,7 +190,9 @@ async function main(args: string[]): Promise<void> {
     const candidate = candidateCheckout(options).commit;
     const expectedDeploymentId = parseDeploymentId(required(options, "--deployment-id"));
     const plan = await verifyFreshManualRollbackReport(
-      parseReportFile(required(options, "--report")), candidate, expectedDeploymentId,
+      parseReportFile(required(options, "--report")),
+      candidate,
+      expectedDeploymentId,
     );
     if (plan.report.databaseChanged)
       assertRestoredBackup(required(options, "--restored-backup"), releaseBackup(plan.ledger).name);
@@ -166,11 +214,17 @@ async function main(args: string[]): Promise<void> {
   if (command === "deploy") {
     const mode = parseMode(required(options, "--mode"));
     const candidateSha = required(options, "--candidate").trim().toLowerCase();
-    const candidateRoot = resolveCandidateSourceRoot(mode, candidateSha, options["--candidate-root"]);
+    const candidateRoot = resolveCandidateSourceRoot(
+      mode,
+      candidateSha,
+      options["--candidate-root"],
+    );
     const candidate = candidateCheckout(options, mode === "automatic").commit;
     const plan = await verifyFreshReport(parseReportFile(required(options, "--report")), candidate);
     if (plan.ledger.state === "unresolved")
-      throw new SafetyGateError("Latest production deployment is unresolved; reconcile it before another release");
+      throw new SafetyGateError(
+        "Latest production deployment is unresolved; reconcile it before another release",
+      );
     const dependencies = productionReleaseDependencies(candidateRoot, candidate);
     const priorBegin = dependencies.begin;
     dependencies.begin = async (report, backup) => {
@@ -184,10 +238,15 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
-  throw new SafetyGateError("Usage: release.ts <latest-base|already-live|report|rollback-report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
+  throw new SafetyGateError(
+    "Usage: release.ts <latest-base|already-live|report|rollback-report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]",
+  );
 }
 
-export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBootstrap = false): { root: string; commit: string } {
+export function candidateCheckout(
+  options: ReleaseCliOptions,
+  allowTrustedMainBootstrap = false,
+): { root: string; commit: string } {
   let root: string;
   try {
     root = realpathSync(options["--candidate-root"] ?? process.cwd());
@@ -202,7 +261,9 @@ export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBo
 
   if (process.env.GITHUB_EVENT_NAME === "workflow_dispatch") {
     if (process.env.GITHUB_REF !== "refs/heads/main")
-      throw new SafetyGateError("Manual candidate checkout requires workflow_dispatch from trusted main");
+      throw new SafetyGateError(
+        "Manual candidate checkout requires workflow_dispatch from trusted main",
+      );
     const runnerTemp = process.env.RUNNER_TEMP;
     let candidateIsUnderRunnerTemp = false;
     if (runnerTemp) {
@@ -215,28 +276,37 @@ export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBo
     let isTrustedBootstrap = false;
     if (allowTrustedMainBootstrap && !options["--candidate-root"]) {
       try {
-        isTrustedBootstrap = root === realpathSync(gitRepositoryRoot()) &&
+        isTrustedBootstrap =
+          root === realpathSync(gitRepositoryRoot()) &&
           configured === process.env.GITHUB_SHA?.trim().toLowerCase();
       } catch {
         isTrustedBootstrap = false;
       }
     }
     if (!candidateIsUnderRunnerTemp && !isTrustedBootstrap)
-      throw new SafetyGateError("Manual candidate checkout must be a separate worktree under RUNNER_TEMP");
+      throw new SafetyGateError(
+        "Manual candidate checkout must be a separate worktree under RUNNER_TEMP",
+      );
   }
   return { root, commit };
 }
 
 function isPathInside(path: string, parent: string): boolean {
   const pathFromParent = relative(parent, path);
-  return pathFromParent !== "" && pathFromParent !== ".." &&
-    !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
+  return (
+    pathFromParent !== "" &&
+    pathFromParent !== ".." &&
+    !pathFromParent.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromParent)
+  );
 }
 
 /** No one approves a rollback, so whoever dispatches names the backup they restored; it must be the recorded one. */
 export function assertRestoredBackup(restored: string, recorded: string): void {
   if (restored.trim() !== recorded)
-    throw new SafetyGateError(`--restored-backup must be this release's recorded backup, ${recorded}; restore that exact backup first`);
+    throw new SafetyGateError(
+      `--restored-backup must be this release's recorded backup, ${recorded}; restore that exact backup first`,
+    );
 }
 
 export function resolveManualRollbackSourceRoot(
@@ -257,11 +327,21 @@ export function resolveManualRollbackSourceRoot(
     throw new SafetyGateError("Manual rollback worktree is unavailable");
   }
   if (!isPathInside(rollbackRoot, allowedRoot) || !isPathInside(failedRoot, allowedRoot))
-    throw new SafetyGateError("Manual rollback and failed-candidate worktrees must be under RUNNER_TEMP");
-  if (rollbackRoot === failedRoot || isPathInside(rollbackRoot, failedRoot) || isPathInside(failedRoot, rollbackRoot))
-    throw new SafetyGateError("Manual rollback source must be separate from the failed candidate worktree");
+    throw new SafetyGateError(
+      "Manual rollback and failed-candidate worktrees must be under RUNNER_TEMP",
+    );
+  if (
+    rollbackRoot === failedRoot ||
+    isPathInside(rollbackRoot, failedRoot) ||
+    isPathInside(failedRoot, rollbackRoot)
+  )
+    throw new SafetyGateError(
+      "Manual rollback source must be separate from the failed candidate worktree",
+    );
   if (currentCommit(rollbackRoot) !== expectedCommit.toLowerCase())
-    throw new SafetyGateError("Manual rollback source HEAD does not match the recorded production baseline");
+    throw new SafetyGateError(
+      "Manual rollback source HEAD does not match the recorded production baseline",
+    );
   return rollbackRoot;
 }
 
@@ -273,7 +353,17 @@ function parseOptions(args: string[]): ReleaseCliOptions {
     const value = args[++index];
     if (!value || value.startsWith("--")) throw new SafetyGateError(`Missing value for ${key}`);
     if (options[key] !== undefined) throw new SafetyGateError(`Duplicate option ${key}`);
-    if (!new Set(["--report", "--candidate", "--mode", "--candidate-root", "--rollback-root", "--deployment-id", "--restored-backup"]).has(key))
+    if (
+      !new Set([
+        "--report",
+        "--candidate",
+        "--mode",
+        "--candidate-root",
+        "--rollback-root",
+        "--deployment-id",
+        "--restored-backup",
+      ]).has(key)
+    )
       throw new SafetyGateError(`Unknown option ${key}`);
     options[key] = value;
   }
@@ -287,20 +377,28 @@ function required(options: ReleaseCliOptions, name: string): string {
 }
 
 function parseMode(value: string): ReleaseMode {
-  if (value !== "automatic" && value !== "manual") throw new SafetyGateError("Release mode must be automatic or manual");
+  if (value !== "automatic" && value !== "manual")
+    throw new SafetyGateError("Release mode must be automatic or manual");
   return value;
 }
 
 function parseDeploymentId(value: string): number {
-  if (!/^[1-9][0-9]*$/.test(value)) throw new SafetyGateError("Production deployment id is invalid");
+  if (!/^[1-9][0-9]*$/.test(value))
+    throw new SafetyGateError("Production deployment id is invalid");
   const id = Number(value);
   if (!Number.isSafeInteger(id)) throw new SafetyGateError("Production deployment id is invalid");
   return id;
 }
 
 function requireManualDispatchIfRisky(manualRequired: boolean): void {
-  if (manualRequired && (process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" || process.env.GITHUB_REF !== "refs/heads/main"))
-    throw new SafetyGateError("Database-changing and Workflow-identity candidates require workflow_dispatch from trusted main");
+  if (
+    manualRequired &&
+    (process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
+      process.env.GITHUB_REF !== "refs/heads/main")
+  )
+    throw new SafetyGateError(
+      "Database-changing and Workflow-identity candidates require workflow_dispatch from trusted main",
+    );
 }
 
 function writeActionOutputs(values: Record<string, string>): void {
@@ -309,14 +407,26 @@ function writeActionOutputs(values: Record<string, string>): void {
   const entries = Object.entries(values);
   if (entries.some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || /[\r\n]/.test(value)))
     throw new SafetyGateError("Action outputs contain an invalid key or value");
-  appendFileSync(path, entries.map(([key, value]) => `${key}=${value}`).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+  appendFileSync(path, entries.map(([key, value]) => `${key}=${value}`).join("\n") + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 /** Says in the Actions log which failed release this run rolls forward over, or why it can't. */
-function noteRollForward(superseded: SupersededRelease | undefined, refusal: string | undefined): void {
-  if (superseded)
-    process.stderr.write(`::notice::Rolling forward over failed production deployment ${superseded.deploymentId} (${superseded.gitCommit}, ${superseded.deploymentStatus}): this release contains that commit, deploys from the last success and re-applies its migrations and data steps\n`);
-  if (refusal) process.stderr.write(`::warning::The failed production deployment is not rolled forward over: ${refusal}\n`);
+function noteRollForward(
+  superseded: SupersededRelease | undefined,
+  refusal: string | undefined,
+  attempts?: SupersededRelease[],
+): void {
+  for (const failed of attempts ?? (superseded ? [superseded] : []))
+    process.stderr.write(
+      `::notice::Rolling forward over failed production deployment ${failed.deploymentId} (${failed.gitCommit}, ${failed.deploymentStatus}): this release contains that commit, deploys from the last success and re-applies its migrations and data steps\n`,
+    );
+  if (refusal)
+    process.stderr.write(
+      `::warning::The failed production deployment is not rolled forward over: ${refusal}\n`,
+    );
 }
 
 function print(value: unknown): void {
@@ -327,7 +437,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
     await main(process.argv.slice(2));
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : "Release safety command failed"}\n`);
+    process.stderr.write(
+      `${error instanceof Error ? error.message : "Release safety command failed"}\n`,
+    );
     process.exitCode = 1;
   }
 }
