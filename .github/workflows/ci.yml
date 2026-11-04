@@ -404,6 +404,9 @@ jobs:
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
+      - name: Verify immutable account declarations across runtime protocols
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/account-definition.config.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
