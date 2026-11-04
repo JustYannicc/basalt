@@ -13,6 +13,8 @@ import urllib.request
 from typing import Any
 
 from .billing_policy import provision_billing_policy
+from .recovery_deadline import current_deadline
+from .recovery_http import request_with_deadline
 
 HOME_URL = "http://127.0.0.1:8327"
 NODE_URL = "http://127.0.0.1:8317"
@@ -162,6 +164,9 @@ def request_json(
     headers = {"X-Management-Key": management_key}
     if body is not None:
         headers["Content-Type"] = "application/json"
+    deadline = current_deadline()
+    if deadline is not None:
+        return request_with_deadline(url, method, body, headers, timeout, deadline)
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
