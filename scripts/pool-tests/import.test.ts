@@ -112,7 +112,7 @@ test(
           apiKey: api.key,
           organization: product.actors.organization.id,
           poolApp: pool,
-          cookie: product.actors.owner.cookies,
+          cookie: product.actors.owner.headers.cookie,
           accounts: [
             {
               providerApp: (await product.provider("anthropic")).id,
