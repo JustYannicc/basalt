@@ -1,0 +1,2038 @@
+diff --git a/apps/hosted/cloud/src/contracts/emulators.ts b/apps/hosted/cloud/src/contracts/emulators.ts
+index 2396e38..7b94062 100644
+--- a/apps/hosted/cloud/src/contracts/emulators.ts
++++ b/apps/hosted/cloud/src/contracts/emulators.ts
+@@ -49,6 +49,29 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
+ 
+ /** External test services provisioned independently of Executor; never browser configuration. */
+ export const EmulatedServices = Schema.Struct({
++  /** Routes transport is configurable only behind cloudEmulators' test-stage guard. */
++  mapsRoutes: Schema.optionalKey(
++    Schema.Struct({
++      baseUrl: Schema.String.check(
++        Schema.makeFilter((value) => {
++          const url = URL.parse(value);
++          return (
++            url !== null &&
++            !url.username &&
++            !url.password &&
++            !url.search &&
++            !url.hash &&
++            !value.endsWith("/") &&
++            ((url.protocol === "https:" &&
++              (url.hostname === "emulators.dev" || url.hostname.endsWith(".emulators.dev"))) ||
++              (url.protocol === "http:" &&
++                ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
++          );
++        }),
++      ),
++      token: Schema.NonEmptyString,
++    }),
++  ),
+   google: GoogleProvider,
+   github: Provider,
+   mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
+diff --git a/apps/hosted/cloud/src/infrastructure/hosted-routes.ts b/apps/hosted/cloud/src/infrastructure/hosted-routes.ts
+new file mode 100644
+index 0000000..5e54db3
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/hosted-routes.ts
+@@ -0,0 +1,66 @@
++/** Cloud configuration and the guarded external-provider emulator boundary. */
++import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { identifyProvider } from "@executor-js/sdk/core";
++import {
++  hostedRoutesProviderDefinition,
++  hostedRoutesCatalogReference,
++} from "@executor-js/hosted-server/hosted-routes/contracts";
++import { Config, Effect, Option, Redacted } from "effect";
++import { Crypto } from "effect";
++import { cloudHosts } from "./stage.ts";
++import { cloudEmulators } from "./emulators.ts";
++import { mapsRoutesHandlers } from "./maps-routes/index.ts";
++
++export const cloudHostedRoutes = Effect.gen(function* () {
++  const apiKey = yield* Config.Redacted("GOOGLE_MAPS_ROUTES_API_KEY").pipe(Config.option);
++  const signingKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const origin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
++  const provider = yield* identifyProvider(
++    hostedRoutesProviderDefinition(origin),
++    yield* Crypto.Crypto,
++  ).pipe(Effect.orDie);
++  const feedUrl = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
++  const reference = Option.isSome(feedUrl)
++    ? new URL("apps/google-maps.json", feedUrl.value).href
++    : hostedRoutesCatalogReference(origin);
++  const emulators = yield* cloudEmulators.pipe(Effect.orDie);
++  const emulator = Option.isSome(emulators)
++    ? Redacted.value(emulators.value).mapsRoutes
++    : undefined;
++  const fetcher: typeof fetch | undefined =
++    emulator === undefined
++      ? undefined
++      : async (input, init) => {
++          const url = new URL(
++            typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
++          );
++          if (url.href !== "https://routes.googleapis.com/directions/v2:computeRoutes")
++            throw new Error("Unexpected Routes emulator destination");
++          const headers = new Headers(init?.headers);
++          headers.delete("x-goog-api-key");
++          headers.set("authorization", `Bearer ${emulator.token}`);
++          return fetch(`${emulator.baseUrl}/directions/v2:computeRoutes`, {
++            ...init,
++            headers,
++            redirect: "manual",
++          });
++        };
++  const configuration = Option.isSome(signingKey)
++    ? {
++        signingKey: signingKey.value,
++        origin,
++        enabled: Option.isSome(apiKey) && Redacted.value(apiKey.value).length > 0,
++        identity: { reference, provider: provider.identity },
++      }
++    : undefined;
++  return {
++    configuration,
++    handlers: mapsRoutesHandlers({
++      apiKey,
++      signingKey,
++      origin,
++      provider: provider.identity,
++      ...(fetcher === undefined ? {} : { fetcher }),
++    }),
++  };
++}).pipe(Effect.provide(BrowserCrypto.layer));
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts
+new file mode 100644
+index 0000000..3e6b8a2
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts
+@@ -0,0 +1,101 @@
++import { Effect, Redacted } from "effect";
++import type { ComputeRoutesRequest } from "./request.ts";
++
++const GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
++const FIELD_MASK = [
++  "routes.distanceMeters",
++  "routes.duration",
++  "routes.polyline.encodedPolyline",
++  "routes.legs.distanceMeters",
++  "routes.legs.duration",
++  "routes.legs.startLocation",
++  "routes.legs.endLocation",
++  "routes.legs.steps.distanceMeters",
++  "routes.legs.steps.staticDuration",
++  "routes.legs.steps.navigationInstruction.instructions",
++  "routes.legs.steps.navigationInstruction.maneuver",
++].join(",");
++const RESPONSE_LIMIT = 128 * 1024;
++
++type Result =
++  | { readonly kind: "success"; readonly body: Record<string, unknown> }
++  | { readonly kind: "rejected" }
++  | { readonly kind: "failed" };
++
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++const readBounded = async (response: Response, limit: number, signal: AbortSignal) => {
++  const declared = Number(response.headers.get("content-length") ?? 0);
++  if (Number.isFinite(declared) && declared > limit) return undefined;
++  if (response.body === null) return new Uint8Array();
++  const reader = response.body.getReader();
++  const chunks: Uint8Array[] = [];
++  let size = 0;
++  const cancel = () => {
++    void reader.cancel();
++  };
++  signal.addEventListener("abort", cancel, { once: true });
++  try {
++    while (true) {
++      const item = await reader.read();
++      if (item.done) break;
++      size += item.value.byteLength;
++      if (size > limit) {
++        await reader.cancel();
++        return undefined;
++      }
++      chunks.push(item.value);
++    }
++  } finally {
++    signal.removeEventListener("abort", cancel);
++    reader.releaseLock();
++  }
++  const bytes = new Uint8Array(size);
++  let offset = 0;
++  for (const chunk of chunks) {
++    bytes.set(chunk, offset);
++    offset += chunk.byteLength;
++  }
++  return bytes;
++};
++
++/** Google is the only upstream. Callers cannot set its URL, method, key, or field mask. */
++export const computeRoutes = (
++  fetcher: typeof fetch,
++  apiKey: Redacted.Redacted<string>,
++  input: ComputeRoutesRequest,
++): Effect.Effect<Result> =>
++  Effect.gen(function* () {
++    const upstream = yield* Effect.tryPromise({
++      try: (signal) =>
++        fetcher(GOOGLE_ROUTES_URL, {
++          method: "POST",
++          redirect: "manual",
++          signal,
++          headers: {
++            "content-type": "application/json",
++            "x-goog-api-key": Redacted.value(apiKey),
++            "x-goog-fieldmask": FIELD_MASK,
++          },
++          body: JSON.stringify(input),
++        }),
++      catch: () => ({ _tag: "RoutesUpstreamFailed" as const }),
++    }).pipe(Effect.timeout("12 seconds"), Effect.option);
++    if (upstream._tag === "None") return { kind: "failed" as const };
++    if (!upstream.value.ok)
++      return upstream.value.status >= 400 && upstream.value.status < 500
++        ? { kind: "rejected" as const }
++        : { kind: "failed" as const };
++    const bytes = yield* Effect.tryPromise({
++      try: (signal) => readBounded(upstream.value, RESPONSE_LIMIT, signal),
++      catch: () => ({ _tag: "RoutesUpstreamBodyFailed" as const }),
++    }).pipe(Effect.timeout("5 seconds"), Effect.option);
++    if (bytes._tag === "None" || bytes.value === undefined) return { kind: "failed" as const };
++    const parsed = yield* Effect.try({
++      try: () => JSON.parse(new TextDecoder().decode(bytes.value)) as unknown,
++      catch: () => ({ _tag: "InvalidRoutesUpstreamJson" as const }),
++    }).pipe(Effect.option);
++    if (parsed._tag === "None" || !isRecord(parsed.value)) return { kind: "failed" as const };
++    return { kind: "success" as const, body: parsed.value };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
+new file mode 100644
+index 0000000..4e444d4
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
+@@ -0,0 +1,229 @@
++import { AppId, ProviderId } from "@executor-js/sdk/core";
++import { authorizeHostedRoutesAccount } from "@executor-js/hosted-server/hosted-routes";
++import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
++import { verifyHostedRoutesToken } from "@executor-js/hosted-server/hosted-routes-token";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { OrganizationForbidden, OrganizationId } from "@executor-js/hosted-server/organization";
++import { Effect, Option, Redacted, Result, Schema, Stream } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import type { SqlClient } from "effect/sql";
++import { computeRoutes } from "./google.ts";
++import { ComputeRoutesRequest, validComputeRoutesRequest } from "./request.ts";
++import { ComputeRoutesResponse } from "./response.ts";
++import { reserveMapsRoute } from "./usage.ts";
++
++export const mapsRoutesPath = "/api/maps/routes";
++export const mapsRoutesHealthPath = "/api/maps/routes/health";
++
++const BODY_LIMIT = 16 * 1024;
++const NO_STORE = { "cache-control": "no-store", "x-content-type-options": "nosniff" } as const;
++
++interface RoutesOptions {
++  readonly apiKey: Option.Option<Redacted.Redacted<string>>;
++  readonly signingKey: Option.Option<Redacted.Redacted<string>>;
++  readonly origin: string;
++  readonly provider: ProviderId;
++  /** Used by the cloud emulator boundary to route only the fixed Google request to its fixture. */
++  readonly fetcher?: typeof fetch;
++}
++
++interface Authorized {
++  readonly app: string;
++  readonly organization: string;
++  readonly user: string;
++}
++
++const tokenFrom = (request: HttpServerRequest.HttpServerRequest) => {
++  const authorization = request.headers.authorization;
++  if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return undefined;
++  const token = authorization.slice("Bearer ".length);
++  return token.length > 0 && token.length <= 4096 ? token : undefined;
++};
++
++const authorize = (
++  sql: SqlClient.SqlClient,
++  input: {
++    readonly token: string | undefined;
++    readonly signingKey: Option.Option<Redacted.Redacted<string>>;
++    readonly origin: string;
++    readonly provider: ProviderId;
++  },
++) =>
++  Effect.gen(function* () {
++    if (Option.isNone(input.signingKey) || input.token === undefined) return undefined;
++    const signingKey = input.signingKey.value;
++    const token = input.token;
++    const claims = yield* Effect.tryPromise(() =>
++      verifyHostedRoutesToken(Redacted.value(signingKey), token),
++    ).pipe(Effect.option);
++    if (Option.isNone(claims) || claims.value === undefined || claims.value.origin !== input.origin)
++      return undefined;
++    const app = yield* Schema.decodeUnknownEffect(AppId)(claims.value.app).pipe(Effect.option);
++    const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
++      claims.value.organization,
++    ).pipe(Effect.option);
++    if (Option.isNone(app) || Option.isNone(organization) || claims.value.user.length === 0)
++      return undefined;
++    yield* authorizeHostedRoutesAccount(sql, {
++      app: app.value,
++      organization: organization.value,
++      user: claims.value.user,
++      nonce: claims.value.nonce,
++      provider: input.provider,
++      tokenOrigin: claims.value.origin,
++    });
++    return {
++      app: claims.value.app,
++      organization: claims.value.organization,
++      user: claims.value.user,
++      nonce: claims.value.nonce,
++    };
++  }).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)));
++
++const response = (body: unknown, status = 200) =>
++  HttpServerResponse.json(body, { status, headers: NO_STORE });
++
++const authFailure = () => response({ error: "unauthorized" }, 401);
++const unavailable = () => response({ error: "routes_unavailable" }, 503);
++
++const boundedRequestText = (request: HttpServerRequest.HttpServerRequest) =>
++  Stream.runFoldEffect(
++    request.stream,
++    () => ({ chunks: [] as Uint8Array[], size: 0 }),
++    (state, chunk) => {
++      if (state.size + chunk.byteLength > BODY_LIMIT) return Effect.fail("too_large" as const);
++      return Effect.succeed({
++        chunks: [...state.chunks, chunk],
++        size: state.size + chunk.byteLength,
++      });
++    },
++  ).pipe(
++    Effect.map((state) => {
++      const bytes = new Uint8Array(state.size);
++      let offset = 0;
++      for (const chunk of state.chunks) {
++        bytes.set(chunk, offset);
++        offset += chunk.byteLength;
++      }
++      return new TextDecoder().decode(bytes);
++    }),
++    Effect.result,
++  );
++
++/** Cloud-only Routes proxy; never exposes Google's key or lets callers choose an upstream. */
++export const mapsRoutesHandlers = (options: RoutesOptions) => {
++  const apiKey = Option.isSome(options.apiKey) ? options.apiKey.value : undefined;
++  const configured =
++    apiKey !== undefined &&
++    Redacted.value(apiKey).length > 0 &&
++    Option.isSome(options.signingKey) &&
++    Redacted.value(options.signingKey.value).length > 0;
++  const fetcher = options.fetcher ?? globalThis.fetch;
++  const routesConfiguration = {
++    signingKey: Option.isSome(options.signingKey) ? options.signingKey.value : Redacted.make(""),
++    origin: options.origin,
++    enabled: configured,
++    identity: {
++      reference: new URL("/catalog/apps/google-maps.json", options.origin).href,
++      provider: options.provider,
++    },
++  } as const;
++
++  const health = Effect.gen(function* () {
++    if (!configured || apiKey === undefined) return yield* unavailable();
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const authorized = yield* authorize(sql, {
++      token: tokenFrom(request),
++      signingKey: options.signingKey,
++      origin: options.origin,
++      provider: options.provider,
++    });
++    if (authorized === undefined) return yield* authFailure();
++    return yield* response({ status: "ready" });
++  }).pipe(
++    Effect.provideService(HostedRoutesConfiguration, routesConfiguration),
++    Effect.withTracerEnabled(false),
++    Effect.catchCause(() => unavailable()),
++  );
++
++  const post = Effect.gen(function* () {
++    if (!configured || apiKey === undefined) return yield* unavailable();
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const contentType = request.headers["content-type"]?.toLowerCase() ?? "";
++    if (!contentType.startsWith("application/json"))
++      return yield* response({ error: "expected_json" }, 415);
++    const length = Number(request.headers["content-length"] ?? 0);
++    if (Number.isFinite(length) && length > BODY_LIMIT)
++      return yield* response({ error: "request_too_large" }, 413);
++    const text = yield* boundedRequestText(request);
++    if (Result.isFailure(text))
++      return yield* text.failure === "too_large"
++        ? response({ error: "request_too_large" }, 413)
++        : response({ error: "invalid_json" }, 400);
++    const bodyText = text.success;
++    const parsed = yield* Effect.try({
++      try: () => JSON.parse(bodyText) as unknown,
++      catch: () => ({ _tag: "InvalidRoutesJson" as const }),
++    }).pipe(Effect.option);
++    if (Option.isNone(parsed) || !validComputeRoutesRequest(parsed.value))
++      return yield* response({ error: "invalid_request" }, 400);
++    const decoded = yield* Schema.decodeUnknownEffect(ComputeRoutesRequest)(parsed.value).pipe(
++      Effect.option,
++    );
++    if (Option.isNone(decoded)) return yield* response({ error: "invalid_request" }, 400);
++
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const authorized = yield* authorize(sql, {
++      token: tokenFrom(request),
++      signingKey: options.signingKey,
++      origin: options.origin,
++      provider: options.provider,
++    });
++    if (authorized === undefined) return yield* authFailure();
++
++    const reservation = yield* reserveMapsRoute(
++      sql,
++      authorized,
++      authorizeHostedRoutesAccount(sql, {
++        app: AppId.make(authorized.app),
++        organization: OrganizationId.make(authorized.organization),
++        user: authorized.user,
++        nonce: authorized.nonce,
++        provider: options.provider,
++        tokenOrigin: options.origin,
++      }),
++    );
++    if (!reservation.allowed)
++      return yield* reservation.reason === "limit"
++        ? response({ error: "route_quota_exceeded", limit: reservation.limit }, 429)
++        : unavailable();
++
++    const result = yield* computeRoutes(fetcher, apiKey, decoded.value);
++    if (result.kind === "rejected")
++      return yield* response({ error: "route_request_rejected" }, 422);
++    if (result.kind === "failed") return yield* response({ error: "routes_upstream_failed" }, 502);
++    const safe = yield* Schema.decodeUnknownEffect(ComputeRoutesResponse)(result.body).pipe(
++      Effect.option,
++    );
++    if (Option.isNone(safe)) return yield* response({ error: "routes_upstream_failed" }, 502);
++    const key = Redacted.value(apiKey);
++    const scrub = (value: unknown): unknown =>
++      typeof value === "string"
++        ? value.split(key).join("[redacted]")
++        : Array.isArray(value)
++          ? value.map(scrub)
++          : value !== null && typeof value === "object"
++            ? Object.fromEntries(
++                Object.entries(value).map(([name, nested]) => [name, scrub(nested)]),
++              )
++            : value;
++    return yield* response(scrub(safe.value));
++  }).pipe(
++    Effect.provideService(HostedRoutesConfiguration, routesConfiguration),
++    Effect.withTracerEnabled(false),
++    Effect.catchCause(() => unavailable()),
++  );
++
++  return { post, health };
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts
+new file mode 100644
+index 0000000..760649a
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts
+@@ -0,0 +1,77 @@
++import { Schema } from "effect";
++
++const Waypoint = Schema.Union([
++  Schema.Struct({ address: Schema.String }),
++  Schema.Struct({ placeId: Schema.String }),
++  Schema.Struct({
++    location: Schema.Struct({
++      latLng: Schema.Struct({
++        latitude: Schema.Number,
++        longitude: Schema.Number,
++      }),
++    }),
++  }),
++]);
++
++export const ComputeRoutesRequest = Schema.Struct({
++  origin: Waypoint,
++  destination: Waypoint,
++  intermediates: Schema.optionalKey(Schema.Array(Waypoint)),
++  travelMode: Schema.Literals(["DRIVE", "WALK", "BICYCLE", "TRANSIT"]),
++});
++export type ComputeRoutesRequest = typeof ComputeRoutesRequest.Type;
++
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++const onlyKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
++  Object.keys(value).every((key) => keys.includes(key));
++
++/** Reject fields the host has not priced and bounded, including nested waypoint options. */
++const validWaypoint = (value: unknown): boolean => {
++  if (!isRecord(value) || !onlyKeys(value, ["address", "placeId", "location"])) return false;
++  if (Object.keys(value).length !== 1) return false;
++  if ("address" in value)
++    return (
++      typeof value.address === "string" &&
++      value.address.trim().length > 0 &&
++      value.address.length <= 512
++    );
++  if ("placeId" in value)
++    return (
++      typeof value.placeId === "string" &&
++      value.placeId.trim().length > 0 &&
++      value.placeId.length <= 256
++    );
++  const location = value.location;
++  if (!isRecord(location) || !onlyKeys(location, ["latLng"]) || !isRecord(location.latLng))
++    return false;
++  const latLng = location.latLng;
++  return (
++    onlyKeys(latLng, ["latitude", "longitude"]) &&
++    typeof latLng.latitude === "number" &&
++    Number.isFinite(latLng.latitude) &&
++    latLng.latitude >= -90 &&
++    latLng.latitude <= 90 &&
++    typeof latLng.longitude === "number" &&
++    Number.isFinite(latLng.longitude) &&
++    latLng.longitude >= -180 &&
++    latLng.longitude <= 180
++  );
++};
++
++export const validComputeRoutesRequest = (value: unknown): value is ComputeRoutesRequest => {
++  if (
++    !isRecord(value) ||
++    !onlyKeys(value, ["origin", "destination", "intermediates", "travelMode"])
++  )
++    return false;
++  if (!validWaypoint(value.origin) || !validWaypoint(value.destination)) return false;
++  if (
++    value.intermediates !== undefined &&
++    (!Array.isArray(value.intermediates) ||
++      value.intermediates.length > 10 ||
++      value.intermediates.some((waypoint) => !validWaypoint(waypoint)))
++  )
++    return false;
++  return ["DRIVE", "WALK", "BICYCLE", "TRANSIT"].includes(String(value.travelMode));
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts
+new file mode 100644
+index 0000000..316711c
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts
+@@ -0,0 +1,39 @@
++import { Schema } from "effect";
++
++const NavigationInstruction = Schema.Struct({
++  instructions: Schema.optionalKey(Schema.String),
++  maneuver: Schema.optionalKey(Schema.String),
++});
++
++const Step = Schema.Struct({
++  distanceMeters: Schema.optionalKey(Schema.Number),
++  staticDuration: Schema.optionalKey(Schema.String),
++  navigationInstruction: Schema.optionalKey(NavigationInstruction),
++});
++
++const Location = Schema.Struct({
++  latLng: Schema.Struct({ latitude: Schema.Number, longitude: Schema.Number }),
++});
++
++const Leg = Schema.Struct({
++  startLocation: Schema.optionalKey(Location),
++  endLocation: Schema.optionalKey(Location),
++  distanceMeters: Schema.optionalKey(Schema.Number),
++  duration: Schema.optionalKey(Schema.String),
++  steps: Schema.optionalKey(Schema.Array(Step)),
++});
++
++const Polyline = Schema.Struct({
++  encodedPolyline: Schema.optionalKey(Schema.String),
++});
++
++export const ComputeRoutesResponse = Schema.Struct({
++  routes: Schema.Array(
++    Schema.Struct({
++      distanceMeters: Schema.optionalKey(Schema.Number),
++      duration: Schema.optionalKey(Schema.String),
++      polyline: Schema.optionalKey(Polyline),
++      legs: Schema.optionalKey(Schema.Array(Leg)),
++    }),
++  ),
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts
+new file mode 100644
+index 0000000..545eece
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts
+@@ -0,0 +1,80 @@
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++
++const Counts = Schema.Struct({
++  globalMonth: Schema.Int,
++  globalDay: Schema.Int,
++  globalMinute: Schema.Int,
++  userMonth: Schema.Int,
++  userDay: Schema.Int,
++  userMinute: Schema.Int,
++});
++
++export type UsageDecision =
++  | { readonly allowed: true }
++  | { readonly allowed: false; readonly reason: "unavailable" }
++  | {
++      readonly allowed: false;
++      readonly reason: "limit";
++      readonly limit:
++        | "globalMonth"
++        | "globalDay"
++        | "globalMinute"
++        | "userMonth"
++        | "userDay"
++        | "userMinute";
++    };
++
++/** Reserve before calling Google. A timeout or an unclear response still consumes the slot. */
++export const reserveMapsRoute = <E, R>(
++  sql: SqlClient.SqlClient,
++  input: { readonly user: string; readonly organization: string; readonly app: string },
++  beforeReserve: Effect.Effect<unknown, E, R>,
++): Effect.Effect<UsageDecision, never, R> =>
++  sql
++    .withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set local statement_timeout = '3s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
++        // All instances serialize this short counter-and-insert section on the same PostgreSQL lock.
++        yield* sql`select pg_advisory_xact_lock(731905221)`;
++        // A revocation may commit while this request waits for the shared quota lock.
++        yield* beforeReserve;
++        const rows = yield* sql`
++        with bounds as (
++          select now() as current_time,
++            date_trunc('month', timezone('UTC', now())) at time zone 'UTC' as month_start,
++            date_trunc('day', timezone('UTC', now())) at time zone 'UTC' as day_start
++        )
++        select
++          count(*) filter (where created_at >= bounds.month_start)::int as "globalMonth",
++          count(*) filter (where created_at >= bounds.day_start)::int as "globalDay",
++          count(*) filter (where created_at >= bounds.current_time - interval '1 minute')::int as "globalMinute",
++          count(*) filter (where user_id = ${input.user} and created_at >= bounds.month_start)::int as "userMonth",
++          count(*) filter (where user_id = ${input.user} and created_at >= bounds.day_start)::int as "userDay",
++          count(*) filter (where user_id = ${input.user} and created_at >= bounds.current_time - interval '1 minute')::int as "userMinute"
++        from basalt_hosted_routes_usage, bounds
++        where created_at >= least(bounds.month_start, bounds.current_time - interval '1 minute')`;
++        const counts = yield* Schema.decodeUnknownEffect(Counts)(rows[0]);
++        const limits = {
++          globalMonth: 620,
++          globalDay: 20,
++          globalMinute: 1,
++          userMonth: 100,
++          userDay: 10,
++          userMinute: 1,
++        } as const;
++        for (const limit of Object.keys(limits) as Array<keyof typeof limits>)
++          if (counts[limit] >= limits[limit])
++            return { allowed: false as const, reason: "limit" as const, limit };
++        yield* sql`insert into basalt_hosted_routes_usage (user_id, organization, app)
++        values (${input.user}, ${input.organization}, ${input.app})`;
++        return { allowed: true as const };
++      }),
++    )
++    .pipe(
++      Effect.catch(() =>
++        Effect.succeed({ allowed: false as const, reason: "unavailable" as const }),
++      ),
++    );
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index efaf0f5..67a3123 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -1,3 +1,5 @@
++import { cloudHostedRoutes } from "./hosted-routes.ts";
++import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
+ /** The executor and the services every cloud Worker shares, including app pages. */
+ import {
+   HostedExecutor,
+@@ -66,9 +68,11 @@ export const cloudProductServices = Effect.fn(function* (
+   const poolKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+   const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
+   const accessLifecycle = poolAccessLifecycle(poolKey, poolOrigin);
++  const routes = yield* cloudHostedRoutes;
+   const wire = yield* cloudOAuthWire;
+   const services = Layer.mergeAll(
+     wire,
++    Layer.succeed(HostedRoutesConfiguration, routes.configuration),
+     Layer.succeed(AccountAcquisitionConfiguration, acquisition),
+     Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index f344ca4..5dfbb83 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -2,6 +2,8 @@ import { drainContributedDepartures } from "@executor-js/hosted-server/contribut
+ import { cloudWorkflowInputDisplays } from "./infrastructure/workflow-display.ts";
+ import { appSandboxAddress } from "@executor-js/mcp";
+ import { McpAppSandbox } from "@executor-js/hosted-server";
++import { cloudHostedRoutes } from "./infrastructure/hosted-routes.ts";
++import { mapsRoutesPath, mapsRoutesHealthPath } from "./infrastructure/maps-routes/index.ts";
+ import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
+ import {
+   Provisioning,
+@@ -616,6 +618,7 @@ export default Api.make(
+       sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
+     );
+     // The site's first-party analytics proxy and error tunnel.
++    const mapsRoutes = (yield* cloudHostedRoutes).handlers;
+     const siteTelemetryRoutes = Layer.mergeAll(
+       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+@@ -625,6 +628,12 @@ export default Api.make(
+       HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
++      HttpRouter.add("POST", mapsRoutesPath, mapsRoutes.post).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
++      HttpRouter.add("GET", mapsRoutesHealthPath, mapsRoutes.health).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 4d4111d..fbb1a4f 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -46,6 +46,9 @@
+     "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
+     "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
+     "./pool-token": "./src/implementation/pool-token.ts",
++    "./hosted-routes": "./src/implementation/hosted-routes-accounts.ts",
++    "./hosted-routes-token": "./src/implementation/hosted-routes-token.ts",
++    "./hosted-routes/contracts": "./src/contracts/hosted-routes.ts",
+     "./pool-models": "./src/implementation/pool-models.ts"
+   },
+   "dependencies": {
+diff --git a/apps/hosted/server/src/contracts/hosted-routes.ts b/apps/hosted/server/src/contracts/hosted-routes.ts
+new file mode 100644
+index 0000000..920b6e4
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/hosted-routes.ts
+@@ -0,0 +1,80 @@
++import { isLoopbackHostname } from "@executor-js/utils/url-policy";
++import type { ProviderDefinition, ProviderId } from "@executor-js/sdk/core";
++import { Context, Redacted } from "effect";
++
++/** Stable app-source identity and provider identity computed from the rendered catalog source. */
++export interface HostedRoutesAppIdentity {
++  readonly reference: string;
++  readonly provider: ProviderId;
++}
++
++/** Host-owned settings for the hosted Google Routes capability. */
++export interface HostedRoutesConfiguration {
++  readonly signingKey: Redacted.Redacted<string>;
++  readonly origin: string;
++  readonly enabled: boolean;
++  readonly identity?: HostedRoutesAppIdentity;
++}
++
++/** Disabled by default so local and unrelated hosted installs fail closed. */
++export const HostedRoutesConfiguration = Context.Reference<HostedRoutesConfiguration | undefined>(
++  "hosted/RoutesConfiguration",
++  { defaultValue: () => undefined },
++);
++
++/** The one member account the official Maps app uses for host-paid Routes calls. */
++export const hostedRoutesRequirement = "hostedRoutes" as const;
++export const hostedRoutesMethod = "hostedRoutes" as const;
++
++/** Requests stay on this host's API Worker. */
++export const hostedRoutesPath = "/api/maps/routes";
++export const hostedRoutesHealthPath = "/api/maps/routes/health";
++
++const canonicalHostedRoutesOrigin = (origin: string) => {
++  const url = new URL(origin);
++  if (
++    url.origin !== origin ||
++    (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHostname(url.hostname)))
++  )
++    throw new Error("Hosted Routes origin must be a canonical HTTP(S) origin");
++  return url;
++};
++
++/** Provider declaration shared with the rendered Google Maps catalog source. */
++export const hostedRoutesProviderDefinition = (origin: string): ProviderDefinition => {
++  const url = canonicalHostedRoutesOrigin(origin);
++  return {
++    name: "Google Maps Routes",
++    hosts: [url.host],
++    auth: {
++      [hostedRoutesMethod]: {
++        type: "secrets",
++        provisioned: true,
++        label: "Signalbox hosted routes",
++        fields: {
++          $schema: "https://json-schema.org/draft/2020-12/schema",
++          type: "object",
++          properties: {
++            origin: { type: "string", minLength: 1 },
++            token: { type: "string", minLength: 1 },
++          },
++          required: ["origin", "token"],
++          additionalProperties: true,
++          $defs: {},
++        },
++        plain: ["origin"],
++        request: [
++          {
++            in: "header",
++            name: "authorization",
++            value: ["Bearer ", { field: "token" }],
++          },
++        ],
++      },
++    },
++  };
++};
++
++/** The copy origin of the one rendered Maps catalog app for this hosted deployment. */
++export const hostedRoutesCatalogReference = (origin: string) =>
++  `${canonicalHostedRoutesOrigin(origin).origin}/catalog/apps/google-maps.json`;
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+index 01062bf..324ccae 100644
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,3 +1,6 @@
++import { HostedExecutor } from "../contracts/executor.ts";
++import { HostedRoutesConfiguration } from "../contracts/hosted-routes.ts";
++import { ensureHostedRoutesAccount, isHostedRoutesApp } from "./hosted-routes-accounts.ts";
+ import { protectProvisionedLinks } from "./provisioned-links.ts";
+ import { InteractiveRemovalDone } from "@executor-js/sdk/core";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+@@ -35,7 +38,7 @@ import type { SqlClient } from "effect/sql";
+ import { CurrentUserId } from "../contracts/auth.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { RequirementMismatch } from "../contracts/app-accounts.ts";
+-import { OrganizationForbidden } from "../contracts/organization.ts";
++import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+ import {
+   AppAccountReads,
+   LinkedAccount,
+@@ -202,7 +205,26 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
+ };
+ /** The accounts an operation the caller starts runs with on the app's active version. */
+ export const callerAccounts = (app: App, links?: CallerLinks) =>
+-  versionAccounts(activeVersion(app), links);
++  Effect.gen(function* () {
++    const configuration = yield* HostedRoutesConfiguration;
++    if (isHostedRoutesApp(app, configuration)) {
++      const user = yield* CurrentUserId;
++      if (user !== undefined) {
++        yield* ensureHostedRoutesAccount(
++          yield* Effect.flatten(HostedExecutor),
++          yield* policyDatabase,
++          {
++            organization: (yield* CurrentOrganization).organization,
++            user,
++            app,
++          },
++        ).pipe(Effect.mapError(() => new StorageError()));
++        // Provisioning may have committed a new link after the access fold read its snapshot.
++        return yield* versionAccounts(activeVersion(app));
++      }
++    }
++    return yield* versionAccounts(activeVersion(app), links);
++  });
+ 
+ /** Webhook source management, from the SDK the product links accounts through. */
+ export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
+diff --git a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
+new file mode 100644
+index 0000000..0c8b8ad
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
+@@ -0,0 +1,305 @@
++import { isLoopbackHostname } from "@executor-js/utils/url-policy";
++/** Provision and authorize the host-owned Maps Routes account. */
++import {
++  AccountId,
++  AppId,
++  ProviderId,
++  StorageError,
++  StorageHost,
++  type App,
++  type Executor,
++} from "@executor-js/sdk/core";
++import { Effect, Redacted, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import {
++  HostedRoutesConfiguration,
++  hostedRoutesMethod,
++  hostedRoutesRequirement,
++  type HostedRoutesConfiguration as HostedRoutesConfigurationValue,
++  type HostedRoutesAppIdentity,
++} from "../contracts/hosted-routes.ts";
++import {
++  OrganizationForbidden,
++  organizationOwner,
++  type OrganizationId,
++} from "../contracts/organization.ts";
++import { personalAccountCreation } from "./resource-lifecycle.ts";
++import { lockAppLinks, provisionAccountLink } from "./app-accounts.ts";
++import {
++  requireAccountAccessAs,
++  requireAppAccessAs,
++  resourceAuthority,
++} from "./resource-policy.ts";
++import { signHostedRoutesToken, verifyHostedRoutesToken } from "./hosted-routes-token.ts";
++
++export {
++  HostedRoutesConfiguration,
++  hostedRoutesCatalogReference,
++  hostedRoutesHealthPath,
++  hostedRoutesMethod,
++  hostedRoutesPath,
++  hostedRoutesRequirement,
++  hostedRoutesProviderDefinition,
++} from "../contracts/hosted-routes.ts";
++export type {
++  HostedRoutesAppIdentity,
++  HostedRoutesConfiguration as HostedRoutesConfigurationValue,
++} from "../contracts/hosted-routes.ts";
++
++const Reservation = Schema.Struct({
++  account: Schema.NullOr(AccountId),
++  nonce: Schema.String,
++  state: Schema.Literals(["provisioning", "linked", "retired"]),
++  provider: Schema.NullOr(ProviderId),
++  method: Schema.NullOr(Schema.String),
++  personalUser: Schema.NullOr(Schema.String),
++  linked: Schema.Boolean,
++});
++
++const AccountRow = Schema.Struct({ account: AccountId });
++const sqlFailures = {
++  SqlError: () => new StorageError(),
++  SchemaError: () => new StorageError(),
++};
++
++const validOrigin = (value: string) => {
++  try {
++    const url = new URL(value);
++    return (
++      url.origin === value &&
++      (url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname)))
++    );
++  } catch {
++    return false;
++  }
++};
++
++const matchingRequirement = (app: App, identity: HostedRoutesAppIdentity) => {
++  const requirement = app.requirements.accounts[hostedRoutesRequirement];
++  return (
++    app.copiedFrom?.reference === identity.reference &&
++    requirement?.scope === "user" &&
++    requirement.cardinality === "many" &&
++    requirement.provider === identity.provider
++  );
++};
++
++/** Whether an app is the exact catalog Maps source with the host-owned Routes requirement. */
++export const isHostedRoutesApp = (
++  app: App,
++  configuration: HostedRoutesConfigurationValue | undefined,
++) =>
++  configuration !== undefined &&
++  configuration.enabled &&
++  validOrigin(configuration.origin) &&
++  configuration.identity !== undefined &&
++  matchingRequirement(app, configuration.identity);
++
++/**
++ * Provision the official Maps app's one hosted Routes account for this member. The migration's
++ * `(app, user_id)` key reserves creation before the SDK writes the account, so concurrent calls
++ * cannot create two accounts. A missing live link retires the mapping instead of recreating it.
++ */
++export const ensureHostedRoutesAccount = (
++  executor: Executor,
++  sql: SqlClient.SqlClient,
++  input: {
++    readonly organization: OrganizationId;
++    readonly user: string;
++    readonly app: App;
++  },
++) =>
++  Effect.gen(function* () {
++    const configuration = yield* HostedRoutesConfiguration;
++    const identity = configuration?.identity;
++    if (
++      configuration === undefined ||
++      identity === undefined ||
++      !isHostedRoutesApp(input.app, configuration)
++    )
++      return undefined;
++
++    const { app, organization, user } = input;
++    const owner = organizationOwner(organization);
++    const tokenKey = Redacted.value(configuration.signingKey);
++    return yield* executor[StorageHost].transaction(
++      Effect.gen(function* () {
++        yield* lockAppLinks(sql, app.id);
++        const rows = yield* sql`
++          select mapping.account_id as account, mapping.nonce, mapping.state,
++            account.provider, account.method, access.personal_user_id as "personalUser",
++            exists (
++              select 1 from hosted_app_account_links link
++              where link.app = mapping.app and link.requirement = ${hostedRoutesRequirement}
++                and link.subject = mapping.user_id and link.account = mapping.account_id
++            ) as linked
++          from basalt_hosted_routes_accounts mapping
++          left join executor_accounts account on account.id = mapping.account_id
++            and account.owner = ${owner}
++          left join hosted_account_access access on access.account_id = mapping.account_id
++          where mapping.app = ${app.id} and mapping.organization = ${organization}
++            and mapping.user_id = ${user}
++          for update of mapping`;
++        const existing = yield* Schema.decodeUnknownEffect(Schema.Array(Reservation))(rows);
++        if (existing.length > 1) return yield* new StorageError();
++        const current = existing[0];
++        if (current !== undefined) {
++          if (current.state === "provisioning") return undefined;
++          if (
++            current.account === null ||
++            current.provider !== identity.provider ||
++            current.method !== hostedRoutesMethod ||
++            current.personalUser !== user ||
++            !current.linked
++          ) {
++            yield* sql`update basalt_hosted_routes_accounts set state = 'retired'
++              where app = ${app.id} and user_id = ${user} and state = 'linked'`;
++            return undefined;
++          }
++          const credentials = yield* executor.managedAccounts
++            .readCredentials({ owner, account: current.account })
++            .pipe(
++              Effect.map(Redacted.value),
++              Effect.catchTags({
++                AccountNotFound: () => Effect.succeed(undefined),
++                CredentialsError: () => Effect.succeed(undefined),
++              }),
++            );
++          const claims =
++            typeof credentials?.token === "string"
++              ? yield* Effect.promise(() =>
++                  verifyHostedRoutesToken(tokenKey, credentials.token as string),
++                )
++              : undefined;
++          if (
++            claims?.app === app.id &&
++            claims.organization === organization &&
++            claims.user === user &&
++            claims.nonce === current.nonce &&
++            claims.origin === configuration.origin
++          ) {
++            if (current.state === "retired")
++              yield* sql`update basalt_hosted_routes_accounts set state = 'linked'
++                where app = ${app.id} and user_id = ${user} and state = 'retired'`;
++            return current.account;
++          }
++          // A live personal link is the authority to repair a host-owned credential after key
++          // rotation. Keep the same account so selections and explicit relinks survive.
++          const token = yield* Effect.tryPromise({
++            try: () => signHostedRoutesToken(tokenKey, {
++              app: app.id, organization, user, nonce: current.nonce,
++              origin: configuration.origin,
++            }),
++            catch: () => new StorageError(),
++          });
++          yield* executor.managedAccounts.replaceCredentials({
++            owner, account: current.account,
++            fields: Redacted.make({ origin: configuration.origin, token }),
++          });
++          yield* sql`update basalt_hosted_routes_accounts set state = 'linked'
++            where app = ${app.id} and user_id = ${user}`;
++          return current.account;
++        }
++
++        const nonce = crypto.randomUUID();
++        const token = yield* Effect.tryPromise({
++          try: () =>
++            signHostedRoutesToken(tokenKey, {
++              app: app.id,
++              organization,
++              user,
++              nonce,
++              origin: configuration.origin,
++            }),
++          catch: () => new StorageError(),
++        });
++        const reserved = yield* sql`
++          insert into basalt_hosted_routes_accounts
++            (app, organization, user_id, nonce, state)
++          values (${app.id}, ${organization}, ${user}, ${nonce}, 'provisioning')
++          on conflict (app, user_id) do nothing
++          returning app`;
++        if (reserved.length !== 1) {
++          return undefined;
++        }
++
++        const account = yield* executor.managedAccounts
++          .add({
++            owner,
++            provider: identity.provider,
++            method: hostedRoutesMethod,
++            fields: Redacted.make({ origin: configuration.origin, token }),
++            label: "Google Maps Routes",
++          })
++          .pipe(personalAccountCreation(user));
++        const linked = yield* provisionAccountLink(sql, executor.webhooks, {
++          app: app.id,
++          requirement: hostedRoutesRequirement,
++          subject: user,
++          account: account.id,
++          linkedBy: user,
++        });
++        if (!linked) return yield* new StorageError();
++        const updated =
++          yield* sql`update basalt_hosted_routes_accounts set account_id = ${account.id},
++          state = 'linked' where app = ${app.id} and organization = ${organization}
++            and user_id = ${user} and nonce = ${nonce} and state = 'provisioning'
++          returning app`;
++        if (updated.length !== 1) return yield* new StorageError();
++        return account.id;
++      }),
++    );
++  }).pipe(Effect.catchTags(sqlFailures));
++
++/** Recheck current membership and policy before using the token's mapped account. */
++export const authorizeHostedRoutesAccount = (
++  sql: SqlClient.SqlClient,
++  input: {
++    readonly organization: OrganizationId;
++    readonly user: string;
++    readonly app: AppId;
++    readonly nonce: string;
++    readonly provider: ProviderId;
++    readonly tokenOrigin: string;
++  },
++) =>
++  Effect.gen(function* () {
++    const configuration = yield* HostedRoutesConfiguration;
++    if (
++      configuration === undefined ||
++      !configuration.enabled ||
++      configuration.origin !== input.tokenOrigin ||
++      configuration.identity?.provider !== input.provider ||
++      !validOrigin(input.tokenOrigin)
++    )
++      return yield* new OrganizationForbidden();
++
++    const actor = yield* resourceAuthority(input.organization, input.user);
++    yield* requireAppAccessAs(actor, input.app, "use");
++    const rows = yield* sql`
++      select a.id as account
++      from hosted_app_account_links l
++      join executor_apps app on app.id = l.app
++      join executor_deployments deployment on deployment.id = app.active_deployment
++        and deployment.requirements::jsonb -> 'accounts' -> ${hostedRoutesRequirement} ->> 'provider' = ${input.provider}
++        and deployment.requirements::jsonb -> 'accounts' -> ${hostedRoutesRequirement} ->> 'scope' = 'user'
++        and deployment.requirements::jsonb -> 'accounts' -> ${hostedRoutesRequirement} ->> 'cardinality' = 'many'
++      join executor_accounts a on a.id = l.account and a.owner = app.owner
++      join hosted_account_access p on p.account_id = a.id
++        and a.owner = 'organization:' || p.organization_id
++      join member m on m."organizationId" = p.organization_id and m."userId" = l.subject
++      join basalt_hosted_routes_accounts mapping
++        on mapping.app = l.app and mapping.user_id = l.subject and mapping.account_id = a.id
++      where l.app = ${input.app} and l.subject = ${actor.user}
++        and l.requirement = ${hostedRoutesRequirement}
++        and m."organizationId" = ${actor.organization} and m."userId" = ${actor.user}
++        and mapping.organization = ${actor.organization} and mapping.nonce = ${input.nonce}
++        and mapping.state = 'linked' and a.provider = ${input.provider}
++        and a.method = ${hostedRoutesMethod} and p.kind = 'personal'
++        and p.personal_user_id = ${actor.user}`;
++    const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(AccountRow))(rows);
++    const account = accounts[0]?.account;
++    if (accounts.length !== 1 || account === undefined) return yield* new OrganizationForbidden();
++    yield* requireAccountAccessAs(actor, account, "use");
++    return account;
++  }).pipe(Effect.catchTags(sqlFailures));
+diff --git a/apps/hosted/server/src/implementation/hosted-routes-schema.ts b/apps/hosted/server/src/implementation/hosted-routes-schema.ts
+new file mode 100644
+index 0000000..b0c8eab
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/hosted-routes-schema.ts
+@@ -0,0 +1,27 @@
++/** Additive host-owned state. A removed link keeps its provisioning tombstone. */
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++export const migrateHostedRoutes = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists basalt_hosted_routes_accounts (
++    app text not null,
++    organization text not null,
++    user_id text not null,
++    account_id text,
++    nonce text not null unique,
++    state text not null default 'provisioning' check (state in ('provisioning', 'linked', 'retired')),
++    primary key (app, user_id)
++  )`;
++  yield* sql`create table if not exists basalt_hosted_routes_usage (
++    id bigint generated always as identity primary key,
++    user_id text not null,
++    organization text not null,
++    app text not null,
++    created_at timestamp with time zone not null default now()
++  )`;
++  yield* sql`create index if not exists basalt_hosted_routes_usage_created
++    on basalt_hosted_routes_usage (created_at)`;
++  yield* sql`create index if not exists basalt_hosted_routes_usage_user_created
++    on basalt_hosted_routes_usage (user_id, created_at)`;
++});
+diff --git a/apps/hosted/server/src/implementation/hosted-routes-token.ts b/apps/hosted/server/src/implementation/hosted-routes-token.ts
+new file mode 100644
+index 0000000..98af5fe
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/hosted-routes-token.ts
+@@ -0,0 +1,72 @@
++import { isLoopbackHostname } from "@executor-js/utils/url-policy";
++/** A per-user capability for the hosted Google Routes proxy. */
++import { isSigningKey, openEnvelope, signEnvelope } from "./pool-token.ts";
++
++/** The identity and deployment origin bound to one provisioned Routes account. */
++export interface HostedRoutesClaims {
++  readonly app: string;
++  readonly organization: string;
++  readonly user: string;
++  readonly nonce: string;
++  readonly origin: string;
++}
++
++// Keep these credentials cryptographically separate from pool tokens even though both use the
++// same host signing key.
++const hostedRoutesPrefix = "bhr1";
++const maxClaimLength = 256;
++
++const validOrigin = (value: string) => {
++  try {
++    const url = new URL(value);
++    return (
++      url.origin === value &&
++      (url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHostname(url.hostname)))
++    );
++  } catch {
++    return false;
++  }
++};
++
++const validClaims = (value: unknown): value is HostedRoutesClaims => {
++  if (typeof value !== "object" || value === null) return false;
++  const claims = value as Record<string, unknown>;
++  if (
++    Object.keys(claims).some(
++      (key) => !["app", "organization", "user", "nonce", "origin"].includes(key),
++    )
++  )
++    return false;
++  return (
++    ["app", "organization", "user", "nonce"].every(
++      (key) =>
++        typeof claims[key] === "string" &&
++        claims[key].length > 0 &&
++        claims[key].length <= maxClaimLength,
++    ) &&
++    typeof claims.origin === "string" &&
++    claims.origin.length <= maxClaimLength &&
++    validOrigin(claims.origin)
++  );
++};
++
++/** Create a domain-separated HMAC token. The Google API key is never included in the token. */
++export const signHostedRoutesToken = async (secret: string, claims: HostedRoutesClaims) => {
++  if (!isSigningKey(secret) || !validClaims(claims))
++    throw new Error("Hosted Routes token configuration is invalid");
++  return signEnvelope(secret, hostedRoutesPrefix, claims);
++};
++
++/** Return claims only for a valid token of this capability and version. */
++export const verifyHostedRoutesToken = async (
++  secret: string,
++  token: string,
++): Promise<HostedRoutesClaims | undefined> => {
++  try {
++    if (!isSigningKey(secret) || typeof token !== "string" || token.length > 4096) return undefined;
++    const claims = await openEnvelope(secret, hostedRoutesPrefix, token);
++    return validClaims(claims) ? claims : undefined;
++  } catch {
++    return undefined;
++  }
++};
+diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+index 5143de3..7383086 100644
+--- a/apps/hosted/server/src/implementation/mcp-http.ts
++++ b/apps/hosted/server/src/implementation/mcp-http.ts
+@@ -323,6 +323,7 @@ export const dispatchHostedMcp = <E, R>(
+           !fold.result.value.access.canUse
+             ? Effect.succeed(undefined)
+             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
++                Effect.provideService(CurrentOrganization, access.access),
+                 Effect.provideService(CurrentAuthorization, access.policy),
+                 Effect.provideService(CurrentUserId, access.userId),
+                 Effect.provideContext(services),
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index 70eb890..7d41e42 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -6,6 +6,7 @@ import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/co
+ import { Context, Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import * as Migrator from "effect/sql/Migrator";
++import { migrateHostedRoutes } from "./hosted-routes-schema.ts";
+ import { migrateModelBindings } from "./model-binding-schema.ts";
+ import { migrateProvisioning } from "./provisioning-schema.ts";
+ import { migrateGroups } from "./group-schema.ts";
+@@ -142,6 +143,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+   "12_account_identity_index": migrateAccountIdentityIndex,
+   "13_contributed_departure_observability": migrateContributedDepartureObservability,
+   "14_model_bindings": migrateModelBindings,
++  "15_hosted_routes": migrateHostedRoutes,
+ });
+ 
+ /**
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 3643ce7..06d8267 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+ import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
++import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+ import {
+   OperatorOAuthFixture,
+   operatorOAuthFile,
+@@ -205,6 +206,40 @@ export const startCloudEnvironment = (input: {
+               services: input.signInThrough.services,
+             }),
+           );
++    const mapsRoutes = yield* Effect.gen(function* () {
++      if (process.env.BASALT_E2E_ROUTES !== "1") return undefined;
++      const sourcePath = process.env.BASALT_E2E_ROUTES_SOURCE_FILE;
++      if (sourcePath === undefined || !path.isAbsolute(sourcePath))
++        return yield* Effect.die(
++          "BASALT_E2E_ROUTES_SOURCE_FILE must name an absolute private fixture file",
++        );
++      const document = yield* fs.readFileString(sourcePath).pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.fromJsonString(
++              Schema.Struct({
++                origin: Schema.String,
++                entry: Schema.Record(Schema.String, Schema.Unknown),
++                source: Schema.Record(Schema.String, Schema.Unknown),
++              }),
++            ),
++          ),
++        ),
++        Effect.mapError(
++          () => new CloudStartFailed({ operation: "Read Maps Routes E2E catalog source" }),
++        ),
++      );
++      return yield* startMapsRoutesEmulator({ document, browserOrigin: browser });
++    });
++    const fixtureValue = Redacted.value(fixture);
++    const routesFixture = Redacted.make(
++      mapsRoutes === undefined
++        ? fixtureValue
++        : {
++            ...fixtureValue,
++            services: { ...fixtureValue.services, mapsRoutes },
++          },
++    );
+     const oauthProxy = {
+       productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
+       secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
+@@ -217,7 +252,7 @@ export const startCloudEnvironment = (input: {
+       ).pipe(Effect.asVoid, Effect.orDie),
+     );
+     const emulators = `${directory}/emulators.json`;
+-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
++    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
+     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+     const analyticsPort = yield* startAnalyticsCollector(directory);
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+@@ -289,7 +324,7 @@ export const startCloudEnvironment = (input: {
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+       // Fresh test installs use the encrypted native journal, as production does.
+       EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+-      ...(process.env.BASALT_E2E_POOL_SETUP === "1"
++      ...(process.env.BASALT_E2E_POOL_SETUP === "1" || mapsRoutes !== undefined
+         ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
+         : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+@@ -337,6 +372,13 @@ export const startCloudEnvironment = (input: {
+       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
+       CLOUD_DEV_EXTERNAL_DATABASE: "true",
+       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
++      ...(mapsRoutes === undefined
++        ? {}
++        : {
++            EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(routesFixture).services),
++            GOOGLE_MAPS_ROUTES_API_KEY: "synthetic-e2e-routes-key",
++            EXECUTOR_CATALOG_URL: `${mapsRoutes.baseUrl}/catalog/index.json`,
++          }),
+       EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
+       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
+       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+@@ -685,6 +727,6 @@ export const startCloudEnvironment = (input: {
+       emulators,
+       fixtures: controls,
+       origin: input.origin,
+-      oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
++      oauthProxy: { ...oauthProxy, services: Redacted.value(routesFixture).services },
+     };
+   });
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+index ddd7b7e..a7b789b 100644
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -56,6 +56,24 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
+       ].every((endpoint) => endpoint.startsWith(`${baseUrl}/`)),
+   ),
+ );
++const RoutesFixture = Schema.Struct({
++  baseUrl: Schema.String.check(
++    Schema.makeFilter((value) => {
++      const url = URL.parse(value);
++      return (
++        url !== null &&
++        !url.username &&
++        !url.password &&
++        !url.search &&
++        !url.hash &&
++        !value.endsWith("/") &&
++        url.protocol === "http:" &&
++        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
++      );
++    }),
++  ),
++  token: Schema.NonEmptyString,
++});
+ 
+ /** The fields of v1 WorkOS listings that seeding reads back. */
+ const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
+@@ -74,6 +92,7 @@ export const EmulatorFixture = Schema.Struct({
+   version: Schema.Literal(4),
+   origin: Schema.String,
+   services: Schema.Struct({
++    mapsRoutes: Schema.optionalKey(RoutesFixture),
+     google: GoogleProvider,
+     github: Provider,
+     mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
+@@ -493,47 +512,51 @@ const make = Effect.gen(function* () {
+       ),
+     );
+   return {
+-    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
+-      Effect.gen(function* () {
+-        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
+-        if (!match?.[1])
+-          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
+-        return yield* request(
+-          value.services.billing.baseUrl,
+-          "/v1/customers.get",
+-          { customer_id: `${match[1]}:organization:${input.organizationId}` },
+-          value.services.billing.token,
+-        ).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({
+-                balances: Schema.Record(
+-                  Schema.String,
+-                  Schema.Struct({
+-                    feature_id: Schema.String,
+-                    usage: Schema.Number,
+-                    remaining: Schema.Number,
+-                    unlimited: Schema.Boolean,
+-                  }),
+-                ),
+-                subscriptions: Schema.Array(
+-                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
++    mapsRoutes:
++      value.services.mapsRoutes === undefined
++        ? undefined
++        : {
++            baseUrl: value.services.mapsRoutes.baseUrl,
++            state: () =>
++              request(
++                value.services.mapsRoutes!.baseUrl,
++                "/__fixture/state",
++                undefined,
++                value.services.mapsRoutes!.token,
++              ).pipe(
++                Effect.flatMap(
++                  Schema.decodeUnknownEffect(
++                    Schema.Struct({
++                      requests: Schema.Array(
++                        Schema.Struct({
++                          method: Schema.String,
++                          path: Schema.String,
++                          search: Schema.String,
++                          body: Schema.Unknown,
++                          fieldMask: Schema.NullOr(Schema.String),
++                          hasGoogleKeyHeader: Schema.Boolean,
++                          authorizedWithFixtureToken: Schema.Boolean,
++                        }),
++                      ),
++                    }),
++                  ),
+                 ),
+-              }),
+-            ),
+-          ),
+-        );
+-      }),
++              ),
++            reset: () =>
++              request(
++                value.services.mapsRoutes!.baseUrl,
++                "/__fixture/reset",
++                {},
++                value.services.mapsRoutes!.token,
++              ).pipe(Effect.asVoid),
++          },
+     billingSubscription: (input: {
+       readonly organizationId: string;
+       readonly planId: string;
+       readonly status: "active" | "trialing" | "scheduled" | "expired";
+     }) =>
+       Effect.gen(function* () {
+-        const match =
+-          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
+-            input.planId,
+-          );
++        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
+         if (!match?.[1])
+           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
+         yield* request(
+diff --git a/e2e/support/maps-routes-emulator.ts b/e2e/support/maps-routes-emulator.ts
+new file mode 100644
+index 0000000..5984ec5
+--- /dev/null
++++ b/e2e/support/maps-routes-emulator.ts
+@@ -0,0 +1,168 @@
++/** A loopback Maps Routes response for the E2E Cloud Worker. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
++import { randomBytes } from "node:crypto";
++
++const expectedPath = "/directions/v2:computeRoutes";
++const routeResponse = {
++  routes: [
++    {
++      distanceMeters: 1200,
++      duration: "600s",
++      polyline: { encodedPolyline: "synthetic-route-polyline" },
++      legs: [
++        {
++          distanceMeters: 1200,
++          duration: "600s",
++          steps: [
++            {
++              distanceMeters: 1200,
++              staticDuration: "600s",
++              navigationInstruction: {
++                instructions: "Turn right onto Synthetic Road",
++                maneuver: "TURN_RIGHT",
++              },
++            },
++          ],
++        },
++      ],
++    },
++  ],
++};
++
++const State = Schema.Struct({
++  requests: Schema.Array(
++    Schema.Struct({
++      method: Schema.String,
++      path: Schema.String,
++      search: Schema.String,
++      body: Schema.Unknown,
++      fieldMask: Schema.NullOr(Schema.String),
++      hasGoogleKeyHeader: Schema.Boolean,
++      authorizedWithFixtureToken: Schema.Boolean,
++    }),
++  ),
++});
++type State = typeof State.Type;
++
++const hasFixtureToken = (authorization: string | undefined, token: string) =>
++  authorization === `Bearer ${token}`;
++
++const replaceText = (
++  value: unknown,
++  replacements: ReadonlyArray<readonly [string, string]>,
++): unknown => {
++  if (typeof value === "string")
++    return replacements.reduce(
++      (current, [before, after]) => current.replaceAll(before, after),
++      value,
++    );
++  if (Array.isArray(value)) return value.map((item) => replaceText(item, replacements));
++  if (value !== null && typeof value === "object")
++    return Object.fromEntries(
++      Object.entries(value).map(([key, item]) => [key, replaceText(item, replacements)]),
++    );
++  return value;
++};
++
++const CatalogFixture = Schema.Struct({
++  origin: Schema.String,
++  entry: Schema.Record(Schema.String, Schema.Unknown),
++  source: Schema.Record(Schema.String, Schema.Unknown),
++});
++
++/**
++ * This listener accepts only the fixed Routes request. It never forwards traffic to Google and
++ * exposes a protected read endpoint so the real Cloud Worker call can be asserted afterward.
++ */
++export const startMapsRoutesEmulator = (input: {
++  readonly document: typeof CatalogFixture.Type;
++  readonly browserOrigin: string;
++}) =>
++  Effect.gen(function* () {
++    const token = randomBytes(24).toString("hex");
++    const state = yield* Ref.make<State>({ requests: [] });
++    const sourceOrigin = new URL(input.document.origin);
++    const browserOrigin = new URL(input.browserOrigin);
++    const replacements = [
++      [sourceOrigin.origin, browserOrigin.origin],
++      [sourceOrigin.hostname, browserOrigin.hostname],
++    ] as const;
++    const source = replaceText(input.document.source, replacements);
++    const entry = input.document.entry;
++    const routes = HttpRouter.addAll([
++      HttpRouter.route(
++        "GET",
++        "/catalog/index.json",
++        HttpServerResponse.json({ version: 1, apps: [entry] }),
++      ),
++      HttpRouter.route("GET", "/catalog/apps/google-maps.json", HttpServerResponse.json(source)),
++      HttpRouter.route("GET", "/catalog/icons/*", HttpServerResponse.empty({ status: 404 })),
++      HttpRouter.route(
++        "GET",
++        "/__fixture/state",
++        Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          if (!hasFixtureToken(request.headers.authorization, token))
++            return yield* HttpServerResponse.json({ error: "unauthorized" }, { status: 401 });
++          return yield* HttpServerResponse.json(yield* Ref.get(state));
++        }),
++      ),
++      HttpRouter.route(
++        "POST",
++        "/__fixture/reset",
++        Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          if (!hasFixtureToken(request.headers.authorization, token))
++            return yield* HttpServerResponse.json({ error: "unauthorized" }, { status: 401 });
++          yield* Ref.set(state, { requests: [] });
++          return yield* HttpServerResponse.json({ ok: true });
++        }),
++      ),
++      HttpRouter.route(
++        "POST",
++        expectedPath,
++        Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          const text = yield* request.text;
++          const body = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
++            text,
++          );
++          const authorized = hasFixtureToken(request.headers.authorization, token);
++          if (!authorized)
++            return yield* HttpServerResponse.json({ error: "unauthorized" }, { status: 401 });
++          if (request.headers["x-goog-api-key"] !== undefined)
++            return yield* HttpServerResponse.json(
++              { error: "unexpected_google_key_header" },
++              { status: 400 },
++            );
++          yield* Ref.update(state, (current) => ({
++            requests: [
++              ...current.requests,
++              {
++                method: request.method,
++                path: new URL(request.url, "http://routes-fixture").pathname,
++                search: new URL(request.url, "http://routes-fixture").search,
++                body,
++                fieldMask: request.headers["x-goog-fieldmask"] ?? null,
++                hasGoogleKeyHeader: request.headers["x-goog-api-key"] !== undefined,
++                authorizedWithFixtureToken: authorized,
++              },
++            ],
++          }));
++          return yield* HttpServerResponse.json(routeResponse);
++        }),
++      ),
++      HttpRouter.route("*", "/*", HttpServerResponse.json({ error: "not_found" }, { status: 404 })),
++    ]);
++    const services = yield* Layer.build(
++      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Routes fixture must listen on TCP");
++    return { baseUrl: `http://127.0.0.1:${server.address.port}`, token };
++  });
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index fdde97c..af8446c 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -12,9 +12,17 @@ export const beforeAccountIdentities = () =>
+     { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+   ] as const;
+ 
++/** Remove Routes' additive state before replaying an earlier hosted migration. */
++export const beforeHostedRoutes = () =>
++  [
++    { sql: "DROP TABLE basalt_hosted_routes_usage, basalt_hosted_routes_accounts" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 15" },
++  ] as const;
++
+ /** Roll back the model-binding objects and journal together before replaying earlier hosted steps. */
+ export const beforeHostedModelBindings = () =>
+   [
++    ...beforeHostedRoutes(),
+     { sql: "DROP TABLE hosted_model_bindings" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
+   ] as const;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..82b1b94 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8843,6 +8843,17 @@ export const scenarios = plan({
+       local: na("The Cloud host owns automatic pool setup."),
+     },
+   },
++  hostedRoutes: {
++    fixtures: "actors",
++    file: "hosted-routes.spec.ts",
++    title:
++      "Hosted Routes installs the Maps source, reserves one shared call, and retires an unlinked account",
++    targets: {
++      "self-host": na("The hosted Google Routes proxy is Cloud-only."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The hosted Google Routes proxy is Cloud-only."),
++    },
++  },
+   cloudPoolAccountEventualRepair: {
+     fixtures: "actors",
+     managementApps: ["owner"],
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index bcf8d90..13b7038 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -83,6 +83,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           { migration_id: 12 },
+           { migration_id: 13 },
+           { migration_id: 14 },
++          { migration_id: 15 },
+         ]);
+         expect(diagnostics).toEqual([{ column_name: "last_error" }, { column_name: "queued_at" }]);
+         yield* evidence.json("upgraded-observation-and-departure-layout.json", {
+diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
+new file mode 100644
+index 0000000..f55b30e
+--- /dev/null
++++ b/e2e/tests/hosted-routes.spec.ts
+@@ -0,0 +1,266 @@
++/** Hosted Maps Routes runs through the installed catalog app and a guarded loopback Google stub. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Emulators } from "../support/emulators.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Installed = Schema.Struct({
++  id: Schema.String,
++  copiedFrom: Schema.Struct({ reference: Schema.String }),
++  requirements: Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.Unknown) }),
++});
++const Session = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
++const AppAccess = Schema.Struct({ revision: Schema.String });
++const RouteFixtureState = Schema.Struct({
++  requests: Schema.Array(
++    Schema.Struct({
++      method: Schema.String,
++      path: Schema.String,
++      search: Schema.String,
++      body: Schema.Unknown,
++      fieldMask: Schema.NullOr(Schema.String),
++      hasGoogleKeyHeader: Schema.Boolean,
++      authorizedWithFixtureToken: Schema.Boolean,
++    }),
++  ),
++});
++
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++layer(RuntimeLive, { excludeTestServices: true })("Hosted Google Routes", (it) => {
++  it.effect(scenarios.hostedRoutes.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          emulators = yield* Emulators,
++          database = yield* cloudLocks;
++        const routes = emulators.mapsRoutes;
++        if (routes === undefined)
++          return yield* Effect.die(
++            "Run this Cloud scenario with BASALT_E2E_ROUTES=1 and its private catalog source fixture",
++          );
++
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const routePath = "/api/maps/routes";
++        const routeInput = {
++          origin: { address: "10 Example Street, Zurich" },
++          destination: { address: "Zurich main station" },
++          travelMode: "DRIVE",
++        };
++        const state = () =>
++          routes.state().pipe(Effect.flatMap(Schema.decodeUnknownEffect(RouteFixtureState)));
++        const actorUser = (actor: typeof actors.owner) =>
++          Effect.flatMap(api.request(actor, "GET", "/api/auth/get-session"), (response) =>
++            body(Session, response),
++          );
++
++        yield* routes.reset();
++        const health = yield* api.request(actors.owner, "GET", `${routePath}/health`);
++        expect(health.status).toBe(401);
++        const invalid = yield* api.request(actors.owner, "POST", routePath, {
++          ...routeInput,
++          routingPreference: "TRAFFIC_AWARE",
++        });
++        expect(invalid.status).toBe(400);
++        expect((yield* state()).requests).toEqual([]);
++
++        const ownerUser = yield* actorUser(actors.owner);
++        const memberUser = yield* actorUser(actors.member);
++        const installed = yield* Effect.forEach(
++          ["owner", "member"],
++          (audience) =>
++            Effect.gen(function* () {
++              const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++                entry: "google-maps",
++                name: `Hosted Routes ${audience}`,
++              });
++              expect(response.status, JSON.stringify(response.body)).toBe(200);
++              const app = yield* body(Installed, response);
++              expect(Object.keys(app.requirements.accounts).sort()).toEqual([
++                "googleMaps",
++                "hostedRoutes",
++              ]);
++              expect(app.copiedFrom.reference).toBe(
++                `${routes.baseUrl}/catalog/apps/google-maps.json`,
++              );
++              yield* Effect.addFinalizer(() =>
++                api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++              );
++              const path = `${prefix}/apps/${app.id}`;
++              const current = yield* body(
++                AppAccess,
++                yield* api.request(actors.owner, "GET", `${path}/access`),
++              );
++              const updated = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++                revision: current.revision,
++                audience: { kind: "everyone" },
++              });
++              expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++              return { id: app.id, path };
++            }),
++          { concurrency: 1 },
++        );
++
++        yield* Effect.addFinalizer(() =>
++          database
++            .run({
++              sql: "delete from basalt_hosted_routes_usage where app in ($1, $2)",
++              params: installed.map((app) => app.id),
++            })
++            .pipe(Effect.orDie),
++        );
++
++        // Readiness is local. The first actual tool call is the only request allowed upstream.
++        const appCalls = [
++          { actor: actors.owner, app: installed[0]! },
++          { actor: actors.member, app: installed[1]! },
++        ];
++        const selected = yield* Effect.forEach(appCalls, ({ actor, app }) =>
++          Effect.gen(function* () {
++            const index = yield* api.request(actor, "GET", `${app.path}/tools/index`);
++            expect(index.status, JSON.stringify(index.body)).toBe(200);
++            const accounts = yield* linkedAccountIds(actor, app.path);
++            expect(accounts).toHaveLength(1);
++            return { actor, app, account: accounts[0]! };
++          }));
++        const results = yield* Effect.forEach(
++          selected,
++          ({ actor, app, account }) =>
++            api.request(actor, "POST", `${app.path}/tools/call`, {
++              tool: "hosted.computeRoutes",
++              kind: "query",
++              input: { accountId: account, input: routeInput },
++            }),
++          { concurrency: 2 },
++        );
++        const completed = results.filter(
++          (result) =>
++            result.status === 200 &&
++            isRecord(result.body) &&
++            Array.isArray(result.body.routes),
++        );
++        const rejected = results.filter(
++          (result) =>
++            result.status >= 400 || (isRecord(result.body) && result.body.toolError === true),
++        );
++        expect(completed, JSON.stringify({ results, fixture: yield* state() })).toHaveLength(1);
++        expect(rejected).toHaveLength(1);
++        const success = completed[0]!.body as Record<string, unknown>;
++        expect(JSON.stringify(success)).toContain("synthetic-route-polyline");
++        expect(JSON.stringify(results)).not.toContain("synthetic-e2e-routes-key");
++
++        const observed = yield* state();
++        expect(observed.requests).toHaveLength(1);
++        expect(observed.requests[0]).toMatchObject({
++          method: "POST",
++          path: "/directions/v2:computeRoutes",
++          search: "",
++          body: routeInput,
++          hasGoogleKeyHeader: false,
++          authorizedWithFixtureToken: true,
++        });
++        expect(observed.requests[0]?.fieldMask).toBe(
++          [
++            "routes.distanceMeters",
++            "routes.duration",
++            "routes.polyline.encodedPolyline",
++            "routes.legs.distanceMeters",
++            "routes.legs.duration",
++            "routes.legs.startLocation",
++            "routes.legs.endLocation",
++            "routes.legs.steps.distanceMeters",
++            "routes.legs.steps.staticDuration",
++            "routes.legs.steps.navigationInstruction.instructions",
++            "routes.legs.steps.navigationInstruction.maneuver",
++          ].join(","),
++        );
++
++        const mappingRows = yield* database.run({
++          sql: `select app, user_id, state from basalt_hosted_routes_accounts
++            where app in ($1, $2) order by app, user_id`,
++          params: installed.map((app) => app.id),
++        });
++        expect(mappingRows).toHaveLength(2);
++        expect(mappingRows.map((row) => row.state)).toEqual(["linked", "linked"]);
++        expect(mappingRows.map((row) => row.user_id).sort()).toEqual(
++          [ownerUser.user.id, memberUser.user.id].sort(),
++        );
++        const usageRows = yield* database.run({
++          sql: `select count(*)::int as calls from basalt_hosted_routes_usage
++            where app in ($1, $2)`,
++          params: installed.map((app) => app.id),
++        });
++        expect(usageRows).toEqual([{ calls: 1 }]);
++
++        const memberAccount = (yield* linkedAccountIds(actors.member, installed[1]!.path))[0];
++        if (memberAccount === undefined)
++          return yield* Effect.die("The member's hosted Routes account was not linked");
++        yield* unlinkAccount(actors.member, installed[1]!.path, "hostedRoutes", memberAccount);
++        const afterUnlink = yield* api.request(
++          actors.member,
++          "POST",
++          `${installed[1]!.path}/tools/call`,
++          {
++            tool: "hosted.computeRoutes",
++            kind: "query",
++            input: routeInput,
++          },
++        );
++        expect(afterUnlink.status).toBeGreaterThanOrEqual(400);
++        const retired = yield* database.run({
++          sql: `select state from basalt_hosted_routes_accounts where app = $1 and user_id = $2`,
++          params: [installed[1]!.id, memberUser.user.id],
++        });
++        expect(retired).toEqual([{ state: "retired" }]);
++        expect((yield* state()).requests).toHaveLength(1);
++        expect(
++          yield* database.run({
++            sql: `select count(*)::int as calls from basalt_hosted_routes_usage
++              where app in ($1, $2)`,
++            params: installed.map((app) => app.id),
++          }),
++        ).toEqual([{ calls: 1 }]);
++
++        // Explicitly relinking the retained account restores access without provisioning another.
++        yield* linkAccount(actors.member, installed[1]!.path, "hostedRoutes", memberAccount);
++        const restored = yield* api.request(actors.member, "GET", `${installed[1]!.path}/tools/index`);
++        expect(restored.status, JSON.stringify(restored.body)).toBe(200);
++        expect(JSON.stringify(restored.body)).toContain("hosted.computeRoutes");
++        expect(yield* database.run({
++          sql: "select state, account_id from basalt_hosted_routes_accounts where app = $1 and user_id = $2",
++          params: [installed[1]!.id, memberUser.user.id],
++        })).toEqual([{ state: "linked", account_id: memberAccount }]);
++        expect(yield* linkedAccountIds(actors.member, installed[1]!.path)).toEqual([memberAccount]);
++
++        // The monthly refusal stays observable even when shorter limits also apply.
++        yield* database.run({
++          sql: `insert into basalt_hosted_routes_usage (user_id, organization, app, created_at)
++            select $1, $2, $3, date_trunc('month', now()) from generate_series(1, 620)`,
++          params: [ownerUser.user.id, actors.organization.id, installed[0]!.id],
++        });
++        const monthly = yield* api.request(
++          actors.owner,
++          "POST",
++          `${installed[0]!.path}/tools/call`,
++          {
++            tool: "hosted.computeRoutes",
++            kind: "query",
++            input: { accountId: selected[0]!.account, input: routeInput },
++          },
++        );
++        expect(JSON.stringify(monthly.body)).toContain("monthly quota has been reached");
++        expect((yield* state()).requests).toHaveLength(1);
++      }).pipe(Effect.provide(Emulators.layer)),
++    ),
++  );
++});
