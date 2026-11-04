@@ -871,10 +871,10 @@ index e2dbddf..7a9158f 100644
 +    );
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b7..04117eb 100644
+index e3b27ce..ec0be5d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3532,6 +3532,18 @@ export const scenarios = plan({
+@@ -3557,6 +3557,18 @@ export const scenarios = plan({
        local: na("Uses hosted organization account policies."),
      },
    },
