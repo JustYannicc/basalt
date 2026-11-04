@@ -1,0 +1,51 @@
+diff --git a/packages/telemetry/src/context.ts b/packages/telemetry/src/context.ts
+index a7ffd02..db9c9c6 100644
+--- a/packages/telemetry/src/context.ts
++++ b/packages/telemetry/src/context.ts
+@@ -57,22 +57,24 @@ export const invocationFetch = (signal: AbortSignal) =>
+       Effect.runPromiseWith(context)(
+         Effect.gen(function* () {
+           const request = yield* Effect.try(() => new Request(input, init));
++          // Workers omit browser-only options; preserve them on hosts that expose them.
++          const fetchOptions = {
++            cache: request.cache,
++            ...("credentials" in request ? { credentials: request.credentials } : {}),
++            integrity: request.integrity,
++            keepalive: request.keepalive,
++            ...("mode" in request ? { mode: request.mode } : {}),
++            redirect: request.redirect,
++            ...("referrer" in request ? { referrer: request.referrer } : {}),
++            ...("referrerPolicy" in request ? { referrerPolicy: request.referrerPolicy } : {}),
++          };
+           const client = yield* HttpClient.HttpClient;
+           const response = yield* client.execute(HttpClientRequest.fromWeb(request)).pipe(
+             Effect.withSpan(
+               "provider.http.request",
+               ownedBy("upstream", { attributes: { "http.request.method": request.method } }),
+             ),
+-            Effect.provideService(FetchHttpClient.RequestInit, {
+-              cache: request.cache,
+-              credentials: request.credentials,
+-              integrity: request.integrity,
+-              keepalive: request.keepalive,
+-              mode: request.mode,
+-              redirect: request.redirect,
+-              referrer: request.referrer,
+-              referrerPolicy: request.referrerPolicy,
+-            }),
++            Effect.provideService(FetchHttpClient.RequestInit, fetchOptions),
+             Effect.provideService(FetchHttpClient.Fetch, (url, options) =>
+               globalThis.fetch(url, {
+                 ...options,
+diff --git a/packages/utils/src/url-policy.ts b/packages/utils/src/url-policy.ts
+index 49ece1a..d5bd920 100644
+--- a/packages/utils/src/url-policy.ts
++++ b/packages/utils/src/url-policy.ts
+@@ -163,6 +163,6 @@ export const redirectDestination = (
+   from: URL | string,
+   policy: UrlPolicy,
+ ): URL | undefined => {
+-  const resolved = URL.parse(location, from);
++  const resolved = URL.parse(location, from.toString());
+   return resolved === null ? undefined : parseDestination(resolved.href, policy);
+ };
