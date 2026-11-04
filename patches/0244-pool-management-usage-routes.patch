@@ -1,0 +1,35 @@
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 519d01562..de887d024 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -59,13 +59,13 @@ const send = <A>(
+       }),
+     );
+     const client = yield* HttpClient.HttpClient;
+-    // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++    // Signed host operations use the public pool boundary.
+     const path =
+       action === "poolUsageSeries"
+         ? "/pool/v1/usage/series"
+         : action === "lastSuccessAt"
+           ? "/pool/v1/usage/last-success"
+-          : `/__setup/v1/${action}`;
++          : `/pool/v1/${action}`;
+     const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
+index 78986c901..44b7ba558 100644
+--- a/e2e/support/pool-usage-backend.ts
++++ b/e2e/support/pool-usage-backend.ts
+@@ -116,8 +116,8 @@ export const poolUsageBackend = Effect.gen(function* () {
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+-        HttpRouter.add("POST", "/__setup/v1/managed-usage", handler),
+-        HttpRouter.add("POST", "/__setup/v1/managed-cap", handler),
++        HttpRouter.add("POST", "/pool/v1/managed-usage", handler),
++        HttpRouter.add("POST", "/pool/v1/managed-cap", handler),
+       ),
+       { disableLogger: true, disableListenLog: true },
+     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
