@@ -11,7 +11,15 @@
  - No operations are skipped after the patches (171 of the 174 spec operations are exposed; the 3 removed are the oauth.* methods above).
 --- a/index.ts
 +++ b/index.ts
-@@ -150,54 +150,12 @@
+@@ -16,6 +16,7 @@
+ import { liveOpenapiRouter } from "apps/openapi";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
++import { slackOpenapiCache } from "./openapi-auth.js";
+ 
+ const userScopes = [
+   "calls:read",
+@@ -150,54 +151,12 @@
        tokenResponse: { path: "authed_user", requiredOnExchange: true },
      }),
      token: secrets({
@@ -68,6 +76,15 @@
      const me = await slackRead(fetch, "https://slack.com/api/auth.test", token, signal, "POST");
      const externalId = text(me.user_id);
      if (externalId === undefined)
+@@ -232,7 +191,7 @@
+       await accountRouter(
+         user?.accounts.slack ?? [],
+         (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
++          withApprovals(liveOpenapiRouter({ ...options, cache: slackOpenapiCache(cache, options.source.url), fetch, signal, account }), (tool) =>
+             tool.kind === "mutation" ? always() : never(),
+           ),
+         { signal },
 --- a/openapi.ts
 +++ b/openapi.ts
 @@ -42,7 +42,6 @@
@@ -88,3 +105,75 @@
 +    "apps": "0.0.1-beta.104-basalt.2"
    }
  }
+--- /dev/null
++++ b/openapi-auth.ts
+@@ -0,0 +1,69 @@
++import type { AppCache, CacheGetOptions } from "apps";
++
++function record(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++// Slack duplicates its account-bound authentication in ordinary operation parameters.
++const slackOpenapiFetch =
++  (fetch: typeof globalThis.fetch, sourceUrl: string): typeof globalThis.fetch =>
++  async (input, init) => {
++    const response = await fetch(input, init);
++    const url = input instanceof Request ? input.url : String(input);
++    if (url !== sourceUrl || !response.ok) return response;
++    const document: unknown = await response.json();
++    if (!record(document) || !record(document.paths))
++      throw new Error("Slack returned an invalid API definition.");
++    for (const item of Object.values(document.paths)) {
++      if (!record(item)) continue;
++      for (const operation of Object.values(item)) {
++        if (!record(operation)) continue;
++        const security = operation.security ?? document.security;
++        if (
++          !Array.isArray(security) ||
++          !security.some((value) => record(value) && "slackAuth" in value)
++        )
++          continue;
++        if (Array.isArray(operation.parameters))
++          operation.parameters = operation.parameters.filter(
++            (parameter) => !record(parameter) || parameter.name !== "token",
++          );
++      }
++    }
++    const headers = new Headers(response.headers);
++    headers.delete("content-length");
++    headers.delete("content-encoding");
++    return new Response(JSON.stringify(document), {
++      status: response.status,
++      statusText: response.statusText,
++      headers,
++    });
++  };
++
++// Compilation uses the cache loader's fetch. A new namespace excludes pre-normalization schemas.
++export const slackOpenapiCache = (cache: AppCache, sourceUrl: string): AppCache => {
++  const key = (value: CacheGetOptions<unknown>["key"]) => ["slack-bearer-v1", value];
++  const load = <A>(input: CacheGetOptions<A>): CacheGetOptions<A> => ({
++    ...input,
++    key: key(input.key),
++    load: (context) =>
++      input.load({
++        ...context,
++        cache: slackOpenapiCache(context.cache, sourceUrl),
++        fetch: slackOpenapiFetch(context.fetch, sourceUrl),
++      }),
++  });
++  return {
++    get: (input) => cache.get(load(input)),
++    revalidate: (input) => cache.revalidate(load(input)),
++    read: (value, schema) => cache.read(key(value), schema),
++    readMany: (values, schema) => cache.readMany(values.map(key), schema),
++    write: (entries, retention) =>
++      cache.write(
++        entries.map((entry) => ({ ...entry, key: key(entry.key) })),
++        retention,
++      ),
++    invalidate: (value) => cache.invalidate(key(value)),
++    forAccount: (account) => slackOpenapiCache(cache.forAccount(account), sourceUrl),
++  };
++};

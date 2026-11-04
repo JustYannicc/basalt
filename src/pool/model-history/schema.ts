@@ -3,7 +3,8 @@ export interface HistoryDatabase {
 }
 
 export const historyBaseSchemaVersion = "model_request_history_v1";
-export const historySchemaVersion = "model_request_history_v2_app_attribution";
+export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
+export const historySchemaVersion = "model_request_history_v3_account_time";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -85,13 +86,17 @@ export const historySchemaStatements = [
 export const historyAppAttributionStatements = [
   "ALTER TABLE basalt_model_requests ADD COLUMN app_id varchar(256), ADD COLUMN requirement varchar(64)",
 ];
+export const historyAccountTimeStatements = [
+  "CREATE INDEX basalt_model_requests_account_time ON basalt_model_requests (pool, account, timestamp)",
+];
 export const historySchemaMigrations = [
   { name: historyBaseSchemaVersion, statements: historySchemaStatements },
-  { name: historySchemaVersion, statements: historyAppAttributionStatements },
+  { name: historyAppSchemaVersion, statements: historyAppAttributionStatements },
+  { name: historySchemaVersion, statements: historyAccountTimeStatements },
 ];
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {
-  const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [historySchemaVersion]);
+  const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [historyAppSchemaVersion]);
   return result.rows.length === 1;
 }
 

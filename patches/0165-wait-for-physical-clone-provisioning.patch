@@ -1,0 +1,206 @@
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -38,6 +38,17 @@
+ }) =>
+   Effect.gen(function* () {
+     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const fs = yield* FileSystem.FileSystem;
++    const states: string[] = [];
++    yield* Effect.addFinalizer(() =>
++      fs
++        .writeFileString(
++          `${input.directory}/physical-state-digests.ndjson`,
++          states.join("\n") + "\n",
++          { mode: 0o600 },
++        )
++        .pipe(Effect.orDie),
++    );
+     const scope = yield* Effect.scope;
+     const services = yield* Effect.context<
+       ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+@@ -96,6 +107,38 @@
+       });
+     const target = Effect.scoped(
+       Effect.gen(function* () {
++        // A clone must not replay unfinished default-account creation between its state reads.
++        const provisioning = yield* processes.spawn(
++          ChildProcess.make(
++            "node",
++            [
++              "apps/hosted/testing/production-ops-provisioning-fixture.ts",
++              `${input.directory}/sso-database.json`,
++            ],
++            {
++              env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
++              extendEnv: false,
++              stderr: "inherit",
++            },
++          ),
++        );
++        const completed = yield* provisioning.stdout.pipe(Stream.decodeText(), Stream.mkString);
++        yield* checked(provisioning.exitCode);
++        yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(
++            Schema.Struct({
++              pending: Schema.Literal(0),
++              failed: Schema.Literal(0),
++              completed: Schema.Number,
++              observedPending: Schema.Number,
++            }),
++          ),
++        )(completed);
++        yield* fs.writeFileString(
++          `${input.directory}/physical-provisioning-completed.json`,
++          completed,
++          { mode: 0o600 },
++        );
+         // pg_dump and the baseline reads must observe the same account and receipt rows.
+         // SHARE permits the dump's reads but blocks every writer until both states are captured.
+         const commands = yield* Queue.unbounded<string, Cause.Done>();
+@@ -237,10 +280,23 @@
+         `select json_build_object('name', current_database(), 'oid', d.oid::text,
+       'role', (select oid::text from pg_roles where rolname = session_user),
+       'identity', (select id::text from production_ops_database_identity),
++      'snapshotStartedAt', statement_timestamp(),
++      'rowDigests', (select json_agg(json_build_object('idHash', md5(a.id), 'rowHash', md5(to_jsonb(a)::text),
++        'columns', (select json_object_agg(key, md5(value::text)) from jsonb_each(to_jsonb(a))))) from executor_accounts a),
+       'accounts', (select md5(coalesce(string_agg(to_jsonb(a)::text, '' order by id), '')) from executor_accounts a),
+       'receipts', coalesce((select json_agg(plan_sha256 order by plan_sha256) from private_production_ops_receipts), '[]'::json))
+       from pg_database d where datname = current_database()`,
+       ).pipe(
++        Effect.tap((value) =>
++          Effect.sync(() =>
++            states.push(
++              JSON.stringify({
++                target,
++                value: Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(value),
++              }),
++            ),
++          ),
++        ),
+         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ProductionDatabaseState))),
+       );
+     const disconnected = Effect.suspend(() =>
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -0,0 +1,117 @@
++/** Wait for committed default provisioning in a runner-owned disposable database. */
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Client } from "pg";
++import { Config, Data, Effect, FileSystem, Redacted, Schema } from "effect";
++import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
++
++class ProvisioningFixtureFailed extends Data.TaggedError("ProvisioningFixtureFailed") {}
++const Configuration = Schema.fromJsonString(Schema.Struct({ database: Schema.String }));
++const Counts = Schema.Array(
++  Schema.Struct({ pending: Schema.Number, failed: Schema.Number, completed: Schema.Number }),
++);
++
++NodeRuntime.runMain(
++  Effect.scoped(
++    Effect.gen(function* () {
++      yield* Config.String("NODE_ENV").pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literal("test"))),
++      );
++      const fs = yield* FileSystem.FileSystem;
++      const configuration = yield* fs
++        .readFileString(process.argv[2] ?? "")
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Configuration)));
++      const database = yield* Schema.decodeUnknownEffect(LocalDatabaseUrl)(
++        Redacted.make(configuration.database),
++      );
++      const client = yield* Effect.acquireRelease(
++        Effect.tryPromise({
++          try: async () => {
++            const client = new Client({ connectionString: Redacted.value(database) });
++            await client.connect();
++            return client;
++          },
++          catch: () => new ProvisioningFixtureFailed(),
++        }),
++        (client) =>
++          Effect.promise(async () => {
++            try {
++              await client.query(
++                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop function if exists e2e_provisioning_completed()",
++              );
++            } finally {
++              await client.end();
++            }
++          }),
++      );
++      yield* Effect.tryPromise({
++        try: async (signal) => {
++          let revision = 0;
++          let observedPending = 0;
++          let wake = () => {};
++          let disconnected = false;
++          const changed = () => {
++            revision++;
++            wake();
++          };
++          const failed = () => {
++            disconnected = true;
++            changed();
++          };
++          client.on("notification", changed);
++          client.on("error", failed);
++          signal.addEventListener("abort", changed);
++          try {
++            // LISTEN precedes both trigger installation and the first read. Notifications are
++            // delivered on commit, and the revision also covers commits during a status query.
++            await client.query("set statement_timeout = '5s'; listen e2e_provisioning_completed");
++            await client.query(`create function e2e_provisioning_completed() returns trigger language plpgsql as $$
++            begin perform pg_notify('e2e_provisioning_completed', ''); return null; end $$;
++            create trigger e2e_provisioning_completed after insert or update or delete on hosted_provisioning
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_defaults_completed after insert or update or delete on organization
++            for each statement execute function e2e_provisioning_completed()`);
++            for (;;) {
++              if (signal.aborted || disconnected) throw new ProvisioningFixtureFailed();
++              const seen = revision;
++              const [counts] = Schema.decodeUnknownSync(Counts)(
++                (
++                  await client.query(`with
++              users as (select status from hosted_provisioning where kind = 'user'),
++              teams as (select id, metadata::jsonb as metadata from organization),
++              expected as (select team.id, member."userId", team.metadata from teams team
++                join member on member."organizationId" = team.id join "user" on "user".id = member."userId"
++                where member.role in ('owner', 'admin') and "user"."emailVerified" = true),
++              missing as (select 1 from expected where not exists (select 1 from executor_accounts account
++                where account.id = expected.metadata->'executorKeyAccounts'->>expected."userId"
++                  and account.owner = 'organization:' || expected.id))
++              select ((select count(*) from users where status <> 'succeeded') + (select count(*) from missing)
++                + (select count(*) from teams where not coalesce((metadata->'executorDefaults'->>'installed')::boolean, false)))::int as pending,
++              (select count(*) from users where status = 'failed')::int as failed,
++              ((select count(*) from expected) - (select count(*) from missing))::int as completed`)
++                ).rows,
++              );
++              if (counts === undefined || counts.failed !== 0)
++                throw new ProvisioningFixtureFailed();
++              if (counts.pending === 0) {
++                process.stdout.write(`${JSON.stringify({ ...counts, observedPending })}\n`);
++                return;
++              }
++              observedPending = Math.max(observedPending, counts.pending);
++              process.stderr.write(`Waiting for ${counts.pending} default provisioning records\n`);
++              if (seen !== revision) continue;
++              await new Promise<void>((resolve) => {
++                wake = resolve;
++              });
++            }
++          } finally {
++            client.off("notification", changed);
++            client.off("error", failed);
++            signal.removeEventListener("abort", changed);
++          }
++        },
++        catch: () => new ProvisioningFixtureFailed(),
++      });
++    }),
++  ).pipe(Effect.provide(NodeServices.layer)),
++);

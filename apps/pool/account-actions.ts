@@ -1,7 +1,7 @@
 import { mutation, object, query, string, type QueryContext } from "apps";
-import { never } from "apps/operations/approval";
+import { always, never } from "apps/operations/approval";
 import type { Account } from "./contract.ts";
-import type { ResetCredits, ResetResult } from "./action-contract.ts";
+import type { ResetAttempt, ResetCredits, ResetResult } from "./action-contract.ts";
 import { requirements } from "./requirements.ts";
 type Context = QueryContext<typeof requirements>;
 import { control } from "./control.ts";
@@ -29,10 +29,14 @@ export const resetCredits = query(
   { description: "Read current Codex reset credits or Claude reset grants, including IDs, expiry, supported windows and whether Claude permits use now. Only the pool owner can read them.", input: accountInput },
   async (ctx: Context, { id }) => control<ResetCredits>(ctx, path(id, "resets")),
 );
+export const resetAttempt = query(
+  { description: "Read this account's latest durable reset attempt after a lost reply, reload or device change. Returns the original request and credit IDs, outcome, follow-up flags and provider retry deadline. Reading never retries or spends. Only the pool owner can read it.", input: accountInput },
+  async (ctx: Context, { id }) => control<ResetAttempt | null>(ctx, path(id, "resets/attempt")),
+);
 export const useReset = mutation(
   {
     description: "Spend the selected banked reset. Read resetCredits first. Supply a fresh UUID requestId for one intended spend and reuse it unchanged for every retry. If the outcome is unknown, never start another spend. Confirmed redemptions retain separate cooldown-cleared and usage-refresh-queued results. Only the pool owner can do this.",
-    approval: never(),
+    approval: always(),
     input: object({ id: string({ minLength: 1 }), creditId: string({ minLength: 1 }), requestId: string({ minLength: 1 }) }),
   },
   async (ctx: Context, { id, creditId, requestId }) => control<ResetResult>(ctx, path(id, "resets/use"), {

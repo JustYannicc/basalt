@@ -181,6 +181,7 @@ jobs:
           npm run check:upstream
           npm run build
           npm run check:build
+          npm run check:startup
           bun install --cwd scripts/architecture --frozen-lockfile
           npm run architecture:model
           npm run typecheck

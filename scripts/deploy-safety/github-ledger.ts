@@ -110,6 +110,39 @@ type Deployment = {
   created_at: string;
 };
 
+export type BackupDeployment = {
+  id: number;
+  gitCommit: string;
+  createdAt: string;
+  status: string;
+  successful: boolean;
+  payload?: DeploymentPayload;
+};
+
+/** Invalid historical payloads remain visible so a retirement report cannot assume they reference no backups. */
+export async function readBackupDeploymentHistory(environment: LedgerEnvironment, fetcher: Fetcher = fetch): Promise<BackupDeployment[]> {
+  const deployments = await listDeployments(environment, fetcher);
+  deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
+  const history: BackupDeployment[] = [];
+  for (const deployment of deployments) {
+    const statuses = await listStatuses(environment, deployment.id, fetcher);
+    let payload: DeploymentPayload | undefined;
+    try {
+      const parsed = parseDeploymentPayload(deployment.payload);
+      if (deployment.environment === "production" && parsed.gitCommit === deployment.sha) payload = parsed;
+    } catch (error) {
+      if (!(error instanceof SafetyGateError)) throw error;
+    }
+    const status = statuses[0]?.state ?? "missing";
+    history.push({
+      id: deployment.id, gitCommit: deployment.sha, createdAt: deployment.created_at, status,
+      successful: status === "success" || (status === "inactive" && statuses.some(item => item.state === "success")),
+      ...(payload ? { payload } : {}),
+    });
+  }
+  return history;
+}
+
 export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
   const token = source.GITHUB_TOKEN;
   const repository = source.GITHUB_REPOSITORY;
