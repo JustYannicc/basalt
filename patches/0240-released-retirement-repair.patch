@@ -382,11 +382,13 @@ new file mode 100644
 +  verify,
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+index 4fe15bb..ee527be 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
-@@ -1,8 +1,19 @@
+@@ -1,8 +1,20 @@
 -import { Effect, Option } from "effect";
-+import { Config, Effect, Option, Redacted, Schema } from "effect";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpClientRequest } from "effect/http";
  import { aesGcmCredentials } from "@executor-js/sdk/core";
  import { firstPartyOAuthClients } from "@executor-js/hosted-server";
  import { productBrandConfig } from "@executor-js/utils/product-brand";
@@ -405,7 +407,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
  import { cloudEmulators } from "../emulators.ts";
  import { cloudEgress } from "../egress.ts";
  import { cloudOAuthWire } from "../oauth-wire.ts";
-@@ -25,12 +36,73 @@
+@@ -25,12 +37,76 @@ export const cloudProductionPreparations = Effect.gen(function* () {
    });
    const wire = yield* cloudOAuthWire;
    const egress = yield* cloudEgress;
@@ -428,35 +430,38 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 +          {
 +            credentials,
 +            verifyHome: (reference, method) =>
-+              Effect.tryPromise(async () => {
-+                const at = Date.now();
-+                const envelope = await signEnvelope(secret, accountAcquisitionPrefix, {
-+                  action: "verify-retirement-reference",
-+                  owner: `organization:${selection.organization}`,
-+                  operation: `released-retirement:${crypto.randomUUID()}`,
-+                  provider: method,
-+                  reference,
-+                  at,
-+                  expiresAt: at + 10_000,
-+                });
-+                const response = await fetch(new URL(accountAcquisitionPath, hosts.browser), {
-+                  method: "POST",
-+                  headers: { "content-type": "application/json" },
-+                  body: JSON.stringify({ envelope }),
-+                  signal: AbortSignal.timeout(10_000),
-+                });
-+                if (!response.ok) {
-+                  await response.body?.cancel();
-+                  return false;
-+                }
-+                const result = Schema.decodeUnknownSync(
-+                  Schema.Struct({
-+                    verified: Schema.Boolean,
-+                    code: Schema.Literal("retirement_reference_verified"),
-+                  }),
-+                )(await response.json());
-+                return result.verified;
-+              }).pipe(Effect.catch(() => Effect.succeed(false))),
++              Effect.scoped(
++                Effect.gen(function* () {
++                  const at = yield* Clock.currentTimeMillis;
++                  const envelope = yield* Effect.tryPromise(() =>
++                    signEnvelope(secret, accountAcquisitionPrefix, {
++                      action: "verify-retirement-reference",
++                      owner: `organization:${selection.organization}`,
++                      operation: `released-retirement:${crypto.randomUUID()}`,
++                      provider: method,
++                      reference,
++                      at,
++                      expiresAt: at + 10_000,
++                    }),
++                  );
++                  const response = yield* egress.client.execute(
++                    HttpClientRequest.post(
++                      new URL(accountAcquisitionPath, hosts.browser).href,
++                    ).pipe(HttpClientRequest.bodyJsonUnsafe({ envelope })),
++                  );
++                  if (response.status < 200 || response.status >= 300) return false;
++                  const result = yield* Schema.decodeUnknownEffect(
++                    Schema.Struct({
++                      verified: Schema.Boolean,
++                      code: Schema.Literal("retirement_reference_verified"),
++                    }),
++                  )(yield* response.json);
++                  return result.verified;
++                }),
++              ).pipe(
++                Effect.timeout("10 seconds"),
++                Effect.catch(() => Effect.succeed(false)),
++              ),
 +          },
 +          requireSnapshot,
 +        );
