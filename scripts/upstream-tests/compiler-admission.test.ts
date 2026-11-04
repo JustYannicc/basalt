@@ -286,6 +286,10 @@ test(
         ).pipe(
           Effect.provideService(Clock.Clock, {
             ...clock,
+            // Clock's unsafe readers are prototype methods, so spreading it omits them.
+            currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+            currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+            monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
             sleep: () => Deferred.succeed(parked, undefined).pipe(Effect.andThen(Effect.never)),
           }),
           Effect.forkChild,

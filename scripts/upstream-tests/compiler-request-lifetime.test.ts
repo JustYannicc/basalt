@@ -22,11 +22,15 @@ export default class extends WorkerEntrypoint {
   request() {
     const peer = this.env.PEER;
     return new CompilerRequest((signal, id) => Effect.gen(function* () {
+      if (id === "abandoned") signal.addEventListener("abort", () => { events.push({ id, phase: "aborted" }); });
       const clock = yield* Clock.Clock;
       const work = admission(Effect.succeed(id), phase => events.push({ id, phase }), signal);
       if (id !== "abandoned") return yield* work;
       return yield* work.pipe(Effect.provideService(Clock.Clock, {
         ...clock,
+            currentTimeMillisUnsafe: () => clock.currentTimeMillisUnsafe(),
+            currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+            monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
         sleep: () => Effect.promise(() => fetch(peer + "/queued")).pipe(Effect.andThen(Effect.never)),
       }));
     }));
@@ -43,12 +47,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 export default class extends WorkerEntrypoint {
   async fetch(request) {
     using ticket = await this.env.COMPILER.request();
+    using run = await ticket.start(new URL(request.url).pathname === "/abandon" ? "abandoned" : "live");
     if (new URL(request.url).pathname === "/abandon") {
-      ticket.compile("abandoned").catch(() => {});
+      run.result().catch(() => {});
       await fetch(this.env.PEER + "/queued-observed");
       return new Response("caller ended");
     }
-    return new Response(await ticket.compile("live"));
+    return new Response(await run.result());
   }
 }`;
 
@@ -133,6 +138,7 @@ test(
       assert.equal(await live.text(), "live");
       const state = await (await compiler.fetch("https://compiler.test/state")).json();
       assert.deepEqual(state, [
+        { id: "abandoned", phase: "aborted" },
         { id: "live", phase: "admitted" },
         { id: "live", phase: "released" },
       ]);

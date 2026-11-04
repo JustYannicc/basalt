@@ -132,20 +132,25 @@ index d4923707e..73ea1e205 100644
    }).pipe(Effect.provide(cloudTelemetry)),
  );
 diff --git a/apps/hosted/cloud/src/contracts/builds.ts b/apps/hosted/cloud/src/contracts/builds.ts
-index ab342bcf3..af37113e8 100644
+index ab342bcf3..8ee2ee8d5 100644
 --- a/apps/hosted/cloud/src/contracts/builds.ts
 +++ b/apps/hosted/cloud/src/contracts/builds.ts
-@@ -61,8 +61,18 @@ export const CloudCompileResult = Schema.Union([
+@@ -61,8 +61,23 @@ export const CloudCompileResult = Schema.Union([
    }),
  ]);
  
++/** Work runs on a separate target so an in-flight call cannot retain its cancellation handle. */
++export interface CloudCompilerRun extends Disposable {
++  result(): Promise<typeof CloudCompileResult.Encoded>;
++}
++
 +/** Native RPC stubs are disposed on completion, interruption or caller disconnection. */
 +export interface CloudCompilerRequest extends Disposable {
-+  compile(
++  start(
 +    files: CodeFiles,
 +    publicPaths: ReadonlyArray<string>,
 +    headers: Readonly<Record<string, string>>,
-+  ): Promise<typeof CloudCompileResult.Encoded>;
++  ): Promise<CloudCompilerRun>;
 +}
 +
  /** Compiler binding calls fail only with Alchemy transport failures; build failures are results. */
@@ -255,13 +260,32 @@ index 26cf2b808..c559ff098 100644
                held.delete(slot);
 diff --git a/apps/hosted/cloud/src/implementation/compiler-request-target.ts b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
 new file mode 100644
-index 000000000..5596e7102
+index 000000000..9dc810a88
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
-@@ -0,0 +1,24 @@
-+/** Native RPC disposal survives a caller disappearing without running its Effect finalizers. */
+@@ -0,0 +1,43 @@
++/** A request handle stays idle while a separate target runs cancellable compiler work. */
 +import { RpcTarget } from "cloudflare:workers";
 +import { Effect } from "effect";
++
++class CompilerRun<Value, Error> extends RpcTarget {
++  readonly #controller: AbortController;
++  readonly #run: () => Effect.Effect<Value, Error>;
++
++  constructor(controller: AbortController, run: () => Effect.Effect<Value, Error>) {
++    super();
++    this.#controller = controller;
++    this.#run = run;
++  }
++
++  result() {
++    return Effect.runPromise(this.#run(), { signal: this.#controller.signal });
++  }
++
++  [Symbol.dispose]() {
++    this.#controller.abort();
++  }
++}
 +
 +export class CompilerRequest<Args extends ReadonlyArray<unknown>, Value, Error> extends RpcTarget {
 +  readonly #controller = new AbortController();
@@ -272,11 +296,11 @@ index 000000000..5596e7102
 +    this.#run = run;
 +  }
 +
-+  compile(...args: Args) {
-+    // The native RPC method is a Promise boundary; work runs in this call's I/O context.
-+    return Effect.runPromise(this.#run(this.#controller.signal, ...args), {
-+      signal: this.#controller.signal,
-+    });
++  async start(...args: Args) {
++    const controller = this.#controller;
++    const run = this.#run;
++    // A pending call keeps its target alive. Cancellation must live on an idle target.
++    return new CompilerRun(controller, () => run(controller.signal, ...args));
 +  }
 +
 +  [Symbol.dispose]() {
@@ -338,7 +362,7 @@ index ad20c1e89..af1314e6b 100644
 +    }),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
-index d321a2643..4a6a46a3b 100644
+index d321a2643..621d7cba3 100644
 --- a/apps/hosted/cloud/src/infrastructure/runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
 @@ -20,6 +20,7 @@ import {
@@ -358,16 +382,23 @@ index d321a2643..4a6a46a3b 100644
  import { AppCompiler } from "./compiler.ts";
  import { AppData } from "./app-data-worker.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
-@@ -149,7 +150,12 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -149,7 +150,19 @@ export const cloudRuntime = Effect.fn(function* (
            Effect.gen(function* () {
              const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
              const result = yield* requestCompile(
 -              compiler.compile(files, publicPaths, headers),
 +              withCompilerRequest(compiler.request(), (request) =>
-+                Effect.tryPromise({
-+                  try: () => request.compile(files, publicPaths, headers),
-+                  catch: (cause) => new RpcCallError({ method: "compile", cause }),
-+                }),
++                withCompilerRequest(
++                  Effect.tryPromise({
++                    try: () => request.start(files, publicPaths, headers),
++                    catch: (cause) => new RpcCallError({ method: "compile", cause }),
++                  }),
++                  (run) =>
++                    Effect.tryPromise({
++                      try: () => run.result(),
++                      catch: (cause) => new RpcCallError({ method: "compile", cause }),
++                    }),
++                ),
 +              ),
              ).pipe(
                Effect.catchTag("RpcCallError", (error) => {
