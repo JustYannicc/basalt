@@ -946,6 +946,8 @@ jobs:
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
+            .generated/pool-reset-checks/**/runtime-cloud.log
+            .generated/pool-reset-checks/**/runtime-diagnostics.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
