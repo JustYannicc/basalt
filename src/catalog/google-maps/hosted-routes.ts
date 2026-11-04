@@ -174,7 +174,7 @@ export const hostedRoutesTools = (account: HostedRoutesAccount) =>
         });
         if (response.status === 429) {
           const error = await decodeJson({ status: 200, json: () => response.json() }, json());
-          const limit = typeof error === "object" && error !== null && !Array.isArray(error) ? error.limit : undefined;
+          const limit = typeof error === "object" && error !== null && "limit" in error ? error.limit : undefined;
           const period = limit === "globalMonth" || limit === "userMonth" ? "monthly" :
             limit === "globalDay" || limit === "userDay" ? "daily" : "minute";
           throw new Error(`Signalbox's hosted Google Maps Routes ${period} quota has been reached. Try again later.`);
