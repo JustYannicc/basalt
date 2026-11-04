@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-identity-action-width",
+  "file": "0227-identity-action-width.patch",
+  "content_sha256": "4423c5c6ce10cc2c636603f14dc78a56fe3e149f34c207aa7875fc4a1ac34342",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
