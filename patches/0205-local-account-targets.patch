@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
-index 32d04174e..889bc19a6 100644
+index 32d0417..889bc19 100644
 --- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 @@ -188,7 +188,7 @@ export const retirementReader = (
@@ -12,7 +12,7 @@ index 32d04174e..889bc19a6 100644
              ),
            ),
 diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
-index 3386971de..9d381721a 100644
+index 3386971..9d38172 100644
 --- a/apps/hosted/server/src/implementation/mcp.ts
 +++ b/apps/hosted/server/src/implementation/mcp.ts
 @@ -106,6 +106,20 @@ export const hostedMcpBackend = Effect.gen(function* () {
@@ -38,11 +38,11 @@ index 3386971de..9d381721a 100644
    );
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
 new file mode 100644
-index 000000000..f055e647a
+index 0000000..cfc2f5c
 --- /dev/null
 +++ b/e2e/support/account-target-sdk-source.ts
-@@ -0,0 +1,72 @@
-+/** Full public SDK host. The device callback is a synthetic outside execution boundary. */
+@@ -0,0 +1,69 @@
++/** Public SDK host for target metadata and refusal. It cannot execute on a device. */
 +export const accountTargetSdkSource = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -70,11 +70,9 @@ index 000000000..f055e647a
 +  const owner = OwnerId.make("account-target-owner");
 +  let status:"online"|"offline"|"unavailable" = "online";
 +  let allowed = true;
-+  const sent: unknown[] = [];
 +  const executor = yield* createExecutor({database:storage,secret,blobs,
 +    machineAccounts:{authorize:value=>Effect.succeed(allowed && value.owner === owner),
-+      availability:()=>Effect.sync(()=>status),
-+      dispatch:value=>Effect.sync(()=>{sent.push(value);return {status:"completed" as const,value:{ran:"device",device:value.bindings[0]!.target.device,input:value.call.input ?? null}};})},
++      availability:()=>Effect.sync(()=>status)},
 +    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:host.runtime,
 +    workflows:host.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
 +  yield* Deferred.succeed(ready,executor);
@@ -104,7 +102,6 @@ index 000000000..f055e647a
 +    route("call",ToolInputs.call,value=>executor.tools.call(value)),
 +    route("status",Schema.Literals(["online","offline","unavailable"]),value=>Effect.sync(()=>{status=value;return null;})),
 +    route("allowed",Schema.Boolean,value=>Effect.sync(()=>{allowed=value;return null;})),
-+    route("sent",Schema.Null,()=>Effect.sync(()=>sent)),
 +  );
 +  const services = yield* Layer.build(HttpRouter.serve(routes,{disableLogger:true,disableListenLog:true}).pipe(
 +    Layer.provideMerge(NodeHttpServer.layer(createServer,{host:"127.0.0.1",port:0}))));
@@ -115,7 +112,7 @@ index 000000000..f055e647a
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
 +`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a57b0b767..70edc9742 100644
+index a57b0b7..bf5ce22 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -8806,6 +8806,16 @@ export const scenarios = plan({
@@ -125,7 +122,7 @@ index a57b0b767..70edc9742 100644
 +  accountTargets: {
 +    file: "account-targets.spec.ts",
 +    title:
-+      "account execution targets route queries without fallback and retain device status after restart",
++      "account target metadata survives restart and bound accounts refuse execution without cloud fallback",
 +    targets: {
 +      "self-host": scheduled,
 +      local: na("Exercises the public SDK host with retained PostgreSQL storage."),
@@ -137,10 +134,10 @@ index a57b0b767..70edc9742 100644
      title: "app call receipts fence concurrent dispatch and retain terminal outcomes after restart",
 diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
 new file mode 100644
-index 000000000..12d22a049
+index 0000000..d0c8a8a
 --- /dev/null
 +++ b/e2e/tests/account-targets.spec.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,79 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { appCallSdkHost } from "../support/app-call-sdk.ts";
@@ -180,20 +177,18 @@ index 000000000..12d22a049
 +        expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 +          execution: { kind: "device", device: "fixture-device", status: "online" },
 +        });
-+        expect((yield* call(ids.local)).body).toMatchObject({
-+          status: "completed",
-+          value: { ran: "device", device: "fixture-device" },
-+        });
-+        const sent = yield* sdk.request("sent", null);
-+        expect(sent.body).toHaveLength(1);
-+        expect(JSON.stringify(sent.body)).not.toContain("synthetic");
++        // An online target is metadata, not an installed device execution path.
++        const unavailable = yield* call(ids.local);
++        expect(unavailable.status).toBe(409);
++        expect(unavailable.body).toEqual({ reason: "host_unavailable" });
 +        yield* sdk.request("status", "offline");
 +        expect((yield* call(ids.local)).status).toBe(503);
 +        expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 +          execution: { status: "offline" },
 +        });
 +        expect((yield* call(ids.cloud)).body).toMatchObject({ value: { ran: "cloud" } });
-+        expect((yield* sdk.request("sent", null)).body).toHaveLength(1);
++        yield* sdk.request("status", "unavailable");
++        expect((yield* call(ids.local)).status).toBe(409);
 +        yield* sdk.request("status", "online");
 +        expect((yield* call(ids.local, "mutation")).status).toBe(409);
 +        yield* sdk.request("allowed", false);
@@ -204,11 +199,11 @@ index 000000000..12d22a049
 +        expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 +          execution: { kind: "device", status: "online" },
 +        });
++        expect((yield* call(ids.local)).status).toBe(409);
 +        expect(
 +          (yield* sdk.request("bind", { account: ids.local, revision: 1, enabled: false })).status,
 +        ).toBe(200);
 +        expect((yield* call(ids.local)).status).toBe(409);
-+        expect((yield* sdk.request("sent", null)).body).toEqual([]);
 +        expect((yield* sdk.request("clear", { account: ids.local, revision: 1 })).status).toBe(409);
 +        expect((yield* sdk.request("clear", { account: ids.local, revision: 2 })).status).toBe(200);
 +        expect((yield* call(ids.local)).body).toMatchObject({ value: { ran: "cloud" } });
@@ -223,7 +218,7 @@ index 000000000..12d22a049
 +  );
 +});
 diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/execute.ts
-index 50e6928c5..cbafdc40d 100644
+index 50e6928..97a58f3 100644
 --- a/packages/mcp/src/contracts/execute.ts
 +++ b/packages/mcp/src/contracts/execute.ts
 @@ -493,7 +493,7 @@ export const SearchToolResult = Schema.Struct({
@@ -231,7 +226,7 @@ index 50e6928c5..cbafdc40d 100644
  export const SearchTool = McpTool.make("search", {
    description:
 -    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
-+    "Find Executor app tools by words in their paths, descriptions and labels. Returns normal app tools and linked accounts, including machine execution target and availability when present. Local and cloud accounts belong to the same app. Calls use the normal saved linked-account selection. Never substitute targets when a device is offline. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
++    "Find Executor app tools by words in their paths, descriptions and labels. Returns normal app tools and linked accounts, including machine execution target and availability when present. Local and cloud accounts belong to the same app. Device-bound accounts cannot execute yet. Calls refuse without cloud fallback, even when the device is online. Never substitute targets when a device is offline. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
    parameters: SearchInput,
    success: SearchToolResult,
    failure: CatalogUnavailable,
@@ -240,7 +235,7 @@ index 50e6928c5..cbafdc40d 100644
  
  /** Shared by every delivery mode; each appends how pending interactions are answered. */
 +export const accountTargetInstructions =
-+  " Machine-backed accounts are normal app accounts. Calls use saved linked accounts. Ask when the intended account is ambiguous; never invent an account-selection input. Device offline means the selected machine was not called. Report it clearly; never fall back to a cloud account or another machine. Unknown outcomes must not be resent automatically.";
++  " Machine-backed accounts are normal app accounts with saved target metadata. Device execution is not available yet; every device-bound call refuses without cloud fallback. Calls use saved linked accounts. Ask when the intended account is ambiguous; never invent an account-selection input. Device offline means the selected machine was not called. Report it clearly; never fall back to a cloud account or another machine. Unknown outcomes must not be resent automatically.";
  export const callDescription =
    "Call Executor app tools directly by exact path from search. Pass one {path, input} as calls, or an array of independent calls to run them concurrently; results come back in the same order, each with ok and its value or error. Use execute instead when one call's output feeds another, or to filter a large result before it reaches you. Results over the output limit are refused, not cut. Never ask the user for secrets in chat; accounts connect through Executor's secure links.";
  /** Call tools without a program. Pending interactions return as from execute. */
@@ -260,7 +255,7 @@ index 50e6928c5..cbafdc40d 100644
    parameters: CallInput,
    success: McpExecutionResult,
 diff --git a/packages/mcp/src/contracts/targets.ts b/packages/mcp/src/contracts/targets.ts
-index 4e4893d45..2d2fee517 100644
+index 4e4893d..2d2fee5 100644
 --- a/packages/mcp/src/contracts/targets.ts
 +++ b/packages/mcp/src/contracts/targets.ts
 @@ -1,7 +1,7 @@
@@ -273,7 +268,7 @@ index 4e4893d45..2d2fee517 100644
   * Every user requirement of the app with the caller's linked accounts for it, oldest link first,
   * after product and grant checks. Calls use them: the newest for a plain requirement, all for
 diff --git a/packages/mcp/src/implementation/accounts.ts b/packages/mcp/src/implementation/accounts.ts
-index f50ff300c..3921fd126 100644
+index f50ff30..98320af 100644
 --- a/packages/mcp/src/implementation/accounts.ts
 +++ b/packages/mcp/src/implementation/accounts.ts
 @@ -32,7 +32,7 @@ export const discoveryAccounts = (linked: McpAppAccounts): AppAccounts | undefin
@@ -281,20 +276,19 @@ index f50ff300c..3921fd126 100644
  // Agents read these once per app, so each account stays on one line.
  const describe = (account: McpAccount) =>
 -  `${account.id} (${account.label}${account.description === null ? "" : `: ${account.description.replace(/\s+/g, " ").trim()}`})`;
-+  `${account.id} (${account.label}${account.execution === undefined ? "" : `; runs on ${account.execution.deviceName}; ${account.execution.status}`}${account.description === null ? "" : `: ${account.description.replace(/\s+/g, " ").trim()}`})`;
++  `${account.id} (${account.label}${account.execution === undefined ? "" : `; target ${account.execution.deviceName}; ${account.execution.status}; execution unavailable`}${account.description === null ? "" : `: ${account.description.replace(/\s+/g, " ").trim()}`})`;
  
  /**
   * The accounts each user requirement uses, with their ID, label and description. Search lists this
 diff --git a/packages/sdk/src/contracts/account-target.ts b/packages/sdk/src/contracts/account-target.ts
 new file mode 100644
-index 000000000..7c1b9358b
+index 0000000..0a419c7
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-target.ts
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,107 @@
 +import { Schema, type Effect } from "effect";
 +import { UserFacingError } from "@executor-js/utils/user-facing-error";
 +import { AccountId, OwnerId, StorageError } from "./shared.ts";
-+import type { ToolInputs, ToolCompleted } from "./tools.ts";
 +import type { AccountNotFound } from "./account.ts";
 +
 +const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(255));
@@ -335,7 +329,7 @@ index 000000000..7c1b9358b
 +    description: `${deviceName} is offline. This account was not called.`,
 +    retryable: false,
 +    recovery: {
-+      action: "Reconnect the named device before calling this account.",
++      action: "Inspect the named device connection. Device execution is not available yet.",
 +      instructions:
 +        "Report the offline device and account. Do not substitute another account, cloud target or machine, or resend automatically.",
 +    },
@@ -367,19 +361,7 @@ index 000000000..7c1b9358b
 +    readonly target: MachineAccountTarget;
 +    readonly managing: boolean;
 +  }) => Effect.Effect<boolean, StorageError>;
-+  /**
-+   * The device host verifies current binding/generation, manifest, decoded input and the tool's
-+   * actual query kind before execution. It sends once, without credentials, substitution or retry.
-+   */
-+  readonly dispatch?: (input: {
-+    readonly bindings: readonly AccountTargetBinding[];
-+    readonly accounts: readonly {
-+      readonly id: AccountId;
-+      readonly owner: OwnerId;
-+      readonly credentialGeneration: number;
-+    }[];
-+    readonly call: typeof ToolInputs.call.Type;
-+  }) => Effect.Effect<typeof ToolCompleted.Type, StorageError | AccountExecutionUnavailable>;
++  // Device execution is unavailable until the product supplies authenticated reverse transport.
 +  readonly availability: (
 +    binding: AccountTargetBinding,
 +  ) => Effect.Effect<"online" | "offline" | "unavailable", StorageError>;
@@ -412,7 +394,7 @@ index 000000000..7c1b9358b
 +  >;
 +}
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 487c26368..62382ff0c 100644
+index 487c263..62382ff 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,4 @@
@@ -429,7 +411,7 @@ index 487c26368..62382ff0c 100644
    method: AuthMethodName,
    label: Schema.String,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index a7acd0133..3f1761497 100644
+index a7acd01..3f17614 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,3 +1,4 @@
@@ -462,7 +444,7 @@ index a7acd0133..3f1761497 100644
      | typeof RepositoryHost
      | typeof InteractiveHost
 diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
-index 801ffe3e0..d3f60a1e0 100644
+index 801ffe3..d3f60a1 100644
 --- a/packages/sdk/src/contracts/storage.ts
 +++ b/packages/sdk/src/contracts/storage.ts
 @@ -28,7 +28,7 @@ import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
@@ -475,7 +457,7 @@ index 801ffe3e0..d3f60a1e0 100644
  });
  
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
-index 12ead74a8..cfb6efcc0 100644
+index 12ead74..cfb6efc 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
 @@ -1,3 +1,4 @@
@@ -493,7 +475,7 @@ index 12ead74a8..cfb6efcc0 100644
    CredentialsError,
    AppNotFound,
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index b508f390a..2c06eaac7 100644
+index b508f39..2c06eaa 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
 @@ -63,3 +63,4 @@ export { asciiJson } from "./implementation/ascii-json.ts";
@@ -503,7 +485,7 @@ index b508f390a..2c06eaac7 100644
 +export * from "./contracts/account-target.ts";
 diff --git a/packages/sdk/src/implementation/account-target-schema.ts b/packages/sdk/src/implementation/account-target-schema.ts
 new file mode 100644
-index 000000000..9d5f8a894
+index 0000000..9d5f8a8
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-target-schema.ts
 @@ -0,0 +1,16 @@
@@ -525,10 +507,10 @@ index 000000000..9d5f8a894
 +});
 diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
 new file mode 100644
-index 000000000..7ab8f31f9
+index 0000000..696dafd
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-targets.ts
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,219 @@
 +import { Effect, Schema } from "effect";
 +import {
 +  AccountDeviceOffline,
@@ -539,12 +521,11 @@ index 000000000..7ab8f31f9
 +  type AccountTargetsHost,
 +  type MachineAccounts,
 +} from "../contracts/account-target.ts";
-+import { ToolCompleted, type ToolInputs } from "../contracts/tools.ts";
 +import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
 +import { storedAccount } from "./accounts.ts";
 +import { query, transaction, type Query } from "./database.ts";
 +
-+/** Shared by ordinary calls and app calls through tools.call, never a second dispatcher. */
++/** Saves target metadata and refuses bound accounts before any cloud credential resolution. */
 +export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined) => {
 +  const read = (account: AccountId, owner: OwnerId) =>
 +    Effect.gen(function* () {
@@ -701,13 +682,12 @@ index 000000000..7ab8f31f9
 +        status,
 +      };
 +    });
-+  const route = (input: {
++  const requireCloudCall = (input: {
 +    readonly accounts: readonly {
 +      readonly id: AccountId;
 +      readonly owner: OwnerId;
 +      readonly credentialGeneration: number;
 +    }[];
-+    readonly call: typeof ToolInputs.call.Type;
 +    readonly authorize: Effect.Effect<void, StorageError>;
 +  }) =>
 +    Effect.gen(function* () {
@@ -735,33 +715,11 @@ index 000000000..7ab8f31f9
 +            reason: "host_unavailable",
 +          });
 +      }
-+      const first = local[0]!;
-+      // This slice cannot move cloud credentials or combine execution on different machines.
-+      if (
-+        local.length !== input.accounts.length ||
-+        local.some((binding) => binding.target.device !== first.target.device)
-+      )
-+        return yield* new AccountExecutionUnavailable({
-+          account: first.account,
-+          reason: "changed",
-+        });
-+      if (input.call.kind !== "query" || host?.dispatch === undefined)
-+        return yield* new AccountExecutionUnavailable({
-+          account: first.account,
-+          reason: "host_unavailable",
-+        });
-+      // Send saved identities and current generations, never decrypted credentials or host addresses.
-+      const result = yield* host.dispatch({
-+        bindings: local,
-+        accounts: input.accounts,
-+        call: input.call,
++      // No reverse transport or device grant check exists yet. No host callback may execute a call.
++      return yield* new AccountExecutionUnavailable({
++        account: local[0]!.account,
++        reason: "host_unavailable",
 +      });
-+      return yield* Schema.decodeUnknownEffect(ToolCompleted)(result).pipe(
-+        Effect.mapError(
-+          () =>
-+            new AccountExecutionUnavailable({ account: first.account, reason: "host_unavailable" }),
-+        ),
-+      );
 +    });
 +  const requireCloud = (accounts: readonly { readonly id: AccountId; readonly owner: OwnerId }[]) =>
 +    Effect.gen(function* () {
@@ -770,10 +728,10 @@ index 000000000..7ab8f31f9
 +        if (binding !== undefined && binding.mode === "device") return yield* new StorageError();
 +      }
 +    });
-+  return { operations, execution, route, requireCloud };
++  return { operations, execution, requireCloudCall, requireCloud };
 +};
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index c15b7eb97..0e9c2d095 100644
+index c15b7eb..0e9c2d0 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
 @@ -307,6 +307,9 @@ export const makeAccounts = (
@@ -787,7 +745,7 @@ index c15b7eb97..0e9c2d095 100644
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d2a7f6ef6..e05c99d6b 100644
+index d2a7f6e..e05c99d 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,6 +1,8 @@
@@ -847,7 +805,7 @@ index d2a7f6ef6..e05c99d6b 100644
        publications: catalog.publications,
        registry: catalog.registry,
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 9da527be6..3cfcc09b8 100644
+index 9da527b..3cfcc09 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
 @@ -7,7 +7,7 @@ import type { ExecutorDatabase } from "./storage.ts";
@@ -860,7 +818,7 @@ index 9da527be6..3cfcc09b8 100644
  });
  
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 5bcfb327d..ab671281e 100644
+index 5bcfb32..ab67128 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,4 @@
@@ -888,7 +846,7 @@ index 5bcfb327d..ab671281e 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index e1d3b378c..1943dc698 100644
+index e1d3b37..1943dc6 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
 @@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
@@ -910,7 +868,7 @@ index e1d3b378c..1943dc698 100644
        lockAccountObservation: (id: string) =>
          sql`update executor_account_observations set id = id where id = ${id}`.pipe(
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 9159828ea..5d5cfe833 100644
+index 9159828..d455c41 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -781,6 +781,10 @@ export const makeTools = (
@@ -919,7 +877,7 @@ index 9159828ea..5d5cfe833 100644
    standingPolicy?: ToolPolicyHook,
 +  accountTargets?: Pick<
 +    ReturnType<typeof import("./account-targets.ts").makeAccountTargets>,
-+    "route" | "requireCloud"
++    "requireCloudCall" | "requireCloud"
 +  >,
  ) => {
    const db = database(storage);
@@ -979,15 +937,18 @@ index 9159828ea..5d5cfe833 100644
          const context = yield* resolve(state, resolveAccount);
          return yield* runtime.mcpApp({
            app: saved.app,
-@@ -1560,6 +1584,25 @@ export const makeTools = (
+@@ -1560,6 +1584,27 @@ export const makeTools = (
            ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
              ? grantReadAhead(ahead.grants.ids, ahead.grants.rows)
              : undefined;
 +        // Machine-bound accounts never enter cloud app code or credential resolution.
-+        const local = yield* (
-+          accountTargets?.route({
-+            accounts: distinctSelection(state).map(({ account }) => account),
-+            call: { ...parsed, version: state.version.id, input: args },
++        yield* (
++          accountTargets?.requireCloudCall({
++            accounts: distinctSelection(state).map(({ account }) => ({
++              id: account.id,
++              owner: account.owner,
++              credentialGeneration: account.credentialGeneration,
++            })),
 +            authorize: Effect.gen(function* () {
 +              if (lifecycle === undefined) return;
 +              const authority = accountAuthority(state.selections);
@@ -999,13 +960,12 @@ index 9159828ea..5d5cfe833 100644
 +              if (!distinctSelection(state).every(({ account }) => allowed.has(account.id)))
 +                return yield* new StorageError();
 +            }),
-+          }) ?? Effect.succeed(undefined)
++          }) ?? Effect.void
 +        );
-+        if (local !== undefined) return local;
          const context = yield* resolve(state, resolveAccount, ahead?.recheck).pipe(
            Effect.withSpan("sdk.accounts.resolve"),
            Effect.provideService(GrantReadAhead, grants),
-@@ -1783,6 +1826,11 @@ export const makeTools = (
+@@ -1783,6 +1828,11 @@ export const makeTools = (
                      "executor.tool.name": saved.tool,
                      "executor.approval.id": input.requestId,
                    });
