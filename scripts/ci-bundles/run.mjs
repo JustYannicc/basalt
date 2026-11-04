@@ -18,9 +18,10 @@ const ids = selectedJobs(process.env.BASALT_CI_BOAT_JOBS ?? "", workflow);
 assert.ok(ids.length, "The bundle requires at least one selected job");
 const shard = Number(process.env.BASALT_CI_BOAT_SHARD);
 assert.ok([1, 2, 3].includes(shard), "Boat shard must be 1, 2 or 3");
-const configured = Number(process.env.BASALT_CI_BOAT_MAX_PARALLEL || 2);
+const configured = Number(process.env.BASALT_CI_BOAT_MAX_PARALLEL || 1);
 assert.ok(Number.isSafeInteger(configured) && configured > 0, "Boat parallelism must be a positive integer");
-const concurrency = Math.max(1, Math.min(2, configured, Math.floor(cpus().length / 2), Math.floor((totalmem() - 2 * gib) / (6 * gib))));
+// The proof observed individual suites above 12 GiB RSS. A 15.6 GiB VM admits one at a time.
+const concurrency = 1;
 const suites = partitionSuites(suitePlan(workflow, ids))[shard - 1];
 const results = [];
 await mkdir(output, { recursive: true });
@@ -90,6 +91,7 @@ async function runSuite(suite, preparationMs) {
         timeoutMs: Math.min(remaining, (step["timeout-minutes"] ?? Infinity) * 60_000),
         log: join(destination, "suite.log"), monitor, suite: suite.key,
       });
+      await monitor.stopSuite(suite.key);
       steps.push({ name, ...result, seconds: (Date.now() - stepStarted) / 1_000 });
       await persist();
       if (result.code !== 0) throw new Error(`${name}: ${result.timedOut ? "timed out" : `exit ${result.code}`}`);
@@ -100,7 +102,14 @@ async function runSuite(suite, preparationMs) {
     record.failure = error.message;
     console.log(`::error title=${suite.key}::${String(error.message).replaceAll("\n", " ").replaceAll("%", "%25")}`);
   } finally {
-    try { await collect(suite, workspace, context, destination); }
+    let stopped = false;
+    try { await monitor.stopSuite(suite.key); stopped = true; }
+    catch (error) {
+      record.status = "failed";
+      record.failure ??= error.message;
+      console.log(`::error title=${suite.key}::${error.message}`);
+    }
+    try { if (stopped) await collect(suite, workspace, context, destination); }
     catch (error) {
       record.status = "failed";
       record.artifactFailure = error.message;
@@ -115,8 +124,10 @@ async function runSuite(suite, preparationMs) {
     await appendFile(process.env.GITHUB_STEP_SUMMARY,
       `### ${suite.key}: ${record.status}\n\n${record.failure ?? "All original steps passed."}\n\n`);
     await appendFile(process.env.GITHUB_OUTPUT, `${suite.key}=true\n`);
-    await rm(workspace, { recursive: true, force: true });
-    await rm(temp, { recursive: true, force: true });
+    if (stopped) {
+      await rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }
 }
 

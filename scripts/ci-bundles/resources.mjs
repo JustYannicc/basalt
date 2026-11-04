@@ -27,6 +27,42 @@ export class Resources {
   register(suite, pid) { this.groups.set(pid, suite); }
   unregister(pid) { this.groups.delete(pid); }
 
+  async stopSuite(suite) {
+    const current = (pid, start) => {
+      try {
+        const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const fields = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
+        return fields[0] !== "Z" && fields[19] === start;
+      } catch { return false; }
+    };
+    const owned = new Map();
+    const capture = () => {
+      this.sample();
+      for (const [pid, item] of this.previous)
+        if (this.owners.get(pid) === suite) owned.set(pid, item.start);
+      return [...owned].filter(([pid, start]) => current(pid, start));
+    };
+    const signal = (processes, name) => {
+      for (const [pid, start] of processes) {
+        if (!current(pid, start)) continue;
+        try { process.kill(pid, name); }
+        catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    };
+    // Descendants can outlive the shell and keep Motel files open. Start times prevent PID reuse.
+    signal(capture(), "SIGTERM");
+    for (const name of ["SIGTERM", "SIGKILL"]) {
+      const deadline = Date.now() + 1_000;
+      let live;
+      while ((live = capture()).length && Date.now() < deadline) {
+        signal(live, name);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (!live.length) return;
+    }
+    throw new Error(`Owned processes still running after ${suite} stopped`);
+  }
+
   oomKills() {
     return Number(/^oom_kill (\d+)$/m.exec(readFileSync("/proc/vmstat", "utf8"))?.[1] ?? 0);
   }
