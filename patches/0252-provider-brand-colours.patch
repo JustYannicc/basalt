@@ -1,0 +1,243 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
+index a555958..265e08d 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
+@@ -7,6 +7,7 @@ import { WeeklyPoolCap } from "@executor-js/hosted-server/pool-usage";
+ import { formatMoment } from "@executor-js/ui/hooks/display-format";
+ import type { DisplayFormat } from "@executor-js/ui/contracts/display";
+ import type { PoolUsageMember } from "../../contracts/pool-usage.ts";
++import { brandLab, brandShades, type BrandLab } from "@executor-js/ui/contracts/provider-brand";
+ 
+ export type Metric = "tokens" | "cost";
+ type Usage = Pick<PoolUsageMember, "requests" | "cost" | "unpriced" | "tokens">;
+@@ -130,35 +131,16 @@ export const share = (part: number, whole: number) =>
+ const providerNames: Readonly<Record<string, string>> = { claude: "Claude", codex: "ChatGPT" };
+ export const providerName = (provider: string) => providerNames[provider] ?? provider;
+ 
+-type Lab = "anthropic" | "openai" | "google" | "other";
++type Lab = BrandLab | "other";
+ /**
+  * The model's maker decides its colour family, read from the model name first because one
+- * provider can serve another lab's models. An unrecognised model gets a neutral colour.
++ * provider can serve another lab's models. An unrecognised model gets a neutral colour. The
++ * families are the shared lab brand colours, so the chart matches the account usage bars.
+  */
+-const lab = (model: ModelUsage): Lab => {
+-  const name = model.model.toLowerCase();
+-  if (name.startsWith("claude")) return "anthropic";
+-  if (/^(gpt|chatgpt|codex|o\d)/.test(name)) return "openai";
+-  if (name.startsWith("gemini")) return "google";
+-  if (model.provider === "claude") return "anthropic";
+-  if (model.provider === "codex") return "openai";
+-  return "other";
+-};
+-// Tailwind only sees complete class names, so every shade is written out. Light and dark pairs keep
+-// the same order. Claude is orange; OpenAI is black on light and white on dark.
++const lab = (model: ModelUsage): Lab =>
++  brandLab(model.model, model.provider, providerName(model.provider)) ?? "other";
+ const shades: Readonly<Record<Lab, readonly string[]>> = {
+-  anthropic: [
+-    "bg-[#b95533] dark:bg-[#f1b198]",
+-    "bg-[#d97757] dark:bg-[#d97757]",
+-    "bg-[#9f705c] dark:bg-[#a36e58]",
+-    "bg-[#e8a487] dark:bg-[#c25f3c]",
+-  ],
+-  openai: [
+-    "bg-[#111111] dark:bg-[#f5f5f5]",
+-    "bg-[#626262] dark:bg-[#b2b2b2]",
+-    "bg-[#3a3a3a] dark:bg-[#dcdcdc]",
+-  ],
+-  google: ["bg-[#1a73e8] dark:bg-[#8ab4f8]", "bg-[#5e97f6] dark:bg-[#aecbfa]"],
++  ...brandShades,
+   other: ["bg-slate-500 dark:bg-slate-400", "bg-stone-500 dark:bg-stone-400"],
+ };
+ /** Models outside the chart's named series. */
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index b081f74..1b20234 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -169,7 +169,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         expect(failed[1]).toBe("Rem 88%");
+         expect(failed[2]).toBe("");
+         // The server clock moved, not the browser's, so only the stale label is stable here.
+-        expect(failed[3]).toMatch(/^last read /);
++        expect(failed[3]).toMatch(/^Stale · last read /);
+         expect(failed[4]).toBe("stale");
+         expect(failed[5], "the retained reading keeps its source time").toBe(observedAt);
+         expect(failed[6], "a usage failure never asks to reconnect").toBe(0);
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index f8a317b..c34b88f 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -285,7 +285,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         ).toBe(true);
+         expect(staleCells).toHaveLength(1);
+         expect(staleCells[0]?.stale).toBe(true);
+-        expect(staleCells[0]?.age).toBe("last read 3 h ago");
++        expect(staleCells[0]?.age).toBe("Stale · last read 3 h ago");
+         expect(staleCells[0]?.value, "a stale cell keeps its exact amount").toBe("Rem 89%");
+         expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
+         expect(staleCells[0]?.count).toContain("↻ 1");
+diff --git a/packages/ui/src/contracts/provider-brand.ts b/packages/ui/src/contracts/provider-brand.ts
+new file mode 100644
+index 0000000..d59ace8
+--- /dev/null
++++ b/packages/ui/src/contracts/provider-brand.ts
+@@ -0,0 +1,51 @@
++/**
++ * The one mapping from a provider or model to its lab's brand colours, shared by account usage
++ * bars and the pool's usage chart so a lab reads the same everywhere: OpenAI green, Anthropic
++ * orange, Kimi blue, Google blue. Colours are extra cues; every place keeps its text label.
++ */
++export type BrandLab = "openai" | "anthropic" | "kimi" | "google";
++
++const labs: readonly (readonly [BrandLab, RegExp])[] = [
++  ["anthropic", /anthropic|claude/],
++  ["openai", /openai|chatgpt|codex|^gpt|^o\d/],
++  ["kimi", /kimi|moonshot/],
++  ["google", /google|gemini|vertex|antigravity/],
++];
++
++/**
++ * The lab behind the first name that names one, such as a model name, a provider id or a provider's
++ * display name. Read the most specific name first: one provider can serve another lab's models.
++ */
++export const brandLab = (
++  ...names: readonly (string | null | undefined)[]
++): BrandLab | undefined => {
++  for (const name of names) {
++    const value = name?.trim().toLowerCase();
++    if (!value) continue;
++    const found = labs.find(([, pattern]) => pattern.test(value));
++    if (found !== undefined) return found[0];
++  }
++  return undefined;
++};
++
++// Tailwind only sees complete class names, so every shade is written out. The first shade is the
++// lab's own colour; light and dark pairs keep the same order.
++export const brandShades: Readonly<Record<BrandLab, readonly string[]>> = {
++  openai: [
++    "bg-[#10a37f] dark:bg-[#19c37d]",
++    "bg-[#0d8a6a] dark:bg-[#5fd4a6]",
++    "bg-[#5fbf9f] dark:bg-[#0f9e73]",
++  ],
++  anthropic: [
++    "bg-[#d97757] dark:bg-[#d97757]",
++    "bg-[#b95533] dark:bg-[#f1b198]",
++    "bg-[#9f705c] dark:bg-[#a36e58]",
++    "bg-[#e8a487] dark:bg-[#c25f3c]",
++  ],
++  kimi: ["bg-[#1783ff] dark:bg-[#5aa7ff]", "bg-[#0f5fc2] dark:bg-[#93c5ff]"],
++  google: ["bg-[#1a73e8] dark:bg-[#8ab4f8]", "bg-[#5e97f6] dark:bg-[#aecbfa]"],
++};
++
++/** The lab's own colour for a bar or swatch, or undefined for a lab without one. */
++export const brandFill = (lab: BrandLab | undefined) =>
++  lab === undefined ? undefined : brandShades[lab][0];
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 0236ffa..5f280ab 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -17,12 +17,15 @@ export function ObservationReadings({
+   now,
+   format,
+   tokens,
++  brand,
+ }: {
+   readonly record: AccountObservationRecord;
+   readonly source?: string;
+   readonly now: number;
+   readonly format: DisplayFormat;
+   readonly tokens?: ((entry: Window) => ReactNode) | undefined;
++  /** The account's lab colour for its healthy bars. */
++  readonly brand?: string | undefined;
+ }) {
+   const observation = record.result?.observation;
+   const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
+@@ -46,6 +49,7 @@ export function ObservationReadings({
+           now={now}
+           format={format}
+           tokens={tokens?.(entry)}
++          brand={brand}
+         />
+       ))}
+     </div>
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index a506df2..9ea9c43 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -24,6 +24,7 @@ import {
+ import { ObservationReadings } from "./account-observation-readings.tsx";
+ import { useQuery } from "./context.tsx";
+ import { useAccountRow } from "./account-row.tsx";
++import { brandFill, brandLab } from "../../contracts/provider-brand.ts";
+ 
+ /** What a product lets the caller see of an account's reported usage. */
+ export interface AccountObservationsView {
+@@ -174,6 +175,14 @@ export function AccountObservations<E>({
+               now={now}
+               format={format}
+               tokens={windowTokens}
++              brand={brandFill(
++                brandLab(
++                  account.providerName,
++                  account.identity?.name,
++                  report.source.label,
++                  report.result?.observation.plan?.label,
++                ),
++              )}
+             />
+           ),
+       )}
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+index 5031d12..cb508f2 100644
+--- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -21,8 +21,9 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+ };
+ 
+ /**
+- * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
+- * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
++ * One limited window: its label, what remains, the bar and when it resets. A healthy bar takes its
++ * lab's `brand` colour; low and critical keep their warning colours. A stale reading keeps its
++ * exact amount and drawn width, greys the bar and says plainly that it is stale and how old it is. `resets` is the banked
+  * reset count for the window they refill; it is a count only, never a control. `tokens` is what a
+  * gateway counted in the window, at the left of the footer.
+  */
+@@ -33,9 +34,12 @@ export function UsageCell({
+   now,
+   format,
+   tokens,
++  brand,
+ }: {
+   readonly entry: Window;
+   readonly stale: boolean;
++  /** The lab's bar colour from `brandFill`, for a reading with room to spare. */
++  readonly brand?: string | undefined;
+   readonly resets?: { readonly count: number; readonly title: string } | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
+@@ -60,7 +64,7 @@ export function UsageCell({
+         </span>
+         {stale && (
+           <span className="shrink-0 text-sign-in-warning" data-stale-age>
+-            last read <time dateTime={entry.observedAt}>{read}</time>
++            Stale · last read <time dateTime={entry.observedAt}>{read}</time>
+           </span>
+         )}
+         <span className="flex-1" />
+@@ -120,7 +124,11 @@ export function UsageCell({
+           <span
+             className={cn(
+               "block h-full rounded-full",
+-              stale ? "bg-muted-foreground/45" : fills[reading.state],
++              stale
++                ? "bg-muted-foreground/45"
++                : reading.state === "good"
++                  ? (brand ?? fills.good)
++                  : fills[reading.state],
+             )}
+             style={{ width: `${reading.width}%` }}
+           />
