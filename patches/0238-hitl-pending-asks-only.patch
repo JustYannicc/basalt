@@ -87,7 +87,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx 
 diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
 --- a/e2e/tests/workflow-input-browser.spec.ts
 +++ b/e2e/tests/workflow-input-browser.spec.ts
-@@ -21,6 +21,42 @@
+@@ -21,6 +21,44 @@
          const f = yield* workflowInputFixture;
          const browser = yield* Browser;
          const run = yield* f.start(86400000, "no", f.actors.owner, "defaults");
@@ -104,11 +104,13 @@ diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input
 +          saved,
 +        );
 +        yield* Effect.addFinalizer(() =>
-+          f.api.request(
-+            f.actors.owner,
-+            "DELETE",
-+            `${policiesPath}/${policy.id}?revision=${policy.revision}`,
-+          ).pipe(Effect.asVoid),
++          f.api
++            .request(
++              f.actors.owner,
++              "DELETE",
++              `${policiesPath}/${policy.id}?revision=${policy.revision}`,
++            )
++            .pipe(Effect.asVoid),
 +        );
 +        const readPolicies = () => f.api.request(f.actors.owner, "GET", policiesPath);
 +        const beforeVisit = yield* readPolicies();
@@ -130,18 +132,23 @@ diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input
          yield* browser.login(f.actors.owner);
          const queue = `/org/${f.actors.organization.slug}/approvals`;
          const types = [
-@@ -101,6 +137,18 @@
+@@ -101,6 +139,23 @@
                    ),
                ),
              ).toBe(message);
 +            const ruleControls = () =>
-+              browser.use("HITL contains only pending asks", async (page) => ({
-+                rules: await page.getByRole("tab", { name: "Rules", exact: true }).count(),
-+                create: await page.getByRole("button", { name: "New rule", exact: true }).count(),
-+                constraint: await page
-+                  .getByRole("textbox", { name: "Input constraint JSON Schema" })
-+                  .count(),
-+              }));
++              Effect.gen(function* () {
++                const rules = yield* browser.use("HITL has no Rules tab", (page) =>
++                  page.getByRole("tab", { name: "Rules", exact: true }).count(),
++                );
++                const create = yield* browser.use("HITL has no rule creation form", (page) =>
++                  page.getByRole("button", { name: "New rule", exact: true }).count(),
++                );
++                const constraint = yield* browser.use("HITL has no JSON Schema editor", (page) =>
++                  page.getByRole("textbox", { name: "Input constraint JSON Schema" }).count(),
++                );
++                return { rules, create, constraint };
++              });
 +            expect(yield* ruleControls()).toEqual({ rules: 0, create: 0, constraint: 0 });
 +            const afterVisit = yield* readPolicies();
 +            expect(afterVisit.status).toBe(200);
@@ -149,7 +156,7 @@ diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input
              yield* browser.checkpoint("Human in the loop shows the question and request type");
              yield* browser.use("Use a phone-sized viewport", (page) =>
                page.setViewportSize({ width: 390, height: 844 }),
-@@ -117,6 +165,7 @@
+@@ -117,6 +172,7 @@
              yield* browser.use("The phone queue retains the same pending request", (page) =>
                page.getByRole("heading", { name: message, exact: true }).waitFor(),
              );

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hitl-pending-asks-only",
   "file": "0238-hitl-pending-asks-only.patch",
-  "content_sha256": "bedbad331ae5504138c7fa42d24523aa9b240aa56e097a39f2d0a1623f244317",
+  "content_sha256": "19e9d1b741cdc116359e684df9f6568d9d7d67ddff4e2ffa4a23889c83d6c6ae",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
