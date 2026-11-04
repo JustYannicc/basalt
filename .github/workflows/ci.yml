@@ -31,7 +31,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          # Temporary same-repository proof; remove after the measured PR run.
+          BOAT_JOBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/boat-suite-runtime') && 'production-ops,production-ops-migrations,production-ops-identity,host-managed-accounts,contributed-accounts,oauth-account-regressions,account-acquisition,pool-account-recovery,compiler-diagnostics' || vars.BASALT_CI_BOAT_JOBS }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-update') }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
@@ -180,6 +181,33 @@ jobs:
             .generated/vercel-sign-in/ci/partial-results.json
             .generated/vercel-sign-in/ci/upstream-calls.json
             .generated/vercel-sign-in/ci/failure.txt
+          if-no-files-found: warn
+  elevenlabs-sign-in:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'elevenlabs-sign-in')
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Verify ElevenLabs client metadata sign-in, retained tokens and audio approval
+        run: bun e2e/elevenlabs-sign-in.mjs .generated/elevenlabs-sign-in/ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: elevenlabs-sign-in
+          path: |
+            .generated/elevenlabs-sign-in/ci/report.json
+            .generated/elevenlabs-sign-in/ci/partial-results.json
+            .generated/elevenlabs-sign-in/ci/upstream-calls.json
+            .generated/elevenlabs-sign-in/ci/failure.txt
           if-no-files-found: warn
   slack-health:
     needs: select
@@ -984,6 +1012,8 @@ jobs:
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
   aws-connectors:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'aws-connectors')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1326,7 +1356,7 @@ jobs:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
 
   check:
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:

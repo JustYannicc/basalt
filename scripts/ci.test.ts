@@ -114,6 +114,27 @@ test("pool ingress and carried shared workflow views retain the gates that consu
   assert.ok(jobs.includes("production-build"));
 });
 
+test("AWS catalog, proof inputs and loopback carries select the AWS runtime proof", () => {
+  for (const path of [
+    "src/catalog/aws/index.ts",
+    "src/catalog/aws/source.json",
+    "src/catalog/worker.ts",
+    "src/catalog/settings.ts",
+    "e2e/aws/browser.mjs",
+    "scripts/check-aws.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("aws-connectors"), path);
+  for (const file of ["0152-loopback-oauth.patch", "0188-loopback-framework-activation.patch"]) {
+    const patch = readFileSync(new URL("../patches/" + file, import.meta.url), "utf8");
+    for (const target of carryTargets(patch))
+      assert.ok(selectPaths([target]).jobs.includes("aws-connectors"), target);
+  }
+  const vercel = selectPaths(["src/catalog/vercel.json"]).jobs;
+  assert.ok(vercel.includes("vercel-sign-in"));
+  assert.ok(!vercel.includes("aws-connectors"));
+  assert.ok(!selectPaths(["clients/mobile/src/account.ts"]).jobs.includes("aws-connectors"));
+});
+
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {
   const selected = ["production-build"];
   const needs = Object.fromEntries(

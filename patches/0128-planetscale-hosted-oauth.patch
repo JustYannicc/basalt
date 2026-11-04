@@ -1,0 +1,68 @@
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -10,6 +10,7 @@
+ import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
+ import { FirstPartyOAuthClientsInvalid } from "../contracts/oauth-client-metadata.ts";
+ import { isZohoOAuthClient, zohoOAuthClients } from "./zoho-oauth.ts";
++import { planetScaleOAuthClient } from "./planetscale-oauth.ts";
+ import { catalogOAuthClientDefinitions } from "./shared-catalog-oauth.ts";
+ 
+ /** A first-party client without its credentials: everything about it that code reviews. */
+@@ -307,6 +308,7 @@
+  */
+ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
+   ...catalogOAuthClientDefinitions,
++  planetScaleOAuthClient,
+   ...zohoOAuthClients,
+   {
+     id: "gitlab",
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+@@ -0,0 +1,47 @@
++import type { FirstPartyOAuthClientDefinition } from "./first-party-oauth.ts";
++
++const scopes = [
++  "read_user",
++  "read_organization",
++  "write_organization",
++  "read_databases",
++  "write_databases",
++  "organization:create_databases",
++  "organization:delete_databases",
++  "organization:read_databases",
++  "organization:write_databases",
++  "organization:read_branches",
++  "organization:write_branches",
++  "organization:delete_branches",
++  "organization:read_deploy_requests",
++  "organization:write_deploy_requests",
++  "organization:approve_deploy_requests",
++  "organization:deploy_deploy_requests",
++  "organization:read_comments",
++  "organization:write_comments",
++  "organization:read_backups",
++  "organization:write_backups",
++  "organization:delete_backups",
++  "organization:restore_backups",
++  "organization:manage_passwords",
++  "organization:manage_read_only_passwords",
++  "organization:read_members",
++  "organization:read_workflows",
++  "organization:write_workflows",
++  "organization:read_audit_logs",
++];
++
++/** Shared hosted client for the catalog app; credentials remain optional host settings. */
++export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
++  id: "planetscale",
++  label: "Signalbox for PlanetScale",
++  server: {
++    issuer: "https://api.planetscale.com",
++    authorizationUrl: "https://app.planetscale.com/oauth/authorize",
++    tokenUrl: "https://auth.planetscale.com/oauth/token",
++  },
++  tokenEndpointAuthMethod: "client_secret_basic",
++  defaultScopes: scopes,
++  allowedScopes: scopes,
++  placement: { hosts: ["api.planetscale.com"] },
++};
