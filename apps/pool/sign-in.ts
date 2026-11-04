@@ -47,7 +47,8 @@ export const prompt = {
   },
   loginFile: {
     session: loginFileMethod,
-    message: "Paste a login file the pool backend exported. It connects that subscription without signing in again.",
+    message:
+      "Paste a login file the pool backend exported. It connects that subscription without signing in again.",
     paste: { label: "Login file contents", placeholder: "{ … }" },
   },
 };
@@ -59,7 +60,8 @@ export function signedIn(status: SignInStatus) {
   if (status.accountId === null)
     return {
       state: "failed" as const,
-      message: "The subscription connected, but the pool couldn't tell which account it was. It shows on the pool's page; remove it there and connect it again.",
+      message:
+        "The subscription connected, but the pool couldn't tell which account it was. It shows on the pool's page; remove it there and connect it again.",
     };
   return { state: "connected" as const, ref: status.accountId };
 }
@@ -90,7 +92,10 @@ export const identityLookupMs = 3_000;
  */
 export async function withIdentity<S extends { readonly state: string; readonly ref?: string }>(
   state: S,
-  lookup: () => Promise<{ readonly ok: boolean; readonly value?: { readonly accounts?: readonly Account[] } }>,
+  lookup: () => Promise<{
+    readonly ok: boolean;
+    readonly value?: { readonly accounts?: readonly Account[] };
+  }>,
   sites: readonly { readonly id: string; readonly site?: string }[],
   timeoutMs = identityLookupMs,
 ): Promise<S | (S & { accountInfo: AccountIdentity })> {
@@ -101,7 +106,9 @@ export async function withIdentity<S extends { readonly state: string; readonly 
   const found = Promise.resolve()
     .then(lookup)
     .then((view) => {
-      const account = view.ok ? view.value?.accounts?.find((candidate) => candidate.id === state.ref) : undefined;
+      const account = view.ok
+        ? view.value?.accounts?.find((candidate) => candidate.id === state.ref)
+        : undefined;
       // A label that is only the account's id names nothing and is the host's reference for it.
       return account === undefined || account.label === account.id
         ? state

@@ -11,7 +11,13 @@ const account: Account = {
   state: "active",
   message: null,
   windows: [
-    { id: "5h", label: "5 hours", remainingRatio: 0.4, resetAt: "2030-01-02T03:04:05.123456+00:00", windowSeconds: 18_000 },
+    {
+      id: "5h",
+      label: "5 hours",
+      remainingRatio: 0.4,
+      resetAt: "2030-01-02T03:04:05.123456+00:00",
+      windowSeconds: 18_000,
+    },
     { id: "week", label: "Weekly", remainingRatio: null, resetAt: null, windowSeconds: null },
   ],
   observedAt: "2030-01-02T00:00:00Z",
@@ -68,28 +74,70 @@ test("the status stays within the host's display limits", () => {
 });
 
 test("windows read shortest first, and an active account shows no note", () => {
-  const status = accountStatus({ ...account, message: "fine", windows: [...account.windows].reverse() }, sites).status;
-  assert.deepEqual(status.meters.map((meter) => meter.label), ["5 hours", "Weekly"]);
+  const status = accountStatus(
+    { ...account, message: "fine", windows: [...account.windows].reverse() },
+    sites,
+  ).status;
+  assert.deepEqual(
+    status.meters.map((meter) => meter.label),
+    ["5 hours", "Weekly"],
+  );
   assert.deepEqual(status.stats, []);
-  assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), { label: "Paused", tone: "warning" });
+  assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), {
+    label: "Paused",
+    tone: "warning",
+  });
 });
 
 test("reset credits use the five-hour meter, with expiry or a bounded fallback badge; zero shows nothing", () => {
-  const codex = accountStatus({ ...account, bankedResets: { available: 2, nextExpiresAt: "2030-01-05T00:00:00Z" } }, sites, new Date("2030-01-02T00:00:00Z")).status;
+  const codex = accountStatus(
+    { ...account, bankedResets: { available: 2, nextExpiresAt: "2030-01-05T00:00:00Z" } },
+    sites,
+    new Date("2030-01-02T00:00:00Z"),
+  ).status;
   assert.equal(codex.meters[0]!.detail, "↻ 2 banked · next expires in 3 days");
-  const claude = accountStatus({ ...account, provider: "claude", windows: [], bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
+  const claude = accountStatus(
+    {
+      ...account,
+      provider: "claude",
+      windows: [],
+      bankedResets: { available: 2, nextExpiresAt: null },
+    },
+    sites,
+  ).status;
   assert.ok(claude.badges.some((badge) => badge.label === "2 banked resets"));
   assert.equal(claude.meters.length, 0);
-  const none = accountStatus({ ...account, bankedResets: { available: 0, nextExpiresAt: null } }, sites).status;
+  const none = accountStatus(
+    { ...account, bankedResets: { available: 0, nextExpiresAt: null } },
+    sites,
+  ).status;
   assert.equal(none.meters[0]!.detail, undefined);
-  assert.equal(accountStatus({ ...account, windows: [], bankedResets: { available: 0, nextExpiresAt: null } }, sites).status.badges.length, 1);
+  assert.equal(
+    accountStatus(
+      { ...account, windows: [], bankedResets: { available: 0, nextExpiresAt: null } },
+      sites,
+    ).status.badges.length,
+    1,
+  );
 });
 
 test("only a failed reading shows a warning badge, within host limits", () => {
-  assert.deepEqual(accountStatus({ ...account, freshness: "stale" }, sites).status.badges, [{ label: "Plus", tone: "neutral" }]);
-  const failed = accountStatus({ ...account, readingFailed: true, freshness: "fresh" }, sites).status;
-  assert.ok(failed.badges.some((badge) => badge.label === "Usage reading failed" && badge.tone === "warning"));
-  const full = accountStatus({ ...account, readingFailed: true, bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
+  assert.deepEqual(accountStatus({ ...account, freshness: "stale" }, sites).status.badges, [
+    { label: "Plus", tone: "neutral" },
+  ]);
+  const failed = accountStatus(
+    { ...account, readingFailed: true, freshness: "fresh" },
+    sites,
+  ).status;
+  assert.ok(
+    failed.badges.some(
+      (badge) => badge.label === "Usage reading failed" && badge.tone === "warning",
+    ),
+  );
+  const full = accountStatus(
+    { ...account, readingFailed: true, bankedResets: { available: 2, nextExpiresAt: null } },
+    sites,
+  ).status;
   assert.ok(full.badges.length <= 8);
   assert.ok(full.meters.length <= 4);
   assert.ok(full.badges.every((badge) => badge.label.length <= 96));

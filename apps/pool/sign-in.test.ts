@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callbackOrigin, identityOf, isLoopbackUrl, prompt, signedIn, withIdentity } from "./sign-in.ts";
+import {
+  callbackOrigin,
+  identityOf,
+  isLoopbackUrl,
+  prompt,
+  signedIn,
+  withIdentity,
+} from "./sign-in.ts";
 
 test("only local addresses count as the pasted callback", () => {
   assert.ok(isLoopbackUrl("http://localhost:5000/callback?code=c&state=s"));
@@ -15,13 +22,25 @@ test("the expected local address comes from the sign-in link itself", () => {
   const link = `https://auth.example.com/authorize?client_id=x&redirect_uri=${encodeURIComponent("http://localhost:5000/callback")}`;
   assert.equal(callbackOrigin(link), "http://localhost:5000");
   assert.equal(callbackOrigin("https://auth.example.com/device?code=1"), null);
-  assert.equal(callbackOrigin(`https://a.example.com/?redirect_uri=${encodeURIComponent("https://b.example.com/cb")}`), null);
+  assert.equal(
+    callbackOrigin(
+      `https://a.example.com/?redirect_uri=${encodeURIComponent("https://b.example.com/cb")}`,
+    ),
+    null,
+  );
   assert.equal(callbackOrigin("not a url"), null);
 });
 
 test("a callback sign-in asks the Connect dialog for the address the tab ends on", () => {
   const url = `https://auth.example.com/authorize?redirect_uri=${encodeURIComponent("http://localhost:5000/callback")}`;
-  const shown = prompt.signIn({ session: "s", provider: "p", flow: "callback", url, userCode: null, expiresAt: "2026-01-01T00:10:00Z" });
+  const shown = prompt.signIn({
+    session: "s",
+    provider: "p",
+    flow: "callback",
+    url,
+    userCode: null,
+    expiresAt: "2026-01-01T00:10:00Z",
+  });
   assert.equal(shown.session, "s");
   assert.equal(shown.url, url);
   assert.equal("code" in shown, false);
@@ -45,8 +64,14 @@ test("a device sign-in shows its code and asks for nothing back", () => {
 
 test("the pool account becomes the account's reference; an unattributed one fails closed", () => {
   assert.deepEqual(signedIn({ status: "waiting" }), { state: "waiting" });
-  assert.deepEqual(signedIn({ status: "connected", accountId: "a1" }), { state: "connected", ref: "a1" });
-  assert.deepEqual(signedIn({ status: "failed", message: "no" }), { state: "failed", message: "no" });
+  assert.deepEqual(signedIn({ status: "connected", accountId: "a1" }), {
+    state: "connected",
+    ref: "a1",
+  });
+  assert.deepEqual(signedIn({ status: "failed", message: "no" }), {
+    state: "failed",
+    message: "no",
+  });
   assert.equal(signedIn({ status: "connected", accountId: null }).state, "failed");
 });
 
@@ -57,7 +82,9 @@ test("a connected subscription reports its email or label, and its provider's lo
     email: "someone@example.com",
     avatarUrl: "https://integrations.sh/logo/chatgpt.com?sz=64",
   });
-  assert.deepEqual(identityOf({ label: "Team login", provider: "kimi" }, sites), { displayName: "Team login" });
+  assert.deepEqual(identityOf({ label: "Team login", provider: "kimi" }, sites), {
+    displayName: "Team login",
+  });
   assert.deepEqual(identityOf({ label: "  ", provider: "other" }, sites), {});
 });
 
@@ -66,19 +93,38 @@ test("identity never undoes a connected sign-in", async () => {
   const sites = [{ id: "codex", site: "chatgpt.com" }];
   const account = { id: "a1", provider: "codex", label: "someone@example.com" };
   assert.equal(
-    (await withIdentity(connected, async () => ({ ok: true, value: { accounts: [account as never] } }), sites)).accountInfo?.email,
+    (
+      await withIdentity(
+        connected,
+        async () => ({ ok: true, value: { accounts: [account as never] } }),
+        sites,
+      )
+    ).accountInfo?.email,
     "someone@example.com",
   );
   // A label that is only the account's id is its reference, so no identity is added.
   const unnamed = { id: "a1", provider: "codex", label: "a1" };
   assert.deepEqual(
-    await withIdentity(connected, async () => ({ ok: true, value: { accounts: [unnamed as never] } }), sites),
+    await withIdentity(
+      connected,
+      async () => ({ ok: true, value: { accounts: [unnamed as never] } }),
+      sites,
+    ),
     connected,
   );
   // Malformed, refused, rejected and late answers all keep the connected result.
   assert.deepEqual(await withIdentity(connected, async () => ({ ok: true }), sites), connected);
   assert.deepEqual(await withIdentity(connected, async () => ({ ok: false }), sites), connected);
-  assert.deepEqual(await withIdentity(connected, () => Promise.reject(new Error("network")), sites), connected);
-  assert.deepEqual(await withIdentity(connected, () => new Promise(() => {}), sites, 10), connected);
-  assert.deepEqual(await withIdentity({ state: "waiting" as const }, async () => ({ ok: true }), sites), { state: "waiting" });
+  assert.deepEqual(
+    await withIdentity(connected, () => Promise.reject(new Error("network")), sites),
+    connected,
+  );
+  assert.deepEqual(
+    await withIdentity(connected, () => new Promise(() => {}), sites, 10),
+    connected,
+  );
+  assert.deepEqual(
+    await withIdentity({ state: "waiting" as const }, async () => ({ ok: true }), sites),
+    { state: "waiting" },
+  );
 });

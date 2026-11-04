@@ -47,10 +47,15 @@ function resetText(account: Account, now: Date): string | null {
 }
 
 /** The account check result for one pool account, within the host's display limits. */
-export function accountStatus(account: Account, sites: readonly { readonly id: string; readonly site?: string }[], now = new Date()) {
+export function accountStatus(
+  account: Account,
+  sites: readonly { readonly id: string; readonly site?: string }[],
+  now = new Date(),
+) {
   const plan = account.plan === null ? "" : text(account.plan, 64);
   // Like the pool screen, a note shows only when something is wrong.
-  const message = account.message === null || account.state === "active" ? "" : text(account.message, 128);
+  const message =
+    account.message === null || account.state === "active" ? "" : text(account.message, 128);
   const windows = orderedWindows(account.windows).slice(0, 4);
   const reset = resetText(account, now);
   const state = states[account.state];
