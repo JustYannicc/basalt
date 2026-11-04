@@ -1,0 +1,54 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index e7bf9de..0846df5 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -240,14 +240,14 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                   .setViewportSize({ width, height: 900 })
+                   .then(() => page.emulateMedia({ colorScheme: scheme }))
+                   .then(() => page.goto(url))
+-                  .then(async () => {
+-                    if (name === "accounts") await ready(page);
+-                    else
+-                      await page
+-                        .getByRole("region", { name: "Your accounts", exact: true })
+-                        .locator('[data-reading="requests"]')
+-                        .waitFor();
+-                  }),
++                  .then(() =>
++                    name === "accounts"
++                      ? ready(page).then(() => undefined)
++                      : page
++                          .getByRole("region", { name: "Your accounts", exact: true })
++                          .locator('[data-reading="requests"]')
++                          .waitFor(),
++                  ),
+               );
+               yield* evidence.attach(
+                 `compact-rows-${name}-${width}-${scheme}.png`,
+diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
+index 404453f..b8e95e0 100644
+--- a/e2e/tests/account-usage-home-reporter.spec.ts
++++ b/e2e/tests/account-usage-home-reporter.spec.ts
+@@ -122,13 +122,15 @@ layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) =>
+             .goto(`/org/${actors.organization.slug}/accounts`)
+             .then(() => connectorLoaded)
+             .then(() => block(page, "Home reporter").locator("[data-usage-unread]").waitFor())
+-            .then(async () => [
+-              await block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
+-              await refreshEnabled(page),
+-              await block(page, "Home reporter").getByText("Refresh failed").count(),
+-              await accountRow(page, "Work mail").locator("[data-usage]").count(),
+-              await accountRow(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
+-            ]);
++            .then(() =>
++              Promise.all([
++                block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
++                refreshEnabled(page),
++                block(page, "Home reporter").getByText("Refresh failed").count(),
++                accountRow(page, "Work mail").locator("[data-usage]").count(),
++                accountRow(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
++              ]),
++            );
+         });
+         expect(unread[0]).toMatch(/Usage from basalt-home\s*·\s*no reading yet/);
+         expect(unread.slice(1)).toEqual([true, 0, 0, 0]);
