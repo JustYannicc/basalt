@@ -12,13 +12,11 @@ from .test_recovery import Clock, Stop
 
 
 class RecoveryHTTPTests(unittest.TestCase):
-    def test_real_http_response_can_close_connection_without_losing_body(self):
+    def assert_real_response(self, response_bytes):
         client, server = socket.socketpair()
         self.addCleanup(client.close)
         self.addCleanup(server.close)
-        server.sendall(
-            b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{"ok":true}'
-        )
+        server.sendall(response_bytes)
         deadline = RecoveryDeadline(Stop(Clock()))
 
         class PairConnection(recovery_http.http.client.HTTPConnection):
@@ -38,6 +36,17 @@ class RecoveryHTTPTests(unittest.TestCase):
                 (200, {"ok": True}),
             )
 
+    def test_real_http_response_can_close_connection_without_losing_body(self):
+        self.assert_real_response(
+            b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{"ok":true}'
+        )
+
+    def test_real_chunked_response_can_close_connection_without_losing_body(self):
+        self.assert_real_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            b'B\r\n{"ok":true}\r\n0\r\n\r\n'
+        )
+
     def test_response_reads_share_remaining_episode_budget(self):
         clock = Clock()
         stop = Stop(clock)
@@ -45,6 +54,7 @@ class RecoveryHTTPTests(unittest.TestCase):
         clock.now = 175
         connection = Mock()
         response = connection.getresponse.return_value
+        response.isclosed.return_value = False
 
         def read_chunk(*args):
             clock.now += 1
@@ -80,6 +90,7 @@ class RecoveryHTTPTests(unittest.TestCase):
         clock = Clock()
         connection = Mock()
         response = connection.getresponse.return_value
+        response.isclosed.return_value = False
         response.status = 503
         response.read1.side_effect = [
             json.dumps({"error": "unavailable"}).encode(),

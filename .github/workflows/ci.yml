@@ -400,7 +400,7 @@ jobs:
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs' --workers 1
+        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs|^Hosted saved sign-in completion retries' --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -443,6 +443,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_PREBOOT_BINDING: "alternate"
         run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
@@ -737,16 +738,23 @@ jobs:
       - name: Install the scenarios' browser engine
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
-      - name: Verify a compiler deadline retains its phase trail
-        timeout-minutes: 5
+      - name: Prepare the production compiler's released framework assets
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud deploys fail promptly when the compiler does not answer' --workers 1
+        run: node scripts/build-basalt-framework.ts
+      - name: Verify compiler deadlines, production reuse and test-stage bypass
+        timeout-minutes: 7
+        working-directory: .upstream
+        env:
+          BASALT_E2E_COMPILER_CACHE_INHERITED: "1"
+        run: bun run e2e:cloud --test-name '^(Cloud deploys fail promptly when the compiler does not answer|Production compiler cache reuses only intact output from the same release|Cloud test stages bypass inherited production compiler cache settings)$' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: compiler-diagnostics-e2e
           include-hidden-files: true
           path: |
+            .upstream/.local/e2e/**/compiler-cache-host.log
+            .upstream/.local/e2e/**/compiler-cache-production.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -946,6 +954,8 @@ jobs:
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
+            .generated/pool-reset-checks/**/runtime-cloud.log
+            .generated/pool-reset-checks/**/runtime-diagnostics.json
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -1161,6 +1171,10 @@ jobs:
           npm run architecture:model
           npm run architecture:typecheck
       - run: npm run check
+      - name: Check app source snapshots against their separate repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/catalog-sources.ts --check
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries
