@@ -1,0 +1,114 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index a57b0b767..ad6acce91 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -279,6 +279,7 @@ export const scenarios = plan({
+   },
+   atlassianIdentityMigration: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     file: "atlassian-identity-migration.spec.ts",
+     title:
+       "Atlassian identity recovery binds exact grants and preserves sites, credentials and links through signed operations",
+@@ -2477,6 +2478,7 @@ export const scenarios = plan({
+   },
+   providerAdoption: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     deferOnboarding: true,
+     file: "provider-adoption.spec.ts",
+     title:
+@@ -2489,6 +2491,7 @@ export const scenarios = plan({
+   },
+   providerAdoptionLocks: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     deferOnboarding: true,
+     file: "provider-adoption.spec.ts",
+     title: "Cloud provider adoption orders authority before concurrent unlink",
+@@ -2500,6 +2503,7 @@ export const scenarios = plan({
+   },
+   providerAdoptionForeign: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     deferOnboarding: true,
+     file: "provider-adoption.spec.ts",
+     title: "Cloud provider adoption refuses foreign locks in a blocked plan",
+@@ -2511,6 +2515,7 @@ export const scenarios = plan({
+   },
+   providerAdoptionAccountDelete: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     deferOnboarding: true,
+     file: "provider-adoption.spec.ts",
+     title: "Cloud provider adoption refuses a busy concurrent account delete",
+@@ -2522,6 +2527,7 @@ export const scenarios = plan({
+   },
+   providerAdoptionPurge: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin"],
+     deferOnboarding: true,
+     file: "provider-adoption.spec.ts",
+     title: "Cloud provider adoption refuses a busy organization purge",
+diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+index 0cc983db2..42595dc19 100644
+--- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
++++ b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+@@ -500,52 +500,22 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
+  */
+ diff --git a/dist/esbuild-session.js b/dist/esbuild-session.js
+ new file mode 100644
+-index 00000000..49bbbe25
++index 00000000..f70f8474
+ --- /dev/null
+ +++ b/dist/esbuild-session.js
+-@@ -0,0 +1,73 @@
++@@ -0,0 +1,43 @@
+ +import { createService } from "esbuild-wasm/lib/browser.js";
+ +
+-+// The hosted compiler's caller stops waiting after 50 seconds. Only values cross requests:
+-+// a waiter owns its timer, and an expired owner's finalizer cannot close a newer service.
+-+const leaseMillis = 50_000;
+-+let active;
+++// Admission owns capacity. A bundle owns its service, never another request's lease.
+ +const stop = (session) => {
+ +  if (!session.closed) {
+ +    session.closed = true;
+ +    void session.service.stop();
+ +  }
+-+  if (active === session) active = undefined;
+ +};
+-+const pause = (millis, signal) =>
+-+  new Promise((resolve, reject) => {
+-+    const finish = () => {
+-+      signal?.removeEventListener("abort", abort);
+-+      resolve();
+-+    };
+-+    const timer = setTimeout(finish, millis);
+-+    const abort = () => {
+-+      clearTimeout(timer);
+-+      signal.removeEventListener("abort", abort);
+-+      reject(signal.reason);
+-+    };
+-+    signal?.addEventListener("abort", abort, { once: true });
+-+    if (signal?.aborted) abort();
+-+  });
+-+
+ +export async function withEsbuildSession(signal, initialize, build) {
+-+  let session;
+-+  for (;;) {
+-+    signal?.throwIfAborted();
+-+    const now = Date.now();
+-+    if (active !== undefined && active.expires <= now) stop(active);
+-+    if (active === undefined) {
+-+      session = { service: createService(), expires: now + leaseMillis, closed: false };
+-+      active = session;
+-+      break;
+-+    }
+-+    await pause(Math.min(200, active.expires - now), signal);
+-+  }
+++  signal?.throwIfAborted();
+++  const session = { service: createService(), closed: false };
+ +  let rejectAbort;
+ +  const cancelled =
+ +    signal === undefined
