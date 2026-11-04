@@ -1,4 +1,12 @@
-import type { AccountUsage, Cap, DayUsage, ModelUsage, TokenCounts, UsageSlice, UsageSummary } from "../../apps/pool/contract.ts";
+import type {
+  AccountUsage,
+  Cap,
+  DayUsage,
+  ModelUsage,
+  TokenCounts,
+  UsageSlice,
+  UsageSummary,
+} from "../../apps/pool/contract.ts";
 import { digest, parseBackendUserName } from "./backend-users.ts";
 import { poolGroupPrefix, type HomeClient } from "./control.ts";
 import { object, rows, text, unavailable, type Json } from "./json.ts";
@@ -15,51 +23,111 @@ const cursorKey = `${prefix}cursor`;
 const daysKey = `${prefix}days`;
 const pendingKey = `${prefix}pending`;
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
-const legacyPoolKey = (pool: string, day: string) => `${prefix}pool:${encodeURIComponent(pool)}:${day}`;
+const legacyPoolKey = (pool: string, day: string) =>
+  `${prefix}pool:${encodeURIComponent(pool)}:${day}`;
 const poolKey = (pool: string, day: string) => `usage-v2:model:${encodeURIComponent(pool)}:${day}`;
-const accountKey = (pool: string, day: string) => `usage-v2:account:${encodeURIComponent(pool)}:${day}`;
+const accountKey = (pool: string, day: string) =>
+  `usage-v2:account:${encodeURIComponent(pool)}:${day}`;
 const seenKey = (day: string) => `${prefix}seen:${day}`;
 // Daily receipt maps use 4096 SHA-256 prefixes. Read/write only the shards
 // touched by a page; the day metadata contains pool ids, never receipt ids.
 const receiptKey = (day: string, hash: string) => `${seenKey(day)}:shard:${hash.slice(0, 3)}`;
 // Existing buckets without an account remain in totals until retention removes them.
-interface Bucket extends ModelUsage { person: string }
-interface AccountBucket extends UsageSlice { person: string; account: string }
-interface Receipts { pools: string[]; pruned?: number }
-interface Scan { from: number; to: number; offset: number }
-interface Cursor { version: number; pools: string[]; readAt: string | null; fresh?: Scan; late?: Scan; lateAt?: number; scan?: Scan }
-interface Options { now?: () => Date; history?: Pick<LimitHistory, "advice"> }
+interface Bucket extends ModelUsage {
+  person: string;
+}
+interface AccountBucket extends UsageSlice {
+  person: string;
+  account: string;
+}
+interface Receipts {
+  pools: string[];
+  pruned?: number;
+}
+interface Scan {
+  from: number;
+  to: number;
+  offset: number;
+}
+interface Cursor {
+  version: number;
+  pools: string[];
+  readAt: string | null;
+  fresh?: Scan;
+  late?: Scan;
+  lateAt?: number;
+  scan?: Scan;
+}
+interface Options {
+  now?: () => Date;
+  history?: Pick<LimitHistory, "advice">;
+}
 export interface SummaryOptions {
-  owner: string; caller: string; members: readonly string[]; days: number; now: Date;
+  owner: string;
+  caller: string;
+  members: readonly string[];
+  days: number;
+  now: Date;
   canManage?: boolean;
   cap: (member: string) => Cap | null;
 }
-const zero = (): UsageSlice => ({ requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }, cost: 0, unpriced: 0 });
-const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+const zero = (): UsageSlice => ({
+  requests: 0,
+  tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 },
+  cost: 0,
+  unpriced: 0,
+});
+const count = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 function add(a: UsageSlice, b: UsageSlice): UsageSlice {
   const tokens = { ...a.tokens };
   for (const key of Object.keys(tokens) as (keyof TokenCounts)[]) tokens[key] += b.tokens[key];
-  return { requests: a.requests + b.requests, cost: a.cost + b.cost, unpriced: a.unpriced + b.unpriced, tokens };
+  return {
+    requests: a.requests + b.requests,
+    cost: a.cost + b.cost,
+    unpriced: a.unpriced + b.unpriced,
+    tokens,
+  };
 }
 
 // Home v1.1.6 management/usage_observability.go:1611-1620,1699-1715;
 // docs/management/api.md:3060-3062: never add the legacy counters together.
 export function recordTokens(row: Json, canonical: boolean): TokenCounts {
   const breakdown = object(row.token_breakdown) ? row.token_breakdown : {};
-  if (canonical && breakdown.quality === "complete" && object(breakdown.input) && object(breakdown.output)) {
+  if (
+    canonical &&
+    breakdown.quality === "complete" &&
+    object(breakdown.input) &&
+    object(breakdown.output)
+  ) {
     return {
-      input: count(breakdown.input.uncached_tokens), cacheRead: count(breakdown.input.cache_read_tokens),
-      cacheWrite: count(breakdown.input.cache_write_tokens), output: count(breakdown.output.total_tokens), total: count(breakdown.total_tokens),
+      input: count(breakdown.input.uncached_tokens),
+      cacheRead: count(breakdown.input.cache_read_tokens),
+      cacheWrite: count(breakdown.input.cache_write_tokens),
+      output: count(breakdown.output.total_tokens),
+      total: count(breakdown.total_tokens),
     };
   }
   const tokens = object(row.tokens) ? row.tokens : {};
   const cacheRead = count(tokens.cache_read_tokens ?? tokens.cached_tokens);
   const cacheWrite = count(tokens.cache_creation_tokens);
-  return { input: Math.max(0, count(tokens.input_tokens) - cacheRead - cacheWrite), cacheRead, cacheWrite,
-    output: count(tokens.output_tokens), total: count(tokens.total_tokens) };
+  return {
+    input: Math.max(0, count(tokens.input_tokens) - cacheRead - cacheWrite),
+    cacheRead,
+    cacheWrite,
+    output: count(tokens.output_tokens),
+    total: count(tokens.total_tokens),
+  };
 }
-const rounded = <T extends UsageSlice>(value: T): T => ({ ...value, cost: Number(value.cost.toFixed(6)) });
-function slices(buckets: readonly (Bucket & { day: string })[], accountBuckets: readonly AccountBucket[] = [], includeAccounts = true) {
+const rounded = <T extends UsageSlice>(value: T): T => ({
+  ...value,
+  cost: Number(value.cost.toFixed(6)),
+});
+function slices(
+  buckets: readonly (Bucket & { day: string })[],
+  accountBuckets: readonly AccountBucket[] = [],
+  includeAccounts = true,
+) {
   let total = zero();
   const accounts = new Map<string, AccountUsage>();
   const models = new Map<string, ModelUsage>();
@@ -67,30 +135,68 @@ function slices(buckets: readonly (Bucket & { day: string })[], accountBuckets: 
   for (const bucket of buckets) {
     total = add(total, bucket);
     const id = JSON.stringify([bucket.provider, bucket.model]);
-    const model = { provider: bucket.provider, model: bucket.model, ...add(models.get(id) ?? zero(), bucket) };
+    const model = {
+      provider: bucket.provider,
+      model: bucket.model,
+      ...add(models.get(id) ?? zero(), bucket),
+    };
     models.set(id, model);
     const old = days.get(bucket.day);
-    const dayModels = new Map((old?.models ?? []).map((item) => [JSON.stringify([item.provider, item.model]), item]));
-    dayModels.set(id, { provider: bucket.provider, model: bucket.model, ...add(dayModels.get(id) ?? zero(), bucket) });
-    days.set(bucket.day, { day: bucket.day, ...add(old ?? zero(), bucket), models: [...dayModels.values()] });
+    const dayModels = new Map(
+      (old?.models ?? []).map((item) => [JSON.stringify([item.provider, item.model]), item]),
+    );
+    dayModels.set(id, {
+      provider: bucket.provider,
+      model: bucket.model,
+      ...add(dayModels.get(id) ?? zero(), bucket),
+    });
+    days.set(bucket.day, {
+      day: bucket.day,
+      ...add(old ?? zero(), bucket),
+      models: [...dayModels.values()],
+    });
   }
-  const sorted = (items: readonly ModelUsage[]) => [...items].sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)).map(rounded);
-  if (includeAccounts) for (const bucket of accountBuckets) {
-    accounts.set(bucket.account, { account: bucket.account, ...add(accounts.get(bucket.account) ?? zero(), bucket) });
-  }
-  return { accounts: [...accounts.values()].sort((a, b) => a.account.localeCompare(b.account)).map(rounded), total: rounded(total), models: sorted([...models.values()]), days: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)).map((day) => ({ ...rounded(day), models: sorted(day.models) })) };
+  const sorted = (items: readonly ModelUsage[]) =>
+    [...items]
+      .sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
+      .map(rounded);
+  if (includeAccounts)
+    for (const bucket of accountBuckets) {
+      accounts.set(bucket.account, {
+        account: bucket.account,
+        ...add(accounts.get(bucket.account) ?? zero(), bucket),
+      });
+    }
+  return {
+    accounts: [...accounts.values()]
+      .sort((a, b) => a.account.localeCompare(b.account))
+      .map(rounded),
+    total: rounded(total),
+    models: sorted([...models.values()]),
+    days: [...days.values()]
+      .sort((a, b) => a.day.localeCompare(b.day))
+      .map((day) => ({ ...rounded(day), models: sorted(day.models) })),
+  };
 }
 
 function foldBuckets(buckets: readonly (Bucket & { account?: string })[]) {
-  const models = new Map<string, Bucket>(), accounts = new Map<string, AccountBucket>();
+  const models = new Map<string, Bucket>(),
+    accounts = new Map<string, AccountBucket>();
   for (const bucket of buckets) {
     const modelId = JSON.stringify([bucket.person, bucket.provider, bucket.model]);
-    models.set(modelId, { person: bucket.person, provider: bucket.provider, model: bucket.model,
-      ...add(models.get(modelId) ?? zero(), bucket) });
+    models.set(modelId, {
+      person: bucket.person,
+      provider: bucket.provider,
+      model: bucket.model,
+      ...add(models.get(modelId) ?? zero(), bucket),
+    });
     if (bucket.account) {
       const accountId = JSON.stringify([bucket.person, bucket.account]);
-      accounts.set(accountId, { person: bucket.person, account: bucket.account,
-        ...add(accounts.get(accountId) ?? zero(), bucket) });
+      accounts.set(accountId, {
+        person: bucket.person,
+        account: bucket.account,
+        ...add(accounts.get(accountId) ?? zero(), bucket),
+      });
     }
   }
   return { models: [...models.values()], accounts: [...accounts.values()] };
@@ -102,7 +208,11 @@ export class UsageLedger {
   private home: Pick<HomeClient, "data" | "allMembership">;
   private options: Options;
   readonly queue = new UsageQueue();
-  constructor(storage: UsageStorage, home: Pick<HomeClient, "data" | "allMembership">, options: Options = {}) {
+  constructor(
+    storage: UsageStorage,
+    home: Pick<HomeClient, "data" | "allMembership">,
+    options: Options = {},
+  ) {
     this.storage = new ChunkStorage(storage);
     this.home = home;
     this.options = options;
@@ -116,25 +226,53 @@ export class UsageLedger {
       const at = now.getTime();
       const cutoff = dayOf(at - 30 * dayMs);
       const state = await this.storage.getMany<unknown>([daysKey, cursorKey]);
-      let days = state.get(daysKey) as string[] | undefined ?? [];
+      let days = (state.get(daysKey) as string[] | undefined) ?? [];
       let cursor = state.get(cursorKey) as Cursor | undefined;
       // Move v4's person × model × account buckets to separate person × model
       // and person × account totals without dropping retained usage.
       if (cursor?.version === 4) {
         const known = cursor.pools ?? [];
-        for (const day of days) for (const pool of known) {
-          const sourceKey = legacyPoolKey(pool, day);
-          const source = await this.storage.get<(Bucket & { account?: string })[]>(sourceKey);
-          if (!source) continue;
-          const folded = foldBuckets(source);
-          await this.storage.commit(new Map<string, unknown>([[poolKey(pool, day), folded.models], [accountKey(pool, day), folded.accounts]]), [sourceKey], pendingKey);
-        }
+        for (const day of days)
+          for (const pool of known) {
+            const sourceKey = legacyPoolKey(pool, day);
+            const source = await this.storage.get<(Bucket & { account?: string })[]>(sourceKey);
+            if (!source) continue;
+            const folded = foldBuckets(source);
+            await this.storage.commit(
+              new Map<string, unknown>([
+                [poolKey(pool, day), folded.models],
+                [accountKey(pool, day), folded.accounts],
+              ]),
+              [sourceKey],
+              pendingKey,
+            );
+          }
         cursor = { ...cursor, version: 5 };
         await this.storage.commit(new Map([[cursorKey, cursor]]), [], pendingKey);
       } else if (cursor && cursor.version !== 5) {
-        const known = cursor.pools ?? [...new Set([...(await this.storage.getMany<Receipts>(days.map(seenKey))).values()].flatMap((value) => value.pools))];
+        const known = cursor.pools ?? [
+          ...new Set(
+            [...(await this.storage.getMany<Receipts>(days.map(seenKey))).values()].flatMap(
+              (value) => value.pools,
+            ),
+          ),
+        ];
         cursor = { version: 5, pools: known, readAt: null };
-        await this.storage.commit(new Map<string, unknown>([[daysKey, []], [cursorKey, cursor]]), days.flatMap((day) => [seenKey(day), ...known.flatMap((pool) => [poolKey(pool, day), accountKey(pool, day), legacyPoolKey(pool, day)])]), pendingKey);
+        await this.storage.commit(
+          new Map<string, unknown>([
+            [daysKey, []],
+            [cursorKey, cursor],
+          ]),
+          days.flatMap((day) => [
+            seenKey(day),
+            ...known.flatMap((pool) => [
+              poolKey(pool, day),
+              accountKey(pool, day),
+              legacyPoolKey(pool, day),
+            ]),
+          ]),
+          pendingKey,
+        );
         days = [];
       }
       cursor ??= { version: 5, pools: [], readAt: null };
@@ -142,30 +280,54 @@ export class UsageLedger {
       // expiry without making a single sync delete a whole busy day's receipts.
       const expired = days.find((day) => day < cutoff);
       if (expired) {
-        const meta = await this.storage.get<Receipts>(seenKey(expired)) ?? { pools: [] };
-        const first = meta.pruned ?? 0, end = Math.min(shardCount, first + 128);
-        const deletes = Array.from({ length: end - first }, (_, i) => receiptKey(expired, (first + i).toString(16).padStart(3, "0")));
+        const meta = (await this.storage.get<Receipts>(seenKey(expired))) ?? { pools: [] };
+        const first = meta.pruned ?? 0,
+          end = Math.min(shardCount, first + 128);
+        const deletes = Array.from({ length: end - first }, (_, i) =>
+          receiptKey(expired, (first + i).toString(16).padStart(3, "0")),
+        );
         const writes = new Map<string, unknown>();
-        if (first === 0) deletes.push(...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]));
+        if (first === 0)
+          deletes.push(
+            ...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]),
+          );
         if (end === shardCount) {
-          deletes.push(seenKey(expired), ...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]));
-          days = days.filter((day) => day !== expired); writes.set(daysKey, days);
+          deletes.push(
+            seenKey(expired),
+            ...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]),
+          );
+          days = days.filter((day) => day !== expired);
+          writes.set(daysKey, days);
         } else writes.set(seenKey(expired), { ...meta, pruned: end });
         await this.storage.commit(writes, deletes, pendingKey);
       }
       const retained = days;
-      let savedCursor = JSON.stringify(cursor), savedDays = JSON.stringify(retained);
-      for (const kind of ["fresh", "late", "scan"] as const) if (cursor[kind] && cursor[kind]!.to <= Date.parse(cutoff)) delete cursor[kind];
+      let savedCursor = JSON.stringify(cursor),
+        savedDays = JSON.stringify(retained);
+      for (const kind of ["fresh", "late", "scan"] as const)
+        if (cursor[kind] && cursor[kind]!.to <= Date.parse(cutoff)) delete cursor[kind];
       // Home v1.1.6 internal/cluster/usage.go:132-138,185-186 preserves node timestamps.
       // One fresh page covers ~6 minutes at 8 req/min. Two late pages per
       // alarm finish 150 minutes in 15 minutes at that rate. The extra 30
       // minutes keep two-hour-late insertions in the next pass, within ~30m.
       // Two reserved sweep pages guarantee backfill progress, at most 5 total.
-      if (!cursor.readAt || Date.parse(cursor.readAt) < at) cursor.fresh ??= { from: Math.max(Date.parse(cutoff), (cursor.readAt ? Date.parse(cursor.readAt) : at) - overlap), to: at, offset: 0 };
-      if (cursor.lateAt === undefined || at - cursor.lateAt >= lateCadence) cursor.late ??= { from: Math.max(Date.parse(cutoff), at - lookback), to: at, offset: 0 };
+      if (!cursor.readAt || Date.parse(cursor.readAt) < at)
+        cursor.fresh ??= {
+          from: Math.max(
+            Date.parse(cutoff),
+            (cursor.readAt ? Date.parse(cursor.readAt) : at) - overlap,
+          ),
+          to: at,
+          offset: 0,
+        };
+      if (cursor.lateAt === undefined || at - cursor.lateAt >= lateCadence)
+        cursor.late ??= { from: Math.max(Date.parse(cutoff), at - lookback), to: at, offset: 0 };
       const membership = await this.home.allMembership();
-      const groups = new Map(membership.groups.filter((group) => group.channel_name.startsWith(poolGroupPrefix))
-        .map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]));
+      const groups = new Map(
+        membership.groups
+          .filter((group) => group.channel_name.startsWith(poolGroupPrefix))
+          .map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]),
+      );
       const pools = new Map<string, string>();
       for (const member of membership.members) {
         const pool = groups.get(member.channel_group_id);
@@ -181,7 +343,9 @@ export class UsageLedger {
       }
       // Home v1.1.6 management/usage_observability.go:28-48; api.md:3060.
       const capabilities = await this.home.data("/capabilities");
-      const canonical = object(capabilities.capabilities) && capabilities.capabilities.usage_token_breakdown_v2 === true;
+      const canonical =
+        object(capabilities.capabilities) &&
+        capabilities.capabilities.usage_token_breakdown_v2 === true;
       let pages = 0;
       let sweepComplete = false;
       for (const kind of ["fresh", "late", "scan"] as const) {
@@ -189,55 +353,94 @@ export class UsageLedger {
         // Spare fresh/late capacity goes to the sweep, never the reverse.
         const budget = kind === "fresh" ? 1 : kind === "late" ? 2 : 5 - pages;
         for (let used = 0; used < budget; used++) {
-          const scan = cursor[kind] ??= { from: Date.parse(cutoff), to: at, offset: 0 };
+          const scan = (cursor[kind] ??= { from: Date.parse(cutoff), to: at, offset: 0 });
           // Home v1.1.6 management/usage_observability.go:129-135,575-597;
           // cluster/usage_observability.go:2927-2928 orders ties by id.
-          const params = new URLSearchParams({ sort: "timestamp_asc", from: new Date(scan.from).toISOString(), to: new Date(scan.to).toISOString(), limit: "200", offset: String(scan.offset) });
+          const params = new URLSearchParams({
+            sort: "timestamp_asc",
+            from: new Date(scan.from).toISOString(),
+            to: new Date(scan.to).toISOString(),
+            limit: "200",
+            offset: String(scan.offset),
+          });
           const page = await this.home.data(`/usage/records?${params}`);
           const items = rows(page.items);
-          if (items.length > 200 || typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0
-            || (!items.length && scan.offset < page.total)) return unavailable();
+          if (
+            items.length > 200 ||
+            typeof page.total !== "number" ||
+            !Number.isSafeInteger(page.total) ||
+            page.total < 0 ||
+            (!items.length && scan.offset < page.total)
+          )
+            return unavailable();
           pages++;
           const writes = new Map<string, unknown>();
           const before = new Map<string, string>();
-          const prepared = await Promise.all(items.map(async (row) => {
-            const id = text(row.id), timestamp = text(row.timestamp);
-            const time = timestamp ? Date.parse(timestamp) : NaN;
-            if (!id || !Number.isFinite(time) || time < scan.from || time >= scan.to) return unavailable();
-            return { row, time, day: dayOf(time), hash: await digest(id) };
-          }));
-          const stored = await this.storage.getMany<unknown>([...new Set(prepared.map(({ day, hash }) => receiptKey(day, hash)))]);
-          const bucketKeys = new Set<string>(), metaKeys = new Set<string>();
+          const prepared = await Promise.all(
+            items.map(async (row) => {
+              const id = text(row.id),
+                timestamp = text(row.timestamp);
+              const time = timestamp ? Date.parse(timestamp) : NaN;
+              if (!id || !Number.isFinite(time) || time < scan.from || time >= scan.to)
+                return unavailable();
+              return { row, time, day: dayOf(time), hash: await digest(id) };
+            }),
+          );
+          const stored = await this.storage.getMany<unknown>([
+            ...new Set(prepared.map(({ day, hash }) => receiptKey(day, hash))),
+          ]);
+          const bucketKeys = new Set<string>(),
+            metaKeys = new Set<string>();
           // Home v1.1.6 cluster/usage_observability.go:2408-2409,2430-2435:
           // charge user wins; without a charge the username follows the current key.
           const attributed = prepared.map((item) => {
             const { row, day, hash } = item;
             const credential = object(row.credential) ? text(row.credential.credential_id) : null;
             const user = parseBackendUserName(object(row.client) ? row.client.username : undefined);
-            const pool = (credential ? pools.get(credential) : undefined) ?? (user ? tags.get(user.pool) : undefined);
+            const pool =
+              (credential ? pools.get(credential) : undefined) ??
+              (user ? tags.get(user.pool) : undefined);
             const seen = stored.get(receiptKey(day, hash)) as Record<string, number> | undefined;
             if (pool !== undefined && day >= cutoff && !Object.hasOwn(seen ?? {}, hash)) {
-              bucketKeys.add(poolKey(pool, day)); if (credential) bucketKeys.add(accountKey(pool, day)); metaKeys.add(seenKey(day));
+              bucketKeys.add(poolKey(pool, day));
+              if (credential) bucketKeys.add(accountKey(pool, day));
+              metaKeys.add(seenKey(day));
             }
             return { ...item, pool, user, account: credential ?? undefined };
           });
-          for (const [key, value] of await this.storage.getMany<unknown>([...bucketKeys, ...metaKeys])) stored.set(key, value);
+          for (const [key, value] of await this.storage.getMany<unknown>([
+            ...bucketKeys,
+            ...metaKeys,
+          ]))
+            stored.set(key, value);
           const load = <T>(key: string, fallback: T): T => {
             if (!writes.has(key)) {
               const value = stored.get(key) ?? fallback;
-              before.set(key, JSON.stringify(value)); writes.set(key, value);
+              before.set(key, JSON.stringify(value));
+              writes.set(key, value);
             }
             return writes.get(key) as T;
           };
           const modelIndexes = new Map<string, Map<string, number>>();
           const accountIndexes = new Map<string, Map<string, number>>();
-          const upsert = <T>(key: string, identity: (row: T) => string, value: T, indexes: Map<string, Map<string, number>>) => {
+          const upsert = <T>(
+            key: string,
+            identity: (row: T) => string,
+            value: T,
+            indexes: Map<string, Map<string, number>>,
+          ) => {
             const values = load<T[]>(key, []);
             let index = indexes.get(key);
-            if (!index) { index = new Map(values.map((row, i) => [identity(row), i])); indexes.set(key, index); }
-            const id = identity(value), position = index.get(id);
-            if (position === undefined) { index.set(id, values.length); values.push(value); }
-            else values[position] = value;
+            if (!index) {
+              index = new Map(values.map((row, i) => [identity(row), i]));
+              indexes.set(key, index);
+            }
+            const id = identity(value),
+              position = index.get(id);
+            if (position === undefined) {
+              index.set(id, values.length);
+              values.push(value);
+            } else values[position] = value;
           };
           for (const { row, day, hash, pool, user, account } of attributed) {
             if (day < cutoff || pool === undefined) continue;
@@ -249,34 +452,73 @@ export class UsageLedger {
             const meta = load<Receipts>(seenKey(day), { pools: [] });
             if (!meta.pools.includes(pool)) meta.pools.push(pool);
             const person = user?.person ?? "other";
-            const model = text(row.model) ?? "", provider = text(row.provider) ?? "";
+            const model = text(row.model) ?? "",
+              provider = text(row.provider) ?? "";
             const amount = object(row.billing) ? row.billing.amount : null;
             // api.md:3103 calls this credits. The public contract currently calls it USD.
             // Home v1.1.6 cluster/billing.go:1452-1456; management/usage_observability.go:1644-1650.
-            const priced = typeof amount === "number" && Number.isFinite(amount)
-              && (!object(row.billing) || row.billing.matched_price_rule !== "default:zero");
-            const increment = { requests: 1, tokens: recordTokens(row, canonical), cost: priced ? amount : 0, unpriced: priced ? 0 : 1 };
-            const modelKey = poolKey(pool, day), modelId = JSON.stringify([person, provider, model]);
+            const priced =
+              typeof amount === "number" &&
+              Number.isFinite(amount) &&
+              (!object(row.billing) || row.billing.matched_price_rule !== "default:zero");
+            const increment = {
+              requests: 1,
+              tokens: recordTokens(row, canonical),
+              cost: priced ? amount : 0,
+              unpriced: priced ? 0 : 1,
+            };
+            const modelKey = poolKey(pool, day),
+              modelId = JSON.stringify([person, provider, model]);
             const models = load<Bucket[]>(modelKey, []);
             let modelIndex = modelIndexes.get(modelKey);
             if (!modelIndex) {
-              modelIndex = new Map(models.map((bucket, i) => [JSON.stringify([bucket.person, bucket.provider, bucket.model]), i]));
+              modelIndex = new Map(
+                models.map((bucket, i) => [
+                  JSON.stringify([bucket.person, bucket.provider, bucket.model]),
+                  i,
+                ]),
+              );
               modelIndexes.set(modelKey, modelIndex);
             }
             const oldModel = modelIndex.get(modelId);
-            const modelValue = { person, model, provider, ...add(oldModel === undefined ? zero() : models[oldModel]!, increment) };
-            upsert(modelKey, (bucket) => JSON.stringify([bucket.person, bucket.provider, bucket.model]), modelValue, modelIndexes);
+            const modelValue = {
+              person,
+              model,
+              provider,
+              ...add(oldModel === undefined ? zero() : models[oldModel]!, increment),
+            };
+            upsert(
+              modelKey,
+              (bucket) => JSON.stringify([bucket.person, bucket.provider, bucket.model]),
+              modelValue,
+              modelIndexes,
+            );
             if (account) {
-              const key = accountKey(pool, day), identity = JSON.stringify([person, account]);
+              const key = accountKey(pool, day),
+                identity = JSON.stringify([person, account]);
               const accountValues = load<AccountBucket[]>(key, []);
               let accountIndex = accountIndexes.get(key);
               if (!accountIndex) {
-                accountIndex = new Map(accountValues.map((bucket, i) => [JSON.stringify([bucket.person, bucket.account]), i]));
+                accountIndex = new Map(
+                  accountValues.map((bucket, i) => [
+                    JSON.stringify([bucket.person, bucket.account]),
+                    i,
+                  ]),
+                );
                 accountIndexes.set(key, accountIndex);
               }
               const oldAccount = accountIndex.get(identity);
-              const accountValue = { person, account, ...add(oldAccount === undefined ? zero() : accountValues[oldAccount]!, increment) };
-              upsert(key, (bucket) => JSON.stringify([bucket.person, bucket.account]), accountValue, accountIndexes);
+              const accountValue = {
+                person,
+                account,
+                ...add(oldAccount === undefined ? zero() : accountValues[oldAccount]!, increment),
+              };
+              upsert(
+                key,
+                (bucket) => JSON.stringify([bucket.person, bucket.account]),
+                accountValue,
+                accountIndexes,
+              );
             }
           }
           scan.offset += items.length;
@@ -288,12 +530,15 @@ export class UsageLedger {
             else sweepComplete = true;
             delete cursor[kind];
           }
-          for (const [key, value] of writes) if (JSON.stringify(value) === before.get(key)) writes.delete(key);
-          const nextCursor = JSON.stringify(cursor), nextDays = JSON.stringify(retained.sort());
+          for (const [key, value] of writes)
+            if (JSON.stringify(value) === before.get(key)) writes.delete(key);
+          const nextCursor = JSON.stringify(cursor),
+            nextDays = JSON.stringify(retained.sort());
           if (nextCursor !== savedCursor) writes.set(cursorKey, cursor);
           if (nextDays !== savedDays) writes.set(daysKey, retained);
           await this.storage.commit(writes, [], pendingKey);
-          savedCursor = nextCursor; savedDays = nextDays;
+          savedCursor = nextCursor;
+          savedDays = nextDays;
           if (complete) break;
         }
       }
@@ -311,24 +556,40 @@ export class UsageLedger {
       const person = await digest(caller);
       const buckets: (Bucket & { day: string })[] = [];
       const dayKeys = Array.from({ length: days }, (_, i) => dayOf(start + i * dayMs));
-      const stored = await this.storage.getMany<unknown>([cursorKey, ...dayKeys.flatMap((day) => [poolKey(pool, day), accountKey(pool, day)])]);
+      const stored = await this.storage.getMany<unknown>([
+        cursorKey,
+        ...dayKeys.flatMap((day) => [poolKey(pool, day), accountKey(pool, day)]),
+      ]);
       const accountBuckets: AccountBucket[] = [];
       for (const day of dayKeys) {
-        for (const bucket of stored.get(poolKey(pool, day)) as Bucket[] | undefined ?? []) {
+        for (const bucket of (stored.get(poolKey(pool, day)) as Bucket[] | undefined) ?? []) {
           if (canManage || bucket.person === person) buckets.push({ ...bucket, day });
         }
-        for (const bucket of stored.get(accountKey(pool, day)) as AccountBucket[] | undefined ?? []) {
+        for (const bucket of (stored.get(accountKey(pool, day)) as AccountBucket[] | undefined) ??
+          []) {
           if (canManage || bucket.person === person) accountBuckets.push(bucket);
         }
       }
-      const result: UsageSummary = { scope: canManage ? "pool" : "you", from: new Date(start).toISOString(), to: new Date(end).toISOString(),
-        ...slices(buckets, accountBuckets), cap: cap(caller), readAt: (stored.get(cursorKey) as Cursor | undefined)?.readAt ?? null };
+      const result: UsageSummary = {
+        scope: canManage ? "pool" : "you",
+        from: new Date(start).toISOString(),
+        to: new Date(end).toISOString(),
+        ...slices(buckets, accountBuckets),
+        cap: cap(caller),
+        readAt: (stored.get(cursorKey) as Cursor | undefined)?.readAt ?? null,
+      };
       if (!canManage) return result;
-      const members = await Promise.all([...new Set(options.members)].map(async (member) => {
-        const person = await digest(member);
-        const own = slices(buckets.filter((bucket) => bucket.person === person), [], false);
-        return { member, ...own.total, models: own.models, days: own.days, cap: cap(member) };
-      }));
+      const members = await Promise.all(
+        [...new Set(options.members)].map(async (member) => {
+          const person = await digest(member);
+          const own = slices(
+            buckets.filter((bucket) => bucket.person === person),
+            [],
+            false,
+          );
+          return { member, ...own.total, models: own.models, days: own.days, cap: cap(member) };
+        }),
+      );
       return { ...result, members };
     });
   }

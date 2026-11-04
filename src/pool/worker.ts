@@ -19,11 +19,7 @@ import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeSession } from "./native-response.worker.ts";
-import {
-  hasActiveHomeApiKey,
-  homeApiKeyCandidates,
-  type HomeApiKeyLookup,
-} from "./model-auth.ts";
+import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { OverviewPrices } from "./overview-prices.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
@@ -34,8 +30,19 @@ import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websock
 import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
-import { handleUsageSeries, lastSuccessAtPath, poolOverviewPath, poolPersonalOverviewPath, poolUsageSeriesPath } from "./model-history/series-http.ts";
-import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
+import {
+  handleUsageSeries,
+  lastSuccessAtPath,
+  poolOverviewPath,
+  poolPersonalOverviewPath,
+  poolUsageSeriesPath,
+} from "./model-history/series-http.ts";
+import {
+  handleModelHistoryOperation,
+  historyBackfillPath,
+  historySchemaApplyPath,
+  historySchemaCatalogPath,
+} from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { NativeMemberships } from "./membership.ts";
@@ -57,7 +64,6 @@ import { ImportRemoval } from "./import-removal/operation.ts";
 import { handleImportRemoval } from "./import-removal/http.ts";
 import { removalSnapshot } from "./import-removal/snapshot.ts";
 import { handleRuntimeRecovery, RuntimeRecovery, runtimeRecoveryPath } from "./runtime-recovery.ts";
-
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -93,20 +99,31 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     // A restarted object, after a deploy or an eviction, has lost its container's inactivity
     // timeout, and the platform stops a running container soon after the object goes idle.
     // Requests that never warm the pool, like an hourly inventory or setup polling, did exactly that.
-    if (ctx.container?.running) ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
+    if (ctx.container?.running)
+      ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
     this.lifecycle = createPoolLifecycle(ctx, env);
-    this.recovery = new RuntimeRecovery({
-      get instanceId() { return ctx.id.toString(); }, imageHash: env.POOL_IMAGE_HASH,
-      running: () => ctx.container?.running ?? false,
-      status: () => {
-        if (!ctx.container) throw new Error("Pool container unavailable");
-        return readRuntimeHealth(ctx.container.getTcpPort(8318), env.POOL_MANAGEMENT_KEY, AbortSignal.timeout(2_000));
+    this.recovery = new RuntimeRecovery(
+      {
+        get instanceId() {
+          return ctx.id.toString();
+        },
+        imageHash: env.POOL_IMAGE_HASH,
+        running: () => ctx.container?.running ?? false,
+        status: () => {
+          if (!ctx.container) throw new Error("Pool container unavailable");
+          return readRuntimeHealth(
+            ctx.container.getTcpPort(8318),
+            env.POOL_MANAGEMENT_KEY,
+            AbortSignal.timeout(2_000),
+          );
+        },
+        restart: async () => {
+          this.managementReadyUntil = 0;
+          return (await this.lifecycle).restart();
+        },
       },
-      restart: async () => {
-        this.managementReadyUntil = 0;
-        return (await this.lifecycle).restart();
-      },
-    }, ctx.storage);
+      ctx.storage,
+    );
     this.protection = new RuntimeProtection(this.modelStreams, {
       check: (signal) => {
         if (!ctx.container) throw new Error("Pool container unavailable");
@@ -122,57 +139,90 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ctx.waitUntil(captureProduct(env, event, accountId));
     };
     const home = async (path: string, init?: RequestInit) => {
-        if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
-        init?.signal?.throwIfAborted();
-        await this.managementReady();
-        init?.signal?.throwIfAborted();
-        const container = this.ctx.container;
-        if (!container) throw new Error("Pool container unavailable");
-        const headers = new Headers(init?.headers);
-        headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
-        return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
-      };
+      if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
+      init?.signal?.throwIfAborted();
+      await this.managementReady();
+      init?.signal?.throwIfAborted();
+      const container = this.ctx.container;
+      if (!container) throw new Error("Pool container unavailable");
+      const headers = new Headers(init?.headers);
+      headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
+      return container
+        .getTcpPort(8327)
+        .fetch(new Request(`http://pool${path}`, { ...init, headers }));
+    };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
     this.overviewPrices = new OverviewPrices(this.mirrorHome);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool),
-      defer: (work) => ctx.waitUntil(work), home, onProductEvent,
+      defer: (work) => ctx.waitUntil(work),
+      home,
+      onProductEvent,
     });
-    this.prices = new PriceUpkeep(new HomeClient(home, Date.now, () => this.control.invalidateViews()), ctx.storage);
+    this.prices = new PriceUpkeep(
+      new HomeClient(home, Date.now, () => this.control.invalidateViews()),
+      ctx.storage,
+    );
     this.usage = new PoolUsage({
-      storage: ctx.storage, client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
-      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      audience: (pool) => this.computers.audience(pool), defer: (work) => ctx.waitUntil(work),
+      storage: ctx.storage,
+      client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
+      signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      audience: (pool) => this.computers.audience(pool),
+      defer: (work) => ctx.waitUntil(work),
       collection: this.control.collection,
-      appUsage: (input) => env.POOL_MODEL_HISTORY_ENABLED !== "true" ? Promise.resolve(undefined)
-        : withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) => appUsage(db, input)),
+      appUsage: (input) =>
+        env.POOL_MODEL_HISTORY_ENABLED !== "true"
+          ? Promise.resolve(undefined)
+          : withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+              appUsage(db, input),
+            ),
       permissions: (pool, user) => this.computers.permissions(pool, user),
     });
     this.computers = new Computers({
-      storage: ctx.storage, home: new ComputerHome(new HomeClient(home, Date.now, () => this.control.invalidateViews()), onProductEvent),
-      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      onProductEvent, usage: this.usage,
+      storage: ctx.storage,
+      home: new ComputerHome(
+        new HomeClient(home, Date.now, () => this.control.invalidateViews()),
+        onProductEvent,
+      ),
+      signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      onProductEvent,
+      usage: this.usage,
     });
     this.appModels = new AppModels({
-      storage: ctx.storage, home: new ComputerHome(this.mirrorHome),
-      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      storage: ctx.storage,
+      home: new ComputerHome(this.mirrorHome),
+      signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       now: () => Date.now(),
       schedule: async (at) => {
         const alarm = await ctx.storage.getAlarm();
         if (alarm === null || alarm > at) await ctx.storage.setAlarm(at);
       },
-      ready: () => env.POOL_MODEL_HISTORY_ENABLED !== "true" ? Promise.resolve(false)
-        : withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, async (db) =>
-          await appAttributionReady(db) && (await db.query("SELECT 1 FROM basalt_model_history_cursor LIMIT 1")).rows.length > 0),
+      ready: () =>
+        env.POOL_MODEL_HISTORY_ENABLED !== "true"
+          ? Promise.resolve(false)
+          : withHistoryDatabase(
+              env.POOL_AUTH_DATABASE?.connectionString,
+              async (db) =>
+                (await appAttributionReady(db)) &&
+                (await db.query("SELECT 1 FROM basalt_model_history_cursor LIMIT 1")).rows.length >
+                  0,
+            ),
       forward: (request, identity) => this.forward(request, identity),
     });
-    const membership = new HomeMembership(new HomeClient(home, Date.now, () => this.control.invalidateViews()));
+    const membership = new HomeMembership(
+      new HomeClient(home, Date.now, () => this.control.invalidateViews()),
+    );
     this.memberships = new NativeMemberships({
-      storage: ctx.storage, signingKey: env.POOL_APP_SIGNING_KEY,
+      storage: ctx.storage,
+      signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      read: (pool, organization) => readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
+      read: (pool, organization) =>
+        readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
       actual: (pool) => membership.actual(pool),
       invalidateView: (pool) => this.control.invalidateViews(pool),
       reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
@@ -181,20 +231,33 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         const container = ctx.container;
         if (!container) throw new Error("Pool container unavailable");
         const response = await container.getTcpPort(8318).fetch("http://pool/native-policy", {
-          method: "POST", headers: { Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`, "content-type": "application/json" },
-          body: JSON.stringify({ projection }), signal: AbortSignal.timeout(2_000),
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ projection }),
+          signal: AbortSignal.timeout(2_000),
         });
         if (!response.ok) {
           await response.body?.cancel();
           throw new Error("Pool account protection is unavailable");
         }
         const acknowledgement: unknown = await response.json();
-        if (typeof acknowledgement !== "object" || acknowledgement === null
-          || !("installed" in acknowledgement) || acknowledgement.installed !== true
-          || !("revision" in acknowledgement) || acknowledgement.revision !== policy.revision)
+        if (
+          typeof acknowledgement !== "object" ||
+          acknowledgement === null ||
+          !("installed" in acknowledgement) ||
+          acknowledgement.installed !== true ||
+          !("revision" in acknowledgement) ||
+          acknowledgement.revision !== policy.revision
+        )
           throw new Error("Pool account protection acknowledgement is invalid");
       },
-      abort: (pool) => { this.modelStreams.abortPool(pool); this.computers.abortPool(pool); },
+      abort: (pool) => {
+        this.modelStreams.abortPool(pool);
+        this.computers.abortPool(pool);
+      },
       schedule: async (at) => {
         const alarm = await ctx.storage.getAlarm();
         if (alarm === null || alarm > at) await ctx.storage.setAlarm(at);
@@ -202,9 +265,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
     const database = new URL(env.POOL_DATABASE_URL);
     this.importRemoval = new ImportRemoval({
-      read: selection => withHistoryDatabase(env.POOL_DATABASE_URL, db => removalSnapshot(db, selection)),
-      home: (path, init) => this.mirrorHome.response(path, init), storage: ctx.storage,
-      secret: env.POOL_APP_SIGNING_KEY, release: productionOpsRelease,
+      read: (selection) =>
+        withHistoryDatabase(env.POOL_DATABASE_URL, (db) => removalSnapshot(db, selection)),
+      home: (path, init) => this.mirrorHome.response(path, init),
+      storage: ctx.storage,
+      secret: env.POOL_APP_SIGNING_KEY,
+      release: productionOpsRelease,
       databaseOrigin: `${database.hostname}:${database.port || "5432"}${database.pathname}`,
     });
   }
@@ -216,11 +282,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.managementWarming = (async () => {
         await timePoolRead("readiness", async () => (await this.lifecycle).warm());
         this.managementReadyUntil = Date.now() + 30_000;
-      })().finally(() => { this.managementWarming = undefined; });
+      })().finally(() => {
+        this.managementWarming = undefined;
+      });
     }
     return this.managementWarming;
   }
-
 
   async alarm() {
     await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
@@ -231,12 +298,21 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.control.expire();
     await this.prices.run();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
-    await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
-    await publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY)
-      .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
+    await this.usage
+      .observe()
+      .catch((error: unknown) => console.error("Pool usage observation failed", error));
+    await publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY).catch(
+      () => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"),
+    );
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
-      try { await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests); }
-      catch { console.error("POOL_MODEL_HISTORY_FAILURE count=1"); }
+      try {
+        await withHistoryDatabase(
+          this.env.POOL_AUTH_DATABASE?.connectionString,
+          captureHomeRequests,
+        );
+      } catch {
+        console.error("POOL_MODEL_HISTORY_FAILURE count=1");
+      }
     }
   }
 
@@ -251,37 +327,56 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const client = new HomeClient((path, init) => {
       const headers = new Headers(init?.headers);
       headers.set("X-Management-Key", this.env.POOL_MANAGEMENT_KEY);
-      return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
+      return container
+        .getTcpPort(8327)
+        .fetch(new Request(`http://pool${path}`, { ...init, headers }));
     });
     return migrateCodexWebSockets(client, approved);
   }
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
-    if (pathname === runtimeRecoveryPath) return handleRuntimeRecovery(request, {
-      inspectRuntimeRecovery: id => this.recovery.inspect(id),
-      recoverRuntime: approval => this.recovery.run(approval),
-    }, this.env.POOL_APP_SIGNING_KEY);
-    if (pathname === importRemovalPath) return handleImportRemoval(request, this.importRemoval,
-      this.env.POOL_APP_SIGNING_KEY, `https://${brand.host}`);
+    if (pathname === runtimeRecoveryPath)
+      return handleRuntimeRecovery(
+        request,
+        {
+          inspectRuntimeRecovery: (id) => this.recovery.inspect(id),
+          recoverRuntime: (approval) => this.recovery.run(approval),
+        },
+        this.env.POOL_APP_SIGNING_KEY,
+      );
+    if (pathname === importRemovalPath)
+      return handleImportRemoval(
+        request,
+        this.importRemoval,
+        this.env.POOL_APP_SIGNING_KEY,
+        `https://${brand.host}`,
+      );
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
         await this.memberships.reserve(request);
         this.ctx.waitUntil(this.memberships.tick());
         return new Response(null, { status: 204 });
-      } catch { return Response.json({ error: "membership_unavailable" }, { status: 503 }); }
+      } catch {
+        return Response.json({ error: "membership_unavailable" }, { status: 503 });
+      }
     }
     if (pathname === appModelPath) return this.appModels.handle(request);
-    if (pathname === accountMirrorPath) return handleAccountKeyMirror(request, {
-      home: this.mirrorHome, signingKey: this.env.POOL_APP_SIGNING_KEY,
-      previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
-    });
+    if (pathname === accountMirrorPath)
+      return handleAccountKeyMirror(request, {
+        home: this.mirrorHome,
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      });
     if (pathname === accessPath) return this.computers.access(request);
     if (pathname === nativeControlPath) return this.computers.nativeControl(request);
     if (pathname === nativeSessionPath) {
-      try { return nativeSession(await this.computers.nativeSession(request)); }
-      catch (error) { return failureResponse(error); }
+      try {
+        return nativeSession(await this.computers.nativeSession(request));
+      } catch (error) {
+        return failureResponse(error);
+      }
     }
     if (isControlPath(pathname)) {
       try {
@@ -290,13 +385,22 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
           permissions: (pool, user) => this.computers.permissions(pool, user),
         });
-      } catch (error) { return failureResponse(error); }
+      } catch (error) {
+        return failureResponse(error);
+      }
     }
-    if (pathname === poolUsageSeriesPath || pathname === lastSuccessAtPath || pathname === poolOverviewPath || pathname === poolPersonalOverviewPath) return handleUsageSeries(request, {
-      signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
-      currentPrices: (targets) => this.overviewPrices.read(targets),
-    });
+    if (
+      pathname === poolUsageSeriesPath ||
+      pathname === lastSuccessAtPath ||
+      pathname === poolOverviewPath ||
+      pathname === poolPersonalOverviewPath
+    )
+      return handleUsageSeries(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+        currentPrices: (targets) => this.overviewPrices.read(targets),
+      });
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);
@@ -306,12 +410,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       if (response.ok) this.ctx.waitUntil(this.managementReady().catch(() => {}));
       return response;
     }
-    if (pathname === summaryPath || pathname === "/pool/v1/usage/capacity") return this.usage.handle(request);
-    if (pathname === modelHistoryPath || pathname === modelImportPath) return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
-      signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
-      permissions: (pool, caller) => this.computers.permissions(pool, caller),
-    });
+    if (pathname === summaryPath || pathname === "/pool/v1/usage/capacity")
+      return this.usage.handle(request);
+    if (pathname === modelHistoryPath || pathname === modelImportPath)
+      return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+        permissions: (pool, caller) => this.computers.permissions(pool, caller),
+      });
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
@@ -322,8 +429,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const port = poolPort(new URL(request.url).pathname);
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
-      env: this.env, computers: this.computers, memberships: this.memberships,
-      streams: this.modelStreams, lifecycle: this.lifecycle, protection: this.protection,
+      env: this.env,
+      computers: this.computers,
+      memberships: this.memberships,
+      streams: this.modelStreams,
+      lifecycle: this.lifecycle,
+      protection: this.protection,
       fetch: (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
         return this.ctx.container.getTcpPort(target).fetch(forwarded);
@@ -344,8 +455,22 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
-  if (pathname === importRemovalPath || pathname === appModelPath || pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
-  if (pathname !== accountAcquisitionPath && pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
+  if (
+    pathname === importRemovalPath ||
+    pathname === appModelPath ||
+    pathname === accountMirrorPath ||
+    pathname === nativeControlPath ||
+    pathname === nativeSessionPath
+  )
+    return singleton(env).fetch(request);
+  if (
+    pathname !== accountAcquisitionPath &&
+    pathname !== accessPath &&
+    pathname !== membershipPath &&
+    !isControlPath(pathname) &&
+    !isPublicModelPath(pathname) &&
+    !pathname.startsWith("/__setup/v1/")
+  ) {
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
@@ -381,9 +506,17 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
       if (request.method === "POST") {
         const value: unknown = await request.json();
-        if (!value || typeof value !== "object" || !("digest" in value) || !("pending" in value)
-          || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)
-          || typeof value.pending !== "number" || !Number.isSafeInteger(value.pending) || value.pending < 0)
+        if (
+          !value ||
+          typeof value !== "object" ||
+          !("digest" in value) ||
+          !("pending" in value) ||
+          typeof value.digest !== "string" ||
+          !/^[a-f0-9]{64}$/.test(value.digest) ||
+          typeof value.pending !== "number" ||
+          !Number.isSafeInteger(value.pending) ||
+          value.pending < 0
+        )
           return new Response(null, { status: 400 });
         approved = { digest: value.digest, pending: value.pending };
       } else if (request.method !== "GET") return new Response(null, { status: 405 });

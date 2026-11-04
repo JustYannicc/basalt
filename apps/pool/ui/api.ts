@@ -25,44 +25,128 @@ function read<T>(promise: Promise<Result<T>>): Promise<Result<T>> {
 }
 
 export const pool = {
-  capacity: (days: 7 | 30, to?: number) => read(client.query(queryReference<typeof capacity>("capacity"), { days, ...(to === undefined ? {} : { to }) }, result<import("../capacity-contract.ts").PoolCapacityHistory>())),
-  overviewUsage: async (input: import("../overview-contract.ts").PoolOverviewInput): Promise<Result<import("../overview-contract.ts").PoolOverviewResult>> => {
+  capacity: (days: 7 | 30, to?: number) =>
+    read(
+      client.query(
+        queryReference<typeof capacity>("capacity"),
+        { days, ...(to === undefined ? {} : { to }) },
+        result<import("../capacity-contract.ts").PoolCapacityHistory>(),
+      ),
+    ),
+  overviewUsage: async (
+    input: import("../overview-contract.ts").PoolOverviewInput,
+  ): Promise<Result<import("../overview-contract.ts").PoolOverviewResult>> => {
     try {
       const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-      const response = await fetch("/_executor/api/pool-usage/overview", { method: "POST", credentials: "same-origin",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+      const response = await fetch("/_executor/api/pool-usage/overview", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: context.version ?? context.deployment, input }),
       });
-      if (!response.ok) return { ok: false, error: response.status === 403 ? "unauthorized" : "backend_unavailable", message: response.status === 403 ? "Pool usage is available to managers only." : "Overview could not be read. Reload and try again." };
+      if (!response.ok)
+        return {
+          ok: false,
+          error: response.status === 403 ? "unauthorized" : "backend_unavailable",
+          message:
+            response.status === 403
+              ? "Pool usage is available to managers only."
+              : "Overview could not be read. Reload and try again.",
+        };
       return { ok: true, value: await response.json() };
-    } catch { return { ok: false, error: "backend_unavailable", message: "Overview could not be read. Try again." }; }
+    } catch {
+      return {
+        ok: false,
+        error: "backend_unavailable",
+        message: "Overview could not be read. Try again.",
+      };
+    }
   },
-  personalOverview: async (input: import("../overview-contract.ts").PoolOverviewInput): Promise<Result<import("../overview-contract.ts").PoolPersonalOverviewResult>> => {
+  personalOverview: async (
+    input: import("../overview-contract.ts").PoolOverviewInput,
+  ): Promise<Result<import("../overview-contract.ts").PoolPersonalOverviewResult>> => {
     try {
       const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-      const response = await fetch("/_executor/api/pool-usage/personal-overview", { method: "POST", credentials: "same-origin",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+      const response = await fetch("/_executor/api/pool-usage/personal-overview", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: context.version ?? context.deployment, input }),
       });
-      if (!response.ok) return { ok: false, error: response.status === 403 ? "unauthorized" : "backend_unavailable", message: response.status === 403 ? "Your usage isn't available for this pool." : "Your usage could not be read. Reload and try again." };
+      if (!response.ok)
+        return {
+          ok: false,
+          error: response.status === 403 ? "unauthorized" : "backend_unavailable",
+          message:
+            response.status === 403
+              ? "Your usage isn't available for this pool."
+              : "Your usage could not be read. Reload and try again.",
+        };
       return { ok: true, value: await response.json() };
-    } catch { return { ok: false, error: "backend_unavailable", message: "Your usage could not be read. Try again." }; }
+    } catch {
+      return {
+        ok: false,
+        error: "backend_unavailable",
+        message: "Your usage could not be read. Try again.",
+      };
+    }
   },
-  series: async (input: Omit<import("../usage-series-contract.ts").PoolUsageSeriesInput, "pool">): Promise<Result<import("../usage-series-contract.ts").PoolUsageSeriesResult>> => {
+  series: async (
+    input: Omit<import("../usage-series-contract.ts").PoolUsageSeriesInput, "pool">,
+  ): Promise<Result<import("../usage-series-contract.ts").PoolUsageSeriesResult>> => {
     try {
       const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-      const response = await fetch("/_executor/api/pool-usage/series", { method: "POST", credentials: "same-origin",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+      const response = await fetch("/_executor/api/pool-usage/series", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: context.version ?? context.deployment, input }),
       });
-      if (!response.ok) return { ok: false, error: "unauthorized", message: response.status === 403 ? "Pool usage is available to managers only." : "Usage could not be read. Reload and try again." };
+      if (!response.ok)
+        return {
+          ok: false,
+          error: "unauthorized",
+          message:
+            response.status === 403
+              ? "Pool usage is available to managers only."
+              : "Usage could not be read. Reload and try again.",
+        };
       return { ok: true, value: await response.json() };
-    } catch { return { ok: false, error: "backend_unavailable", message: "Usage could not be read. Try again." }; }
+    } catch {
+      return {
+        ok: false,
+        error: "backend_unavailable",
+        message: "Usage could not be read. Try again.",
+      };
+    }
   },
-  computerContext: () => read(client.query(queryReference<typeof computerContext>("computerContext"), {}, result<ComputerContext>())),
+  computerContext: () =>
+    read(
+      client.query(
+        queryReference<typeof computerContext>("computerContext"),
+        {},
+        result<ComputerContext>(),
+      ),
+    ),
   /** `fresh` waits for a live read; otherwise the pool may answer at once from its retained view. */
   view: (options: { readonly fresh?: boolean } = {}) =>
-    read(client.query(queryReference<typeof view>("view"), options.fresh ? { fresh: true } : {}, result<PoolView>())),
-  usage: () => read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
+    read(
+      client.query(
+        queryReference<typeof view>("view"),
+        options.fresh ? { fresh: true } : {},
+        result<PoolView>(),
+      ),
+    ),
+  usage: () =>
+    read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   remove: (id: string) =>
-    read(client.mutate(mutationReference<typeof removeAccount>("removeAccount"), { id }, result<null>())),
+    read(
+      client.mutate(
+        mutationReference<typeof removeAccount>("removeAccount"),
+        { id },
+        result<null>(),
+      ),
+    ),
   /** Refreshes on an interval only while someone sees the page, including behind the host's other tabs. */
   poll: client.poll,
 };

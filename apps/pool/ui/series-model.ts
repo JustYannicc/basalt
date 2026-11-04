@@ -31,10 +31,15 @@ export interface SeriesRead {
   readonly truncated: boolean;
 }
 
-const keyId = (key: SeriesKey) => JSON.stringify(Object.entries(key).sort(([a], [b]) => a.localeCompare(b)));
+const keyId = (key: SeriesKey) =>
+  JSON.stringify(Object.entries(key).sort(([a], [b]) => a.localeCompare(b)));
 
 /** Reads every page of one query, pinned to the caller's bounds, merging groups split across pages. */
-export async function readSeries(fetch: SeriesFetch, input: SeriesQuery, maxPages = maxSeriesPages): Promise<Result<SeriesRead>> {
+export async function readSeries(
+  fetch: SeriesFetch,
+  input: SeriesQuery,
+  maxPages = maxSeriesPages,
+): Promise<Result<SeriesRead>> {
   const groups = new Map<string, SeriesGroup>();
   let first: PoolUsageSeriesResult | undefined;
   let changed = false;
@@ -48,15 +53,36 @@ export async function readSeries(fetch: SeriesFetch, input: SeriesQuery, maxPage
     for (const group of value.groups) {
       const id = keyId(group.key);
       const known = groups.get(id);
-      groups.set(id, known ? { key: known.key, buckets: [...known.buckets, ...group.buckets] } : group);
+      groups.set(
+        id,
+        known ? { key: known.key, buckets: [...known.buckets, ...group.buckets] } : group,
+      );
     }
     if (value.next === null)
-      return { ok: true, value: { groups: [...groups.values()], coverage: first.coverage, asOf: first.asOf, asOfChanged: changed, truncated: false } };
+      return {
+        ok: true,
+        value: {
+          groups: [...groups.values()],
+          coverage: first.coverage,
+          asOf: first.asOf,
+          asOfChanged: changed,
+          truncated: false,
+        },
+      };
     after = value.next;
   }
   // `first` is set: maxPages is at least one and every failed page returned above.
   const read = first as PoolUsageSeriesResult;
-  return { ok: true, value: { groups: [...groups.values()], coverage: read.coverage, asOf: read.asOf, asOfChanged: changed, truncated: true } };
+  return {
+    ok: true,
+    value: {
+      groups: [...groups.values()],
+      coverage: read.coverage,
+      asOf: read.asOf,
+      asOfChanged: changed,
+      truncated: true,
+    },
+  };
 }
 
 // ---------- exact decimals ----------
@@ -119,8 +145,19 @@ export interface Totals {
 }
 
 export const emptyTotals = (): Totals => ({
-  requests: 0, failed: 0, unassignedFailures: 0, countsOnly: 0, tokens: 0n, tokensKnown: 0, tokensMissing: 0,
-  home: [], homePriced: 0, imported: [], importedPriced: 0, unpriced: 0, partial: false,
+  requests: 0,
+  failed: 0,
+  unassignedFailures: 0,
+  countsOnly: 0,
+  tokens: 0n,
+  tokensKnown: 0,
+  tokensMissing: 0,
+  home: [],
+  homePriced: 0,
+  imported: [],
+  importedPriced: 0,
+  unpriced: 0,
+  partial: false,
 });
 
 function addMoney(list: Money[], sum: CostSum) {
@@ -162,8 +199,20 @@ export function addTotals(into: Totals, from: Totals) {
   into.tokens += from.tokens;
   into.tokensKnown += from.tokensKnown;
   into.tokensMissing += from.tokensMissing;
-  for (const money of from.home) addMoney(into.home, { amount: decimalText(money.amount), currency: money.currency, priced: 0, unpriced: 0 });
-  for (const money of from.imported) addMoney(into.imported, { amount: decimalText(money.amount), currency: money.currency, priced: 0, unpriced: 0 });
+  for (const money of from.home)
+    addMoney(into.home, {
+      amount: decimalText(money.amount),
+      currency: money.currency,
+      priced: 0,
+      unpriced: 0,
+    });
+  for (const money of from.imported)
+    addMoney(into.imported, {
+      amount: decimalText(money.amount),
+      currency: money.currency,
+      priced: 0,
+      unpriced: 0,
+    });
   into.homePriced += from.homePriced;
   into.importedPriced += from.importedPriced;
   into.unpriced += from.unpriced;
@@ -223,8 +272,16 @@ export interface Row {
   readonly byProvider: Map<string, bigint>;
   readonly children: Row[];
   readonly empty: boolean;
-  readonly requestTokens: { readonly p50: number | null; readonly p90: number | null; readonly p99: number | null } | null;
-  readonly usageKey: { readonly person?: string | null; readonly provider?: string | null; readonly model?: string | null };
+  readonly requestTokens: {
+    readonly p50: number | null;
+    readonly p90: number | null;
+    readonly p99: number | null;
+  } | null;
+  readonly usageKey: {
+    readonly person?: string | null;
+    readonly provider?: string | null;
+    readonly model?: string | null;
+  };
 }
 
 interface Draft {
@@ -236,12 +293,26 @@ interface Draft {
   byProvider: Map<string, bigint>;
   children: Map<string, Draft>;
   empty?: boolean;
-  requestTokens?: { readonly p50: number | null; readonly p90: number | null; readonly p99: number | null } | null;
-  usageKey?: { readonly person?: string | null; readonly provider?: string | null; readonly model?: string | null };
+  requestTokens?: {
+    readonly p50: number | null;
+    readonly p90: number | null;
+    readonly p99: number | null;
+  } | null;
+  usageKey?: {
+    readonly person?: string | null;
+    readonly provider?: string | null;
+    readonly model?: string | null;
+  };
 }
 
 const draft = (id: string, label: string, countsOnly: boolean, provider: string | null): Draft => ({
-  id, label, countsOnly, provider, totals: emptyTotals(), byProvider: new Map(), children: new Map(),
+  id,
+  label,
+  countsOnly,
+  provider,
+  totals: emptyTotals(),
+  byProvider: new Map(),
+  children: new Map(),
 });
 
 function finish(drafts: Iterable<Draft>): Row[] {
@@ -253,8 +324,13 @@ function finish(drafts: Iterable<Draft>): Row[] {
       usageKey: entry.usageKey ?? {},
       children: finish(entry.children.values()),
     }))
-    .sort((a, b) => Number(a.countsOnly) - Number(b.countsOnly) || (b.totals.tokens > a.totals.tokens ? 1 : b.totals.tokens < a.totals.tokens ? -1 : 0)
-      || b.totals.requests - a.totals.requests || a.label.localeCompare(b.label));
+    .sort(
+      (a, b) =>
+        Number(a.countsOnly) - Number(b.countsOnly) ||
+        (b.totals.tokens > a.totals.tokens ? 1 : b.totals.tokens < a.totals.tokens ? -1 : 0) ||
+        b.totals.requests - a.totals.requests ||
+        a.label.localeCompare(b.label),
+    );
 }
 
 export type Grouping = "person" | "provider" | "model";
@@ -266,15 +342,41 @@ export function rows(
   providerName: (id: string) => string,
   directory: readonly MemberDirectoryEntry[] = [],
   requestTokens?: {
-    readonly byPerson: readonly { readonly person: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
-    readonly byModel: readonly { readonly provider: string; readonly model: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
-    readonly byModelPerson: readonly { readonly person: string; readonly provider: string; readonly model: string; readonly p50: number | null; readonly p90: number | null; readonly p99: number | null }[];
+    readonly byPerson: readonly {
+      readonly person: string;
+      readonly p50: number | null;
+      readonly p90: number | null;
+      readonly p99: number | null;
+    }[];
+    readonly byModel: readonly {
+      readonly provider: string;
+      readonly model: string;
+      readonly p50: number | null;
+      readonly p90: number | null;
+      readonly p99: number | null;
+    }[];
+    readonly byModelPerson: readonly {
+      readonly person: string;
+      readonly provider: string;
+      readonly model: string;
+      readonly p50: number | null;
+      readonly p90: number | null;
+      readonly p99: number | null;
+    }[];
   },
 ): Row[] {
   const people = new Map(directory.map((entry) => [entry.person, entry]));
   const byPerson = new Map(requestTokens?.byPerson.map((value) => [value.person, value]) ?? []);
-  const byModel = new Map(requestTokens?.byModel.map((value) => [JSON.stringify([value.provider, value.model]), value]) ?? []);
-  const byModelPerson = new Map(requestTokens?.byModelPerson.map((value) => [JSON.stringify([value.provider, value.model, value.person]), value]) ?? []);
+  const byModel = new Map(
+    requestTokens?.byModel.map((value) => [JSON.stringify([value.provider, value.model]), value]) ??
+      [],
+  );
+  const byModelPerson = new Map(
+    requestTokens?.byModelPerson.map((value) => [
+      JSON.stringify([value.provider, value.model, value.person]),
+      value,
+    ]) ?? [],
+  );
   const top = new Map<string, Draft>();
   for (const group of groups) {
     const owner = who(group.key);
@@ -287,31 +389,53 @@ export function rows(
     else if (by === "person") {
       const member = owner.kind === "person" ? people.get(owner.id) : undefined;
       [id, label] = [whoId(owner), member?.displayName || whoLabel(owner)];
-    }
-    else if (by === "provider") [id, label] = [providerKey, providerLabel];
-    else [id, label] = [`${providerKey}:${group.key.model ?? ""}`, group.key.model ?? "Model not recorded"];
+    } else if (by === "provider") [id, label] = [providerKey, providerLabel];
+    else
+      [id, label] = [
+        `${providerKey}:${group.key.model ?? ""}`,
+        group.key.model ?? "Model not recorded",
+      ];
     const row = top.get(id) ?? draft(id, label, redacted, by === "person" ? null : provider);
     top.set(id, row);
-    row.usageKey = by === "person" && owner.kind === "person" ? { person: owner.id }
-      : by === "provider" ? { provider }
-        : by === "model" ? { provider, model: group.key.model ?? null } : {};
+    row.usageKey =
+      by === "person" && owner.kind === "person"
+        ? { person: owner.id }
+        : by === "provider"
+          ? { provider }
+          : by === "model"
+            ? { provider, model: group.key.model ?? null }
+            : {};
     if (by === "person" && owner.kind === "person") {
       row.requestTokens = byPerson.get(owner.id) ?? null;
       const member = people.get(owner.id);
       if (member) row.empty = !member.active;
     }
-    if (by === "model" && provider) row.requestTokens = byModel.get(JSON.stringify([provider, group.key.model ?? ""])) ?? null;
-    const child = redacted ? null
-      : by === "person" ? [JSON.stringify([providerKey, group.key.model ?? null]), group.key.model ?? "Model not recorded", provider]
-        : owner.kind === "person" ? [whoId(owner), people.get(owner.id)?.displayName || whoLabel(owner), provider]
+    if (by === "model" && provider)
+      row.requestTokens = byModel.get(JSON.stringify([provider, group.key.model ?? ""])) ?? null;
+    const child = redacted
+      ? null
+      : by === "person"
+        ? [
+            JSON.stringify([providerKey, group.key.model ?? null]),
+            group.key.model ?? "Model not recorded",
+            provider,
+          ]
+        : owner.kind === "person"
+          ? [whoId(owner), people.get(owner.id)?.displayName || whoLabel(owner), provider]
           : null;
-    const sub = child ? (row.children.get(child[0]!) ?? draft(child[0]!, child[1]!, false, child[2] ?? null)) : null;
+    const sub = child
+      ? (row.children.get(child[0]!) ?? draft(child[0]!, child[1]!, false, child[2] ?? null))
+      : null;
     if (sub) {
-      if (by === "person" && owner.kind === "person") sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
-      else if (by === "provider" && owner.kind === "person") sub.usageKey = { person: owner.id, provider };
-      else if (by === "model" && owner.kind === "person") sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
+      if (by === "person" && owner.kind === "person")
+        sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
+      else if (by === "provider" && owner.kind === "person")
+        sub.usageKey = { person: owner.id, provider };
+      else if (by === "model" && owner.kind === "person")
+        sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
       if ((by === "model" || by === "person") && owner.kind === "person")
-        sub.requestTokens = byModelPerson.get(JSON.stringify([provider, group.key.model ?? "", owner.id])) ?? null;
+        sub.requestTokens =
+          byModelPerson.get(JSON.stringify([provider, group.key.model ?? "", owner.id])) ?? null;
       row.children.set(sub.id, sub);
     }
     for (const bucket of group.buckets) {
@@ -325,16 +449,18 @@ export function rows(
       }
     }
   }
-  if (by === "person") for (const member of directory) {
-    const id = `person:${member.person}`;
-    if (top.has(id)) continue;
-    const row = draft(id, member.displayName || "Member", false, null);
-    row.empty = true;
-    row.usageKey = { person: member.person };
-    row.requestTokens = byPerson.get(member.person) ?? null;
-    top.set(id, row);
-  }
-  for (const row of top.values()) if (row.empty === undefined) row.empty = row.totals.requests === 0;
+  if (by === "person")
+    for (const member of directory) {
+      const id = `person:${member.person}`;
+      if (top.has(id)) continue;
+      const row = draft(id, member.displayName || "Member", false, null);
+      row.empty = true;
+      row.usageKey = { person: member.person };
+      row.requestTokens = byPerson.get(member.person) ?? null;
+      top.set(id, row);
+    }
+  for (const row of top.values())
+    if (row.empty === undefined) row.empty = row.totals.requests === 0;
   return finish(top.values());
 }
 
@@ -357,24 +483,48 @@ export function money(value: Money): string {
   const amount = decimalNumber(value.amount);
   if (value.currency === "USD") {
     if (amount > 0 && amount < 0.01) return "<$0.01";
-    return new Intl.NumberFormat("en", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+    return new Intl.NumberFormat("en", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
   }
-  const text = new Intl.NumberFormat("en", { maximumFractionDigits: amount > 0 && amount < 1 ? 4 : 2 }).format(amount);
+  const text = new Intl.NumberFormat("en", {
+    maximumFractionDigits: amount > 0 && amount < 1 ? 4 : 2,
+  }).format(amount);
   return `${text} ${value.currency.toLowerCase() === "credits" ? "credits" : value.currency}`;
 }
 
 export const moneyList = (list: readonly Money[]) => list.map(money).join(" + ");
-export const moneyExact = (list: readonly Money[]) => list.map((entry) => `${decimalText(entry.amount)} ${entry.currency}`).join(" + ");
+export const moneyExact = (list: readonly Money[]) =>
+  list.map((entry) => `${decimalText(entry.amount)} ${entry.currency}`).join(" + ");
 
 /** Why parts of the series may be incomplete, in the order they matter. */
 export function coverageNotes(read: SeriesRead): string[] {
   const notes: string[] = [];
   const { coverage } = read;
-  if (read.truncated) notes.push(`Showing the first ${maxSeriesPages} pages of usage. The rest of this range isn't included, so totals are partial.`);
-  if (read.asOfChanged) notes.push("New usage landed while this was read, so some pages are newer than others. Reload for one consistent view.");
-  if (coverage.mapping.proof !== "proven" && coverage.mapping.unmapped + coverage.mapping.otherAccounts > 0)
-    notes.push("Account mapping is pending, so some requests are counted but not split by person, lab or model.");
-  const arriving = coverage.sources.filter((source) => source.kind === "import" && source.backfillComplete !== true);
-  if (arriving.length) notes.push(`Imported history from ${arriving.length} ${arriving.length === 1 ? "source is" : "sources are"} still arriving, so earlier days can still change.`);
+  if (read.truncated)
+    notes.push(
+      `Showing the first ${maxSeriesPages} pages of usage. The rest of this range isn't included, so totals are partial.`,
+    );
+  if (read.asOfChanged)
+    notes.push(
+      "New usage landed while this was read, so some pages are newer than others. Reload for one consistent view.",
+    );
+  if (
+    coverage.mapping.proof !== "proven" &&
+    coverage.mapping.unmapped + coverage.mapping.otherAccounts > 0
+  )
+    notes.push(
+      "Account mapping is pending, so some requests are counted but not split by person, lab or model.",
+    );
+  const arriving = coverage.sources.filter(
+    (source) => source.kind === "import" && source.backfillComplete !== true,
+  );
+  if (arriving.length)
+    notes.push(
+      `Imported history from ${arriving.length} ${arriving.length === 1 ? "source is" : "sources are"} still arriving, so earlier days can still change.`,
+    );
   return notes;
 }

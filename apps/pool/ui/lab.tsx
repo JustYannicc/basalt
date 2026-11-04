@@ -11,7 +11,15 @@ export const labColor = (provider: string | null) =>
   (provider && colors[provider]) || "color-mix(in srgb, var(--foreground) 55%, transparent)";
 
 /** Providers declare no icon yet, so a lab shows as its colour and initial. */
-export function LabMark({ provider, name, small = false }: { provider: string; name: string; small?: boolean }) {
+export function LabMark({
+  provider,
+  name,
+  small = false,
+}: {
+  provider: string;
+  name: string;
+  small?: boolean;
+}) {
   return (
     <span
       aria-hidden="true"
