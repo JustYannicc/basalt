@@ -1,26 +1,31 @@
 diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
-index a555958..265e08d 100644
+index a555958..31f9393 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
 +++ b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
-@@ -7,6 +7,7 @@ import { WeeklyPoolCap } from "@executor-js/hosted-server/pool-usage";
+@@ -7,6 +7,12 @@ import { WeeklyPoolCap } from "@executor-js/hosted-server/pool-usage";
  import { formatMoment } from "@executor-js/ui/hooks/display-format";
  import type { DisplayFormat } from "@executor-js/ui/contracts/display";
  import type { PoolUsageMember } from "../../contracts/pool-usage.ts";
-+import { brandLab, brandShades, type BrandLab } from "@executor-js/ui/contracts/provider-brand";
++import {
++  brandFill,
++  brandLab,
++  brandShadeCount,
++  type BrandLab,
++} from "@executor-js/ui/lib/provider-brand";
  
  export type Metric = "tokens" | "cost";
  type Usage = Pick<PoolUsageMember, "requests" | "cost" | "unpriced" | "tokens">;
-@@ -130,35 +131,16 @@ export const share = (part: number, whole: number) =>
+@@ -130,35 +136,20 @@ export const share = (part: number, whole: number) =>
  const providerNames: Readonly<Record<string, string>> = { claude: "Claude", codex: "ChatGPT" };
  export const providerName = (provider: string) => providerNames[provider] ?? provider;
  
 -type Lab = "anthropic" | "openai" | "google" | "other";
 +type Lab = BrandLab | "other";
  /**
-  * The model's maker decides its colour family, read from the model name first because one
+- * The model's maker decides its colour family, read from the model name first because one
 - * provider can serve another lab's models. An unrecognised model gets a neutral colour.
-+ * provider can serve another lab's models. An unrecognised model gets a neutral colour. The
-+ * families are the shared lab brand colours, so the chart matches the account usage bars.
++ * The model's maker decides its colour family: the shared lab colours, read from the model name
++ * first because one provider can serve another lab's models. An unrecognised model is neutral.
   */
 -const lab = (model: ModelUsage): Lab => {
 -  const name = model.model.toLowerCase();
@@ -34,7 +39,9 @@ index a555958..265e08d 100644
 -// Tailwind only sees complete class names, so every shade is written out. Light and dark pairs keep
 -// the same order. Claude is orange; OpenAI is black on light and white on dark.
 +const lab = (model: ModelUsage): Lab =>
-+  brandLab(model.model, model.provider, providerName(model.provider)) ?? "other";
++  brandLab({ model: model.model, providers: [providerName(model.provider)] }) ?? "other";
++const tints = (family: BrandLab) =>
++  Array.from({ length: brandShadeCount }, (_, shade) => brandFill(family, shade)!);
  const shades: Readonly<Record<Lab, readonly string[]>> = {
 -  anthropic: [
 -    "bg-[#b95533] dark:bg-[#f1b198]",
@@ -48,7 +55,10 @@ index a555958..265e08d 100644
 -    "bg-[#3a3a3a] dark:bg-[#dcdcdc]",
 -  ],
 -  google: ["bg-[#1a73e8] dark:bg-[#8ab4f8]", "bg-[#5e97f6] dark:bg-[#aecbfa]"],
-+  ...brandShades,
++  openai: tints("openai"),
++  anthropic: tints("anthropic"),
++  kimi: tints("kimi"),
++  google: tints("google"),
    other: ["bg-slate-500 dark:bg-slate-400", "bg-stone-500 dark:bg-stone-400"],
  };
  /** Models outside the chart's named series. */
@@ -78,63 +88,6 @@ index f8a317b..c34b88f 100644
          expect(staleCells[0]?.value, "a stale cell keeps its exact amount").toBe("Rem 89%");
          expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
          expect(staleCells[0]?.count).toContain("↻ 1");
-diff --git a/packages/ui/src/contracts/provider-brand.ts b/packages/ui/src/contracts/provider-brand.ts
-new file mode 100644
-index 0000000..d59ace8
---- /dev/null
-+++ b/packages/ui/src/contracts/provider-brand.ts
-@@ -0,0 +1,51 @@
-+/**
-+ * The one mapping from a provider or model to its lab's brand colours, shared by account usage
-+ * bars and the pool's usage chart so a lab reads the same everywhere: OpenAI green, Anthropic
-+ * orange, Kimi blue, Google blue. Colours are extra cues; every place keeps its text label.
-+ */
-+export type BrandLab = "openai" | "anthropic" | "kimi" | "google";
-+
-+const labs: readonly (readonly [BrandLab, RegExp])[] = [
-+  ["anthropic", /anthropic|claude/],
-+  ["openai", /openai|chatgpt|codex|^gpt|^o\d/],
-+  ["kimi", /kimi|moonshot/],
-+  ["google", /google|gemini|vertex|antigravity/],
-+];
-+
-+/**
-+ * The lab behind the first name that names one, such as a model name, a provider id or a provider's
-+ * display name. Read the most specific name first: one provider can serve another lab's models.
-+ */
-+export const brandLab = (
-+  ...names: readonly (string | null | undefined)[]
-+): BrandLab | undefined => {
-+  for (const name of names) {
-+    const value = name?.trim().toLowerCase();
-+    if (!value) continue;
-+    const found = labs.find(([, pattern]) => pattern.test(value));
-+    if (found !== undefined) return found[0];
-+  }
-+  return undefined;
-+};
-+
-+// Tailwind only sees complete class names, so every shade is written out. The first shade is the
-+// lab's own colour; light and dark pairs keep the same order.
-+export const brandShades: Readonly<Record<BrandLab, readonly string[]>> = {
-+  openai: [
-+    "bg-[#10a37f] dark:bg-[#19c37d]",
-+    "bg-[#0d8a6a] dark:bg-[#5fd4a6]",
-+    "bg-[#5fbf9f] dark:bg-[#0f9e73]",
-+  ],
-+  anthropic: [
-+    "bg-[#d97757] dark:bg-[#d97757]",
-+    "bg-[#b95533] dark:bg-[#f1b198]",
-+    "bg-[#9f705c] dark:bg-[#a36e58]",
-+    "bg-[#e8a487] dark:bg-[#c25f3c]",
-+  ],
-+  kimi: ["bg-[#1783ff] dark:bg-[#5aa7ff]", "bg-[#0f5fc2] dark:bg-[#93c5ff]"],
-+  google: ["bg-[#1a73e8] dark:bg-[#8ab4f8]", "bg-[#5e97f6] dark:bg-[#aecbfa]"],
-+};
-+
-+/** The lab's own colour for a bar or swatch, or undefined for a lab without one. */
-+export const brandFill = (lab: BrandLab | undefined) =>
-+  lab === undefined ? undefined : brandShades[lab][0];
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 index 0236ffa..5f280ab 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
@@ -164,29 +117,22 @@ index 0236ffa..5f280ab 100644
        ))}
      </div>
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index a506df2..9ea9c43 100644
+index a506df2..8db6f01 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -24,6 +24,7 @@ import {
  import { ObservationReadings } from "./account-observation-readings.tsx";
  import { useQuery } from "./context.tsx";
  import { useAccountRow } from "./account-row.tsx";
-+import { brandFill, brandLab } from "../../contracts/provider-brand.ts";
++import { brandFill, brandLab } from "../lib/provider-brand.ts";
  
  /** What a product lets the caller see of an account's reported usage. */
  export interface AccountObservationsView {
-@@ -174,6 +175,14 @@ export function AccountObservations<E>({
+@@ -174,6 +175,7 @@ export function AccountObservations<E>({
                now={now}
                format={format}
                tokens={windowTokens}
-+              brand={brandFill(
-+                brandLab(
-+                  account.providerName,
-+                  account.identity?.name,
-+                  report.source.label,
-+                  report.result?.observation.plan?.label,
-+                ),
-+              )}
++              brand={brandFill(brandLab({ providers: [account.providerName] }))}
              />
            ),
        )}
@@ -241,3 +187,135 @@ index 5031d12..cb508f2 100644
              )}
              style={{ width: `${reading.width}%` }}
            />
+diff --git a/packages/ui/src/implementation/lib/provider-brand.ts b/packages/ui/src/implementation/lib/provider-brand.ts
+index ce7b13a..38d5311 100644
+--- a/packages/ui/src/implementation/lib/provider-brand.ts
++++ b/packages/ui/src/implementation/lib/provider-brand.ts
+@@ -53,3 +53,56 @@ const brands: ReadonlyMap<string, ProviderBrand> = new Map([
+ /** The brand of a provider or app by its display name, or undefined for every other name. */
+ export const providerBrand = (name: string): ProviderBrand | undefined =>
+   brands.get(name.toLowerCase().trim());
++
++/**
++ * The labs whose identity colour also fills healthy usage bars and pool chart series. The colour
++ * lives once in `dashboard.css` (`--brand-<lab>`), which provider icon tiles use too.
++ */
++export type BrandLab = "openai" | "anthropic" | "kimi" | "google";
++
++const labOf: Readonly<Record<string, BrandLab>> = {
++  openai: "openai",
++  anthropic: "anthropic",
++  kimi: "kimi",
++  gemini: "google",
++  vertex: "google",
++  antigravity: "google",
++};
++
++/** A model's maker from its name's family prefix, such as `claude-…` or `gpt-…`; never a guess. */
++const modelFamilies: readonly (readonly [RegExp, BrandLab])[] = [
++  [/^claude(?:[-._\s]|$)/, "anthropic"],
++  [/^(?:gpt|chatgpt|codex)(?:[-._\s\d]|$)/, "openai"],
++  [/^o\d+(?:[-._\s]|$)/, "openai"],
++  [/^(?:kimi|moonshot)(?:[-._\s]|$)/, "kimi"],
++  [/^gemini(?:[-._\s]|$)/, "google"],
++];
++
++/**
++ * The lab behind a usage reading: the model's family first, since one provider can serve another
++ * lab's models, then the first provider name that is exactly one of the lab's known names. A
++ * gateway or unknown name has no lab.
++ */
++export const brandLab = (input: {
++  readonly model?: string | undefined;
++  readonly providers?: readonly (string | null | undefined)[];
++}): BrandLab | undefined => {
++  const model = input.model?.trim().toLowerCase();
++  const family = model ? modelFamilies.find(([pattern]) => pattern.test(model)) : undefined;
++  if (family !== undefined) return family[1];
++  for (const name of input.providers ?? []) {
++    const key = name === null || name === undefined ? undefined : providerBrand(name)?.key;
++    const lab = key === undefined ? undefined : labOf[key];
++    if (lab !== undefined) return lab;
++  }
++  return undefined;
++};
++
++/** How many tints of one lab `dashboard.css` defines for series that need telling apart. */
++export const brandShadeCount = 3;
++
++/** The class that fills a bar or swatch with the lab's colour, or one of its tints. */
++export const brandFill = (lab: BrandLab | undefined, shade = 0) =>
++  lab === undefined
++    ? undefined
++    : `brand-fill brand-${lab}${shade > 0 ? ` brand-shade-${Math.min(shade, brandShadeCount - 1)}` : ""}`;
+diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
+index 746ac2d..22ca4d8 100644
+--- a/packages/ui/src/implementation/styles/dashboard.css
++++ b/packages/ui/src/implementation/styles/dashboard.css
+@@ -14,28 +14,60 @@ body:has([data-name-account-handoff][data-state="open"])
+   display: none;
+ }
+ 
++/*
++ * Lab identity colours (`provider-brand.ts`), one value per lab for icon tiles, healthy usage bars
++ * and pool chart series. Status colours (low, critical, stale) never come from here.
++ */
++:root {
++  --brand-openai: light-dark(#10a37f, #19c37d);
++  --brand-anthropic: light-dark(#c4623f, #d97757);
++  --brand-kimi: light-dark(#1773e6, #5aa7ff);
++  --brand-google: light-dark(#1a73e8, #8ab4f8);
++}
++.brand-fill.brand-openai {
++  --brand-ink: var(--brand-openai);
++}
++.brand-fill.brand-anthropic {
++  --brand-ink: var(--brand-anthropic);
++}
++.brand-fill.brand-kimi {
++  --brand-ink: var(--brand-kimi);
++}
++.brand-fill.brand-google {
++  --brand-ink: var(--brand-google);
++}
++.brand-fill {
++  background-color: var(--brand-ink);
++}
++.brand-fill.brand-shade-1 {
++  background-color: color-mix(in oklab, var(--brand-ink) 65%, var(--foreground));
++}
++.brand-fill.brand-shade-2 {
++  background-color: color-mix(in oklab, var(--brand-ink) 55%, var(--background));
++}
++
+ /*
+  * Model provider identity on icon tiles (`provider-brand.ts`). The ink tints only the tile behind
+  * the provider's logo and its monogram; account health keeps its own colours. Unlayered so the
+  * tile's utility background and border yield to it. Light and dark follow the page's color-scheme.
+  */
+ .provider-icon[data-provider="openai"] {
+-  --provider-ink: light-dark(#087f63, #57d3ad);
++  --provider-ink: var(--brand-openai);
+ }
+ .provider-icon[data-provider="anthropic"] {
+-  --provider-ink: light-dark(#a84d2f, #e9a185);
++  --provider-ink: var(--brand-anthropic);
+ }
+ .provider-icon[data-provider="gemini"] {
+-  --provider-ink: light-dark(#285ec4, #8ab4ff);
++  --provider-ink: var(--brand-google);
+ }
+ .provider-icon[data-provider="vertex"] {
+-  --provider-ink: light-dark(#2867bd, #8ab4ff);
++  --provider-ink: var(--brand-google);
+ }
+ .provider-icon[data-provider="antigravity"] {
+-  --provider-ink: light-dark(#6348bd, #bca6ff);
++  --provider-ink: var(--brand-google);
+ }
+ .provider-icon[data-provider="kimi"] {
+-  --provider-ink: light-dark(#087d58, #61d6a7);
++  --provider-ink: var(--brand-kimi);
+ }
+ .provider-icon[data-provider="xai"] {
+   --provider-ink: var(--foreground);
