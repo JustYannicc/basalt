@@ -1,7 +1,7 @@
 {
   "identity": "basalt-series-fixture-paths",
   "file": "0219-series-fixture-paths.patch",
-  "content_sha256": "8bcd1c0d234f1418a71990301e4d4d88a392f690e7cde192f0dab4005adb1f13",
+  "content_sha256": "ca9f6d11df107dd1167b5adf9f32e152d3243c726f48e7075dbe70a5f6e3afe0",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

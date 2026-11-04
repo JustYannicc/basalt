@@ -1,8 +1,8 @@
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
-index 1a2315e..519d015 100644
+index b09f5682b..dc0d9fb5d 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
-@@ -59,7 +59,16 @@ const send = <A>(
+@@ -61,7 +61,16 @@ const send = <A>(
        }),
      );
      const client = yield* HttpClient.HttpClient;
@@ -21,10 +21,10 @@ index 1a2315e..519d015 100644
      });
      if (response.status !== 200) return yield* new PoolUsageUnavailable();
 diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
-index 522174b..27ace73 100644
+index 48b0257f5..1d029e2d8 100644
 --- a/e2e/support/pool-usage-series-backend.ts
 +++ b/e2e/support/pool-usage-series-backend.ts
-@@ -4,17 +4,40 @@
+@@ -4,17 +4,40 @@ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "e
  import { createHmac, timingSafeEqual } from "node:crypto";
  import { createServer } from "node:http";
  
@@ -70,7 +70,7 @@ index 522174b..27ace73 100644
  });
  
  /** The hosted server is real; this loopback peer implements only the external pool protocol. */
-@@ -43,14 +66,75 @@
+@@ -43,16 +66,77 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
        Buffer.from(encoded, "base64url").toString(),
      );
      const now = yield* Clock.currentTimeMillis;
@@ -94,6 +94,8 @@ index 522174b..27ace73 100644
      )
        return HttpServerResponse.empty({ status: 401 });
      yield* Ref.update(calls, (values) => [...values, assertion]);
+     const respond = yield* Ref.get(responder);
+     if (respond !== undefined) return HttpServerResponse.jsonUnsafe(respond(assertion));
      const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
 +    if (assertion.action === "poolOverview") {
 +      const input = yield* Schema.decodeUnknownEffect(PoolOverviewInput)(assertion.input);
@@ -147,7 +149,7 @@ index 522174b..27ace73 100644
      if (assertion.action === "lastSuccessAt")
        return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
      const unavailable = {
-@@ -137,8 +220,10 @@
+@@ -143,8 +227,10 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
    const services = yield* Layer.build(
      HttpRouter.serve(
        Layer.mergeAll(

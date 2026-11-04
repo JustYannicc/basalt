@@ -1,7 +1,7 @@
 {
   "identity": "basalt-usage-series-routes",
   "file": "0189-usage-series-routes.patch",
-  "content_sha256": "a1ab173476b9e67585b986ac60f055493dbf96c0ca022e274fc7fafeb0de33f8",
+  "content_sha256": "d6240eab40dd3d356cf5fe0c0f54700c68ad2ae47ee0a8c4dac12be3520021e7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
