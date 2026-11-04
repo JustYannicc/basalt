@@ -1,7 +1,7 @@
 {
   "identity": "basalt-released-retirement-repair",
   "file": "0240-released-retirement-repair.patch",
-  "content_sha256": "7d3e260ecd413b19c5d4753bdc7350cf12b6b9ee1acc02d83ce09e97deab1eca",
+  "content_sha256": "6a5d261a38887a9bd6725c71f72c5d69a183386ddd758dc5c0bc8e2481cfa233",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

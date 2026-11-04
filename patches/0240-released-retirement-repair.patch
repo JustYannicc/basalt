@@ -374,7 +374,7 @@ new file mode 100644
 +      const before = yield* readReleasedRetirement(input);
 +      const sql = yield* SqlClient.SqlClient;
 +      const updated = yield* sql`update executor_account_connections c
-+      set state = state #- '{interactive,retirement}'
++      set state = (state::jsonb #- '{interactive,retirement}')::json
 +      where id = ${input.connection} and to_jsonb(c) = ${JSON.stringify(before.connection)}::jsonb
 +      returning id`;
 +      if (updated.length !== 1) return yield* retirementRefused("compare_and_swap_failed");
@@ -696,7 +696,7 @@ new file mode 100644
 +  const connection = rows[0]!;
 +  const marker = (value: Schema.Json) =>
 +    p.database.run({
-+      sql: "update executor_account_connections set state = jsonb_set(state, '{interactive,retirement}', $2::jsonb) where id = $1",
++      sql: "update executor_account_connections set state = jsonb_set(state::jsonb, '{interactive,retirement}', $2::jsonb)::json where id = $1",
 +      params: [connection.id, JSON.stringify(value)],
 +    });
 +  yield* marker({ removed: false });
@@ -785,7 +785,7 @@ new file mode 100644
 +  }
 +  yield* p.marker({ removed: false });
 +  yield* p.database.run({
-+    sql: "update executor_account_connections set state = state #- '{interactive,retirement}' where id = $1",
++    sql: "update executor_account_connections set state = (state::jsonb #- '{interactive,retirement}')::json where id = $1",
 +    params: [p.selection.connection],
 +  });
 +  expect((yield* p.client.request(p.operation)).status).toBe(409);
