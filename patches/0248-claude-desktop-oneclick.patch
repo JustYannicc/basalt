@@ -1,10 +1,10 @@
 diff --git a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
-index a439227..7b0048a 100644
+index a439227..18bf578 100644
 --- a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
 @@ -1,4 +1,4 @@
 -import { useState } from "react";
-+import { useRef, useState } from "react";
++import { useEffect, useRef, useState } from "react";
  import { Button } from "@executor-js/ui/components/button";
  import { AssistantGuideSteps, EndpointField } from "@executor-js/ui/dashboard/connect";
  import { PoolSelect } from "./computer-quick-setup.tsx";
@@ -19,7 +19,7 @@ index a439227..7b0048a 100644
   */
  
  /** The fields the in-app configuration window writes, as its exported JSON config names them. */
-@@ -46,87 +46,108 @@ export function ClaudeDesktopSetup({
+@@ -46,87 +46,127 @@ export function ClaudeDesktopSetup({
    readonly server: string;
    readonly mcpUrl: string;
  }) {
@@ -28,9 +28,23 @@ index a439227..7b0048a 100644
 +    readonly pool: string | undefined;
 +    readonly key: PoolKey;
 +  }>();
++  const attempts = useRef(new Map<string | undefined, string>());
++  const revoked =
++    issued !== undefined &&
++    setup.view?.computers.some(
++      (computer) =>
++        computer.id === issued.key.computerId &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed"),
++    );
++  useEffect(() => {
++    if (revoked || setup.view === undefined) setIssued(undefined);
++  }, [revoked, setup.view]);
 +  const [manualOpen, setManualOpen] = useState(false);
 +  const issuing = useRef(false);
-+  const current = issued?.pool === setup.pool ? issued?.key : undefined;
++  const current = !revoked && issued?.pool === setup.pool ? issued?.key : undefined;
    const [busy, setBusy] = useState(false);
    const [problem, setProblem] = useState<string>();
 -  const create = async () => {
@@ -42,7 +56,12 @@ index a439227..7b0048a 100644
      try {
 -      setIssued(await setup.issueKey(`${computerName()} · Claude Desktop`));
 +      const pool = setup.pool;
-+      const key = current ?? (await setup.issueKey(`${computerName()} · Claude Desktop`));
++      let attempt = attempts.current.get(pool);
++      if (attempt === undefined) {
++        attempt = crypto.randomUUID();
++        attempts.current.set(pool, attempt);
++      }
++      const key = current ?? (await setup.issueKey(`${computerName()} · Claude Desktop`, attempt));
 +      setIssued({ pool, key });
 +      if (saveFile) download("claude-desktop-config.json", desktopConfig(key, server, mcpUrl));
      } catch (error) {
@@ -214,31 +233,79 @@ index 36b483c..b0e22a0 100644
          <SelectValue placeholder="Your pool" />
        </SelectTrigger>
 diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
-index e2cd9d1..f8e31a0 100644
+index e2cd9d1..413fa42 100644
 --- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
-@@ -140,6 +140,7 @@ export function usePoolSetup() {
+@@ -47,6 +47,7 @@ interface SetupLink {
+ }
+ /** A models-only key this page shows once, for clients the person configures by hand. */
+ export interface PoolKey {
++  readonly computerId: string;
+   readonly key: string;
+   readonly baseUrl: string;
+ }
+@@ -140,6 +141,23 @@ export function usePoolSetup() {
    const { slug } = useOrganizationRoute();
    const scope = useSetupScope(slug);
    const { view, pool } = useRetainedSetup(scope);
 +  const keyAttempts = useRef(new Map<string, { link?: SetupLink; key?: PoolKey }>());
++  useEffect(() => {
++    for (const [id, attempt] of keyAttempts.current) {
++      const computer = view?.computers.find((computer) => computer.id === attempt.link?.computerId);
++      if (
++        computer &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed")
++      ) {
++        delete attempt.key;
++        keyAttempts.current.delete(id);
++      }
++    }
++  }, [view]);
++  useEffect(() => () => keyAttempts.current.clear(), [scope]);
    const intent = useRef<{ value: Promise<string>; at: number } | undefined>(undefined);
    const [pending, setPending] = useState<Pending>();
    const [problem, setProblem] = useState<string>();
-@@ -371,17 +372,35 @@ export function usePoolSetup() {
+@@ -158,6 +176,7 @@ export function usePoolSetup() {
+   /** Refused here: nothing this person saw stays to be shown again. */
+   const forget = useCallback(() => {
+     reader.current = { inFlight: 0, issued: 0, committed: 0 };
++    keyAttempts.current.clear();
+     intent.current = undefined;
+     rearm.current();
+     const stored = registry.get(retainedSetupAtom);
+@@ -370,18 +389,50 @@ export function usePoolSetup() {
+    * computer.
     */
    const issueKey = useCallback(
-     async (name: string): Promise<PoolKey> => {
+-    async (name: string): Promise<PoolKey> => {
 -      const link = await post<SetupLink>("links", {
 -        intent: await signed(),
 -        name,
 -        tools: false,
 -        ...(pool && { pool }),
 -      });
-+      const identity = JSON.stringify([scope, pool, name]);
++    async (name: string, attemptId: string = crypto.randomUUID()): Promise<PoolKey> => {
++      const identity = JSON.stringify([scope, pool, attemptId]);
 +      let attempt = keyAttempts.current.get(identity);
++      const computer = view?.computers.find(
++        (computer) => computer.id === attempt?.link?.computerId,
++      );
++      if (
++        computer &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed")
++      ) {
++        if (attempt !== undefined) delete attempt.key;
++        keyAttempts.current.delete(identity);
++        attempt = undefined;
++      }
 +      if (attempt?.key !== undefined) return attempt.key;
-+      const recovery = `A key may already have been issued for ${name}, but it was not downloaded. This attempt will not create another key. Retry the same link, or revoke that entry under Connected agents before starting over.`;
++      const recovery = `A key may already have been issued for ${name}, but it was not downloaded. This attempt will not create another key. Retry the same link, or revoke that entry under Connected agents before starting over. If the creation response was lost, reload this page after revoking it.`;
 +      if (attempt === undefined) {
 +        const intent = await signed();
 +        attempt = {};
@@ -268,23 +335,24 @@ index e2cd9d1..f8e31a0 100644
        }
        const body = (await claimed.json().catch(() => ({}))) as {
          credentials?: { modelKey?: unknown; modelUrl?: unknown };
-@@ -389,10 +408,11 @@ export function usePoolSetup() {
+@@ -389,10 +440,12 @@ export function usePoolSetup() {
        const { modelKey, modelUrl } = body.credentials ?? {};
        void refresh().catch(() => undefined);
        if (!claimed.ok || typeof modelKey !== "string" || typeof modelUrl !== "string")
 -        throw new SetupFailure("Couldn't create the key. Try again.");
 -      return { key: modelKey, baseUrl: modelUrl };
 +        throw new SetupFailure(recovery);
-+      attempt.key = { key: modelKey, baseUrl: modelUrl };
++      if (keyAttempts.current.get(identity) !== attempt) throw new SetupFailure(recovery);
++      attempt.key = { key: modelKey, baseUrl: modelUrl, computerId: link.computerId };
 +      return attempt.key;
      },
 -    [pool, refresh, signed],
-+    [pool, refresh, scope, signed],
++    [pool, refresh, scope, signed, view],
    );
  
    /** Runs one change against the signed intent, then reloads; returns the error to show, if any. */
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
-index 3904ce6..64a8efb 100644
+index 3904ce6..a0dd188 100644
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
 @@ -5,7 +5,7 @@
@@ -311,7 +379,7 @@ index 3904ce6..64a8efb 100644
          );
          yield* browser.use("Open Connect", (page) =>
            page.goto(`/org/${actors.organization.slug}/connect`),
-@@ -335,27 +339,148 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+@@ -335,27 +339,170 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
          yield* browser.use("Its limits are stated up front", (page) =>
            guide(page, "Claude Desktop").getByText("third-party mode", { exact: false }).waitFor(),
          );
@@ -367,10 +435,6 @@ index 3904ce6..64a8efb 100644
 -        const file = yield* browser.use("Download the setup file", (page) =>
 -          Promise.all([
 -            page.waitForEvent("download"),
--            guide(page, "Claude Desktop")
--              .getByRole("button", { name: "Download setup file" })
--              .click(),
--          ]).then(([download]) => download.suggestedFilename()),
 +        expect(config).toEqual({
 +          inferenceProvider: "gateway",
 +          inferenceGatewayBaseUrl: yield* browser.use("Read fixture origin", (page) =>
@@ -453,9 +517,16 @@ index 3904ce6..64a8efb 100644
 +        });
 +        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
 +        yield* browser.use("Retry a consumed link without minting again", async (page) => {
-+          await guide(page, "Claude Desktop")
-+            .getByRole("button", { name: "Download setup file", exact: true })
-+            .click();
++          await Promise.all([
++            page.waitForResponse(
++              (response) => response.url().includes("/setup/claim/") && response.status() === 410,
++            ),
+             guide(page, "Claude Desktop")
+-              .getByRole("button", { name: "Download setup file" })
++              .getByRole("button", { name: "Download setup file", exact: true })
+               .click(),
+-          ]).then(([download]) => download.suggestedFilename()),
++          ]);
 +          await guide(page, "Claude Desktop")
 +            .getByRole("alert")
 +            .getByText("A key may already have been issued", { exact: false })
@@ -467,6 +538,23 @@ index 3904ce6..64a8efb 100644
 +            .getByRole("button", { name: "Show Connected agents" })
 +            .waitFor(),
 +        );
++        yield* browser.use("Restore normal claim delivery", async (page) => {
++          await page.unroute("**/setup/claim/**");
++          await page.route("**/setup/claim/**", service.claim);
++        });
++        yield* browser.use("Revoke the failed Desktop attempt", async (page) => {
++          const row = rows(page)
++            .filter({ hasText: "Claude Desktop" })
++            .filter({ hasText: "Team pool" })
++            .first();
++          await row.getByRole("button", { name: /Manage/ }).click();
++          await page.getByRole("menuitem", { name: "Revoke", exact: true }).click();
++          await page.getByRole("button", { name: "Revoke computer", exact: true }).click();
++          await row.waitFor({ state: "detached" });
++        });
++        const recovered = yield* download();
++        expect(recovered.name).toBe("claude-desktop-config.json");
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(3);
 +        yield* browser.use("Restore desktop width", (page) =>
 +          page.setViewportSize({ width: 1280, height: 900 }),
          );
@@ -474,3 +562,12 @@ index 3904ce6..64a8efb 100644
  
          yield* browser.use("Open the pool endpoint", (page) =>
            page.getByRole("tab", { name: "Pool endpoint" }).click(),
+@@ -371,7 +518,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+           page.getByText("export OPENAI_API_KEY=sk-fake-pool-key").waitFor(),
+         );
+         yield* browser.checkpoint("Pool endpoint: key and example");
+-        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(4);
+       }),
+     ),
+   );
