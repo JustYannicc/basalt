@@ -34,6 +34,7 @@ const baseEnvironment = { ...process.env,
 async function bootstrap() {
   const commands = [
     [root, "npm run prepare:upstream"],
+    [join(root, ".upstream"), "node e2e/check-boundary.ts"],
     [join(root, ".upstream"), "bun run e2e:prepare"],
     [join(root, ".upstream"), "bunx playwright install --with-deps chromium"],
   ];

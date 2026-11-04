@@ -109,3 +109,7 @@ For Slack, run `node scripts/check-slack.ts --preflight`, then `node scripts/che
 ## GitLab MCP
 
 Install **GitLab MCP** from the catalog and enter your instance origin. The server must enable MCP and support HTTP transport. Connect using an instance OAuth application with the `mcp` scope, or a fine-grained personal token with MCP tool Execute permission. Legacy personal, project and group tokens do not work with GitLab MCP. The REST app remains separate. Each MCP tool call asks for approval.
+
+## PlanetScale
+
+Hosted sign-in uses an optional organization-owned [PlanetScale OAuth app](https://planetscale.com/docs/api/reference/oauth). Register the deployed OAuth callback and the catalog app’s 28 scopes. Supply `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID` and `EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET` through deployment secrets. Incomplete pairs are omitted. Manual OAuth and service tokens remain available. This setup does not use dynamic client registration.
