@@ -2,8 +2,13 @@ name: Check
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -15,6 +20,7 @@ jobs:
   select:
     runs-on: ubuntu-latest
     outputs:
+      full_suite: ${{ steps.jobs.outputs.full_suite }}
       jobs: ${{ steps.jobs.outputs.jobs }}
       hosted_jobs: ${{ steps.jobs.outputs.hosted_jobs }}
       boat_jobs: ${{ steps.jobs.outputs.boat_jobs }}
@@ -26,19 +32,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      - name: Select affected heavy jobs
+      - name: Select the PR fast lane or full suite
         id: jobs
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           # Temporary same-repository proof; remove after the measured PR run.
           BOAT_JOBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/boat-suite-runtime') && 'production-ops,production-ops-migrations,production-ops-identity,host-managed-accounts,contributed-accounts,oauth-account-regressions,account-acquisition,pool-account-recovery,compiler-diagnostics' || vars.BASALT_CI_BOAT_JOBS }}
-          FULL_SUITE: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-update') }}
+          FULL_SUITE: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update') }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
           else
-            node scripts/ci/select-jobs.ts
+            node scripts/ci/select-jobs.ts --fast
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -1124,6 +1130,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   fast:
+    needs: select
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1160,7 +1167,15 @@ jobs:
         run: |
           npm run architecture:model
           npm run architecture:typecheck
-      - run: npm run check
+      - name: Run focused owned unit tests
+        if: needs.select.outputs.full_suite != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci/unit-tests.ts
+      - name: Run the complete owned unit suite
+        if: needs.select.outputs.full_suite == 'true'
+        run: npm run check
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries
@@ -1168,6 +1183,7 @@ jobs:
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
       - name: Verify Cloud startup diagnostics and app listeners
+        if: needs.select.outputs.full_suite == 'true'
         working-directory: .upstream
         run: |
           bunx vitest run --config e2e/alchemy-dev-output.config.ts
@@ -1204,9 +1220,11 @@ jobs:
           npm run check:releases
           npm run prove:releases
           npm run check:preview-auth
+      - name: Prepare generated inputs for fitness and source typechecking
+        run: bun run --cwd .upstream/apps/hosted/cloud framework:build
       - name: Architecture deployment generation
+        if: needs.select.outputs.full_suite == 'true'
         run: |
-          bun run --cwd .upstream/apps/hosted/cloud framework:build
           npm run architecture:deployment
           git diff --exit-code -- architecture/gen
           test -z "$(git ls-files --others --exclude-standard architecture/gen)"
@@ -1218,6 +1236,7 @@ jobs:
           ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: npm run architecture:test
       - name: Typecheck the patched upstream the way upstream checks itself
+        if: needs.select.outputs.full_suite == 'true'
         run: npm run typecheck:upstream
 
   pool-runtime:
@@ -1377,6 +1396,7 @@ jobs:
       - name: Require every selected job and every fast check to pass
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts

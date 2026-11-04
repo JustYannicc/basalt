@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affected.ts";
+import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { bundleJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 
@@ -178,7 +179,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
   );
   assert.equal(
     jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env.FULL_SUITE,
-    "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'release-update') }}",
+    "${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update') }}",
   );
 });
 
@@ -209,4 +210,97 @@ test("only affected configured Boat jobs substitute for hosted jobs, and every b
       gateErrors({ ...needs, "boat-bundle": { result } }, selected, routes.boatJobs).length,
     );
   assert.ok(gateErrors(needs, selected, ["production-ops-identity"]).length);
+});
+
+test("fast-only and full gates reject missing work and dishonest lane selections", () => {
+  const needs = (selected: readonly string[]) =>
+    Object.fromEntries(
+      [...fastJobs, ...heavyJobs, ...bundleJobs].map((job) => [
+        job,
+        {
+          result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped",
+        },
+      ]),
+    );
+  assert.deepEqual(gateErrors(needs([]), [], [], false), []);
+  assert.deepEqual(gateErrors(needs(heavyJobs), heavyJobs, [], true), []);
+  assert.ok(gateErrors(needs([]), [], [], true).length);
+  assert.ok(gateErrors(needs(heavyJobs), heavyJobs, [], false).length);
+  for (const job of fastJobs)
+    for (const result of ["failure", "cancelled", "skipped"])
+      assert.ok(gateErrors({ ...needs([]), [job]: { result } }, [], [], false).length);
+  assert.ok(
+    gateErrors({ ...needs([]), "production-build": { result: "success" } }, [], [], false).length,
+  );
+});
+
+test("explicit fast selection never schedules heavy work even without comparison refs", () => {
+  const root = mkdtempSync(join(tmpdir(), "basalt-ci-lane-"));
+  const selector = new URL("./ci/select-jobs.ts", import.meta.url).pathname;
+  try {
+    for (const lane of ["--fast", "--all"]) {
+      execFileSync(process.execPath, [selector, lane], {
+        cwd: root,
+        env: { ...process.env, BASE_SHA: "invalid", HEAD_SHA: "invalid", BOAT_JOBS: "" },
+      });
+      const selected = JSON.parse(readFileSync(join(root, ".generated/ci/selection.json"), "utf8"));
+      assert.deepEqual(selected.jobs, lane === "--all" ? heavyJobs : []);
+      assert.deepEqual(selected.hostedJobs, selected.jobs);
+      assert.deepEqual(selected.boatJobs, []);
+      assert.equal(selected.full, lane === "--all");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("workflow cancels superseded PRs, preserves each main push and gates build steps", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  assert.equal(
+    workflow.concurrency["cancel-in-progress"],
+    "${{ github.event_name == 'pull_request' }}",
+  );
+  assert.equal(
+    workflow.concurrency.group,
+    "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}",
+  );
+  assert.ok(workflow.on.pull_request.types.includes("labeled"));
+  assert.ok(workflow.on.pull_request.types.includes("unlabeled"));
+  for (const name of [
+    "Verify Cloud startup diagnostics and app listeners",
+    "Architecture deployment generation",
+    "Typecheck the patched upstream the way upstream checks itself",
+  ])
+    assert.equal(
+      workflow.jobs.fast.steps.find((step: { name?: string }) => step.name === name).if,
+      "needs.select.outputs.full_suite == 'true'",
+    );
+});
+
+test("fast unit selection runs changed tests and nearby source tests, with a conservative fallback", () => {
+  const tests = [
+    "scripts/ci.test.ts",
+    "scripts/ci-prepare.test.ts",
+    "src/catalog/feed.test.ts",
+    "src/pool/key.test.ts",
+  ];
+  assert.deepEqual(selectUnitTests(tests, ["src/catalog/feed.ts"]), tests.slice(0, 3));
+  assert.deepEqual(selectUnitTests(tests, ["src/pool/key.test.ts"]), [
+    tests[0],
+    tests[1],
+    tests[3],
+  ]);
+  assert.deepEqual(
+    selectUnitTests(tests, ["architecture/model/build.c4", "docs/releases.md"]),
+    tests.slice(0, 2),
+  );
+  for (const input of [
+    ".upstream/packages/sdk/index.ts",
+    "scripts/ci/gate.ts",
+    "package.json",
+    "src/new-feature.ts",
+  ])
+    assert.deepEqual(selectUnitTests(tests, [input]), tests, input);
 });
