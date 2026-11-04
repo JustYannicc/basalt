@@ -1,3 +1,4 @@
+import { onServedFramework } from "./framework.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
@@ -25,7 +26,7 @@ test("Miro serves the full carried REST source without publisher access", async 
   const response = await handleCatalog(new Request("https://catalog.example.test/catalog/apps/miro.json"),
     async () => { throw new Error("Carried Miro source must not require its publisher"); });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), miroSource);
+  assert.deepEqual(await response.json(), JSON.parse(onServedFramework(JSON.stringify(miroSource))));
   const head = await handleCatalog(new Request("https://catalog.example.test/catalog/apps/miro.json", { method: "HEAD" }));
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
