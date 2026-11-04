@@ -97,6 +97,24 @@ diff --git a/e2e/tests/oauth-callback-new-tab.spec.ts b/e2e/tests/oauth-callback
  /** Open the emailed link and wait until the callback page settles on success or failure. */
  const openLink = (label: string, callbackUrl: URL, organizationSlug: string, app: string) =>
    Effect.flatMap(Browser, (browser) =>
+@@ -117,7 +41,7 @@
+       Effect.gen(function* () {
+         const actors = yield* Actors,
+           browser = yield* Browser;
+-        const signIn = yield* pendingSignIn;
++        const signIn = yield* pendingSignIn();
+         yield* browser.omitNetworkTrace;
+         // A fresh browser context: it shares the session cookie but nothing from the start.
+         yield* browser.login(actors.owner);
+@@ -169,7 +93,7 @@
+         const api = yield* Api,
+           actors = yield* Actors,
+           browser = yield* Browser;
+-        const signIn = yield* pendingSignIn;
++        const signIn = yield* pendingSignIn();
+         yield* browser.omitNetworkTrace;
+         yield* browser.login(actors.member);
+         const refused = yield* openLink(
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
@@ -121,7 +139,7 @@ diff --git a/e2e/support/oauth-link-sign-in.ts b/e2e/support/oauth-link-sign-in.
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/oauth-link-sign-in.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,86 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -144,70 +162,75 @@ new file mode 100644
 + * The owner starts sign-in through the API, so no browser holds its context, and the service
 + * returns the callback URL it would put in the emailed link.
 + */
-+export const pendingSignIn = Effect.gen(function* () {
-+  const api = yield* Api,
-+    actors = yield* Actors,
-+    http = yield* HttpClient.HttpClient;
-+  const prefix = `/api/organizations/${actors.organization.id}`;
-+  const issuer = yield* oauthInteropIssuer("apple");
-+  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+    name: "Emailed sign-in link",
-+    files: [
-+      {
-+        path: "index.ts",
-+        content: `import { defineApp, defineProvider, oauth2, router } from "apps";
-+const service=defineProvider({name:"Link service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
++export const pendingSignIn = (displayName?: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      http = yield* HttpClient.HttpClient;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const issuer = yield* oauthInteropIssuer("apple");
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Emailed sign-in link",
++      files: [
++        {
++          path: "index.ts",
++          content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service=defineProvider({
++  name:"Link service",
++  auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})},
++  ${displayName === undefined ? "" : `async health() { return { accountInfo: { displayName: ${JSON.stringify(displayName)} } }; },`}
++});
 +export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
-+      },
-+      appsManifest,
-+    ],
-+  });
-+  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-+  const app = yield* body(Resource, deployed);
-+  yield* Effect.addFinalizer(() =>
-+    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-+  );
-+  const connection = yield* body(
-+    Resource,
-+    yield* api.request(
++        },
++        appsManifest,
++      ],
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(Resource, deployed);
++    yield* Effect.addFinalizer(() =>
++      api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++    );
++    const connection = yield* body(
++      Resource,
++      yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++        {},
++      ),
++    );
++    const started = yield* api.request(
 +      actors.owner,
 +      "POST",
-+      connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-+      {},
-+    ),
-+  );
-+  const started = yield* api.request(
-+    actors.owner,
-+    "POST",
-+    `${prefix}/connections/${connection.id}/oauth/start`,
-+    { method: "oauth" },
-+  );
-+  expect(started.status, JSON.stringify(started.body)).toBe(200);
-+  const { authorizationUrl } = yield* body(SignIn, started);
-+  const callbackUrl = yield* Effect.scoped(
-+    Effect.gen(function* () {
-+      const response = yield* HttpClient.withScope(http).get(authorizationUrl);
-+      expect(response.status).toBe(302);
-+      const location = response.headers.location;
-+      if (location === undefined) return yield* Effect.die("Service did not return a callback");
-+      return new URL(location);
-+    }),
-+  ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-+  expect(callbackUrl.searchParams.get("code")).not.toBeNull();
-+  const read = api
-+    .request(actors.owner, "GET", `${prefix}/connections/${connection.id}`)
-+    .pipe(Effect.flatMap((response) => body(Connection, response)));
-+  const removeAccount = (account: string) =>
-+    Effect.addFinalizer(() =>
-+      api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
++      `${prefix}/connections/${connection.id}/oauth/start`,
++      { method: "oauth" },
 +    );
-+  return { prefix, app: app.id, connection: connection.id, callbackUrl, read, removeAccount };
-+});
++    expect(started.status, JSON.stringify(started.body)).toBe(200);
++    const { authorizationUrl } = yield* body(SignIn, started);
++    const callbackUrl = yield* Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* HttpClient.withScope(http).get(authorizationUrl);
++        expect(response.status).toBe(302);
++        const location = response.headers.location;
++        if (location === undefined) return yield* Effect.die("Service did not return a callback");
++        return new URL(location);
++      }),
++    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++    expect(callbackUrl.searchParams.get("code")).not.toBeNull();
++    const read = api
++      .request(actors.owner, "GET", `${prefix}/connections/${connection.id}`)
++      .pipe(Effect.flatMap((response) => body(Connection, response)));
++    const removeAccount = (account: string) =>
++      Effect.addFinalizer(() =>
++        api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
++      );
++    return { prefix, app: app.id, connection: connection.id, callbackUrl, read, removeAccount };
++  });
 diff --git a/e2e/tests/oauth-name-ready.spec.ts b/e2e/tests/oauth-name-ready.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/oauth-name-ready.spec.ts
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,206 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -233,13 +256,21 @@ new file mode 100644
 +          browser = yield* Browser;
 +        yield* browser.omitNetworkTrace;
 +        yield* browser.login(actors.owner);
-+        for (const width of [1440, 390]) {
++        for (const { width, failDetails, typeDraft } of [
++          { width: 1440, failDetails: false, typeDraft: true },
++          { width: 390, failDetails: false, typeDraft: true },
++          { width: 390, failDetails: true, typeDraft: false },
++        ]) {
 +          yield* Effect.scoped(
 +            Effect.gen(function* () {
-+              const signIn = yield* pendingSignIn;
-+              const detail = yield* holdQuery(/\/accounts\/[^/]+$/, "continue", {
-+                allRequests: true,
-+              });
++              const signIn = yield* pendingSignIn("Suggested account");
++              const detail = yield* holdQuery(
++                /\/accounts\/[^/]+$/,
++                failDetails ? "fail" : "continue",
++                {
++                  allRequests: true,
++                },
++              );
 +              const health = yield* holdQuery(/\/accounts\/[^/]+\/health$/, "continue", {
 +                method: "POST",
 +                allRequests: true,
@@ -276,16 +307,15 @@ new file mode 100644
 +                  ]),
 +              );
 +              expect(state).toEqual([true, "Default", true, true, true]);
-+              const label = `Work ${width}`;
++              const label = typeDraft ? `Work ${width}` : "Suggested account";
 +              const description = `Synthetic description ${width}`;
 +              yield* browser.use("Type a name and description while details are held", (page) =>
-+                accountNameField(page)
-+                  .fill(label)
-+                  .then(() =>
++                Promise.resolve(typeDraft ? accountNameField(page).fill(label) : undefined).then(
++                  () =>
 +                    nameAccountDialog(page)
 +                      .getByRole("textbox", { name: "Description for agents", exact: true })
 +                      .fill(description),
-+                  ),
++                ),
 +              );
 +              yield* browser.checkpoint(`OAuth name ready before details ${width}px`);
 +              const completed = yield* signIn.read;
@@ -322,20 +352,57 @@ new file mode 100644
 +                  nameAccountDialog(page).waitFor({ state: "hidden" }),
 +                );
 +              } else {
++                const failedRead = failDetails
++                  ? yield* browser.use("Observe the optional account-read failure", (page) =>
++                      Promise.resolve({
++                        finished: page.waitForEvent("requestfailed", {
++                          predicate: (request) =>
++                            request.method() === "GET" &&
++                            new URL(request.url()).pathname.endsWith(`/accounts/${account.id}`),
++                        }),
++                      }),
++                    )
++                  : undefined;
 +                yield* detail.release;
-+                yield* browser.use("Provider details arrive without remounting the draft", (page) =>
-+                  nameAccountDialog(page)
-+                    .getByText("Link service is connected. Choose a name you’ll recognize.", {
-+                      exact: true,
-+                    })
-+                    .waitFor(),
-+                );
++                if (failedRead !== undefined) {
++                  yield* browser.use("The optional read fails without disabling naming", () =>
++                    failedRead.finished.then(() => undefined),
++                  );
++                  expect(
++                    yield* browser.use(
++                      "Missing provider details use a neutral description",
++                      (page) =>
++                        nameAccountDialog(page)
++                          .getByText("Name the account you connected.", { exact: true })
++                          .count(),
++                    ),
++                  ).toBe(1);
++                } else {
++                  yield* browser.use(
++                    "Provider details arrive without remounting the draft",
++                    (page) =>
++                      nameAccountDialog(page)
++                        .getByText("Link service is connected. Choose a name you’ll recognize.", {
++                          exact: true,
++                        })
++                        .waitFor(),
++                  );
++                }
 +                yield* health.release;
 +                expect(
 +                  yield* browser.use("The background health check still completes", () =>
 +                    healthResponse.finished.then((response) => response.status()),
 +                  ),
 +                ).toBe(200);
++                if (!typeDraft)
++                  yield* browser.use("An untouched name adopts the reported identity", (page) =>
++                    accountNameField(page)
++                      .and(page.locator('input[value="Suggested account"]'))
++                      .waitFor(),
++                  );
++                yield* browser.checkpoint(
++                  `OAuth identity received ${width}px ${typeDraft ? "typed" : "untouched"}`,
++                );
 +                expect(
 +                  yield* browser.use("The optional details preserve both drafts", (page) =>
 +                    Promise.all([

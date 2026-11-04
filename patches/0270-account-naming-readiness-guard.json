@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-naming-readiness-guard",
   "file": "0270-account-naming-readiness-guard.patch",
-  "content_sha256": "a5fd631ecdda6cf697e253936e07161736b8aad04d41d4c97b214cc8a145e40d",
+  "content_sha256": "fe101039ab13b78b2b645a8f1767ebd8825e9b00c4102d056176c885e8e34ba1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
