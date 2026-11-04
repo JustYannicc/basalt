@@ -13,7 +13,7 @@
     "check:startup": "node --test scripts/worker-startup-tests/*.test.ts && node scripts/worker-startup.ts",
     "deploy": "node scripts/deploy.ts",
     "check:providers": "node scripts/pool-providers.ts --check",
-    "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
+    "check:upstream": "node --test scripts/upstream-tests/*.test.ts scripts/upstream-tests/*.test.mjs",
     "check:releases": "node --test scripts/releases/*.test.ts scripts/release-credentials/*.test.ts scripts/release-preview/*.test.ts scripts/release-merge/*.test.ts scripts/deploy-safety/*.test.ts scripts/deploy-main/*.test.ts scripts/preview/*.test.ts",
     "check:preview-auth": "node .upstream/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts && node scripts/preview-auth/tests/check.ts",
     "prove:releases": "node scripts/releases/simulate.ts",
