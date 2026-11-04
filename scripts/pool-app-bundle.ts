@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { brand } from "../brand.ts";
+import { catalog } from "../src/catalog/settings.ts";
 
 export interface PoolAppFile {
   readonly path: string;
   readonly content: string;
 }
 
-export const poolFrameworkVersion = "0.0.1-beta.104-basalt.4";
+export const poolFrameworkVersion = catalog.framework;
 
 const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
 
