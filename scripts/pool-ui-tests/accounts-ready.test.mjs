@@ -101,6 +101,8 @@ function instrument() {
   };
   // What the page showed when each fresh view request left, to prove the retained view committed first.
   const followUps = [];
+  const queries = [];
+  Reflect.set(window, "queries", queries);
   Reflect.set(window, "followUps", followUps);
   const send = window.fetch.bind(window);
   window.fetch = (input, init) => {
@@ -114,6 +116,7 @@ function instrument() {
           : null;
     try {
       const operation = text === null ? null : JSON.parse(text);
+      if (operation?.name) queries.push(operation.name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
     } catch {}
     return send(input, init);
@@ -331,12 +334,12 @@ test(
       await page.screenshot({ path: join(artifacts, `${artifactLabel}-${name}.png`), fullPage: true });
       if (name === "snapshot-updating") evidenceVideo = page.video();
     };
-    const session = async (work) => {
+    const session = async (work, width = 1100) => {
       held = [];
       views = [];
       freshResult = undefined;
       answerFresh = false;
-      const context = await browser.newContext({ viewport: { width: 1100, height: 860 },
+      const context = await browser.newContext({ viewport: { width, height: 860 },
         ...(artifacts ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } } : {}),
       });
       try {
@@ -369,6 +372,26 @@ test(
         await context.close();
       }
     };
+
+    for (const width of [1440, 390])
+      await t.test(`usage loads while capacity is held at ${width}px`, async () => {
+        viewResult = { ok: true, value: empty };
+        await session(async ({ page, frame, accepted, settled }) => {
+          await settled();
+          await capture(page, `usage-before-capacity-${width}`);
+          const queries = await frame.evaluate(() => Reflect.get(window, "queries"));
+          assert.ok(queries.includes("usage"), "Usage must start before the held capacity read answers");
+          await frame.getByText("No requests through this pool yet.", { exact: false }).waitFor();
+          assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
+          const usageReads = queries.filter((name) => name === "usage").length;
+          release();
+          await frame.getByText("Connect your first account", { exact: true }).waitFor();
+          await settled();
+          const after = await frame.evaluate(() => Reflect.get(window, "queries"));
+          assert.equal(after.filter((name) => name === "usage").length, usageReads,
+            "Receiving capacity must not fetch usage again");
+        }, width);
+      });
 
     for (const { populated, recovery, sourced } of sourceRef ? [] : [
       { populated: false },
