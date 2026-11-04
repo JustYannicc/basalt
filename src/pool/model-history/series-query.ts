@@ -29,6 +29,7 @@ export async function seriesQuery(
   input: PoolUsageSeriesInput,
   authority: SeriesAuthority,
   after?: SeriesCursor,
+  personScope?: string,
 ) {
   const source = await digest("home-local-v1"),
     gateway = await digest("pool-gateway-v1");
@@ -69,6 +70,11 @@ export async function seriesQuery(
   if (input.sources !== undefined) {
     values.push(input.sources);
     where += ` AND r.source = ANY($${values.length}::text[])`;
+  }
+  let personalWhere = "";
+  if (personScope !== undefined) {
+    values.push(personScope);
+    personalWhere = ` AND r.person = $${values.length}::character(64) AND r.attribution IS DISTINCT FROM 'import-owner'`;
   }
   const columns = Object.entries(tokenColumns).flatMap(([name, column]) => [
     `sum(${column})::text AS "${name}Sum"`,
@@ -120,12 +126,12 @@ export async function seriesQuery(
     selected AS (SELECT r.*, $6::text AS gateway_source, ${app === "r.app_id" ? "" : `${app},`}
       CASE WHEN r.account IS NULL THEN NULL WHEN r.source <> $5 OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
-      (r.source = $5 AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL)) AS counts_only
+      ${personScope === undefined ? "(r.source = $5 AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))" : "false"} AS counts_only
       FROM basalt_model_requests r LEFT JOIN bindings b ON r.source = $5 AND r.account = b.history::character(64)
       WHERE r.pool = $1
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
-        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}ACCOUNT_FILTER),
+        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER),
     keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
       ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
       date_trunc('${input.bucket}', left(timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS bucket_at

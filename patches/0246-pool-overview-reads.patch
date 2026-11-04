@@ -1,0 +1,897 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index 25fad59f3..8b5d9aa9f 100644
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -176,6 +176,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
++      HttpRouter.add(
++        "POST",
++        appUi.poolPersonalUsageOverview.path,
++        appUi.poolPersonalUsageOverview.read,
++      ),
+       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
+       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
+       HttpRouter.add("GET", "*", appUi.page),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index 3c7bf08e6..adb1d5f63 100644
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -244,6 +244,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
++      HttpRouter.add(
++        "POST",
++        appUi.poolPersonalUsageOverview.path,
++        appUi.poolPersonalUsageOverview.read,
++      ),
+       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
+       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
+       HttpRouter.add("GET", "/_executor/*", notFound),
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index 501703c96..a6f385b75 100644
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -1,5 +1,7 @@
+ import {
+   poolAppUsage,
++  poolAppPersonalUsageOverview,
++  poolAppPersonalUsageOverviewPath,
+   poolAppUsageOverview,
+   poolAppUsageOverviewPath,
+   poolAppUsagePath,
+@@ -831,6 +833,10 @@ export const hostedAppUi = <R = never>(
+     sessionAccess,
+     telemetry,
+     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) },
++    poolPersonalUsageOverview: {
++      path: poolAppPersonalUsageOverviewPath,
++      read: poolAppPersonalUsageOverview(authorize),
++    },
+     poolUsageOverview: {
+       path: poolAppUsageOverviewPath,
+       read: poolAppUsageOverview(authorize),
+diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+index 54f58b871..53aeb3fc5 100644
+--- a/apps/hosted/server/src/implementation/pool-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
+@@ -15,10 +15,11 @@ import {
+ } from "../contracts/organization.ts";
+ import { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+ import { PoolUsageSeriesInput } from "../contracts/pool-usage-series.ts";
+-import { poolUsageOverview, poolUsageSeries } from "./pool-usage.ts";
++import { poolPersonalUsageOverview, poolUsageOverview, poolUsageSeries } from "./pool-usage.ts";
+ 
+ export const poolAppUsagePath = "/_executor/api/pool-usage/series";
+ export const poolAppUsageOverviewPath = "/_executor/api/pool-usage/overview";
++export const poolAppPersonalUsageOverviewPath = "/_executor/api/pool-usage/personal-overview";
+ const SeriesRequest = Schema.Struct({ version: VersionId, input: PoolUsageSeriesInput });
+ const OverviewRequest = Schema.Struct({ version: VersionId, input: PoolOverviewInput });
+ const json = (body: unknown, status = 200) =>
+@@ -66,7 +67,7 @@ export const poolAppUsage = <E, R>(
+   );
+ 
+ /** Session and deployment binding match the series route; the pool service adds manager checks. */
+-export const poolAppUsageOverview = <E, R>(
++const appUsageOverview = <E, R>(
+   authorize: Effect.Effect<
+     {
+       readonly app: Pick<App, "id" | "activeVersion">;
+@@ -75,6 +76,7 @@ export const poolAppUsageOverview = <E, R>(
+     E,
+     R
+   >,
++  read: typeof poolUsageOverview | typeof poolPersonalUsageOverview,
+ ) =>
+   Effect.gen(function* () {
+     const current = yield* authorize;
+@@ -90,7 +92,7 @@ export const poolAppUsageOverview = <E, R>(
+       );
+     if (payload.version !== current.app.activeVersion)
+       return json({ _tag: "UiDeploymentChanged" }, 409);
+-    const result = yield* poolUsageOverview(current.app.id, payload.input).pipe(
++    const result = yield* read(current.app.id, payload.input).pipe(
+       Effect.provideService(CurrentOrganization, current.access),
+       Effect.provideService(CurrentUserId, current.access.userId),
+       Effect.provideService(CurrentAuthorization, fullAuthority),
+@@ -105,3 +107,10 @@ export const poolAppUsageOverview = <E, R>(
+       return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
+     }),
+   );
++
++export const poolAppUsageOverview = <E, R>(
++  authorize: Parameters<typeof appUsageOverview<E, R>>[0],
++) => appUsageOverview(authorize, poolUsageOverview);
++export const poolAppPersonalUsageOverview = <E, R>(
++  authorize: Parameters<typeof appUsageOverview<E, R>>[0],
++) => appUsageOverview(authorize, poolPersonalUsageOverview);
+diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+index 0aced1f18..1d3ab53b7 100644
+--- a/apps/hosted/server/src/implementation/pool-usage-overview.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+@@ -1,8 +1,4 @@
+-import {
+-  AppId,
+-  StorageError,
+-  identifyProvider,
+-} from "@executor-js/sdk/core";
++import { AppId, StorageError, identifyProvider } from "@executor-js/sdk/core";
+ import { Crypto, Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { providerDeclaration } from "apps/host";
+@@ -48,9 +44,11 @@ const providerOfferings = Effect.gen(function* () {
+       }));
+     }),
+   );
+-  const candidates = declared.flat().sort(
+-    (left, right) => left.lab.localeCompare(right.lab) || left.method.localeCompare(right.method),
+-  );
++  const candidates = declared
++    .flat()
++    .sort(
++      (left, right) => left.lab.localeCompare(right.lab) || left.method.localeCompare(right.method),
++    );
+   const byBinding = new Map<string, Set<PoolOverviewOffering>>();
+   for (const entry of candidates) {
+     const key = JSON.stringify([entry.provider, entry.method]);
+@@ -71,49 +69,35 @@ const providerOfferings = Effect.gen(function* () {
+   );
+ });
+ 
+-/** Construct and validate the host-only identity authority for one signed overview read. */
+-export const poolOverviewSignedInput = (pool: Pool, input: PoolOverviewInput) =>
++/** Account classification stays behind the existing per-account inspection checks. */
++const accountOfferings = (pool: Pick<Pool, "pool" | "organization">) =>
+   Effect.gen(function* () {
+-    const users = [...new Set(pool.users)].sort();
+-    if (users.length > 500) return yield* new StorageError();
+     const sql = yield* policyDatabase;
+-    const rows =
+-      users.length === 0
+-        ? []
+-        : yield* sql`select m."userId" as "user", coalesce(u.name, '') as "displayName"
+-            from member m join "user" u on u.id = m."userId"
+-            where m."organizationId" = ${pool.organization}
+-              and ${sql.in("m.userId", users)}
+-            order by m."userId"`;
+-    const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
+-    const members = yield* Effect.forEach(people, (person) =>
+-      Effect.tryPromise(() => digest(person.user)).pipe(
+-        Effect.mapError(() => new StorageError()),
+-        Effect.map((personHash) => ({
+-          person: personHash,
+-          displayName: person.displayName,
+-          active: true as const,
+-        })),
+-      ),
+-    );
+-
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const membership = yield* nativePoolMembership(pool.organization, pool.pool, executor).pipe(
+       Effect.provideService(SqlClient.SqlClient, sql),
+     );
+     const history = yield* usageSeriesAccounts(pool, undefined);
+-    const bindingByAccount = new Map<string, { readonly provider: string; readonly method: string }>();
++    const bindingByAccount = new Map<
++      string,
++      { readonly provider: string; readonly method: string }
++    >();
+     const conflictingBindings = new Set<string>();
+     for (const account of membership.accounts) {
+       const previous = bindingByAccount.get(account.account);
+       if (previous === undefined) {
+-        bindingByAccount.set(account.account, { provider: account.provider, method: account.method });
++        bindingByAccount.set(account.account, {
++          provider: account.provider,
++          method: account.method,
++        });
+       } else if (previous.provider !== account.provider || previous.method !== account.method) {
+         conflictingBindings.add(account.account);
+       }
+     }
+     const nativeAccounts = new Set(bindingByAccount.keys());
+-    const namedAccounts = history.flatMap((entry) => entry.account === null ? [] : [entry.account]);
++    const namedAccounts = history.flatMap((entry) =>
++      entry.account === null ? [] : [entry.account],
++    );
+     const mappingProven =
+       membership.native &&
+       conflictingBindings.size === 0 &&
+@@ -124,14 +108,64 @@ export const poolOverviewSignedInput = (pool: Pool, input: PoolOverviewInput) =>
+     const accounts = history.map((entry) => {
+       if (entry.account === null) return { ...entry, offering: "unknown" as const };
+       const binding = bindingByAccount.get(entry.account);
+-      const key = binding === undefined ? undefined : JSON.stringify([binding.provider, binding.method]);
++      const key =
++        binding === undefined ? undefined : JSON.stringify([binding.provider, binding.method]);
+       const offering =
+         binding === undefined || conflictingBindings.has(entry.account) || key === undefined
+           ? "unknown"
+-          : offerings.get(key) ?? "unknown";
++          : (offerings.get(key) ?? "unknown");
+       return { ...entry, offering };
+     });
+ 
++    return { accounts, mappingProven };
++  });
++
++/** Personal estimates receive only inspected opaque references and explicit billing kinds. */
++export const poolPersonalOverviewOfferings = (pool: Pick<Pool, "pool" | "organization">) =>
++  Effect.gen(function* () {
++    const { accounts } = yield* accountOfferings(pool);
++    const byHistory = new Map<string, PoolOverviewOffering>();
++    for (const account of accounts) {
++      if (account.account === null) continue;
++      for (const history of account.history) {
++        const prior = byHistory.get(history);
++        byHistory.set(
++          history,
++          prior === undefined || prior === account.offering ? account.offering : "unknown",
++        );
++      }
++    }
++    return [...byHistory].map(([history, offering]) => ({ history, offering }));
++  });
++
++/** Construct and validate the host-only identity authority for one signed overview read. */
++export const poolOverviewSignedInput = (pool: Pool, input: PoolOverviewInput) =>
++  Effect.gen(function* () {
++    const users = [...new Set(pool.users)].sort();
++    if (users.length > 500) return yield* new StorageError();
++    const sql = yield* policyDatabase;
++    const rows =
++      users.length === 0
++        ? []
++        : yield* sql`select m."userId" as "user", coalesce(u.name, '') as "displayName"
++            from member m join "user" u on u.id = m."userId"
++            where m."organizationId" = ${pool.organization}
++              and ${sql.in("m.userId", users)}
++            order by m."userId"`;
++    const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
++    const members = yield* Effect.forEach(people, (person) =>
++      Effect.tryPromise(() => digest(person.user)).pipe(
++        Effect.mapError(() => new StorageError()),
++        Effect.map((personHash) => ({
++          person: personHash,
++          displayName: person.displayName,
++          active: true as const,
++        })),
++      ),
++    );
++
++    const { accounts, mappingProven } = yield* accountOfferings(pool);
++
+     return yield* Schema.decodeUnknownEffect(PoolOverviewSignedInput)({
+       ...input,
+       pool: pool.pool,
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 3007bdc13..a93b3c704 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -22,7 +22,7 @@ import {
+ } from "../contracts/pool-usage-series.ts";
+ import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
+ import type { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+-import { poolOverviewSignedInput } from "./pool-usage-overview.ts";
++import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-usage-overview.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ 
+ const Pool = Schema.Struct({
+@@ -46,7 +46,13 @@ const backend = Effect.gen(function* () {
+ }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+ const send = <A>(
+-  action: "managed-usage" | "managed-cap" | "poolUsageSeries" | "lastSuccessAt" | "poolOverview",
++  action:
++    | "managed-usage"
++    | "managed-cap"
++    | "poolUsageSeries"
++    | "lastSuccessAt"
++    | "poolOverview"
++    | "poolPersonalOverview",
+   payload: Record<string, unknown>,
+   responseSchema: Schema.ConstraintDecoder<A, never>,
+ ) =>
+@@ -61,13 +67,17 @@ const send = <A>(
+       }),
+     );
+     const client = yield* HttpClient.HttpClient;
+-    // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++    // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+     const path =
+       action === "poolUsageSeries"
+         ? "/pool/v1/usage/series"
+         : action === "lastSuccessAt"
+           ? "/pool/v1/usage/last-success"
+-          : `/__setup/v1/${action}`;
++          : action === "poolOverview"
++            ? "/pool/v1/usage/overview"
++            : action === "poolPersonalOverview"
++              ? "/pool/v1/usage/personal-overview"
++              : `/__setup/v1/${action}`;
+     const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+@@ -298,6 +308,51 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
+     }),
+   );
+ 
++/** Personal reads require current use permission, without manager or account authority. */
++export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput) =>
++  Effect.gen(function* () {
++    const sql = yield* policyDatabase;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        yield* requireAppAccessAs(actor, app, "use");
++        const person = yield* Effect.tryPromise(async () => {
++          const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(actor.user));
++          return Array.from(new Uint8Array(bytes), (byte) =>
++            byte.toString(16).padStart(2, "0"),
++          ).join("");
++        }).pipe(Effect.mapError(() => new StorageError()));
++        const offerings = yield* poolPersonalOverviewOfferings({
++          pool: app,
++          organization: actor.organization,
++        });
++        return yield* send(
++          "poolPersonalOverview",
++          {
++            pool: app,
++            organization: actor.organization,
++            user: actor.user,
++            input: {
++              pool: app,
++              person,
++              from: input.from,
++              to: input.to,
++              days: input.days,
++              offerings,
++            },
++          },
++          Schema.Unknown,
++        );
++      }),
++    );
++  }).pipe(
++    trackedUsageRead,
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
++
+ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+   handlers
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+index 65002c3a7..7209da137 100644
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -1,26 +1,71 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import { Clock, Effect, Layer, Ref, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+-import { createHmac, timingSafeEqual } from "node:crypto";
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer } from "node:http";
+ 
++const NativeAuthority = Schema.Struct({
++  canManage: Schema.Literal(true),
++  accounts: Schema.Array(Schema.Unknown),
++});
++const PoolOverviewDirectory = Schema.Struct({
++  members: Schema.Array(
++    Schema.Struct({
++      person: Schema.String,
++      displayName: Schema.String,
++      active: Schema.Boolean,
++    }),
++  ).check(Schema.isMaxLength(500)),
++  activeCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  totalCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++});
++const PoolOverviewInput = Schema.Struct({
++  from: Schema.NonEmptyString,
++  to: Schema.NonEmptyString,
++  days: Schema.Literals([7, 30]),
++  directory: PoolOverviewDirectory,
++});
++const PoolOverviewAssertion = Schema.Struct({
++  authority: Schema.Struct({
++    canManage: Schema.Literal(true),
++    accounts: Schema.Array(Schema.Unknown),
++    mappingProven: Schema.Boolean,
++  }),
++});
++const PersonalOverviewInput = Schema.Struct({
++  pool: Schema.String,
++  person: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++  from: Schema.NonEmptyString,
++  to: Schema.NonEmptyString,
++  days: Schema.Literals([7, 30]),
++  offerings: Schema.Array(
++    Schema.Struct({
++      history: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++      offering: Schema.Literals(["subscription", "metered_api", "prepaid", "other", "unknown"]),
++    }),
++  ).check(Schema.isMaxLength(16000)),
++});
+ const Assertion = Schema.Struct({
+-  action: Schema.Literals(["poolUsageSeries", "lastSuccessAt"]),
++  action: Schema.Literals([
++    "poolUsageSeries",
++    "lastSuccessAt",
++    "poolOverview",
++    "poolPersonalOverview",
++  ]),
+   pool: Schema.String,
+   organization: Schema.String,
+   user: Schema.String,
+   expiresAt: Schema.Number,
+   input: Schema.Unknown,
+-  authority: Schema.Struct({
+-    canManage: Schema.Literal(true),
+-    accounts: Schema.Array(Schema.Unknown),
+-  }),
++  authority: Schema.optionalKey(NativeAuthority),
+ });
+ 
+-// Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++// Public paths are shared by the signed native series, last-success and overview reads.
+ const assertionPaths = {
+   poolUsageSeries: "/pool/v1/usage/series",
+   lastSuccessAt: "/pool/v1/usage/last-success",
++  poolOverview: "/pool/v1/usage/overview",
++  poolPersonalOverview: "/pool/v1/usage/personal-overview",
+ } as const;
+ 
+ /** The hosted server is real; this loopback peer implements only the external pool protocol. */
+@@ -49,16 +94,148 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+       Buffer.from(encoded, "base64url").toString(),
+     );
+     const now = yield* Clock.currentTimeMillis;
++    const personal =
++      assertion.action === "poolPersonalOverview"
++        ? yield* Schema.decodeUnknownEffect(PersonalOverviewInput)(assertion.input).pipe(
++            Effect.catch(() => Effect.succeed(undefined)),
++          )
++        : undefined;
++    if (
++      assertion.action === "poolPersonalOverview" &&
++      (personal === undefined ||
++        personal.pool !== assertion.pool ||
++        personal.person !== createHash("sha256").update(assertion.user).digest("hex") ||
++        assertion.authority !== undefined)
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    const authority =
++      assertion.action === "poolOverview"
++        ? yield* Schema.decodeUnknownEffect(PoolOverviewAssertion)(assertion.input).pipe(
++            Effect.map((value) => value.authority),
++            Effect.catch(() => Effect.succeed(undefined)),
++          )
++        : assertion.authority;
++    if (assertion.action !== "poolPersonalOverview" && authority === undefined)
++      return HttpServerResponse.empty({ status: 401 });
+     if (
+       assertion.expiresAt <= now ||
+       assertion.expiresAt > now + 30_000 ||
+-      !request.url.endsWith(assertionPaths[assertion.action])
++      new URL(request.url, "http://localhost").pathname !== assertionPaths[assertion.action]
+     )
+       return HttpServerResponse.empty({ status: 401 });
+     yield* Ref.update(calls, (values) => [...values, assertion]);
+     const respond = yield* Ref.get(responder);
+     if (respond !== undefined) return HttpServerResponse.jsonUnsafe(respond(assertion));
++    if (personal !== undefined)
++      return HttpServerResponse.jsonUnsafe({
++        from: personal.from,
++        to: personal.to,
++        asOf: null,
++        person: personal.person,
++        partial: true,
++        reason: "The loopback fixture has no retained personal overview data.",
++      });
+     const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
++    if (assertion.action === "poolOverview") {
++      const input = yield* Schema.decodeUnknownEffect(PoolOverviewInput)(assertion.input);
++      const unavailable = {
++        status: "unavailable",
++        reason: "The loopback fixture has no retained overview data.",
++      };
++      const series = {
++        from: input.from,
++        to: input.to,
++        bucket: "day",
++        asOf: null,
++        coverage: {
++          sources: [],
++          firstAt: null,
++          lastAt: null,
++          capturedThrough: null,
++          mapping: {
++            current: true,
++            historicalGenerations: "unknown",
++            proof: "unavailable",
++            mapped: 0,
++            unmapped: 0,
++            otherAccounts: 0,
++          },
++          pricing: {
++            homeCharge: 0,
++            importedApiPrice: 0,
++            unpriced: 0,
++            missing: 0,
++            missingSnapshot: 0,
++            missingVersion: 0,
++            apiEquivalent: unavailable,
++          },
++          priceProjection: unavailable,
++          percentiles: unavailable,
++          seasonalTrainingRange: unavailable,
++        },
++        groups: [],
++        next: null,
++      };
++      return HttpServerResponse.jsonUnsafe({
++        from: input.from,
++        to: input.to,
++        asOf: null,
++        homeCapture: { capturedAt: null, completeHours: [] },
++        consistency: "consistent",
++        directory: input.directory,
++        people: series,
++        models: series,
++        requestsByHour: [],
++        metrics: {
++          requestTokens: {
++            status: "unavailable",
++            reason: unavailable.reason,
++            percentiles: null,
++            requests: 0,
++            excluded: { missing: 0, unknownKind: 0 },
++            byPerson: [],
++            byModel: [],
++            byModelPerson: [],
++          },
++          apiBilled: {
++            status: "unavailable",
++            reason: unavailable.reason,
++            amount: null,
++            currency: "USD",
++            pricedRequests: 0,
++            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 },
++            price: null,
++          },
++          subscriptionValue: {
++            status: "unavailable",
++            reason: unavailable.reason,
++            amount: null,
++            currency: "USD",
++            pricedRequests: 0,
++            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 },
++            price: null,
++          },
++          perActivePersonPerDay: {
++            status: "unavailable",
++            reason: unavailable.reason,
++            p50: null,
++            p90: null,
++            currency: "USD",
++            activePeople: 0,
++            completeDays: 0,
++          },
++          failureShareWorstHourP95: {
++            status: "unavailable",
++            reason: unavailable.reason,
++            p95: null,
++            unit: "percent",
++            hours: 0,
++          },
++          usageSlices: [],
++        },
++        partial: true,
++      });
++    }
+     if (assertion.action === "lastSuccessAt")
+       return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
+     const unavailable = {
+@@ -149,9 +326,11 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+-        // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++        // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
++        HttpRouter.add("POST", "/pool/v1/usage/overview", handler),
++        HttpRouter.add("POST", "/pool/v1/usage/personal-overview", handler),
+       ),
+       { disableLogger: true, disableListenLog: true },
+     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 1849e8a6e..46a0c9225 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8889,6 +8889,7 @@ export const scenarios = plan({
+   poolUsageSeries: {
+     fixtures: "actors",
+     legacyStorage: true,
++    appOrigin: true,
+     file: "pool-usage-series.spec.ts",
+     title: "poolUsageSeries is manager-only and preserves one bounded decimal usage read",
+     targets: {
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+index b30cd5144..05b6f5d5d 100644
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -1,11 +1,15 @@
++import { createHash } from "node:crypto";
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+ import { Actors } from "../support/actors.ts";
+-import { Api, body } from "../support/api.ts";
++import { Api, body, type Session } from "../support/api.ts";
+ import { App } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { appOriginHttpClient } from "../support/app-origin-tls.ts";
+ import { withHostedHttpCase } from "../support/case.ts";
+-import { RuntimeLive } from "../support/platform.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
+ import { serverControl } from "../support/server-control.ts";
+@@ -13,6 +17,25 @@ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import {defineApp,query,object,router} from "apps";
+ export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++const AppDeployment = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
++const Viewer = Schema.Struct({ userId: Schema.String });
++const UiLocation = Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String });
++const PersonalInput = Schema.Struct({
++  pool: Schema.String,
++  person: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++  from: Schema.String,
++  to: Schema.String,
++  days: Schema.Literals([7, 30]),
++  offerings: Schema.Array(
++    Schema.Struct({
++      history: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++      offering: Schema.Literals(["subscription", "metered_api", "prepaid", "other", "unknown"]),
++    }),
++  ),
++});
++const PersonalReply = Schema.Struct({ person: Schema.String });
++const personHash = (userId: string) => createHash("sha256").update(userId).digest("hex");
++
+ const Series = Schema.Struct({
+   from: Schema.String,
+   to: Schema.String,
+@@ -57,9 +80,13 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+         const app = yield* api
+           .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+             name: "Usage series pool",
+-            files: [{ path: "index.ts", content: source }, appsManifest],
++            files: [
++              { path: "index.ts", content: source },
++              { path: "ui/index.html", content: "<!doctype html><title>Pool</title><p>Pool</p>" },
++              appsManifest,
++            ],
+           })
+-          .pipe(Effect.flatMap((response) => body(App, response)));
++          .pipe(Effect.flatMap((response) => body(AppDeployment, response)));
+         const accessPath = `${prefix}/apps/${app.id}/access`;
+         const access = yield* api
+           .request(actors.owner, "GET", accessPath)
+@@ -159,6 +186,205 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+             accounts: Array(501).fill("acc_11111111-1111-4111-8111-111111111111"),
+           })).status,
+         ).toBe(400);
++        const target = yield* Target;
++        const appOriginClient =
++          target.tlsCertificate === undefined
++            ? yield* HttpClient.HttpClient
++            : yield* appOriginHttpClient(target.tlsCertificate);
++        const sendAppRequest = (request: HttpClientRequest.HttpClientRequest) =>
++          Effect.scoped(
++            appOriginClient.execute(request).pipe(
++              Effect.flatMap((response) =>
++                response.text.pipe(
++                  Effect.map((text) => ({
++                    status: response.status,
++                    location: response.headers.location,
++                    cookies: response.cookies,
++                    text,
++                  })),
++                ),
++              ),
++            ),
++          ).pipe(
++            Effect.provideService(HttpClient.TracerPropagationEnabled, false),
++            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
++          );
++        const openAppSession = (actor: Session) =>
++          Effect.gen(function* () {
++            const location = yield* api
++              .request(actor, "GET", prefix + "/apps/" + app.id + "/ui")
++              .pipe(Effect.flatMap((response) => body(UiLocation, response)));
++            const appOrigin = new URL(location.url).origin;
++            const dashboard = targetHosts(target).browser;
++            const dashboardCookies = Redacted.value(yield* actor.cookies)
++              .map(({ name, value }) => name + "=" + value)
++              .join("; ");
++            const appCookies = new Map<string, string>();
++            let url = location.url;
++            let opened = false;
++            for (let redirects = 0; redirects < 6; redirects += 1) {
++              const origin = new URL(url).origin;
++              expect([appOrigin, dashboard]).toContain(origin);
++              const cookie =
++                origin === dashboard
++                  ? dashboardCookies
++                  : [...appCookies].map(([name, value]) => name + "=" + value).join("; ");
++              const response = yield* sendAppRequest(
++                HttpClientRequest.get(url).pipe(
++                  HttpClientRequest.setHeaders({
++                    accept: "text/html",
++                    "sec-fetch-mode": "navigate",
++                    cookie,
++                  }),
++                ),
++              );
++              if (origin === appOrigin)
++                for (const value of Object.values(response.cookies.cookies))
++                  appCookies.set(value.name, value.valueEncoded);
++              if (origin === appOrigin && response.status === 200) {
++                opened = true;
++                break;
++              }
++              expect(response.status).toBe(302);
++              expect(response.location).toBeDefined();
++              url = new URL(response.location!, url).href;
++            }
++            expect(opened).toBe(true);
++            return { origin: appOrigin, cookies: appCookies };
++          });
++        const postApp = (
++          session: { readonly origin: string; readonly cookies: Map<string, string> },
++          path: string,
++          payload: unknown,
++        ) =>
++          HttpClientRequest.post(session.origin + path).pipe(
++            HttpClientRequest.setHeaders({
++              origin: session.origin,
++              "sec-fetch-site": "same-origin",
++              cookie: [...session.cookies].map(([name, value]) => name + "=" + value).join("; "),
++            }),
++            HttpClientRequest.bodyJson(payload),
++            Effect.flatMap(sendAppRequest),
++          );
++
++        const ownerIdentity = viewer.userId;
++        const memberIdentity = yield* api
++          .request(actors.member, "GET", "/api/viewer")
++          .pipe(Effect.flatMap((response) => body(Viewer, response)));
++        const ownerPerson = personHash(ownerIdentity);
++        const memberPerson = personHash(memberIdentity.userId);
++        expect(memberPerson).not.toBe(ownerPerson);
++        yield* backend.respond((assertion) => {
++          if (assertion.action !== "poolPersonalOverview") return {};
++          return {
++            person: Schema.decodeUnknownSync(PersonalInput)(assertion.input).person,
++          };
++        });
++        const memberApp = yield* openAppSession(actors.member);
++        const ownerApp = yield* openAppSession(actors.owner);
++        const personalPath = "/_executor/api/pool-usage/personal-overview";
++        const managerPath = "/_executor/api/pool-usage/overview";
++        const range = {
++          from: "2026-01-01T00:00:00Z",
++          to: "2026-01-08T00:00:00Z",
++          days: 7 as const,
++        };
++        const attack = (spoofedPerson: string) => ({
++          version: app.activeVersion,
++          person: spoofedPerson,
++          pool: "spoofed-pool",
++          input: {
++            ...range,
++            person: spoofedPerson,
++            pool: "spoofed-pool",
++            offerings: [{ history: "f".repeat(64), offering: "subscription" }],
++            authority: { canManage: true },
++            directory: { members: [] },
++          },
++        });
++
++        const memberResponse = yield* postApp(memberApp, personalPath, attack(ownerIdentity));
++        expect(memberResponse.status).toBe(200);
++        expect(
++          yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PersonalReply))(
++            memberResponse.text,
++          ),
++        ).toEqual({ person: memberPerson });
++        const ownerResponse = yield* postApp(ownerApp, personalPath, attack(memberIdentity.userId));
++        expect(ownerResponse.status).toBe(200);
++        expect(
++          yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PersonalReply))(
++            ownerResponse.text,
++          ),
++        ).toEqual({ person: ownerPerson });
++
++        const personalCalls = (yield* backend.calls).filter(
++          (call) => call.action === "poolPersonalOverview",
++        );
++        expect(personalCalls).toHaveLength(2);
++        const memberCall = personalCalls[0]!;
++        const ownerCall = personalCalls[1]!;
++        const memberInput = yield* Schema.decodeUnknownEffect(
++          Schema.Record(Schema.String, Schema.Unknown),
++        )(memberCall.input);
++        const ownerInput = yield* Schema.decodeUnknownEffect(
++          Schema.Record(Schema.String, Schema.Unknown),
++        )(ownerCall.input);
++        expect(memberInput).toEqual({
++          pool: app.id,
++          person: memberPerson,
++          from: range.from,
++          to: range.to,
++          days: range.days,
++          offerings: [],
++        });
++        expect(ownerInput).toEqual({
++          pool: app.id,
++          person: ownerPerson,
++          from: range.from,
++          to: range.to,
++          days: range.days,
++          offerings: [],
++        });
++        expect(Object.keys(memberInput).sort()).toEqual([
++          "days",
++          "from",
++          "offerings",
++          "person",
++          "pool",
++          "to",
++        ]);
++        for (const call of personalCalls) {
++          const envelope = yield* Schema.decodeUnknownEffect(
++            Schema.Record(Schema.String, Schema.Unknown),
++          )(call);
++          expect(
++            Object.keys(envelope).filter((key) =>
++              ["authority", "directory", "accounts"].includes(key),
++            ),
++          ).toEqual([]);
++        }
++
++        const beforeRejected = (yield* backend.calls).length;
++        const stale = yield* postApp(memberApp, personalPath, {
++          ...attack(ownerIdentity),
++          version: "dpl_stale",
++        });
++        expect(stale.status).toBe(409);
++        expect((yield* backend.calls).length).toBe(beforeRejected);
++        const anonymous = yield* postApp(
++          { origin: memberApp.origin, cookies: new Map<string, string>() },
++          personalPath,
++          attack(ownerIdentity),
++        );
++        expect(anonymous.status).toBe(401);
++        expect((yield* backend.calls).length).toBe(beforeRejected);
++        const managerOverview = yield* postApp(memberApp, managerPath, {
++          version: app.activeVersion,
++          input: range,
++        });
++        expect(managerOverview.status).toBe(403);
++        expect((yield* backend.calls).length).toBe(beforeRejected);
+       }),
+     ),
+   );
