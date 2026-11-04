@@ -264,7 +264,7 @@ model {
         libraries "socket|http.client"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight formatter error records captured before count projection, projected onto fixed words from pinned Home and standard-library error literals, fixed punctuation and placeholders before retention, bounded to 512 bytes each without partial tokens; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight formatter error records captured before count projection, matched against fixed pinned Home message templates with whole dynamic error slots replaced by one of eleven priority-ordered labels and listen addresses replaced by a constant; unmatched records retain only level and unrecognized; coordinator accepts a bounded classifier channel of at most about 4 bits per record, 8 records; records are at most 512 bytes; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"

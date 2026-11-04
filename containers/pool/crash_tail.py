@@ -1,123 +1,114 @@
-"""Project bounded Home error records onto a fixed diagnostic vocabulary."""
+"""Retain fixed Home error templates and one bounded diagnostic class."""
 
 from __future__ import annotations
 
+import re
 import threading
 from collections import deque
 
-from .child_signals import HOME_INIT_FAILURE_PREFIXES, HOME_LOG_LINE
+from .child_signals import HOME_LOG_LINE
 
 
 MAX_TAIL_LINES = 8
 MAX_LINE_BYTES = 512
 MAX_INPUT_CHARS = 8192
 LEVEL_PREFIXES = {"error": "error: ", "fatal": "fatal: ", "panic": "panic: "}
-PUNCTUATION = ("", ":", ",", ";", ".")
-UNKNOWN_TOKENS = {suffix: "<v>" + suffix for suffix in PUNCTUATION}
 
-# A subset of literals at Home eca75d6: cmd/home/main.go and
-# internal/cluster/{home_incarnation,coordinator,events,database_snapshot,management/auth}.go.
-HOME_ERROR_PHRASES = (
-    "http server error",
-    "listener accept error",
-    "cluster coordinator error",
-    "cluster event watcher error",
-    "Home incarnation is fenced",
-    "Home incarnation is not active",
-    "Home incarnation not found",
-    "cluster election found no live nodes",
-    "cluster coordinator is not initialized",
-    "cluster event watcher repository is nil",
-    "credential id cannot change",
-    "credential provider cannot change",
-    "decode database snapshot manifest",
+# Exact log.Errorf templates in cmd/home/main.go at Home eca75d6.
+ERROR_TEMPLATES = (
+    "only one of -import, -export, -db-import, or -db-export can be used",
+    "failed to validate database snapshot: %v",
+    "failed to load cluster config: %v",
+    "failed to validate database snapshot for target backend: %v",
+    "failed to open database: %v",
+    "failed to get sql db: %v",
+    "failed to import database snapshot: %v",
+    "failed to migrate database: %v",
+    "failed to export database snapshot: %v",
+    "failed to initialize lifecycle configuration: %v",
+    "failed to import local state: %v",
+    "failed to export local state: %v",
+    "failed to load database config snapshot: %v",
+    "database config is empty; run with -import first",
+    "failed to load database runtime config: %v",
+    "failed to init runtime: %v",
+    "failed to init runtime",
+    "failed to resolve database node ip: %v",
+    "failed to init runtime certificates: %v",
+    "failed to resolve listen address: %v",
+    "failed to resolve cluster advertised port: %v",
+    "failed to resolve database node port: listen port must be greater than 0",
+    "failed to init cluster runtime adapter",
+    "failed to start runtime: %v",
+    "failed to apply in-flight observation config: %v",
+    "failed to init management http: %v",
+    "failed to initialize cluster coordinator: %v",
+    "failed to listen on %s: %v",
+    "failed to start HTTPS server: tls.cert or tls.key is empty",
+    "failed to start HTTPS server: %v",
+    "http server error: %v",
+    "listener accept error: %v",
+    "cluster coordinator error: %v",
+    "cluster event watcher error: %v",
 )
 
-# Go stdlib diagnostic literals: syscall/zerrors_linux_amd64.go,
-# internal/poll/fd.go, io/io.go, context/context.go, encoding/json,
-# crypto/{tls,x509} and net's operation names. No formatted values are included.
-GO_ERROR_PHRASES = (
-    "permission denied",
-    "no such file or directory",
-    "address already in use",
-    "connection refused",
-    "connection reset by peer",
-    "broken pipe",
-    "network is unreachable",
-    "i/o timeout",
-    "use of closed network connection",
-    "context canceled",
-    "context deadline exceeded",
-    "EOF unexpected EOF",
-    "invalid character looking for beginning of value",
-    "unexpected end of JSON input",
-    "json: cannot unmarshal into Go struct field of type",
-    "x509: certificate signed by unknown authority",
-    "x509: certificate has expired or is not yet valid",
-    "x509: certificate is valid for not",
-    "tls: handshake failure",
-    "tls: bad certificate",
-    "tls: internal error",
-    "tls: first record does not look like a TLS handshake",
-    "dial tcp udp unix connect read write open stat lstat mkdir rename remove listen accept lookup",
+# First match wins. Error text can choose one of these labels, never input text.
+ERROR_CLASSES = (
+    ("fenced_or_retired", ("fenced", "retired", "home incarnation is not active", "home incarnation not found")),
+    ("context_canceled", ("context canceled", "context cancelled")),
+    ("deadline_exceeded", ("deadline exceeded", "i/o timeout", "timed out")),
+    ("conn_refused", ("connection refused",)),
+    ("eof", ("eof",)),
+    ("tls", ("tls", "x509", "certificate")),
+    ("dns", ("no such host", "name resolution", "server misbehaving")),
+    ("permission_denied", ("permission denied", "operation not permitted")),
+    ("no_such_file", ("no such file or directory", "file does not exist")),
+    ("sql", ("sqlstate", "sql:", "pq:", "postgres", "database is locked", "database is closed")),
 )
 
-_words = frozenset(
-    word.rstrip(":,;.")
-    for phrase in (
-        *HOME_ERROR_PHRASES,
-        *GO_ERROR_PHRASES,
-        *(phrase for phrases in HOME_INIT_FAILURE_PREFIXES.values() for phrase in phrases),
-    )
-    for word in phrase.split()
+# A formatted template wins if a fixed record also fits its dynamic slot.
+TEMPLATE_PATTERNS = tuple(
+    (template, re.compile(re.escape(template).replace("%v", "(?P<error>.*)").replace("%s", ".*")))
+    for template in sorted(ERROR_TEMPLATES, key=lambda value: "%v" not in value)
 )
-ERROR_TOKENS = {word + suffix: word + suffix for word in _words for suffix in PUNCTUATION}
 
 
-def project_error(message: str, prefix: str) -> str | None:
-    tokens = []
-    size = len(prefix)
-    known = False
-    for token in message.split():
-        approved = ERROR_TOKENS.get(token)
-        safe = approved if approved is not None else UNKNOWN_TOKENS.get(token[-1], "<v>")
-        if tokens and safe == tokens[-1] and safe.startswith("<v>"):
+def classify_error(value: str) -> str:
+    folded = value.casefold()
+    for label, needles in ERROR_CLASSES:
+        if any(needle in folded for needle in needles):
+            return label
+    return "other"
+
+
+def project_error(message: str, prefix: str) -> str:
+    for template, pattern in TEMPLATE_PATTERNS:
+        match = pattern.fullmatch(message)
+        if match is None:
             continue
-        next_size = size + len(safe) + bool(tokens)
-        if next_size > MAX_LINE_BYTES:
-            break
-        tokens.append(safe)
-        size = next_size
-        known = known or approved is not None
-    return prefix + " ".join(tokens) if known else None
+        label = classify_error(match["error"]) if "%v" in template else "other"
+        # The listen-address %s is always constant; only the error class varies.
+        return prefix + template.replace("%s", "redacted").replace("%v", label)
+    return prefix + "unrecognized"
 
 
 class HomeCrashTail:
     def __init__(self) -> None:
         self._lines: deque[str] = deque(maxlen=MAX_TAIL_LINES)
         self._lock = threading.Lock()
-        self._private_key = False
 
     def append(self, line: str) -> None:
+        if len(line) >= MAX_INPUT_CHARS:
+            return
+        match = HOME_LOG_LINE.fullmatch(line.strip())
+        if match is None:
+            return
+        prefix = LEVEL_PREFIXES.get(match["level"])
+        if prefix is None:
+            return
+        record = project_error(match["message"], prefix)
         with self._lock:
-            if "-----BEGIN " in line:
-                self._private_key = True
-                return
-            if self._private_key:
-                if "-----END " in line:
-                    self._private_key = False
-                return
-            if len(line) >= MAX_INPUT_CHARS:
-                return
-            match = HOME_LOG_LINE.fullmatch(line.strip())
-            if match is None:
-                return
-            prefix = LEVEL_PREFIXES.get(match["level"])
-            if prefix is None:
-                return
-            record = project_error(match["message"], prefix)
-            if record is not None:
-                self._lines.append(record)
+            self._lines.append(record)
 
     def snapshot(self) -> list[str]:
         with self._lock:

@@ -79,7 +79,7 @@ class OutputPrivacyTests(unittest.TestCase):
                 message = "failed to open database: connection refused"
                 snapshot, receipt, stdout, _ = self.home_exit([self.home_log(message)], stream=stream)
                 self.assertIn("POOL_HOME_INIT_FAILURE", stdout)
-                self.assertEqual(snapshot, ["fatal: " + message])
+                self.assertEqual(snapshot, ["fatal: failed to open database: conn_refused"])
                 self.assertEqual(receipt["output_tail"], snapshot)
 
     def test_real_home_child_drops_cookie_nested_and_quoted_credentials(self) -> None:
@@ -104,8 +104,7 @@ class OutputPrivacyTests(unittest.TestCase):
                 for value in ("short-cookie", "short-pass!", "quoted-short-pass!", "backtick-pass!", "curly-quoted-pass!", "curly-single-pass!"):
                     self.assertNotIn(value, json.dumps(snapshot))
                     self.assertNotIn(value, stdout + stderr)
-                projected = ["fatal: credential <v>: <v>"] if payload.startswith("credential ") else []
-                self.assertEqual(snapshot, [*projected, "fatal: " + reason])
+                self.assertEqual(snapshot, ["fatal: unrecognized", "fatal: cluster coordinator error: conn_refused"])
                 self.assertEqual(receipt["output_tail"], snapshot)
 
     def test_real_home_child_redacts_short_known_secret_encodings(self) -> None:
@@ -126,14 +125,18 @@ class OutputPrivacyTests(unittest.TestCase):
                 "".join(f"%{byte:02X}" if index % 2 else f"%{byte:02x}" for index, byte in enumerate(raw)),
             }
             for encoded in forms:
-                with self.subTest(secret=secret, encoded=encoded):
-                    message = "credential decode failed: " + encoded
-                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], secret)
-                    for value in forms:
-                        self.assertNotIn(value, json.dumps(snapshot))
-                        self.assertNotIn(value, stdout + stderr)
-                    self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"])
-                    self.assertEqual(receipt["output_tail"], snapshot)
+                for message, expected in (
+                    ("credential decode failed: " + encoded, "fatal: unrecognized"),
+                    ("failed to init runtime: " + encoded, "fatal: failed to init runtime: other"),
+                ):
+                    with self.subTest(secret=secret, encoded=encoded, message=message):
+                        snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], secret)
+                        for value in forms:
+                            self.assertNotIn(value, json.dumps(snapshot))
+                            self.assertNotIn(value, json.dumps(receipt["output_tail"]))
+                            self.assertNotIn(value, stdout + stderr)
+                        self.assertEqual(snapshot, [expected])
+                        self.assertEqual(receipt["output_tail"], snapshot)
 
     def test_home_error_tail_is_bounded_and_rejects_other_output(self) -> None:
         lines = [self.home_log(f"cluster coordinator error: connection refused {index}") for index in range(20)] + [
@@ -148,7 +151,7 @@ class OutputPrivacyTests(unittest.TestCase):
         ]
         snapshot, receipt, stdout, stderr = self.home_exit(lines)
         self.assertEqual(len(snapshot), 8)
-        self.assertEqual(snapshot[-1], "error: database connection refused")
+        self.assertEqual(snapshot[-1], "error: unrecognized")
         self.assertEqual(receipt["output_tail"], snapshot)
         self.assertEqual(stdout, "")
         for value in ("unformatted output", "informational", "private-key-body", "secret-in-oversized-line"):
@@ -156,22 +159,22 @@ class OutputPrivacyTests(unittest.TestCase):
             self.assertNotIn(value, stderr)
         self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in snapshot))
 
-    def test_real_home_child_bounds_whole_projected_tokens(self) -> None:
+    def test_real_home_child_replaces_entire_large_error_slot(self) -> None:
         message = "failed to start HTTPS server: " + "permission " * 100 + "/run/unknown-secret"
         snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)])
         self.assertEqual(receipt["output_tail"], snapshot)
         self.assertEqual(len(snapshot), 1)
         self.assertLessEqual(len(snapshot[0].encode("utf-8")), 512)
-        self.assertTrue(snapshot[0].endswith(" permission"))
+        self.assertEqual(snapshot, ["fatal: failed to start HTTPS server: other"])
         self.assertNotIn("unknown-secret", json.dumps(snapshot))
         self.assertNotIn("unknown-secret", stdout + stderr)
 
     def test_real_home_child_projects_unknown_colon_values_and_paths(self) -> None:
         cases = [
             ("failed to init runtime: access_token: short-pass!",
-                "fatal: failed to init runtime: <v>: <v>"),
+                "fatal: failed to init runtime: other"),
             ("failed to start HTTPS server: open /run/a!b: permission denied",
-                "fatal: failed to start HTTPS server: open <v>: permission denied"),
+                "fatal: failed to start HTTPS server: permission_denied"),
         ]
         for stream in ("stdout", "stderr"):
             for message, expected in cases:
@@ -198,26 +201,116 @@ class OutputPrivacyTests(unittest.TestCase):
             base64.b64encode(encoded).decode("ascii").rstrip("="),
             " ".join(fragments),
         ]
-        for value in forms:
-            with self.subTest(value=value):
-                snapshot, receipt, stdout, stderr = self.home_exit([
-                    self.home_log("credential decode failed: " + value),
-                ])
-                self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"])
-                self.assertEqual(receipt["output_tail"], snapshot)
-                for fragment in value.split():
-                    self.assertNotIn(fragment, json.dumps(snapshot))
-                    self.assertNotIn(fragment, stdout + stderr)
-        for pieces in (["fix", "ture!"], fragments):
+        for prefix, expected in (
+            ("credential decode failed: ", "fatal: unrecognized"),
+            ("failed to init runtime: ", "fatal: failed to init runtime: other"),
+        ):
+            for value in forms:
+                with self.subTest(value=value, prefix=prefix):
+                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(prefix + value)])
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for fragment in value.split():
+                        self.assertNotIn(fragment, json.dumps(snapshot))
+                        self.assertNotIn(fragment, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(fragment, stdout + stderr)
+            for pieces in (["fix", "ture!"], fragments):
+                with self.subTest(pieces=pieces, prefix=prefix):
+                    snapshot, receipt, stdout, stderr = self.home_exit([
+                        self.home_log(prefix + piece) for piece in pieces
+                    ])
+                    self.assertEqual(snapshot, [expected] * len(pieces))
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for piece in pieces:
+                        self.assertNotIn(piece, json.dumps(snapshot))
+                        self.assertNotIn(piece, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(piece, stdout + stderr)
+
+    def test_real_home_child_removes_dictionary_credentials_from_entire_slots(self) -> None:
+        secret = "open network connection"
+        payloads = [
+            "access_token: " + secret,
+            '{"credentials":{"value":"alpha ' + secret + ' omega"}}',
+            '"alpha ' + secret + ' omega"',
+            r'{\"credentials\":{\"value\":\"alpha ' + secret + r' omega\"}}',
+            "/run/alpha " + secret + " omega: permission denied",
+            "access_token: " + secret + ".,;:",
+        ]
+        for stream in ("stdout", "stderr"):
+            for payload in payloads:
+                with self.subTest(stream=stream, payload=payload):
+                    snapshot, receipt, stdout, stderr = self.home_exit([
+                        self.home_log("failed to init runtime: " + payload)
+                    ], secret, stream)
+                    label = "permission_denied" if "permission denied" in payload else "other"
+                    expected = "fatal: failed to init runtime: " + label
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], [expected])
+                    for value in (secret, "open", "network", "connection", "alpha", "omega"):
+                        self.assertNotIn(value, json.dumps(snapshot))
+                        self.assertNotIn(value, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(value, stdout + stderr)
+
+    def test_real_home_child_removes_split_dictionary_and_punctuation_slots(self) -> None:
+        prefix = "fatal: failed to init runtime: "
+        for pieces in (["open", "connect", "read"], [".", ":", ";", ","], [".,;:"]):
             with self.subTest(pieces=pieces):
-                snapshot, receipt, stdout, stderr = self.home_exit([
-                    self.home_log("credential decode failed: " + piece) for piece in pieces
-                ])
-                self.assertEqual(snapshot, ["fatal: credential decode failed: <v>"] * len(pieces))
+                snapshot, receipt, _, _ = self.home_exit([
+                    self.home_log("failed to init runtime: " + piece) for piece in pieces
+                ], "".join(pieces))
+                self.assertEqual(snapshot, [prefix + "other"] * len(pieces))
                 self.assertEqual(receipt["output_tail"], snapshot)
-                for piece in pieces:
-                    self.assertNotIn(piece, json.dumps(snapshot))
-                    self.assertNotIn(piece, stdout + stderr)
+                for records in (snapshot, receipt["output_tail"]):
+                    slots = [record.removeprefix(prefix) for record in records]
+                    for piece in pieces:
+                        self.assertTrue(all(piece not in slot for slot in slots))
+
+    def test_real_home_child_classifies_entire_slots_with_fixed_priority(self) -> None:
+        cases = [
+            ("retired: connection refused", "fenced_or_retired"),
+            ("context canceled: deadline exceeded", "context_canceled"),
+            ("context deadline exceeded: connection refused", "deadline_exceeded"),
+            ("dial tcp: connection refused", "conn_refused"),
+            ("unexpected EOF", "eof"),
+            ("x509: certificate is not valid", "tls"),
+            ("lookup hidden-host: no such host", "dns"),
+            ("open hidden-file: permission denied", "permission_denied"),
+            ("open hidden-file: no such file or directory", "no_such_file"),
+            ("SQLSTATE 08006: hidden-database", "sql"),
+            ("unclassified hidden-value.,;:", "other"),
+        ]
+        for error, label in cases:
+            with self.subTest(label=label):
+                snapshot, receipt, stdout, stderr = self.home_exit([
+                    self.home_log("cluster event watcher error: " + error, "error")
+                ])
+                expected = ["error: cluster event watcher error: " + label]
+                self.assertEqual(snapshot, expected)
+                self.assertEqual(receipt["output_tail"], expected)
+                for hidden in ("hidden-host", "hidden-file", "hidden-database", "hidden-value"):
+                    self.assertNotIn(hidden, json.dumps(snapshot))
+                    self.assertNotIn(hidden, stdout + stderr)
+
+    def test_real_home_child_matches_templates_and_replaces_listen_address(self) -> None:
+        cases = [
+            ("failed to listen on /run/open network connection: permission denied",
+                "fatal: failed to listen on redacted: permission_denied"),
+            ("failed to start HTTPS server: tls.cert or tls.key is empty",
+                "fatal: failed to start HTTPS server: tls"),
+            ("failed to init runtime", "fatal: failed to init runtime"),
+            ("http server error: unexpected EOF.,;:", "fatal: http server error: eof"),
+            ("listener accept error: context canceled", "fatal: listener accept error: context_canceled"),
+            ("prefix failed to init runtime: connection refused", "fatal: unrecognized"),
+            ("failed to init runtime.", "fatal: unrecognized"),
+            ("credential decode failed: open network connection.,;:", "fatal: unrecognized"),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message):
+                snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)])
+                self.assertEqual(snapshot, [expected])
+                self.assertEqual(receipt["output_tail"], [expected])
+                self.assertNotIn("open network connection", json.dumps(snapshot))
+                self.assertNotIn("open network connection", stdout + stderr)
 
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()
