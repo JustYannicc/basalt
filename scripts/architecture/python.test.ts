@@ -7,7 +7,9 @@ import { pythonDependencies } from "./python.ts";
 import type { Module, OutsideService } from "./source.ts";
 
 const temporary: string[] = [];
-afterEach(() => temporary.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
+afterEach(() =>
+  temporary.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })),
+);
 function fixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "architecture-python-"));
   temporary.push(root);
@@ -17,44 +19,76 @@ function fixture(files: Record<string, string>): string {
   }
   return root;
 }
-const module = (id: string, code: string, libraries: string[] = []): Module => ({ id, code, bindings: [], libraries });
-const api: OutsideService = { id: "api", hosts: ["api.example.invalid", "*.service.example.invalid"], sdks: ["example_sdk"] };
+const module = (id: string, code: string, libraries: string[] = []): Module => ({
+  id,
+  code,
+  bindings: [],
+  libraries,
+});
+const api: OutsideService = {
+  id: "api",
+  hosts: ["api.example.invalid", "*.service.example.invalid"],
+  sdks: ["example_sdk"],
+};
 function scan(text: string, services: OutsideService[] = [], libraries: string[] = []) {
-  return pythonDependencies(fixture({ "src/app.py": text }), [module("app", "src/app.py", libraries)], services);
+  return pythonDependencies(
+    fixture({ "src/app.py": text }),
+    [module("app", "src/app.py", libraries)],
+    services,
+  );
 }
 
 test("all runtime literals and third-party imports need outside-service or library coverage", () => {
-  const result = scan('import unknown_sdk\ndef unused():\n    return "https://unknown.example.invalid/v1"\n');
+  const result = scan(
+    'import unknown_sdk\ndef unused():\n    return "https://unknown.example.invalid/v1"\n',
+  );
   expect(result.errors.join("\n")).toContain("Unmodelled SDK or library: unknown_sdk");
   expect(result.errors.join("\n")).toContain("Unmodelled outside host: unknown.example.invalid");
   expect(scan("import pure_library\nimport json\n", [], ["pure_library"]).errors).toEqual([]);
 });
 
 test("modelled SDKs and URLs produce caller dependencies, including wildcard hosts", () => {
-  const result = scan('from example_sdk.client import Client\nURL = "https://api.example.invalid/v1"\nOTHER = "https://a.service.example.invalid/v1"\n', [api]);
+  const result = scan(
+    'from example_sdk.client import Client\nURL = "https://api.example.invalid/v1"\nOTHER = "https://a.service.example.invalid/v1"\n',
+    [api],
+  );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies).toEqual(expect.arrayContaining([
-    expect.objectContaining({ source: "app", target: "api", evidence: expect.stringContaining("example_sdk.client.Client") }),
-    expect.objectContaining({ source: "app", target: "api", evidence: expect.stringContaining("api.example.invalid") }),
-    expect.objectContaining({ source: "app", target: "api", evidence: expect.stringContaining("a.service.example.invalid") }),
-  ]));
+  expect(result.dependencies).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: "app",
+        target: "api",
+        evidence: expect.stringContaining("example_sdk.client.Client"),
+      }),
+      expect.objectContaining({
+        source: "app",
+        target: "api",
+        evidence: expect.stringContaining("api.example.invalid"),
+      }),
+      expect.objectContaining({
+        source: "app",
+        target: "api",
+        evidence: expect.stringContaining("a.service.example.invalid"),
+      }),
+    ]),
+  );
 });
 
 test.each([
   'import urllib.request as u\nu.urlopen("https://new.example.invalid")',
   'from urllib import request as u\nsend = u.urlopen\nsend("https://new.example.invalid")',
   'from urllib.request import urlopen as send, Request as Req\nr = Req("https://new.example.invalid")\nsend(r)',
-])("urllib aliases retain their actual destination", text => {
+])("urllib aliases retain their actual destination", (text) => {
   expect(scan(text).errors.join("\n")).toContain("Unmodelled outside host: new.example.invalid");
 });
 
 test.each([
   'import os, urllib.request\nurllib.request.urlopen(os.getenv("OUTSIDE"))',
   'from urllib.request import urlopen\nHOST = "http://127.0.0.1"\nurlopen(compute_url())',
-  'from urllib.request import urlopen\nimport os\nurlopen(f"https://{os.getenv(\'HOST\')}/v1")',
-  'from urllib.request import urlopen\ndef send(url):\n    urlopen(url)\nsend(compute_url())',
+  "from urllib.request import urlopen\nimport os\nurlopen(f\"https://{os.getenv('HOST')}/v1\")",
+  "from urllib.request import urlopen\ndef send(url):\n    urlopen(url)\nsend(compute_url())",
   'import urllib.request as u\nu.urlopen("http://127.0.0.1" if choose else compute_url())',
-])("unknown computed URLs fail closed", text => {
+])("unknown computed URLs fail closed", (text) => {
   expect(scan(text).errors.join("\n")).toContain("dynamic or unsupported host");
 });
 
@@ -75,36 +109,52 @@ request_json("http://localhost:8318/ready")
 });
 
 test("one dynamic helper call cannot hide among resolved loopback calls", () => {
-  const result = scan('from urllib.request import urlopen\ndef send(url):\n    urlopen(url)\nsend("http://127.0.0.1/ready")\nsend(unknown())\n');
+  const result = scan(
+    'from urllib.request import urlopen\ndef send(url):\n    urlopen(url)\nsend("http://127.0.0.1/ready")\nsend(unknown())\n',
+  );
   expect(result.errors.join("\n")).toContain("dynamic or unsupported host");
 });
 
 test("absolute and relative own imports produce module edges", () => {
-  const root = fixture({ "src/a.py": "import b\nfrom .b import VALUE\n", "src/b.py": "VALUE = 1\n" });
+  const root = fixture({
+    "src/a.py": "import b\nfrom .b import VALUE\n",
+    "src/b.py": "VALUE = 1\n",
+  });
   const result = pythonDependencies(root, [module("a", "src/a.py"), module("b", "src/b.py")], []);
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(edge => `${edge.source}->${edge.target}`)).toEqual(["a->b", "a->b"]);
+  expect(result.dependencies.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+    "a->b",
+    "a->b",
+  ]);
 });
 
 test("imported own helper arguments are checked at all callers", () => {
   const root = fixture({
     "src/a.py": 'from b import send\nsend("http://127.0.0.1/ready")\nsend(compute_url())\n',
-    "src/b.py": "from urllib.request import urlopen\ndef send(destination):\n    return urlopen(destination)\n",
+    "src/b.py":
+      "from urllib.request import urlopen\ndef send(destination):\n    return urlopen(destination)\n",
   });
   const result = pythonDependencies(root, [module("a", "src/a.py"), module("b", "src/b.py")], []);
   expect(result.errors.join("\n")).toContain("dynamic or unsupported host");
-  expect(result.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ source: "a", target: "b" })]));
+  expect(result.dependencies).toEqual(
+    expect.arrayContaining([expect.objectContaining({ source: "a", target: "b" })]),
+  );
 });
 
 test("build-stage and runtime Python are scanned while tests retain separate ownership", () => {
   const root = fixture({
-    "containers/pool/Dockerfile": "FROM python:3 AS builder\nCOPY fetch.py ./\nFROM python:3\nCOPY run.py tests /app/\n",
+    "containers/pool/Dockerfile":
+      "FROM python:3 AS builder\nCOPY fetch.py ./\nFROM python:3\nCOPY run.py tests /app/\n",
     "containers/pool/fetch.py": 'import unknown_build_sdk\nURL = "https://build.example.invalid"',
     "containers/pool/run.py": 'URL = "https://runtime.example.invalid"',
-    "containers/pool/tests/test_runtime.py": 'import unknown_test_sdk',
+    "containers/pool/tests/test_runtime.py": "import unknown_test_sdk",
     "src/test_runtime.py": "import unknown_test_sdk",
   });
-  const result = pythonDependencies(root, [module("pool", "containers/pool"), module("tests", "src")], []);
+  const result = pythonDependencies(
+    root,
+    [module("pool", "containers/pool"), module("tests", "src")],
+    [],
+  );
   expect(result.errors.join("\n")).toContain("Unmodelled SDK or library: unknown_build_sdk");
   expect(result.errors.join("\n")).toContain("Unmodelled outside host: build.example.invalid");
   expect(result.errors.join("\n")).toContain("Unmodelled outside host: runtime.example.invalid");
@@ -113,13 +163,42 @@ test("build-stage and runtime Python are scanned while tests retain separate own
 
 test("the actual build downloader and pool wrapper require a release service", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "child_signals.py", "runtime_signals.py", "pool_contract.py", "readiness.py", "healthcheck.py", "policy_monitor.py", "__init__.py"].map(file =>
-    [`containers/pool/${file}`, readFileSync(join(root, "containers/pool", file), "utf8")]));
+  const files = Object.fromEntries(
+    [
+      "Dockerfile",
+      "releases.json",
+      "fetch_releases.py",
+      "supervisor.py",
+      "child_signals.py",
+      "crash_tail.py",
+      "runtime_signals.py",
+      "pool_contract.py",
+      "readiness.py",
+      "healthcheck.py",
+      "policy_monitor.py",
+      "__init__.py",
+    ].map((file) => [
+      `containers/pool/${file}`,
+      readFileSync(join(root, "containers/pool", file), "utf8"),
+    ]),
+  );
   const copy = fixture(files);
-  expect(pythonDependencies(copy, [module("pool", "containers/pool", ["socket", "http.client"])], []).errors.join("\n")).toContain("Unmodelled outside host: github.com");
-  const result = pythonDependencies(copy, [module("pool", "containers/pool", ["socket", "http.client"])], [{ id: "releases", hosts: ["github.com"], sdks: [] }]);
+  expect(
+    pythonDependencies(
+      copy,
+      [module("pool", "containers/pool", ["socket", "http.client"])],
+      [],
+    ).errors.join("\n"),
+  ).toContain("Unmodelled outside host: github.com");
+  const result = pythonDependencies(
+    copy,
+    [module("pool", "containers/pool", ["socket", "http.client"])],
+    [{ id: "releases", hosts: ["github.com"], sdks: [] }],
+  );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies).toContainEqual(expect.objectContaining({ source: "pool", target: "releases" }));
+  expect(result.dependencies).toContainEqual(
+    expect.objectContaining({ source: "pool", target: "releases" }),
+  );
 });
 
 test.each([
@@ -132,19 +211,36 @@ test.each([
   'from urllib.request import Request, urlopen\nr = Request("http://127.0.0.1")\nr.full_url = compute_url()\nurlopen(r)',
   'from urllib.request import urlopen\ndef send(url):\n    urlopen(url)\nsend("http://127.0.0.1")\nqueue = [send]\nqueue[0](compute_url())',
   "import http\nhttp.client.HTTPSConnection(unknown_host)",
-])("unsupported Python networking and execution constructs are explicit", text => {
+])("unsupported Python networking and execution constructs are explicit", (text) => {
   expect(scan(text).errors.length).toBeGreaterThan(0);
 });
 
 test("only a newly created Unix-domain socket has no outside host", () => {
-  expect(scan("import socket\ns = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\ns.connect(path)", [], ["socket"]).errors).toEqual([]);
-  expect(scan("from socket import socket as make, AF_UNIX\nmake(family=AF_UNIX)", [], ["socket"]).errors).toEqual([]);
-  for (const call of ["socket.socket()", "socket.socket(socket.AF_INET)", "socket.socket(family=unknown)", "socket.socket(socket.AF_UNIX, fileno=fd)"])
-    expect(scan(`import socket\n${call}`, [], ["socket"]).errors.join("\n")).toContain("Unsupported Python network call");
+  expect(
+    scan(
+      "import socket\ns = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\ns.connect(path)",
+      [],
+      ["socket"],
+    ).errors,
+  ).toEqual([]);
+  expect(
+    scan("from socket import socket as make, AF_UNIX\nmake(family=AF_UNIX)", [], ["socket"]).errors,
+  ).toEqual([]);
+  for (const call of [
+    "socket.socket()",
+    "socket.socket(socket.AF_INET)",
+    "socket.socket(family=unknown)",
+    "socket.socket(socket.AF_UNIX, fileno=fd)",
+  ])
+    expect(scan(`import socket\n${call}`, [], ["socket"]).errors.join("\n")).toContain(
+      "Unsupported Python network call",
+    );
 });
 
 test("invalid Python is a reported parse failure, and unowned Python is rejected", () => {
   expect(scan("def broken(:").errors.join("\n")).toContain("invalid syntax");
   const root = fixture({ "src/unowned.py": "pass" });
-  expect(pythonDependencies(root, [], []).errors).toEqual(["Unmodelled Python code: src/unowned.py"]);
+  expect(pythonDependencies(root, [], []).errors).toEqual([
+    "Unmodelled Python code: src/unowned.py",
+  ]);
 });

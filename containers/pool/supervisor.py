@@ -92,10 +92,10 @@ class Child:
         oversized = False
         while line := stream.readline(MAX_INPUT_CHARS):
             if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
-                if not oversized and self.diagnostics is not None:
-                    self.diagnostics.append("x" * MAX_INPUT_CHARS)
                 oversized = not line.endswith("\n")
                 continue
+            if self.diagnostics is not None:
+                self.diagnostics.append(line)
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
             fused = self._fuse_parser.feed(self.name, line)
@@ -113,8 +113,6 @@ class Child:
             safe = safe_child_output_line(self.name, line)
             if safe is not None:
                 print(safe, flush=True)
-            elif self.diagnostics is not None:
-                self.diagnostics.append(line)
 
 
 def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:

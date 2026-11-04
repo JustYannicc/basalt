@@ -1,30 +1,46 @@
-"""Redact before retaining a bounded tail of otherwise discarded Home output."""
+"""Keep only bounded Home error records after secret removal."""
 
 from __future__ import annotations
 
-import json
+import base64
 import re
 import threading
 from collections import deque
 from collections.abc import Mapping
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
+
+from .child_signals import HOME_LOG_LINE
 
 
 MAX_TAIL_LINES = 8
 MAX_LINE_BYTES = 512
 MAX_INPUT_CHARS = 8192
 REDACTED = "[redacted]"
-SECRET_NAME = re.compile(r"key|token|secret|password|passwd|credential|dsn|url", re.I)
+SECRET_NAME = re.compile(r"key|token|secret|password|passwd|credential|dsn|url|auth|cookie", re.I)
 URI = re.compile(r"[a-z][a-z0-9+.-]*://[^\s<>\"']+", re.I)
 HEADER = re.compile(r"\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=].*", re.I)
 AUTH = re.compile(r"\b(?:Bearer|Basic)\s+[^\s,;]+", re.I)
-FIELD = re.compile(
-    r"(?P<key>[\"']?[a-z0-9_-]{0,64}(?:token|password|passwd|secret|credential|key)"
-    r"[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)", re.I,
-)
 OPAQUE = re.compile(r"[a-zA-Z0-9_+/.=-]{24,}")
 EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+STRUCTURED_OR_QUOTED = re.compile(r"[{}\[\]\"'`\\]")
+ASSIGNMENT = re.compile(r"(?:^|\s)[a-zA-Z_][a-zA-Z0-9_.-]*\s*=")
+ERROR_LEVELS = frozenset(("error", "fatal", "panic"))
+
+
+def percent_decoded(value: str) -> str | None:
+    # Bound recursive encoding and refuse ambiguous or malformed leftovers.
+    for _ in range(3):
+        if "%" not in value:
+            return value
+        try:
+            decoded = unquote(value, errors="strict")
+        except UnicodeError:
+            return None
+        if decoded == value:
+            return None
+        value = decoded
+    return value if "%" not in value else None
 
 
 class HomeCrashTail:
@@ -38,10 +54,15 @@ class HomeCrashTail:
                     secrets.update(unquote(part) for part in (uri.username, uri.password) if part)
                 except ValueError:
                     pass
-        self._secrets = sorted(
-            {encoded for value in secrets for encoded in (value, quote(value, safe=""), json.dumps(value)[1:-1])},
-            key=len, reverse=True,
-        )
+        variants = set(secrets)
+        for value in secrets:
+            decoded = percent_decoded(value)
+            if decoded:
+                variants.add(decoded)
+            for encode in (base64.b64encode, base64.urlsafe_b64encode):
+                encoded = encode(value.encode("utf-8")).decode("ascii")
+                variants.update((encoded, encoded.rstrip("=")))
+        self._secrets = sorted((value for value in variants if value), key=len, reverse=True)
         self._lines: deque[str] = deque(maxlen=MAX_TAIL_LINES)
         self._lock = threading.Lock()
         self._private_key = False
@@ -50,27 +71,34 @@ class HomeCrashTail:
         with self._lock:
             if "-----BEGIN " in line:
                 self._private_key = True
-                self._lines.append("[private key omitted]")
                 return
             if self._private_key:
                 if "-----END " in line:
                     self._private_key = False
                 return
             if len(line) >= MAX_INPUT_CHARS:
-                self._lines.append("[oversized line omitted]")
                 return
-            safe = ANSI.sub("", line)
+            match = HOME_LOG_LINE.fullmatch(ANSI.sub("", line).strip())
+            if match is None or match["level"] not in ERROR_LEVELS:
+                return
+            message = percent_decoded(match["message"])
+            if message is None or STRUCTURED_OR_QUOTED.search(message):
+                return
+            if any(not char.isprintable() or (not char.isascii() and not char.isalnum()) for char in message):
+                return
             for secret in self._secrets:
-                safe = safe.replace(secret, REDACTED)
-            safe = HEADER.sub(REDACTED, safe)
+                message = message.replace(secret, REDACTED)
+            # Unknown fields are rejected as a whole, never guessed by their names.
+            if ASSIGNMENT.search(message):
+                return
+            safe = HEADER.sub(REDACTED, message)
             safe = AUTH.sub(REDACTED, safe)
             safe = URI.sub(REDACTED, safe)
-            safe = FIELD.sub(lambda match: match["key"] + REDACTED, safe)
             safe = EMAIL.sub(REDACTED, safe)
-            safe = OPAQUE.sub(REDACTED, safe)
-            safe = "".join(char if char.isprintable() else " " for char in safe).strip()
+            safe = OPAQUE.sub(REDACTED, safe).strip()
             if safe:
-                self._lines.append(safe.encode("utf-8")[:MAX_LINE_BYTES].decode("utf-8", errors="ignore"))
+                record = match["level"] + ": " + safe
+                self._lines.append(record.encode("utf-8")[:MAX_LINE_BYTES].decode("utf-8", errors="ignore"))
 
     def snapshot(self) -> list[str]:
         with self._lock:

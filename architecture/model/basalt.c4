@@ -234,8 +234,11 @@ model {
         stack. The supervisor forwards closed numeric maintenance signals during normal operation.
         Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
         child name, bounded numeric exit status and failure category before cleanup. Home exits also
-        attach the last eight unrecognized output lines, redacted before memory retention and bounded
-        to 512 UTF-8 bytes each. Oversized lines and private-key blocks are omitted.
+        attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,
+        captured before startup-error projection and redacted before memory retention. Each is bounded
+        to 512 UTF-8 bytes. Structured or quoted values, oversized lines and private-key blocks are
+        omitted. Literal, base64, base64url and percent-encoded known secrets are removed regardless
+        of length or hex case; ambiguous encodings are rejected.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
         `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
@@ -260,7 +263,7 @@ model {
         libraries "socket|http.client"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach eight unrecognized output lines redacted before retention and bounded to 512 UTF-8 bytes each; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed startup phase enums with bounded monotonic milliseconds; privacy counts and numeric failure categories; unexpected Home exits attach at most eight allowlisted formatter error records captured before count projection, with structured and quoted values rejected and literal or encoded known secrets removed before retention, bounded to 512 UTF-8 bytes each; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"

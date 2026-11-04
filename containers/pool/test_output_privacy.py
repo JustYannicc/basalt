@@ -45,100 +45,114 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class OutputPrivacyTests(unittest.TestCase):
-    def test_home_exit_keeps_bounded_redacted_unrecognized_output(self) -> None:
-        secret = "fixture-management-secret"
-        database = "postgresql://fixture:database-password@private.example/pool"
-        lines = [f"old line {index}" for index in range(20)] + [
-            f"Authorization: Bearer {secret}",
-            f"database connection failed: {database}",
-            "refresh_token=unknown-refresh-secret",
-            "panic: runtime error: invalid memory address or nil pointer dereference",
-        ]
-        program = "import sys; " + "; ".join(
-            f"print({line!r}, file=sys.stderr, flush=True)" for line in lines
-        ) + "; sys.exit(1)"
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with (
-            patch.dict(os.environ, {"POOL_DATABASE_URL": database}),
-            redirect_stdout(stdout),
-            redirect_stderr(stderr),
-        ):
-            child = supervisor.Child("home", [sys.executable, "-c", program],
-                {**os.environ, "MANAGEMENT_PASSWORD": secret}, pathlib.Path.cwd())
-            child.process.wait(timeout=5)
-            with self.assertRaises(StartupError):
-                supervisor.wait_for_home(child, secret, threading.Event())
-            if child.process.stdout is not None:
-                child.process.stdout.close()
-        self.assertEqual(stdout.getvalue(), "")
-        marker, payload = stderr.getvalue().strip().split(" ", 1)
-        self.assertEqual(marker, "POOL_CHILD_EXIT")
-        receipt = json.loads(payload)
-        self.assertIn("output_tail", receipt, "Home's fatal output was discarded")
-        tail = receipt["output_tail"]
-        self.assertEqual(len(tail), 8)
-        self.assertIn("panic: runtime error: invalid memory address", tail[-1])
-        for value in (secret, database, "database-password", "unknown-refresh-secret", "old line 0"):
-            self.assertNotIn(value, stderr.getvalue())
-        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in tail))
+    @staticmethod
+    def home_log(message: str, level: str = "fatal") -> str:
+        return ("[CLIProxyAPIHome] [2026-11-04 12:00:00] [--------] "
+            f"[{level}] [main.go:123] {message}")
 
-    def test_home_tail_drops_oversized_lines_and_private_key_blocks(self) -> None:
-        from .crash_tail import HomeCrashTail
-
-        lines = [
-            "before overflow",
-            "x" * 8192 + "secret-in-oversized-line",
-            "-----BEGIN PRIVATE KEY-----",
-            "private-key-body",
-            "-----END PRIVATE KEY-----",
-            "é" * 700,
-            "fatal: database connection refused",
-        ]
+    def home_exit(self, lines: list[str], secret: str = "fixture!", stream: str = "stdout"):
         program = "import sys; " + "; ".join(
-            f"print({line!r}, file=sys.stderr, flush=True)" for line in lines
+            f"print({line!r}, file=sys.{stream}, flush=True)" for line in lines
         ) + "; sys.exit(1)"
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             child = supervisor.Child("home", [sys.executable, "-c", program],
-                os.environ.copy(), pathlib.Path.cwd())
-            child.process.wait(timeout=5)
-            supervisor.report_exit(child, 1, supervisor.FailureCategory.RUNTIME)
-            if child.process.stdout is not None:
-                child.process.stdout.close()
-        self.assertEqual(stdout.getvalue(), "")
-        receipt = json.loads(stderr.getvalue().split(" ", 1)[1])
-        tail = receipt["output_tail"]
-        self.assertIsInstance(child.diagnostics, HomeCrashTail)
-        self.assertEqual(tail[-1], "fatal: database connection refused")
-        self.assertIn("[oversized line omitted]", tail)
-        self.assertIn("[private key omitted]", tail)
-        self.assertNotIn("secret-in-oversized-line", stderr.getvalue())
-        self.assertNotIn("private-key-body", stderr.getvalue())
-        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in tail))
+                {**os.environ, "MANAGEMENT_PASSWORD": secret}, pathlib.Path.cwd())
+            try:
+                child.process.wait(timeout=5)
+                child._reader.join(timeout=1)
+                self.assertFalse(child._reader.is_alive(), "child output was not drained")
+                self.assertIsNotNone(child.diagnostics)
+                snapshot = child.diagnostics.snapshot() if child.diagnostics is not None else []
+                with self.assertRaises(StartupError):
+                    supervisor.wait_for_home(child, secret, threading.Event())
+            finally:
+                if child.process.stdout is not None:
+                    child.process.stdout.close()
+        marker, payload = stderr.getvalue().strip().split(" ", 1)
+        self.assertEqual(marker, "POOL_CHILD_EXIT")
+        return snapshot, json.loads(payload), stdout.getvalue(), stderr.getvalue()
 
-    def test_home_tail_redacts_encoded_and_unfamiliar_credential_fields(self) -> None:
-        from .crash_tail import HomeCrashTail
+    def test_home_stdout_and_recognized_startup_errors_survive_projection(self) -> None:
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                message = "failed to open database: connection refused"
+                snapshot, receipt, stdout, _ = self.home_exit([self.home_log(message)], stream=stream)
+                self.assertIn("POOL_HOME_INIT_FAILURE", stdout)
+                self.assertEqual(snapshot, ["fatal: " + message])
+                self.assertEqual(receipt["output_tail"], snapshot)
 
-        tail = HomeCrashTail({"POOL_MANAGEMENT_KEY": "known+fixture/password"})
-        values = [
-            "known+fixture/password", "known%2Bfixture%2Fpassword",
-            "unknown-access-secret", "unknown-cookie-secret", "unknown-basic-secret",
-            "unknown-private-secret", "fixture@example.test",
+    def test_real_home_child_drops_cookie_nested_and_quoted_credentials(self) -> None:
+        payloads = [
+            '{"cookie":"session=short-cookie"}',
+            '{"credentials":{"value":"short-pass!"}}',
+            r'{\"credentials\":{\"value\":\"escaped-short-pass!\"}}',
+            'credential rejected: "quoted-short-pass!"',
+            "credential rejected: 'single-quoted-pass!'",
+            "credential rejected: `backtick-pass!`",
+            "credential rejected: “curly-quoted-pass!”",
+            "credential rejected: ‘curly-single-pass!’",
+            "cookie=session=short-cookie",
+            "credentials = short-pass!",
+            "%7b%22cookie%22%3a%22session%3dshort-cookie%22%7d",
         ]
-        for line in [
-            values[0], values[1],
-            'access_token="unknown-access-secret"',
-            "Cookie: session=unknown-cookie-secret",
-            "Basic unknown-basic-secret",
-            '{"client_secret":"unknown-private-secret"}',
-            "fixture@example.test",
-            "panic: runtime error: index out of range [4] with length 0",
-        ]:
-            tail.append(line)
-        output = json.dumps(tail.snapshot())
-        for secret in values:
-            self.assertNotIn(secret, output)
-        self.assertIn("index out of range [4] with length 0", output)
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                lines = [payload, self.home_log(payload), self.home_log("HTTP server stopped")]
+                snapshot, receipt, stdout, stderr = self.home_exit(lines)
+                for value in ("short-cookie", "short-pass!", "quoted-short-pass!", "backtick-pass!", "curly-quoted-pass!", "curly-single-pass!"):
+                    self.assertNotIn(value, json.dumps(snapshot))
+                    self.assertNotIn(value, stdout + stderr)
+                self.assertEqual(snapshot, ["fatal: HTTP server stopped"])
+                self.assertEqual(receipt["output_tail"], snapshot)
+
+    def test_real_home_child_redacts_short_known_secret_encodings(self) -> None:
+        import base64
+        from urllib.parse import quote
+
+        for secret in ("fixture!", "~~~!", "tiny+/!"):
+            raw = secret.encode("utf-8")
+            forms = {
+                secret,
+                base64.b64encode(raw).decode("ascii"),
+                base64.b64encode(raw).decode("ascii").rstrip("="),
+                base64.urlsafe_b64encode(raw).decode("ascii"),
+                base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+                quote(secret, safe=""),
+                quote(secret, safe="").lower(),
+                "".join(f"%{byte:02x}" for byte in raw),
+                "".join(f"%{byte:02X}" if index % 2 else f"%{byte:02x}" for index, byte in enumerate(raw)),
+            }
+            for encoded in forms:
+                with self.subTest(secret=secret, encoded=encoded):
+                    message = "credential decode failed: " + encoded
+                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], secret)
+                    for value in forms:
+                        self.assertNotIn(value, json.dumps(snapshot))
+                        self.assertNotIn(value, stdout + stderr)
+                    self.assertEqual(snapshot, ["fatal: credential decode failed: [redacted]"])
+                    self.assertEqual(receipt["output_tail"], snapshot)
+
+    def test_home_error_tail_is_bounded_and_rejects_other_output(self) -> None:
+        lines = [self.home_log(f"fatal operation {index}") for index in range(20)] + [
+            "panic: unformatted output",
+            self.home_log("ordinary informational message", "info "),
+            self.home_log("é" * 700),
+            self.home_log("x" * 8192 + "secret-in-oversized-line"),
+            "-----BEGIN PRIVATE KEY-----",
+            "private-key-body",
+            "-----END PRIVATE KEY-----",
+            self.home_log("database connection refused", "error"),
+        ]
+        snapshot, receipt, stdout, stderr = self.home_exit(lines)
+        self.assertEqual(len(snapshot), 8)
+        self.assertEqual(snapshot[-1], "error: database connection refused")
+        self.assertEqual(receipt["output_tail"], snapshot)
+        self.assertEqual(stdout, "")
+        for value in ("unformatted output", "informational", "private-key-body", "secret-in-oversized-line"):
+            self.assertNotIn(value, json.dumps(snapshot))
+            self.assertNotIn(value, stderr)
+        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in snapshot))
 
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()
