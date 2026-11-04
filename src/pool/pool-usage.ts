@@ -1,4 +1,10 @@
-import { callerHeader, controlBasePath, usageDays, type AppUsage, type UsageSummary } from "../../apps/pool/contract.ts";
+import {
+  callerHeader,
+  controlBasePath,
+  usageDays,
+  type AppUsage,
+  type UsageSummary,
+} from "../../apps/pool/contract.ts";
 import { readCap, readCaps, setCap } from "./caps.ts";
 import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
 import type { PoolPermissions } from "./authorization.ts";
@@ -19,7 +25,8 @@ export const summaryPath = `${controlBasePath}/usage/summary`;
 export const managedUsagePath = `${controlBasePath}/managed-usage`;
 export const managedCapPath = `${controlBasePath}/managed-cap`;
 export const maxMembers = 500;
-export const isMemberId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 512;
+export const isMemberId = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 512;
 // The alarm reads every five minutes; a read only syncs when the alarm fell behind.
 const stale = 6 * 60_000;
 
@@ -35,7 +42,12 @@ interface Dependencies {
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
   collection?: QuotaCollection;
-  appUsage?: (input: { pool: string; members: readonly string[]; from: string; to: string }) => Promise<Map<string, AppUsage[]> | undefined>;
+  appUsage?: (input: {
+    pool: string;
+    members: readonly string[];
+    from: string;
+    to: string;
+  }) => Promise<Map<string, AppUsage[]> | undefined>;
 }
 
 export class PoolUsage {
@@ -58,7 +70,12 @@ export class PoolUsage {
     const { client } = this.deps;
     const membership = await client.allMembership();
     const pools = new Map<string, Set<string>>();
-    const byGroup = new Map(membership.groups.map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]));
+    const byGroup = new Map(
+      membership.groups.map((group) => [
+        group.id,
+        group.channel_name.slice(poolGroupPrefix.length),
+      ]),
+    );
     for (const member of membership.members) {
       const pool = byGroup.get(member.channel_group_id);
       if (pool !== undefined) pools.set(pool, (pools.get(pool) ?? new Set()).add(member.auth_id));
@@ -72,55 +89,112 @@ export class PoolUsage {
     const now = this.deps.now?.() ?? new Date();
     const byId = new Map(quota.map((reading) => [reading.credential_id, reading]));
     if (this.deps.collection) {
-      await mapBounded([...ids].filter((id) => hasUsageLimits(files.find((file) => file.id === id) ?? {}, byId.get(id))
-        && needsQuotaCollection(byId.get(id) ?? {}, now.getTime())), async (id) => {
-        try { await this.deps.collection!.read(id, undefined, false); }
-        catch { /* The next alarm retries within the persisted per-account cap. */ }
-      });
+      await mapBounded(
+        [...ids].filter(
+          (id) =>
+            hasUsageLimits(files.find((file) => file.id === id) ?? {}, byId.get(id)) &&
+            needsQuotaCollection(byId.get(id) ?? {}, now.getTime()),
+        ),
+        async (id) => {
+          try {
+            await this.deps.collection!.read(id, undefined, false);
+          } catch {
+            /* The next alarm retries within the persisted per-account cap. */
+          }
+        },
+      );
     }
     for (const [pool, accounts] of pools) {
       // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
       // 812-828,1034-1091 retains windows after failed/partial probes. An account
       // timestamp alone cannot establish freshness of every primary window.
       const readings = accountsView(files, quota, accounts).map((account) => {
-        const raw = byId.get(account.id), windows = rows(raw?.primary_windows);
-        const times = [Date.parse(account.observedAt ?? ""), ...windows.map((window) => Date.parse(text(window.observed_at) ?? ""))];
-        const valid = account.freshness === "fresh" && ["success", "partial"].includes(text(raw?.collection_status) ?? "")
-          && windows.length > 0 && windows.every((window) => ["healthy", "low", "exhausted"].includes(text(window.status) ?? ""))
-          && times.every((at) => Number.isFinite(at) && at <= now.getTime());
-        return { ...account, observedAt: valid ? new Date(Math.min(...times)).toISOString() : null };
+        const raw = byId.get(account.id),
+          windows = rows(raw?.primary_windows);
+        const times = [
+          Date.parse(account.observedAt ?? ""),
+          ...windows.map((window) => Date.parse(text(window.observed_at) ?? "")),
+        ];
+        const valid =
+          account.freshness === "fresh" &&
+          ["success", "partial"].includes(text(raw?.collection_status) ?? "") &&
+          windows.length > 0 &&
+          windows.every((window) =>
+            ["healthy", "low", "exhausted"].includes(text(window.status) ?? ""),
+          ) &&
+          times.every((at) => Number.isFinite(at) && at <= now.getTime());
+        return {
+          ...account,
+          observedAt: valid ? new Date(Math.min(...times)).toISOString() : null,
+        };
       });
-      const capacityAccounts = readings.filter((account) => account.state === "active").map((account) => ({
-        account, quota: quotaObservation(byId.get(account.id) ?? {}),
-      }));
-      const expected = new Map<string, { provider: string; windowSeconds: number; accounts: number }>();
+      const capacityAccounts = readings
+        .filter((account) => account.state === "active")
+        .map((account) => ({
+          account,
+          quota: quotaObservation(byId.get(account.id) ?? {}),
+        }));
+      const expected = new Map<
+        string,
+        { provider: string; windowSeconds: number; accounts: number }
+      >();
       for (const { account, quota } of capacityAccounts) {
-        for (const seconds of new Set(capacityWindows(account.provider, quota.windows).map((window) => window.period.seconds!))) {
+        for (const seconds of new Set(
+          capacityWindows(account.provider, quota.windows).map((window) => window.period.seconds!),
+        )) {
           const key = JSON.stringify([account.provider, seconds]);
-          const cohort = expected.get(key) ?? { provider: account.provider, windowSeconds: seconds, accounts: 0 };
+          const cohort = expected.get(key) ?? {
+            provider: account.provider,
+            windowSeconds: seconds,
+            accounts: 0,
+          };
           cohort.accounts++;
           expected.set(key, cohort);
         }
       }
-      try { await this.capacity.observe(pool, {
-        at: now.getTime(), expected: [...expected.values()],
-        readings: capacityAccounts.flatMap(({ account, quota }) => capacityReadings(account.id, account.provider, quota, now.getTime())),
-      }); }
-      catch (error) { console.error("Pool capacity sampling failed", error); }
-      try { await this.history.sample(pool, readings, now); }
-      catch (error) { console.error("Pool limit sampling failed", error); }
+      try {
+        await this.capacity.observe(pool, {
+          at: now.getTime(),
+          expected: [...expected.values()],
+          readings: capacityAccounts.flatMap(({ account, quota }) =>
+            capacityReadings(account.id, account.provider, quota, now.getTime()),
+          ),
+        });
+      } catch (error) {
+        console.error("Pool capacity sampling failed", error);
+      }
+      try {
+        await this.history.sample(pool, readings, now);
+      } catch (error) {
+        console.error("Pool limit sampling failed", error);
+      }
     }
   }
 
   /** One sync at a time; a failed one leaves what was already read. */
   private sync(): Promise<void> {
-    this.syncing ??= this.ledger.sync().then(() => {}, (error: unknown) => {
-      console.error("Pool usage sync failed", error);
-    }).finally(() => { this.syncing = undefined; });
+    this.syncing ??= this.ledger
+      .sync()
+      .then(
+        () => {},
+        (error: unknown) => {
+          console.error("Pool usage sync failed", error);
+        },
+      )
+      .finally(() => {
+        this.syncing = undefined;
+      });
     return this.syncing;
   }
 
-  async summary(pool: string, owner: string, caller: string, days: number, members: readonly string[] = [], canManage = caller === owner): Promise<UsageSummary> {
+  async summary(
+    pool: string,
+    owner: string,
+    caller: string,
+    days: number,
+    members: readonly string[] = [],
+    canManage = caller === owner,
+  ): Promise<UsageSummary> {
     const now = this.deps.now?.() ?? new Date();
     const readAt = await this.ledger.readAt();
     // Serve what's stored; only catch up in the background when the alarm fell behind.
@@ -133,19 +207,47 @@ export class PoolUsage {
     let summary: UsageSummary;
     if (!canManage) {
       const cap = await readCap(this.deps.client, caller, pool);
-      summary = await this.ledger.summary(pool, { owner, caller, canManage, members: [], days, now, cap: () => cap });
+      summary = await this.ledger.summary(pool, {
+        owner,
+        caller,
+        canManage,
+        members: [],
+        days,
+        now,
+        cap: () => cap,
+      });
     } else {
       const capped = [...new Set([caller, ...people])].filter((person) => person !== owner);
       const caps = await readCaps(this.deps.client, pool, capped);
-      summary = await this.ledger.summary(pool, { owner, caller, canManage, members: people, days, now, cap: (member) => caps.get(member) ?? null });
+      summary = await this.ledger.summary(pool, {
+        owner,
+        caller,
+        canManage,
+        members: people,
+        days,
+        now,
+        cap: (member) => caps.get(member) ?? null,
+      });
     }
-    const apps = await this.deps.appUsage?.({ pool, members: people, from: summary.from, to: summary.to });
-    return apps === undefined ? summary : {
-      ...summary,
-      ...(summary.members === undefined ? { apps: apps.get(caller) ?? [] } : {
-        members: summary.members.map((member) => ({ ...member, apps: apps.get(member.member) ?? [] })),
-      }),
-    };
+    const apps = await this.deps.appUsage?.({
+      pool,
+      members: people,
+      from: summary.from,
+      to: summary.to,
+    });
+    return apps === undefined
+      ? summary
+      : {
+          ...summary,
+          ...(summary.members === undefined
+            ? { apps: apps.get(caller) ?? [] }
+            : {
+                members: summary.members.map((member) => ({
+                  ...member,
+                  apps: apps.get(member.member) ?? [],
+                })),
+              }),
+        };
   }
 
   /** The caller authorizes management; the recorded owner is never capped. */
@@ -159,19 +261,28 @@ export class PoolUsage {
   async handle(request: Request): Promise<Response> {
     try {
       const token = /^Bearer (\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-      const claims = token ? await verifyPoolToken(this.deps.signingKey, token, this.deps.previousSigningKey) : undefined;
+      const claims = token
+        ? await verifyPoolToken(this.deps.signingKey, token, this.deps.previousSigningKey)
+        : undefined;
       if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
-      if (request.method !== "GET") return fail(404, "not_found", "This pool endpoint does not exist.");
+      if (request.method !== "GET")
+        return fail(404, "not_found", "This pool endpoint does not exist.");
       // Without a signed-in caller there is nobody whose usage to show.
       const caller = text(request.headers.get(callerHeader));
       if (!caller) return fail(403, "unauthorized", "Sign in to see your usage on this pool.");
       const raw = new URL(request.url).searchParams.get("days") ?? String(usageDays);
-      if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > usageDays) return fail(400, "invalid_query", `Ask for 1 to ${usageDays} days.`);
+      if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > usageDays)
+        return fail(400, "invalid_query", `Ask for 1 to ${usageDays} days.`);
       const permissions = await this.deps.permissions?.(claims.pool, caller);
-      if (permissions !== undefined && !permissions.canUse) return fail(403, "unauthorized", "This pool is not available to you.");
+      if (permissions !== undefined && !permissions.canUse)
+        return fail(403, "unauthorized", "This pool is not available to you.");
       const canManage = permissions?.canManage ?? caller === claims.owner;
       const members = canManage ? (await this.deps.audience(claims.pool)).slice(0, maxMembers) : [];
-      return json(await this.summary(claims.pool, claims.owner, caller, Number(raw), members, canManage));
-    } catch (error) { return failureResponse(error); }
+      return json(
+        await this.summary(claims.pool, claims.owner, caller, Number(raw), members, canManage),
+      );
+    } catch (error) {
+      return failureResponse(error);
+    }
   }
 }
