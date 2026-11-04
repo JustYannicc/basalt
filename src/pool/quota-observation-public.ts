@@ -89,7 +89,8 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
   return {
     observedAt,
     observation: {
-      offering: "subscription",
+      // This quota payload reports a plan and allowance, but no explicit funding kind.
+      offering: "unknown",
       ...(plan === undefined ? {} : { plan: { label: plan, observedAt, staleAt: staleAt(observedAt, value.staleAt) } }),
       windows, balances: balances.slice(0, 8),
     },
