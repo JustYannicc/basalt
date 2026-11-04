@@ -176,6 +176,10 @@ test("the actual build downloader and pool wrapper require a release service", (
       "readiness.py",
       "healthcheck.py",
       "policy_monitor.py",
+      "recovery.py",
+      "recovery_deadline.py",
+      "recovery_http.py",
+      "recovery_signals.py",
       "__init__.py",
     ].map((file) => [
       `containers/pool/${file}`,
@@ -243,4 +247,26 @@ test("invalid Python is a reported parse failure, and unowned Python is rejected
   expect(pythonDependencies(root, [], []).errors).toEqual([
     "Unmodelled Python code: src/unowned.py",
   ]);
+});
+
+test("HTTP connections require a proven loopback host and reject tunnels", () => {
+  expect(
+    scan('import http.client\nhttp.client.HTTPConnection("127.0.0.1", 8317)', [], ["http.client"])
+      .errors,
+  ).toEqual([]);
+  expect(
+    scan('from http.client import HTTPConnection as Local\nLocal(host="::1")', [], ["http.client"])
+      .errors,
+  ).toEqual([]);
+  for (const call of [
+    "http.client.HTTPConnection(unknown_host)",
+    'http.client.HTTPConnection("outside.example.invalid")',
+    'http.client.HTTPSConnection("127.0.0.1")',
+    'http.client.HTTPConnection("localhost:outside.example.invalid")',
+    'http.client.HTTPConnection("127.0.0.1" if choose else unknown_host)',
+    'http.client.HTTPConnection("127.0.0.1").set_tunnel("outside.example.invalid")',
+  ])
+    expect(scan(`import http.client\n${call}`, [], ["http.client"]).errors.length).toBeGreaterThan(
+      0,
+    );
 });

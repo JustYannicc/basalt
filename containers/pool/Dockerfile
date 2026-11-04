@@ -78,6 +78,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /opt/pool
 COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
+COPY recovery.py recovery_deadline.py recovery_http.py recovery_signals.py /opt/pool/
 COPY child_signals.py /opt/pool/child_signals.py
 COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
