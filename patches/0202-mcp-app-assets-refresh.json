@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-mcp-app-assets-refresh",
+  "file": "0202-mcp-app-assets-refresh.patch",
+  "content_sha256": "f7ce9864d3b35cc2be6cfec95efed211fecf768b2e26f36b213b14aeb1ac3256",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
