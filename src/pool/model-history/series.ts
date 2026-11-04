@@ -23,7 +23,8 @@ import {
 } from "./series-input.ts";
 import { requestCount, seriesCoverage } from "./series-coverage.ts";
 import { seriesQuery, tokenColumns } from "./series-query.ts";
-import { historyObject, timestamp } from "./record.ts";
+import { HistoryInputError, historyObject, timestamp } from "./record.ts";
+import { digest } from "../backend-users.ts";
 
 function bucket(
   row: Record<string, unknown>,
@@ -87,20 +88,28 @@ function bucket(
 }
 
 /** Each page is a repeatable-read observation. A later import can change a previously read range. */
-export async function poolUsageSeries(
+async function readUsageSeries(
   db: HistoryDatabase,
   raw: unknown,
   authority: SeriesAuthority,
+  transaction: "owned" | "caller" = "owned",
+  personScope?: string,
 ): Promise<PoolUsageSeriesResult> {
   const input = seriesInput(raw);
-  authorizeSeries(input, authority);
-  const scope = await cursorScope(input, authority),
+  if (personScope === undefined) authorizeSeries(input, authority);
+  else {
+    if (!/^[a-f0-9]{64}$/.test(personScope)
+      || input.accounts !== undefined
+      || input.by.some((dimension) => ["account", "app", "attribution", "source"].includes(dimension)))
+      throw new HistoryInputError();
+  }
+  const scope = await cursorScope(input, authority, personScope),
     after = readSeriesCursor(input.after, scope, input.by);
-  await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  if (transaction === "owned") await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
-    const query = await seriesQuery(db, input, authority, after);
-    const { coverage, asOf } = await seriesCoverage(db, query, input, authority);
+    const query = await seriesQuery(db, input, authority, after, personScope);
+    const { coverage, asOf } = await seriesCoverage(db, query, input, authority, personScope !== undefined);
     const rows = (await db.query(query.text, query.values)).rows;
     const result: PoolUsageSeriesResult = {
       from: input.from,
@@ -148,10 +157,34 @@ export async function poolUsageSeries(
     }
     if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
       throw new Error("Usage page exceeds its byte bound");
-    await db.query("COMMIT");
+    if (transaction === "owned") await db.query("COMMIT");
     return result;
   } catch (error) {
-    await db.query("ROLLBACK").catch(() => {});
+    if (transaction === "owned") await db.query("ROLLBACK").catch(() => {});
     throw error;
   }
+}
+
+export async function poolUsageSeries(
+  db: HistoryDatabase,
+  raw: unknown,
+  authority: SeriesAuthority,
+  transaction: "owned" | "caller" = "owned",
+): Promise<PoolUsageSeriesResult> {
+  return readUsageSeries(db, raw, authority, transaction);
+}
+
+/** Signed personal overview only: account bindings stay absent and the caller hash is the SQL scope. */
+export async function poolPersonalUsageSeries(
+  db: HistoryDatabase,
+  raw: unknown,
+  person: string,
+  transaction: "owned" | "caller" = "owned",
+): Promise<PoolUsageSeriesResult> {
+  if (!/^[a-f0-9]{64}$/.test(person)) throw new HistoryInputError();
+  const input = seriesInput(raw);
+  const allowedSources = [await digest("home-local-v1"), await digest("pool-gateway-v1")];
+  if (input.sources?.length !== allowedSources.length
+    || !allowedSources.every((source) => input.sources?.includes(source))) throw new HistoryInputError();
+  return readUsageSeries(db, raw, { canManage: false, mappingProven: false, accounts: [] }, transaction, person);
 }

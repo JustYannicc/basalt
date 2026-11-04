@@ -71,4 +71,16 @@ test("every lab shade keeps at least 3:1 against the page on both themes", async
     assert.ok(contrast(onLight!, light) >= 3, `${name} on the light page`);
     assert.ok(contrast(onDark!, dark) >= 3, `${name} on the dark page`);
   }
+  // A healthy usage bar fills with the lab's own colour over the meter track (`bg-border`).
+  const tracks = [...globals.matchAll(/--border:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
+    expand(m[1]!.toLowerCase()),
+  );
+  const [lightTrack, darkTrack] = tracks as [string, string];
+  assert.equal(tracks.length, 2, "one light and one dark meter track");
+  const bars = shades.filter(([, name]) => !/-\d$/.test(name!));
+  assert.equal(bars.length, 4);
+  for (const [, name, onLight, onDark] of bars) {
+    assert.ok(contrast(onLight!, lightTrack) >= 3, `${name} on the light meter track`);
+    assert.ok(contrast(onDark!, darkTrack) >= 3, `${name} on the dark meter track`);
+  }
 });

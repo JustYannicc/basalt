@@ -249,7 +249,7 @@ index ce7b13a..38d5311 100644
 +    ? undefined
 +    : `brand-fill brand-${lab}${shade > 0 ? ` brand-shade-${Math.min(shade, brandShadeCount - 1)}` : ""}`;
 diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
-index 746ac2d..17014bc 100644
+index 746ac2d..96b2155 100644
 --- a/packages/ui/src/implementation/styles/dashboard.css
 +++ b/packages/ui/src/implementation/styles/dashboard.css
 @@ -14,28 +14,78 @@ body:has([data-name-account-handoff][data-state="open"])
@@ -259,13 +259,13 @@ index 746ac2d..17014bc 100644
 +/*
 + * Lab identity colours (`provider-brand.ts`), one value per lab for icon tiles, healthy usage bars
 + * and pool chart series, plus two lightness steps of the same hue for extra series. Every shade keeps
-+ * at least 3:1 against the page on both themes. Status colours (low, critical, stale) never come
-+ * from here.
++ * at least 3:1 against the page, and each lab colour against the usage meter track, on both themes.
++ * Status colours (low, critical, stale) never come from here.
 + */
 +:root {
-+  --brand-openai: light-dark(#10a37f, #19c37d);
++  --brand-openai: light-dark(#0e9473, #19c37d);
 +  --brand-openai-1: light-dark(#0b6e56, #7fe3b8);
-+  --brand-openai-2: light-dark(#178f6a, #14a86b);
++  --brand-openai-2: light-dark(#07463a, #14a86b);
 +  --brand-anthropic: light-dark(#c4623f, #d97757);
 +  --brand-anthropic-1: light-dark(#8f4129, #f0b59d);
 +  --brand-anthropic-2: light-dark(#b5532f, #c4623f);

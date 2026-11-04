@@ -133,7 +133,7 @@ test("native managers see pool totals with their own cap, and demotion immediate
   assert.deepEqual(manager.total, slice(127, 7));
   assert.equal(manager.cap?.weekly, 5);
   assert.equal(manager.members?.find((person) => person.member === a)?.cap?.weekly, 5);
-  assert.deepEqual(manager.accountsNeeded?.map((advice) => advice.provider), ["fixture"]);
+  assert.equal(Object.hasOwn(manager, "accountsNeeded"), false);
   canManage = false;
   own(await f.summary(a), 34, 8);
   canUse = false;
@@ -164,7 +164,7 @@ test("owning pool B cannot elevate membership on A or include B's records; queri
   assert.deepEqual(ownPool.members!.map((row) => row.member), [a]);
 });
 
-test("owner sees every audience member including zero usage, each cap and pool-only accounts-needed", async () => {
+test("owner sees every audience member including zero usage and each cap, without legacy sizing advice", async () => {
   const f = await fixture(), result = await f.summary(owner);
   assert.equal(result.scope, "pool"); assert.equal(result.cap, null);
   assert.deepEqual(result.total, slice(127, 7));
@@ -184,7 +184,7 @@ test("owner sees every audience member including zero usage, each cap and pool-o
     assert.deepEqual(models, person === owner ? [{ provider: "fixture", model: "model-x", ...slice(1, 1) }] : own!.models);
     assert.deepEqual(days, person === owner ? [{ day: "2026-10-23", ...slice(1, 1), models }] : own!.days);
   }
-  assert.deepEqual(result.accountsNeeded, [{ provider: "fixture", advice: "unknown", accounts: 1, limitHits: 0, exhausted: 0, hoursRead: 0 }]);
+  assert.equal(Object.hasOwn(result, "accountsNeeded"), false);
   assert.deepEqual(f.audienceCalls, ["pool-a"]);
 });
 
@@ -311,4 +311,46 @@ test("the existing alarm persists weighted capacity without extra Home reads and
   clock = new Date(clock.getTime() + 3_600_000); stale = true;
   await usage.observe();
   assert.equal((await new CapacityHistory(storage).read("pool-a")).length, 1);
+});
+
+test("capacity history requires management rather than model-use authority and leaves absent readings empty", async () => {
+  const f = await fixture(async (_pool, user) => ({ canUse: user !== idle && user !== b, canManage: user === b }));
+  const token = await signPoolToken(signingKey, claims);
+  const read = (user: string | null, authorization = token, days = "7") => f.usage.handle(new Request(
+    `https://pool.example.test/pool/v1/usage/capacity?days=${days}`,
+    { headers: { authorization: `Bearer ${authorization}`, ...(user === null ? {} : { [callerHeader]: user }) } },
+  ));
+  assert.equal((await read(b, "invalid")).status, 401);
+  assert.equal((await read(null)).status, 403);
+  assert.equal((await read(owner)).status, 403);
+  assert.equal((await read(idle)).status, 403);
+  assert.equal((await read(b, token, "31")).status, 400);
+  const response = await read(b);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    from: now.getTime() - 7 * 86_400_000, to: now.getTime(), points: [],
+    readAt: null, trackingSince: null, completedWeeks: 0, forecasts: [], refillEvents: [],
+    estimate: { status: "learning", reason: "Forecasts start after two completed weeks; account advice after four." },
+  });
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.audienceCalls, []);
+});
+
+
+test("capacity uses the overview's shared end time and refuses stale or future snapshots", async () => {
+  const f = await fixture(async (_pool, user) => ({ canUse: true, canManage: user === b }));
+  const token = await signPoolToken(signingKey, claims);
+  const read = (to: string) => f.usage.handle(new Request(
+    `https://pool.example.test/pool/v1/usage/capacity?days=7&to=${encodeURIComponent(to)}`,
+    { headers: { authorization: `Bearer ${token}`, [callerHeader]: b } },
+  ));
+  for (const to of ["NaN", "", String(now.getTime() + 1), String(now.getTime() - 5 * 60_000 - 1)])
+    assert.equal((await read(to)).status, 400);
+  const to = now.getTime() - 10_000;
+  const response = await read(String(to));
+  assert.equal(response.status, 200);
+  const result = await response.json() as { from: number; to: number; forecasts: unknown[] };
+  assert.equal(result.to, to);
+  assert.equal(result.from, Math.floor((to - 7 * 86_400_000) / 3_600_000) * 3_600_000);
+  assert.deepEqual(result.forecasts, []);
 });
