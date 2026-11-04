@@ -34,8 +34,8 @@ export const requirements = {
     accounts: {
       pool,
       subscriptions: subscription.many(),
-      openai: nativeProviders.openai.many().contributed(),
-      anthropic: nativeProviders.anthropic.many().contributed(),
+      openai: nativeProviders.openai.many().requiring("model-inference").contributed(),
+      anthropic: nativeProviders.anthropic.many().requiring("model-inference").contributed(),
     },
   },
 };

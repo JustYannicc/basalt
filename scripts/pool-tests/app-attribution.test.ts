@@ -7,7 +7,7 @@ import { appUsage } from "../../src/pool/model-history/app-usage.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { appAttributionReady, historyBaseSchemaVersion, historySchemaStatements,
-  historySchemaVersion, migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
+  historyAppSchemaVersion, historySchemaVersion, migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 
@@ -42,7 +42,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
     await migrateModelHistory(db);
     assert.equal(await appAttributionReady(db), true);
     assert.deepEqual((await db.query("SELECT name FROM basalt_model_history_migrations ORDER BY name")).rows.map((row) => row.name),
-      [historyBaseSchemaVersion, historySchemaVersion]);
+      [historyBaseSchemaVersion, historyAppSchemaVersion, historySchemaVersion]);
     assert.deepEqual((await readRequests(db, query)).records[0], old, "the old usage row is unchanged");
     const label = appModelLabel(app, "email", "11111111-1111-4111-8111-111111111111");
     await db.query("INSERT INTO api_key VALUES (2,$1,1,$2)", [`sha256:${"b".repeat(64)}`, label]);

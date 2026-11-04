@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-usage-series",
+  "file": "0145-pool-usage-series.patch",
+  "content_sha256": "4344b99fe966b8240fa2ce4084b83285fb119d6728ceff5230a40066224b93ff",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

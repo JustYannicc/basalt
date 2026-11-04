@@ -1,0 +1,826 @@
+{
+  "postgresVersion": "17.11 (Debian 17.11-1.pgdg13+2)",
+  "fixtureRows": 100000,
+  "accountFiltered": {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 138.38,
+      "Total Cost": 144.42,
+      "Plan Rows": 16,
+      "Plan Width": 1193,
+      "Plans": [
+        {
+          "Node Type": "Subquery Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Alias": "aggregated",
+          "Startup Cost": 138.38,
+          "Total Cost": 144.42,
+          "Plan Rows": 16,
+          "Plan Width": 1193,
+          "Plans": [
+            {
+              "Node Type": "Aggregate",
+              "Strategy": "Sorted",
+              "Partial Mode": "Simple",
+              "Parent Relationship": "Subquery",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 138.38,
+              "Total Cost": 144.34,
+              "Plan Rows": 16,
+              "Plan Width": 1161,
+              "Group Key": [
+                "(((CASE WHEN ((r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) AND (r.account IS NOT NULL) AND ((b.history IS NULL) OR (b.saved IS NULL))) THEN jsonb_build_object('currency', NULL::unknown, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text WHEN ((r.source <> 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) OR (b.history IS NULL)) THEN 'unmapped'::text WHEN (b.saved IS NULL) THEN 'otherAccounts'::text ELSE b.saved END) ELSE jsonb_build_object('currency', r.currency, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text WHEN ((r.source <> 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) OR (b.history IS NULL)) THEN 'unmapped'::text WHEN (b.saved IS NULL) THEN 'otherAccounts'::text ELSE b.saved END) END)::text)::text)",
+                "((date_trunc('hour'::text, (\"left\"((r.timestamp_exact)::text, 19))::timestamp without time zone) AT TIME ZONE 'UTC'::text))"
+              ],
+              "Plans": [
+                {
+                  "Node Type": "Sort",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 138.38,
+                  "Total Cost": 138.42,
+                  "Plan Rows": 16,
+                  "Plan Width": 418,
+                  "Sort Key": [
+                    "(((CASE WHEN ((r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) AND (r.account IS NOT NULL) AND ((b.history IS NULL) OR (b.saved IS NULL))) THEN jsonb_build_object('currency', NULL::unknown, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text WHEN ((r.source <> 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) OR (b.history IS NULL)) THEN 'unmapped'::text WHEN (b.saved IS NULL) THEN 'otherAccounts'::text ELSE b.saved END) ELSE jsonb_build_object('currency', r.currency, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text WHEN ((r.source <> 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) OR (b.history IS NULL)) THEN 'unmapped'::text WHEN (b.saved IS NULL) THEN 'otherAccounts'::text ELSE b.saved END) END)::text)::text) COLLATE \"C\"",
+                    "((date_trunc('hour'::text, (\"left\"((r.timestamp_exact)::text, 19))::timestamp without time zone) AT TIME ZONE 'UTC'::text))"
+                  ],
+                  "Plans": [
+                    {
+                      "Node Type": "Hash Join",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Join Type": "Left",
+                      "Startup Cost": 2.67,
+                      "Total Cost": 138.06,
+                      "Plan Rows": 16,
+                      "Plan Width": 418,
+                      "Inner Unique": false,
+                      "Hash Cond": "(r.account = (b.history)::character(64))",
+                      "Join Filter": "(r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar)",
+                      "Plans": [
+                        {
+                          "Node Type": "Append",
+                          "Parent Relationship": "Outer",
+                          "Parallel Aware": false,
+                          "Async Capable": false,
+                          "Startup Cost": 0.42,
+                          "Total Cost": 135.23,
+                          "Plan Rows": 16,
+                          "Plan Width": 314,
+                          "Subplans Removed": 0,
+                          "Plans": [
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_0_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_0",
+                              "Alias": "r_1",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_1_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_1",
+                              "Alias": "r_2",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_2_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_2",
+                              "Alias": "r_3",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_3_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_3",
+                              "Alias": "r_4",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_4_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_4",
+                              "Alias": "r_5",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_5_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_5",
+                              "Alias": "r_6",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_6_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_6",
+                              "Alias": "r_7",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_7_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_7",
+                              "Alias": "r_8",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.33,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_8_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_8",
+                              "Alias": "r_9",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_9_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_9",
+                              "Alias": "r_10",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_10_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_10",
+                              "Alias": "r_11",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_11_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_11",
+                              "Alias": "r_12",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_12_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_12",
+                              "Alias": "r_13",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_13_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_13",
+                              "Alias": "r_14",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_14_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_14",
+                              "Alias": "r_15",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_15_pool_account_timestamp_idx",
+                              "Relation Name": "basalt_model_requests_15",
+                              "Alias": "r_16",
+                              "Startup Cost": 0.42,
+                              "Total Cost": 8.45,
+                              "Plan Rows": 1,
+                              "Plan Width": 314,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (account = ANY ('{677646743ae584d7cf2077c521d869f6aa17b5f3f6f8f493c3a29f72fde31c03}'::character(64)[])) AND (\"timestamp\" >= (('2025-01-01T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-02-12T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-01T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-02-12T00:00:00.000000000Z'::text) AND (source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar))"
+                            }
+                          ]
+                        },
+                        {
+                          "Node Type": "Hash",
+                          "Parent Relationship": "Inner",
+                          "Parallel Aware": false,
+                          "Async Capable": false,
+                          "Startup Cost": 1,
+                          "Total Cost": 1,
+                          "Plan Rows": 100,
+                          "Plan Width": 64,
+                          "Plans": [
+                            {
+                              "Node Type": "Function Scan",
+                              "Parent Relationship": "Outer",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Function Name": "jsonb_to_recordset",
+                              "Alias": "b",
+                              "Startup Cost": 0,
+                              "Total Cost": 1,
+                              "Plan Rows": 100,
+                              "Plan Width": 64
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groupedPool": {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 161.5,
+      "Total Cost": 167.46,
+      "Plan Rows": 16,
+      "Plan Width": 1193,
+      "Plans": [
+        {
+          "Node Type": "Subquery Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Alias": "aggregated",
+          "Startup Cost": 161.5,
+          "Total Cost": 167.46,
+          "Plan Rows": 16,
+          "Plan Width": 1193,
+          "Plans": [
+            {
+              "Node Type": "Aggregate",
+              "Strategy": "Sorted",
+              "Partial Mode": "Simple",
+              "Parent Relationship": "Subquery",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 161.5,
+              "Total Cost": 167.38,
+              "Plan Rows": 16,
+              "Plan Width": 1161,
+              "Group Key": [
+                "(((CASE WHEN ((r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) AND (r.account IS NOT NULL)) THEN jsonb_build_object('currency', NULL::unknown, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text ELSE 'unmapped'::text END, 'provider', NULL::unknown, 'model', NULL::unknown) ELSE jsonb_build_object('currency', r.currency, 'provider', r.provider, 'model', r.model) END)::text)::text)",
+                "((date_trunc('hour'::text, (\"left\"((r.timestamp_exact)::text, 19))::timestamp without time zone) AT TIME ZONE 'UTC'::text))"
+              ],
+              "Plans": [
+                {
+                  "Node Type": "Sort",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Startup Cost": 161.5,
+                  "Total Cost": 161.54,
+                  "Plan Rows": 16,
+                  "Plan Width": 354,
+                  "Sort Key": [
+                    "(((CASE WHEN ((r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar) AND (r.account IS NOT NULL)) THEN jsonb_build_object('currency', NULL::unknown, 'account', CASE WHEN (r.account IS NULL) THEN NULL::text ELSE 'unmapped'::text END, 'provider', NULL::unknown, 'model', NULL::unknown) ELSE jsonb_build_object('currency', r.currency, 'provider', r.provider, 'model', r.model) END)::text)::text) COLLATE \"C\"",
+                    "((date_trunc('hour'::text, (\"left\"((r.timestamp_exact)::text, 19))::timestamp without time zone) AT TIME ZONE 'UTC'::text))"
+                  ],
+                  "Plans": [
+                    {
+                      "Node Type": "Hash Join",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Join Type": "Left",
+                      "Startup Cost": 2.55,
+                      "Total Cost": 161.18,
+                      "Plan Rows": 16,
+                      "Plan Width": 354,
+                      "Inner Unique": false,
+                      "Hash Cond": "(r.account = (b.history)::character(64))",
+                      "Join Filter": "(r.source = 'b6b8c32b40ccd77c11a03bb2a25766ebbeedc71b85be8e4868a2f7c73c8ba261'::bpchar)",
+                      "Plans": [
+                        {
+                          "Node Type": "Append",
+                          "Parent Relationship": "Outer",
+                          "Parallel Aware": false,
+                          "Async Capable": false,
+                          "Startup Cost": 0.3,
+                          "Total Cost": 158.44,
+                          "Plan Rows": 16,
+                          "Plan Width": 1346,
+                          "Subplans Removed": 0,
+                          "Plans": [
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_0_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_0",
+                              "Alias": "r_1",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_1_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_1",
+                              "Alias": "r_2",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_2",
+                              "Alias": "r_3",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_2_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_3",
+                              "Alias": "r_4",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_3_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_4",
+                              "Alias": "r_5",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_4_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_5_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_5",
+                              "Alias": "r_6",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_6_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_6",
+                              "Alias": "r_7",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_7_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_7",
+                              "Alias": "r_8",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_8",
+                              "Alias": "r_9",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_8_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_9_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_9",
+                              "Alias": "r_10",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_10",
+                              "Alias": "r_11",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_10_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_11_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_11",
+                              "Alias": "r_12",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_12",
+                              "Alias": "r_13",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.91,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_12_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_13_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_13",
+                              "Alias": "r_14",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Index Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Scan Direction": "Forward",
+                              "Index Name": "basalt_model_requests_14_pool_timestamp_id_idx",
+                              "Relation Name": "basalt_model_requests_14",
+                              "Alias": "r_15",
+                              "Startup Cost": 0.3,
+                              "Total Cost": 8.32,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))"
+                            },
+                            {
+                              "Node Type": "Bitmap Heap Scan",
+                              "Parent Relationship": "Member",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Relation Name": "basalt_model_requests_15",
+                              "Alias": "r_16",
+                              "Startup Cost": 4.32,
+                              "Total Cost": 11.92,
+                              "Plan Rows": 1,
+                              "Plan Width": 1346,
+                              "Recheck Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))",
+                              "Filter": "(((timestamp_exact)::text >= '2025-01-02T00:00:00.000000000Z'::text) AND ((timestamp_exact)::text < '2025-01-03T00:00:00.000000000Z'::text))",
+                              "Plans": [
+                                {
+                                  "Node Type": "Bitmap Index Scan",
+                                  "Parent Relationship": "Outer",
+                                  "Parallel Aware": false,
+                                  "Async Capable": false,
+                                  "Index Name": "basalt_model_requests_15_pool_timestamp_id_idx",
+                                  "Startup Cost": 0,
+                                  "Total Cost": 4.32,
+                                  "Plan Rows": 2,
+                                  "Plan Width": 0,
+                                  "Index Cond": "(((pool)::text = 'b9de90d022add29d'::text) AND (\"timestamp\" >= (('2025-01-02T00:00:00.000000000Z'::cstring)::timestamp with time zone - '00:00:00.000001'::interval)) AND (\"timestamp\" < (('2025-01-03T00:00:00.000000000Z'::cstring)::timestamp with time zone + '00:00:00.000001'::interval)))"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "Node Type": "Hash",
+                          "Parent Relationship": "Inner",
+                          "Parallel Aware": false,
+                          "Async Capable": false,
+                          "Startup Cost": 1,
+                          "Total Cost": 1,
+                          "Plan Rows": 100,
+                          "Plan Width": 32,
+                          "Plans": [
+                            {
+                              "Node Type": "Function Scan",
+                              "Parent Relationship": "Outer",
+                              "Parallel Aware": false,
+                              "Async Capable": false,
+                              "Function Name": "jsonb_to_recordset",
+                              "Alias": "b",
+                              "Startup Cost": 0,
+                              "Total Cost": 1,
+                              "Plan Rows": 100,
+                              "Plan Width": 32
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

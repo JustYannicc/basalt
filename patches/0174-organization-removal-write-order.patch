@@ -76,18 +76,34 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -187,8 +187,9 @@
-     const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
-     if (input.manualCron && poolBackend)
+@@ -190,6 +190,7 @@
+     if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
+     const databasePort = databaseProxy?.port ?? input.databasePort;
+-    const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+-    if (input.manualCron && poolBackend)
++    const nativePoolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
++    const poolBackend = nativePoolBackend || process.env.BASALT_E2E_PRODUCTION_OPS === "1";
++    if (input.manualCron && nativePoolBackend)
        return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
--    const apiListener = poolBackend ? yield* cloudListener : input.listener;
--    if (poolBackend) {
-+    const poolGateway = poolBackend || process.env.BASALT_E2E_PRODUCTION_OPS === "1";
-+    const apiListener = poolGateway ? yield* cloudListener : input.listener;
-+    if (poolGateway) {
-       const gateway = yield* cloudPoolGateway(input.origin, directory, apiListener.url);
-       yield* input.listener.set(gateway);
+     const apiListener = poolBackend ? yield* cloudListener : input.listener;
+@@ -199,5 +200,5 @@
      }
+     const apiPort = 0;
+-    const stack = poolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
++    const stack = nativePoolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
+     const stage = `e2e-${randomBytes(8).toString("hex")}`;
+     const container = `executor-${stage}`;
+@@ -332,8 +333,8 @@
+       // Built assets avoid Vite contention in timed scenarios. The HTTP-only native backend
+       // uses the supported source port configuration, without starting the dashboard dev process.
+-      CLOUD_DEV_DASHBOARD: poolBackend ? "source" : "built",
++      CLOUD_DEV_DASHBOARD: nativePoolBackend ? "source" : "built",
+       CLOUD_DEV_API_PORT: String(apiPort),
+       CLOUD_DEV_WEB_PORT: new URL(input.origin).port,
+-      ...(poolBackend
++      ...(nativePoolBackend
+         ? { EXECUTOR_CATALOG_URL: `${browser}/native-provider-fixture/catalog/index.json` }
+         : {}),
 diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
 --- a/e2e/tests/production-ops.spec.ts
 +++ b/e2e/tests/production-ops.spec.ts

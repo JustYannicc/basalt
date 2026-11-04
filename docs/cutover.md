@@ -98,9 +98,13 @@ Check that Claude Code uses the new base URL, Codex selects the new provider
 with `requires_openai_auth = true` and `X-Api-Key`, and both select the new
 `signalbox` MCP server. Do not publish config contents.
 
-Inspect any older unmarked entries separately. After backing them up, remove
-only entries proven to target the retired setup. Never hardcode a known person's
-old names or addresses into setup. Confirm no client still selects the old
+When setup finds existing MCP connections, it asks whether to replace the old
+Executor connection or keep both. It lists connection names without credentials.
+Choose the names to replace; unrelated local MCP servers stay. The same undo
+command restores replaced connections. When an agent runs setup, it relays this
+choice and reruns with `--replace-mcp NAME` for each approved name or `--keep-mcp`.
+No answer means no config changes and the one-time link is not consumed.
+Confirm no client still selects the old
 model or tools endpoint. Keep a private row for every computer and client;
 an unchecked row blocks shutdown.
 
