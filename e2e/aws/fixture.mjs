@@ -19,7 +19,7 @@ const json = (response, status, value, headers = {}) => {
 };
 
 /** A small AWS MCP and OAuth server. Requests remain local and use synthetic identities. */
-export async function startAwsFixture() {
+export async function startAwsFixture({ clientName }) {
   const expectedLoopbackCallback = "http://127.0.0.1:43119/oauth/callback";
   const events = {
     registrations: [],
@@ -95,9 +95,11 @@ export async function startAwsFixture() {
         });
 
       if (url.pathname === "/mcp" && request.method === "GET") {
-        return response.writeHead(401, {
-          "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
-        }).end();
+        return response
+          .writeHead(401, {
+            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+          })
+          .end();
       }
 
       if (url.pathname === "/register" && request.method === "POST") {
@@ -106,8 +108,16 @@ export async function startAwsFixture() {
         assert.deepEqual(input.grant_types, ["authorization_code", "refresh_token"]);
         assert.deepEqual(input.response_types, ["code"]);
         assert.equal(input.scope, undefined, "AWS publishes no OAuth scope strings");
-        assert.equal(input.client_name, "AWS");
-        assert.equal(input.application_type, "native", "AWS Sign-In must receive a native loopback client");
+        assert.equal(
+          input.client_name,
+          clientName,
+          "OAuth registration must identify the host product",
+        );
+        assert.equal(
+          input.application_type,
+          "native",
+          "AWS Sign-In must receive a native loopback client",
+        );
         const callbacks = input.redirect_uris ?? [];
         acceptedCallback = callbacks[0];
         events.registrations.push({
@@ -141,7 +151,10 @@ export async function startAwsFixture() {
         const challenge = url.searchParams.get("code_challenge") ?? "";
         const resource = url.searchParams.get("resource") ?? "";
         const client = clients.get(clientId);
-        assert.ok(client?.redirectUris.includes(redirectUri), "Authorization used an unregistered callback");
+        assert.ok(
+          client?.redirectUris.includes(redirectUri),
+          "Authorization used an unregistered callback",
+        );
         assert.ok(state.length > 0, "Authorization did not include OAuth state");
         assert.equal(url.searchParams.get("code_challenge_method"), "S256");
         assert.ok(challenge.length > 0, "Authorization did not include a PKCE challenge");
@@ -162,7 +175,11 @@ export async function startAwsFixture() {
 
       if (url.pathname === "/token" && request.method === "POST") {
         const input = new URLSearchParams(await bodyOf(request));
-        assert.equal(request.headers.authorization, undefined, "Public clients do not send a secret");
+        assert.equal(
+          request.headers.authorization,
+          undefined,
+          "Public clients do not send a secret",
+        );
         assert.equal(input.get("client_secret"), null, "Public clients do not send a secret");
         const clientId = input.get("client_id") ?? "";
         if (input.get("grant_type") === "authorization_code") {
@@ -172,7 +189,9 @@ export async function startAwsFixture() {
           assert.equal(grant.redirectUri, input.get("redirect_uri"));
           assert.equal(grant.resource, input.get("resource"));
           assert.equal(
-            createHash("sha256").update(input.get("code_verifier") ?? "").digest("base64url"),
+            createHash("sha256")
+              .update(input.get("code_verifier") ?? "")
+              .digest("base64url"),
             grant.challenge,
             "Token exchange did not prove the registered PKCE challenge",
           );
@@ -182,8 +201,14 @@ export async function startAwsFixture() {
           const refreshToken = `aws-fixture-refresh-${grant.actor}-${randomUUID()}`;
           access.set(token, grant.actor);
           refresh.set(refreshToken, { actor: grant.actor, grantId, generation: 0 });
-          events.exchanges.push({ actor: grant.actor, clientId, resource: grant.resource, pkce: true,
-            grantId, refreshGeneration: 0 });
+          events.exchanges.push({
+            actor: grant.actor,
+            clientId,
+            resource: grant.resource,
+            pkce: true,
+            grantId,
+            refreshGeneration: 0,
+          });
           return json(response, 200, {
             access_token: token,
             token_type: "Bearer",
@@ -211,8 +236,13 @@ export async function startAwsFixture() {
           });
           refresh.set(refreshToken, { ...current, generation });
           access.set(token, current.actor);
-          events.refreshes.push({ actor: current.actor, clientId, grantId: current.grantId,
-            previousGeneration: current.generation, issuedGeneration: generation });
+          events.refreshes.push({
+            actor: current.actor,
+            clientId,
+            grantId: current.grantId,
+            previousGeneration: current.generation,
+            issuedGeneration: generation,
+          });
           return json(response, 200, {
             access_token: token,
             token_type: "Bearer",
@@ -224,7 +254,9 @@ export async function startAwsFixture() {
       }
 
       if (url.pathname === "/mcp" && request.method === "POST") {
-        const actor = access.get((/^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? "") ?? [])[1]);
+        const actor = access.get(
+          (/^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? "") ?? [])[1],
+        );
         if (!actor) return response.writeHead(401).end();
         const message = JSON.parse(await bodyOf(request));
         events.mcp.push({ actor, method: message.method, tool: message.params?.name });
@@ -246,7 +278,8 @@ export async function startAwsFixture() {
           const name = message.params?.name;
           if (!tools.some((tool) => tool.name === name))
             return json(response, 200, {
-              jsonrpc: "2.0", id: message.id,
+              jsonrpc: "2.0",
+              id: message.id,
               result: { isError: true, content: [{ type: "text", text: "Unknown fixture tool" }] },
             });
           const input = message.params?.arguments ?? {};
@@ -260,7 +293,8 @@ export async function startAwsFixture() {
           });
         }
         return json(response, 200, {
-          jsonrpc: "2.0", id: message.id,
+          jsonrpc: "2.0",
+          id: message.id,
           error: { code: -32601, message: "Method not found" },
         });
       }
@@ -274,7 +308,10 @@ export async function startAwsFixture() {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const listening = server.address();
-  assert.ok(listening && typeof listening === "object", "Fixture server did not expose its TCP address");
+  assert.ok(
+    listening && typeof listening === "object",
+    "Fixture server did not expose its TCP address",
+  );
   const endpoint = new URL("http://127.0.0.1");
   endpoint.port = String(listening.port);
   origin = endpoint.origin;
@@ -282,15 +319,24 @@ export async function startAwsFixture() {
   return {
     origin,
     host,
-    setCallbacksAllowed(value) { allowCallbacks = value; },
-    callbackUri() { return acceptedCallback; },
+    setCallbacksAllowed(value) {
+      allowCallbacks = value;
+    },
+    callbackUri() {
+      return acceptedCallback;
+    },
     expectedCallback: expectedLoopbackCallback,
-    observations() { return structuredClone(events); },
+    observations() {
+      return structuredClone(events);
+    },
     async approve(authorizationUrl, actor) {
       const authorize = new URL(authorizationUrl);
       assert.equal(authorize.origin, origin, "OAuth authorization escaped the local fixture");
       authorize.searchParams.set("fixture_actor", actor);
-      const result = await fetch(authorize, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      const result = await fetch(authorize, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
       assert.equal(result.status, 302, "The local OAuth fixture did not redirect to its callback");
       const location = result.headers.get("location");
       assert.ok(location, "The local OAuth fixture omitted its callback URI");
@@ -299,7 +345,7 @@ export async function startAwsFixture() {
     async stop() {
       await new Promise((resolve, reject) => {
         if (!server.listening) return resolve();
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
     },
