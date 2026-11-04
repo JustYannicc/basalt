@@ -784,9 +784,9 @@ new file mode 100644
 @@ -0,0 +1,673 @@
 +{
 +  "jira": {
-+    "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
-+    "sha256": "30d96390297b247d3e734110a689c9314209021b00badacea12fdf2a34f97ad4",
-+    "checkedAt": "2026-10-31",
++    "url": "https://app.signalbox.run/catalog/openapi/atlassian/5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72.json",
++    "sha256": "5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72",
++    "checkedAt": "2026-11-04",
 +    "scheme": "OAuth2",
 +    "pathPrefix": "/ex/jira/{cloudId}",
 +    "title": "Jira Platform",
@@ -1074,9 +1074,9 @@ new file mode 100644
 +    ]
 +  },
 +  "serviceManagement": {
-+    "url": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
-+    "sha256": "511d6e039a28c094e7a369dc3f17b7dbd6d067ba6e2071d6c2b86d939f8d0e17",
-+    "checkedAt": "2026-10-31",
++    "url": "https://app.signalbox.run/catalog/openapi/atlassian/81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797.json",
++    "sha256": "81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797",
++    "checkedAt": "2026-11-04",
 +    "scheme": "OAuth2",
 +    "pathPrefix": "/ex/jira/{cloudId}",
 +    "title": "Jira Service Management",

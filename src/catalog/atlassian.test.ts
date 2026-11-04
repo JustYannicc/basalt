@@ -38,7 +38,7 @@ test("the app source is served locally without contacting the official publisher
     noFetch,
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), atlassianAddition().source);
+  assert.deepEqual(await response.json(), atlassianAddition(new URL(url).origin).source);
   const head = await handleCatalog(new Request(url, { method: "HEAD" }), noFetch);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");

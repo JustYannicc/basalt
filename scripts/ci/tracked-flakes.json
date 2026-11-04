@@ -1,0 +1,25 @@
+[
+  {
+    "id": "physical-database-0165",
+    "owner": "CI reliability",
+    "fix": { "pullRequest": 304, "carry": "0165" },
+    "job": "production-ops-identity",
+    "file": "production-ops-database.spec.ts",
+    "titles": [
+      "Cloud production operations enforce the reviewed physical database with equivalent fixture rows"
+    ],
+    "signature": "account-checksum-only"
+  },
+  {
+    "id": "production-ops-remove-400",
+    "owner": "CI reliability",
+    "fix": { "carry": "0174" },
+    "job": "production-ops",
+    "file": "production-ops.spec.ts",
+    "titles": [
+      "Cloud production operations bind inventories to the runtime database target",
+      "Cloud production operations encrypt named read-only inventories and backups and refuse unreviewed writes"
+    ],
+    "signature": "remove-400-after-passed-body"
+  }
+]

@@ -14,7 +14,10 @@ export const providers = {
     family: {
       id: "openai",
       name: "OpenAI",
-      methods: { codex: { mechanism: "interactive" }, apiKey: { mechanism: "api-key" } },
+      methods: {
+        codex: { mechanism: "interactive", offering: "subscription" },
+        apiKey: { mechanism: "api-key" },
+      },
     },
     name: "OpenAI",
     hosts: ["api.openai.com", "chatgpt.com"],
@@ -24,7 +27,10 @@ export const providers = {
     family: {
       id: "anthropic",
       name: "Anthropic",
-      methods: { claude: { mechanism: "interactive" }, apiKey: { mechanism: "api-key" } },
+      methods: {
+        claude: { mechanism: "interactive", offering: "subscription" },
+        apiKey: { mechanism: "api-key" },
+      },
     },
     name: "Anthropic",
     hosts: ["api.anthropic.com"],
@@ -60,7 +66,7 @@ export const providers = {
     family: {
       id: "antigravity",
       name: "Antigravity",
-      methods: { antigravity: { mechanism: "interactive" } },
+      methods: { antigravity: { mechanism: "interactive", offering: "subscription" } },
     },
     name: "Antigravity",
     hosts: ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"],
@@ -71,8 +77,8 @@ export const providers = {
       id: "kimi",
       name: "Kimi",
       methods: {
-        kimi: { mechanism: "interactive" },
-        "kimi-ai": { mechanism: "interactive" },
+        kimi: { mechanism: "interactive", offering: "subscription" },
+        "kimi-ai": { mechanism: "interactive", offering: "subscription" },
         apiKey: { mechanism: "api-key" },
       },
     },
@@ -88,14 +94,21 @@ export const providers = {
     family: {
       id: "xai",
       name: "xAI",
-      methods: { xai: { mechanism: "interactive" }, apiKey: { mechanism: "api-key" } },
+      methods: {
+        xai: { mechanism: "interactive", offering: "subscription" },
+        apiKey: { mechanism: "api-key" },
+      },
     },
     name: "xAI",
     hosts: ["api.x.ai", "grok.com"],
     auth: { xai: subscription("Grok subscription"), apiKey: token("xAI API key") },
   }),
   devin: defineProvider({
-    family: { id: "devin", name: "Devin", methods: { devin: { mechanism: "interactive" } } },
+    family: {
+      id: "devin",
+      name: "Devin",
+      methods: { devin: { mechanism: "interactive", offering: "subscription" } },
+    },
     name: "Devin",
     hosts: ["api.devin.ai"],
     auth: { devin: subscription("Devin subscription") },
@@ -104,7 +117,10 @@ export const providers = {
     family: {
       id: "meta",
       name: "Meta",
-      methods: { meta: { mechanism: "interactive" }, apiKey: { mechanism: "api-key" } },
+      methods: {
+        meta: { mechanism: "interactive", offering: "subscription" },
+        apiKey: { mechanism: "api-key" },
+      },
     },
     name: "Meta",
     hosts: ["api.llama.com", "meta.ai"],
@@ -145,12 +161,20 @@ export const providers = {
     auth: { apiKey: token("OpenRouter API key") },
   }),
   qwen: defineProvider({
-    family: { id: "qwen", name: "Qwen", methods: { subscription: { mechanism: "interactive" } } },
+    family: {
+      id: "qwen",
+      name: "Qwen",
+      methods: { subscription: { mechanism: "interactive", offering: "subscription" } },
+    },
     name: "Qwen",
     auth: { subscription: subscription("Qwen subscription") },
   }),
   iflow: defineProvider({
-    family: { id: "iflow", name: "iFlow", methods: { subscription: { mechanism: "interactive" } } },
+    family: {
+      id: "iflow",
+      name: "iFlow",
+      methods: { subscription: { mechanism: "interactive", offering: "subscription" } },
+    },
     name: "iFlow",
     auth: { subscription: subscription("iFlow subscription") },
   }),

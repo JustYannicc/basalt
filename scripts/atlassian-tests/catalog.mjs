@@ -105,7 +105,21 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   assert.equal(entry.source, "apps/atlassian.json");
   const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), fetcher);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), snapshot, "Feed differs from captured source");
+  const served = await response.json();
+  const template = structuredClone(snapshot);
+  const templateCoverage = template.files.find((file) => file.path === "api-coverage.json");
+  for (const name of ["jira", "serviceManagement"]) {
+    const api = provenance.capabilities.apis[name];
+    templateCoverage.content = templateCoverage.content.replace(
+      JSON.stringify(api.url),
+      JSON.stringify(`${origin}/catalog/openapi/atlassian/${api.sha256}.json`),
+    );
+  }
+  assert.deepEqual(
+    served,
+    template,
+    "Feed differs from captured source except its own asset origin",
+  );
   const files = structuredClone(snapshot.files);
   const manifest = JSON.parse(files.find((file) => file.path === "package.json").content);
   assert.equal(manifest.name, capture.packageName);
