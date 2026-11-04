@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/contracts/identity-consent.ts b/apps/hosted/web/src/contracts/identity-consent.ts
-index 85a7440..e5667b4 100644
+index 85a7440..911be2f 100644
 --- a/apps/hosted/web/src/contracts/identity-consent.ts
 +++ b/apps/hosted/web/src/contracts/identity-consent.ts
 @@ -1,11 +1,14 @@
@@ -14,12 +14,12 @@ index 85a7440..e5667b4 100644
 -import { refreshResourceDirectory } from "./resource-access.ts";
 +import { refreshResourceDirectory, resourceDirectoryAtom } from "./resource-access.ts";
 +import { inventoryAtom } from "./organization.ts";
-+import { savedAccountRowsAtom } from "./account-projection.ts";
++import { reconcileSavedAccountRows } from "./account-projection.ts";
 +import { refreshAppDiscovery } from "./app-discovery.ts";
  import { refreshAppLinks } from "./app-accounts.ts";
  
  export const identityConsentAtoms = (key: {
-@@ -31,6 +34,36 @@ export const identityConsentAtoms = (key: {
+@@ -31,6 +34,34 @@
      }),
    );
    return {
@@ -46,9 +46,7 @@ index 85a7440..e5667b4 100644
 +        }
 +        yield* Effect.all([
 +          get.result(inventoryAtom(key.organization), { suspendOnWaiting: true }),
-+          get.result(savedAccountRowsAtom({ organization: key.organization }), {
-+            suspendOnWaiting: true,
-+          }),
++          reconcileSavedAccountRows(get, key.organization),
 +        ]);
 +        if (Exit.isFailure(directory)) return yield* Effect.failCause(directory.cause);
 +      }),
@@ -56,7 +54,7 @@ index 85a7440..e5667b4 100644
      plan: HostedClient.runtime.fn((input: IdentityConsentSelection & { readonly method: string }) =>
        Effect.gen(function* () {
          const { connection, ...selection } = yield* prepare(input);
-@@ -46,7 +79,6 @@ export const identityConsentAtoms = (key: {
+@@ -46,7 +77,6 @@
            readonly method: string;
            readonly sourceAccount: NonNullable<IdentityConsentSelection["sourceAccount"]>;
          },
@@ -64,7 +62,7 @@ index 85a7440..e5667b4 100644
        ) =>
          Effect.gen(function* () {
            const { connection, additionalConnections } = yield* prepare(input);
-@@ -54,10 +86,6 @@ export const identityConsentAtoms = (key: {
+@@ -54,10 +84,6 @@
              params: { organization: key.organization, connection },
              payload: { additionalConnections, method: input.method, account: input.sourceAccount },
            });
@@ -177,10 +175,10 @@ index fa6e7ff..492684f 100644
      file: "account-identity-policy.spec.ts",
 diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
 new file mode 100644
-index 0000000..231906a
+index 0000000..50a85e1
 --- /dev/null
 +++ b/e2e/tests/account-identity-reconciliation.spec.ts
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,216 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -351,6 +349,18 @@ index 0000000..231906a
 +        expect(linked).toHaveLength(1);
 +        accounts.add(linked[0]!.account.id);
 +        yield* browser.checkpoint("Connection committed while only the account projection failed");
++        const beforeFailedRetry = failedReads;
++        yield* browser.use("A failed read-only retry keeps the warning", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).click(),
++        );
++        yield* browser.use("The failed retry is available again", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true, disabled: false }).waitFor(),
++        );
++        expect(failedReads).toBeGreaterThan(beforeFailedRetry);
++        expect(saves).toBe(1);
++        yield* browser.use("Save success survives the failed retry", (page) =>
++          page.getByRole("status").filter({ hasText: "Apps connected" }).waitFor(),
++        );
 +        const beforeRetry = projectionReads,
 +          failedBeforeRetry = failedReads;
 +        blocked = false;
@@ -386,10 +396,10 @@ index 0000000..231906a
 +  );
 +});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index 788ece8..b1fe43d 100644
+index 788ece8..e950d6f 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
-@@ -167,6 +167,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -167,6 +167,7 @@
            },
          );
          const later = yield* product.deploy(issuer.origin, "Later app", ["write"]);
@@ -397,7 +407,7 @@ index 788ece8..b1fe43d 100644
          // Retained sign-ins predate verified identity metadata; their grants and app links survive.
          yield* legacyStorage([
            {
-@@ -303,13 +304,58 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -303,12 +304,57 @@
          yield* browser.use("The existing grant covers the app", (page) =>
            page.getByRole("button", { name: "Add app", exact: true }).waitFor(),
          );
@@ -409,6 +419,8 @@ index 788ece8..b1fe43d 100644
 +          page.setViewportSize({ width: 390, height: 844 }),
 +        );
          yield* browser.use("Connect the covered app", (page) =>
+-          page
+-            .getByRole("button", { name: "Add app", exact: true })
 +          page.getByRole("button", { name: "Add apps", exact: true }).click(),
 +        );
 +        yield* browser.use("Show confirmed completion", (page) =>
@@ -440,24 +452,22 @@ index 788ece8..b1fe43d 100644
 +            page
 +              .locator(".inventory-row")
 +              .filter({ hasText: "same@example.test" })
-+              .getByRole("link", { name: "Later app" })
++              .getByRole("link", { name: "Later app", exact: true, includeHidden: true })
 +              .waitFor(),
 +        );
 +        yield* browser.checkpoint("The covered app is connected at phone width");
 +        yield* browser.use("Finish the confirmed connection", (page) =>
-           page
--            .getByRole("button", { name: "Add app", exact: true })
++          page
 +            .getByRole("button", { name: "Done", exact: true })
              .click()
              .then(() => dismissAccountName(page)),
-         );
++        );
 +        yield* browser.use("Return to desktop width", (page) =>
 +          page.setViewportSize({ width: 1280, height: 900 }),
-+        );
+         );
          yield* browser.use("The added app appears on the same identity row", (page) =>
            page
-             .locator(".inventory-row")
-@@ -319,7 +365,15 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -319,7 +365,15 @@
          );
          expect((yield* issuer.metrics).authorizations).toBe(5);
          expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
@@ -691,3 +701,33 @@ index 0000000..ad2598c
 +    </div>
 +  );
 +}
+diff --git a/apps/hosted/web/src/contracts/account-projection.ts b/apps/hosted/web/src/contracts/account-projection.ts
+index ec5e7ca..337f413 100644
+--- a/apps/hosted/web/src/contracts/account-projection.ts
++++ b/apps/hosted/web/src/contracts/account-projection.ts
+@@ -1,6 +1,7 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
++import { readInto } from "@executor-js/ui/contracts/mutations";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { Data } from "effect";
++import { Data, Effect } from "effect";
+ import { Atom, AsyncResult } from "effect/reactivity";
+ import type { AppId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+@@ -39,3 +40,16 @@
+ /** All mounted pool filters share the same source, so a changed binding refreshes them together. */
+ export const refreshSavedAccountRows = (get: Atom.FnContext, organization: OrganizationReference) =>
+   get.refresh(accounts(new OrganizationKey({ organization })));
++
++/** Completion owns a fresh read; a retained list value is not proof that refresh succeeded. */
++export const reconcileSavedAccountRows = (
++  get: Atom.FnContext,
++  organization: OrganizationReference,
++) =>
++  Effect.flatMap(HostedClient, (client) =>
++    readInto(
++      get,
++      accounts(new OrganizationKey({ organization })),
++      client.resourceAccess.accounts({ params: { organization }, query: {} }),
++    ),
++  );
