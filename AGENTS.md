@@ -75,6 +75,9 @@ enforce boundaries. For behavior, read [pools](docs/pools.md) or
 ## Prove the outcome
 
 Run focused `package.json` checks and applicable [CI gates](.github/workflows/ci.yml).
+Before pushing, run `npm run ci:fast -- --base origin/main` on the committed
+candidate. [Local CI](scripts/ci/README.md) covers preparation and exact commands.
+
 Authenticated tests use upstream's `apps/hosted/testing/cli.ts` and
 `apps/hosted/cloud/scripts/test-accounts.ts`; previews use the password-sign-in
 overlay. Keep test accounts dedicated.
