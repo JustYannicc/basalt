@@ -115,7 +115,11 @@ def wait_for_home(
     while not stop.is_set() and time.monotonic() < deadline:
         exit_code = child.process.poll()
         if exit_code is not None:
-            drain_exited_home(child)
+            try:
+                drain_exited_home(child)
+            except Exception:
+                report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
+                raise
             if home_boot_requires_import(exit_code, child.config_empty.is_set()):
                 return "empty"
             report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
