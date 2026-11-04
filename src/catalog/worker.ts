@@ -14,6 +14,7 @@ import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
+import { googleMapsAddition } from "./google-maps/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws, ...providerApps];
@@ -36,7 +37,13 @@ function configuredAdditions(
 ): readonly FeedAddition[] {
   const additions = [atlassianAddition(origin)];
   const zendesk = zendeskAddition(metadata);
-  return [...additions, ...sourceAdditions, ...recipeAdditions(origin), zendesk];
+  return [
+    ...additions,
+    ...sourceAdditions,
+    ...recipeAdditions(origin),
+    googleMapsAddition(origin),
+    zendesk,
+  ];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
@@ -92,24 +99,25 @@ export async function handleCatalog(
     });
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
-    const body =
-      relative === "index.json"
-        ? JSON.stringify(
-            withOAuthDeferrals(
-              withServiceIdentities(
-                mergeFeed(
-                  withVercelSignIn(
-                    withMiroCapabilities(
-                      withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
-                    ),
-                  ),
-                  additions,
-                ),
-              ),
-              reviewedOAuth,
-            ),
-          )
-        : onServedFramework(await response.text());
+    let body: string;
+    if (relative === "index.json") {
+      const upstream = withVercelSignIn(
+        withMiroCapabilities(
+          withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+        ),
+      );
+      const feed = {
+        ...upstream,
+        apps: upstream.apps.filter(
+          (entry) => !(entry.id === "google-maps" && entry.package === "@executor.sh/google-maps"),
+        ),
+      };
+      body = JSON.stringify(
+        withOAuthDeferrals(withServiceIdentities(mergeFeed(feed, additions)), reviewedOAuth),
+      );
+    } else {
+      body = onServedFramework(await response.text());
+    }
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
     return unavailable();
