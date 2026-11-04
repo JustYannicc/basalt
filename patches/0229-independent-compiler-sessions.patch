@@ -767,6 +767,18 @@ index dc3664410..9fae5e314 100644
    it.effect(scenarios.providerAdoptionPurge.title, (context) =>
      withHostedCase(context, proveConcurrentOrganizationPurge),
    );
+diff --git a/packages/sdk/src/contracts/workerd-modules.d.ts b/packages/sdk/src/contracts/workerd-modules.d.ts
+index eba884e54..979ad4534 100644
+--- a/packages/sdk/src/contracts/workerd-modules.d.ts
++++ b/packages/sdk/src/contracts/workerd-modules.d.ts
+@@ -1,5 +1,7 @@
+ /** Narrow constructors provided by workerd; app modules never load these in Node. */
+ declare module "cloudflare:workers" {
++  export const RpcTarget: typeof import("@cloudflare/workers-types").CloudflareWorkersModule.RpcTarget;
++  export type RpcTarget = import("@cloudflare/workers-types").CloudflareWorkersModule.RpcTarget;
+   export abstract class WorkerEntrypoint<Env> {
+     protected readonly ctx: import("@cloudflare/workers-types").ExecutionContext;
+     protected readonly env: Env;
 diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 index 0cc983db2..42595dc19 100644
 --- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
