@@ -200,6 +200,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const database = new URL(env.POOL_DATABASE_URL);
     this.importRemoval = new ImportRemoval({
       read: selection => withHistoryDatabase(env.POOL_DATABASE_URL, db => removalSnapshot(db, selection)),
+      ready: () => this.managementReady(),
       home: (path, init) => this.mirrorHome.response(path, init), storage: ctx.storage,
       secret: env.POOL_APP_SIGNING_KEY, release: productionOpsRelease,
       databaseOrigin: `${database.hostname}:${database.port || "5432"}${database.pathname}`,

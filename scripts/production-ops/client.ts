@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { canonical, hash } from "./artifact.ts";
 import { failure, failureReceipt, OperationFailure } from "./failure.ts";
-import { importRemovalName, importRemovalPath } from "../../src/pool/import-removal/paths.ts";
+import {
+  importRecoveryName,
+  importRemovalName,
+  importRemovalPath,
+} from "../../src/pool/import-removal/paths.ts";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -32,8 +36,18 @@ export async function productionOperation(
     !/^[a-z0-9][a-z0-9-]{0,127}$/.test(input.selection)
   )
     throw new OperationFailure(failure("config", "config"));
-  const action = input.action === "migrate" ? input.mode : input.action;
-  if (!["inventory", "backup", "prepare", "dry-run", "apply"].includes(action))
+  const recovery = input.selection === importRecoveryName;
+  const removal = recovery || input.selection === importRemovalName;
+  const action =
+    input.action === "migrate"
+      ? recovery && input.mode === "apply"
+        ? "resume"
+        : input.mode
+      : input.action;
+  if (
+    !["inventory", "backup", "prepare", "dry-run", "apply", "resume"].includes(action) ||
+    (recovery && !["prepare", "resume"].includes(action))
+  )
     throw new OperationFailure(failure("config", "config"));
   if (input.recipient.length > 2048 || !/^[A-Za-z0-9+/]+={0,2}$/.test(input.recipient))
     throw new OperationFailure(failure("config", "config"));
@@ -58,14 +72,33 @@ export async function productionOperation(
     recipient: input.recipient,
   };
   if (input.selection === importRemovalName && action === "inventory" && input.planSha256) {
-    if (!/^[a-f0-9]{64}$/.test(input.planSha256)) throw new OperationFailure(failure("config", "config"));
+    if (!/^[a-f0-9]{64}$/.test(input.planSha256))
+      throw new OperationFailure(failure("config", "config"));
     operation.planSha256 = input.planSha256;
   }
-  if (action === "apply") {
+  if (recovery && action === "prepare") {
     const previous = input.previous;
     if (
       !record(previous) ||
       previous.action !== "dry-run" ||
+      !record(previous.artifact) ||
+      !record(previous.backup) ||
+      !/^[a-f0-9]{64}$/.test(input.planSha256) ||
+      previous.artifact.sha256 !== input.planSha256 ||
+      hash(`${canonical(previous.backup)}\n`) !== previous.backupSha256
+    )
+      throw new OperationFailure(failure("config", "config"));
+    Object.assign(operation, {
+      originalArtifact: previous.artifact,
+      originalPlanSha256: input.planSha256,
+      originalBackupSha256: previous.backupSha256,
+    });
+  }
+  if (action === "apply" || action === "resume") {
+    const previous = input.previous;
+    if (
+      !record(previous) ||
+      previous.action !== (recovery ? "prepare" : "dry-run") ||
       !record(previous.artifact) ||
       !record(previous.backup) ||
       !/^[a-f0-9]{64}$/.test(input.planSha256) ||
@@ -92,13 +125,16 @@ export async function productionOperation(
   }).catch(() => {
     throw new OperationFailure(failure("auth", "auth"));
   });
-  const response = await fetcher(`${target.origin}${input.selection === importRemovalName ? importRemovalPath : "/api/internal/production-ops"}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ envelope }),
-    redirect: "error",
-    signal: AbortSignal.timeout(30_000),
-  }).catch(() => {
+  const response = await fetcher(
+    `${target.origin}${removal ? importRemovalPath : "/api/internal/production-ops"}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ envelope }),
+      redirect: "error",
+      signal: AbortSignal.timeout(removal ? 290_000 : 30_000),
+    },
+  ).catch(() => {
     throw new OperationFailure(failure("unknown", "request"));
   });
   const refusal = () =>

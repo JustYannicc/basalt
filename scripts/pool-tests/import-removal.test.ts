@@ -6,7 +6,7 @@ import { decryptArtifact } from "../production-ops/artifact.ts";
 import { productionOperation } from "../production-ops/client.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { HomeClient, PoolHome } from "../../src/pool/control.ts";
-import { importRemovalName } from "../../src/pool/import-removal/paths.ts";
+import { importRecoveryName, importRemovalName } from "../../src/pool/import-removal/paths.ts";
 import { removalSelection } from "../../src/pool/import-removal/contract.ts";
 import { handleImportRemoval } from "../../src/pool/import-removal/http.ts";
 import { ImportRemoval } from "../../src/pool/import-removal/operation.ts";
@@ -51,7 +51,7 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     const secret = "ab".repeat(32);
     const read = () => withHistoryDatabase(fixture.database, db => removalSnapshot(db, selection));
     const storage = new MemoryStorage();
-    const deps = { read, home: (path: string, init: RequestInit) => client.response(path, init), storage,
+    const deps = { read, ready: async () => {}, home: (path: string, init: RequestInit) => client.response(path, init), storage,
       secret, release: "fixture-release", databaseOrigin: "fixture-database" };
     let operation = new ImportRemoval(deps);
     const defaults = { target, signingKey: secret, selection: importRemovalName, mode: "dry-run", request: JSON.stringify(selection),
@@ -123,11 +123,28 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     assert.equal(decrypt(failed.artifact).receipt.status, "incomplete");
     assert.equal(deletes(), initialDeletes);
 
-    operation = new ImportRemoval(deps);
-    dry = await invoke();
-    const result = await invoke(approve(dry));
-    assert.equal(result.action, "apply");
+    const originalReceipt = decrypt(failed.artifact).receipt;
+    const prepare = () => invoke({ action: "prepare", selection: importRecoveryName, previous: dry, planSha256: approve(dry).planSha256 });
+    let recovery = await prepare();
+    operation = new ImportRemoval({ ...deps, storage: failedStorage, home: async (path, init) => {
+      const response = await client.response(path, init);
+      assert.ok(response.ok);
+      await response.body?.cancel();
+      throw new Error("Synthetic lost DELETE acknowledgement");
+    } });
+    await assert.rejects(invoke({ ...approve(recovery), selection: importRecoveryName }));
+    assert.equal(deletes() - initialDeletes, 1);
+    const interrupted = await read();
+    assert.equal(interrupted.credentials.filter(row => row.deleted).length, 1);
+    operation = new ImportRemoval({ ...deps, storage: failedStorage });
+    await assert.rejects(invoke({ ...approve(recovery), selection: importRecoveryName }), "An uncertain recovery also needs a new reviewed plan");
+    recovery = await prepare();
+    assert.equal(recovery.changes, 7);
+    const result = await invoke({ ...approve(recovery), selection: importRecoveryName });
+    assert.equal(result.action, "resume");
     assert.deepEqual(result.verification, { ok: true, checks: { credentialsRemoved: true, membershipsRemoved: true, retainedUnchanged: true } });
+    const originalAfter = await invoke({ action: "inventory", planSha256: approve(dry).planSha256 });
+    assert.deepEqual(decrypt(originalAfter.artifact).receipt, originalReceipt, "Recovery preserves the original incomplete receipt");
     const after = await read();
     assert.ok(after.credentials.every(row => row.deleted));
     assert.ok(after.memberships.every(row => row.deleted));
@@ -135,7 +152,7 @@ test("signed import removal backs up four exact Home rows, refuses drift and unc
     const expectedPaths = [...selection.remove.map(row => `/v8/management/credentials?id=${row.id}`),
       ...before.memberships.map(row => `/v8/management/channel-group-details/${row.id}`)].sort();
     assert.deepEqual(fixture.events.filter(event => event.method === "DELETE").map(event => event.path).sort(), expectedPaths);
-    const repeated = await invoke(approve(dry));
+    const repeated = await invoke({ ...approve(recovery), selection: importRecoveryName });
     assert.equal(repeated.repeated, true);
     assert.equal(deletes() - initialDeletes, 8);
     assert.deepEqual((await new PoolHome(client, pool).membership()).members.map(row => row.auth_id), [retained.id]);

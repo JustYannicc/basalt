@@ -17,7 +17,10 @@ try {
   const mode = process.env.OPS_MODE ?? "";
   const source = process.env.OPS_SOURCE_RUN ?? "";
   let previous: unknown;
-  if (action === "migrate" && mode === "apply") {
+  if (
+    (action === "migrate" && mode === "apply") ||
+    (action === "prepare" && process.env.OPS_SELECTION === "home-agent-import-recovery-v1")
+  ) {
     if (
       !/^[1-9][0-9]{0,19}$/.test(source) ||
       !process.env.GITHUB_TOKEN ||
