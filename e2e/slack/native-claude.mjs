@@ -97,7 +97,6 @@ export async function proveInstalledClaude({
   historyAccountId,
   postAccountId,
   peerAccountId,
-  userToken,
   marker,
   peerMarker,
   channel,
@@ -128,7 +127,6 @@ export async function proveInstalledClaude({
     input: {
       contentType: "application/x-www-form-urlencoded",
       body: { channel, text: postText },
-      headers: { token: userToken },
     },
   };
   const completionText = "slack-local-proof-ok";

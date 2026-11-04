@@ -1,0 +1,2341 @@
+diff --git a/apps/hosted/web/src/contracts/pool-usage.ts b/apps/hosted/web/src/contracts/pool-usage.ts
+new file mode 100644
+index 0000000..a7dee51
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/pool-usage.ts
+@@ -0,0 +1,88 @@
++/** A pool's per-person usage and weekly caps, read through the host and never by running the pool. */
++import { hydrated } from "@executor-js/ui/contracts/http";
++import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { Data, Effect, Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import type { AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { PoolUsagePage } from "@executor-js/hosted-server/pool-usage";
++import { HostedClient } from "./api.ts";
++import { protectedQuery } from "./protected-query.ts";
++
++export type { PoolUsagePage } from "@executor-js/hosted-server/pool-usage";
++export type PoolUsageMember = PoolUsagePage["members"][number];
++export type PoolMemberId = PoolUsageMember["member"];
++
++class PageKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  /** The last person on the previous page, in the backend's order; none for the first page. */
++  readonly after: string | undefined;
++}> {}
++class MemberKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly member: PoolMemberId;
++}> {}
++
++const source = Atom.family((key: PageKey) =>
++  HostedClient.query(
++    "poolUsage",
++    "get",
++    hydrated({
++      params: { organization: key.organization, app: key.app },
++      query: { after: key.after },
++    }),
++  ).pipe(revalidated, protectedQuery),
++);
++const polled = Atom.family((key: PageKey) => pollingQuery(source(key)));
++const page = Atom.family((key: PageKey) =>
++  Atom.readable(
++    (get) => {
++      const result = get(source(key));
++      // Only a pool reconciles while the page is visible, including while a refresh fails; an
++      // ordinary app's null answer is read once.
++      const current = AsyncResult.value(result);
++      if (Option.isSome(current) && current.value !== null) get(polled(key));
++      return result;
++    },
++    (refresh) => refresh(source(key)),
++  ),
++);
++/** One page of a pool's people, or null when the app is not a pool. Managers only. */
++export const poolUsagePageAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly after: string | undefined;
++}) => page(new PageKey(key));
++
++const setCap = Atom.family((key: MemberKey) =>
++  HostedClient.runtime.fn(
++    (input: { readonly weekly: number | null; readonly after: string | undefined }, get) =>
++      Effect.flatMap(HostedClient, (client) =>
++        client.poolUsage.setCap({
++          params: { organization: key.organization, app: key.app, member: key.member },
++          payload: { weekly: input.weekly },
++        }),
++      ).pipe(
++        // The response carries no usage, so the page the person was edited on is read again.
++        // A conflict or lost access also means that page is out of date.
++        Effect.ensuring(
++          Effect.sync(() =>
++            get.refresh(
++              source(
++                new PageKey({ organization: key.organization, app: key.app, after: input.after }),
++              ),
++            ),
++          ),
++        ),
++      ),
++  ),
++);
++/** Set or remove one person's weekly cap; each person has an independent write. */
++export const setPoolCapAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly member: PoolMemberId;
++}) => setCap(new MemberKey(key));
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index d093669..84a59f1 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -14,6 +14,7 @@ import {
+   type RequirementLink,
+ } from "@executor-js/ui/contracts/app-accounts";
+ import { AppAccessSettings } from "./resource-settings.tsx";
++import { PoolUsageSection } from "./pool-usage.tsx";
+ import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
+ import {
+   emptyManyRequirements,
+@@ -389,6 +390,9 @@ export function AppDetailPage({
+                   <section className="rounded-lg border p-5">
+                     <AppAccessSettings app={current.id} />
+                   </section>
++                  {canManage && (
++                    <PoolUsageSection key={current.id} app={current.id} canUse={canUse} />
++                  )}
+                 </AppSettings>
+               );
+             if (
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
+new file mode 100644
+index 0000000..f0448ea
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
+@@ -0,0 +1,297 @@
++/** A person's weekly cap: its summary, the inline editor and the drafts that survive paging. */
++import { useAtomSet } from "@effect/atom-react";
++import { Exit } from "effect";
++import { useEffect, useId, useRef } from "react";
++import type { AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { Button } from "@executor-js/ui/components/button";
++import { Input } from "@executor-js/ui/components/input";
++import { LocalTime } from "@executor-js/ui/components/local-time";
++import { setPoolCapAtom, type PoolUsageMember } from "../../contracts/pool-usage.ts";
++import { appError, type HostedError } from "../../contracts/errors.ts";
++import { SharingFailure } from "../components/sharing.tsx";
++import { resetDay, resetMoment } from "./pool-usage-details.tsx";
++import {
++  capInput,
++  capText,
++  capTone,
++  parseCap,
++  successText,
++  type Formats,
++} from "./pool-usage-format.ts";
++
++/** An unsaved cap change. `attempt` ties a save's answer to the draft that sent it. */
++export interface CapDraft {
++  readonly mode: "none" | "cap";
++  readonly value: string;
++  readonly invalid: boolean;
++  readonly status: "editing" | "saving" | "failed";
++  readonly error?: string | undefined;
++  readonly attempt: number;
++}
++/**
++ * The section keeps every person's draft and last confirmed save, so a draft survives closing the
++ * details or leaving the page, and a save's answer reaches only the person it was sent for.
++ */
++export interface CapEdits {
++  readonly drafts: ReadonlyMap<string, CapDraft>;
++  /** Confirmed saves, shown until the person edits that cap again. */
++  readonly saved: ReadonlyMap<string, { readonly weekly: number | null }>;
++}
++export const noEdits = (): CapEdits => ({ drafts: new Map(), saved: new Map() });
++
++const put = <V,>(map: ReadonlyMap<string, V>, key: string, value: V | undefined) => {
++  const next = new Map(map);
++  if (value === undefined) next.delete(key);
++  else next.set(key, value);
++  return next;
++};
++/** Starting or changing a draft clears the last save's confirmation. */
++export const editDraft = (
++  edits: CapEdits,
++  member: string,
++  change: (draft: CapDraft | undefined) => CapDraft | undefined,
++): CapEdits => ({
++  drafts: put(edits.drafts, member, change(edits.drafts.get(member))),
++  saved: put(edits.saved, member, undefined),
++});
++/** A save's answer applies only to the draft that is still waiting for it. */
++export const settleSave = (
++  edits: CapEdits,
++  member: string,
++  attempt: number,
++  weekly: number | null,
++  exit: Exit.Exit<unknown, HostedError>,
++): CapEdits => {
++  const draft = edits.drafts.get(member);
++  if (draft?.attempt !== attempt || draft.status !== "saving") return edits;
++  return Exit.isSuccess(exit)
++    ? { drafts: put(edits.drafts, member, undefined), saved: put(edits.saved, member, { weekly }) }
++    : {
++        ...edits,
++        drafts: put(edits.drafts, member, {
++          ...draft,
++          status: "failed",
++          error: appError(exit.cause),
++        }),
++      };
++};
++export const savingAny = (edits: CapEdits) =>
++  [...edits.drafts.values()].some((draft) => draft.status === "saving");
++
++export function CapSummary({
++  member,
++  saved,
++  format,
++}: {
++  readonly member: PoolUsageMember;
++  readonly saved: { readonly weekly: number | null } | undefined;
++  readonly format: Formats;
++}) {
++  if (member.owner) return <span className="block">No cap for the pool owner</span>;
++  const cap = member.cap;
++  // A confirmed save shows its own value until the page reads it back, never the old cap.
++  if (saved !== undefined && (cap?.weekly ?? null) !== saved.weekly)
++    return (
++      <span role="status" className="block">
++        <span className={successText}>
++          Saved: {saved.weekly === null ? "no cap" : `${format.cost(saved.weekly)} a week`}
++        </span>{" "}
++        · updating usage…
++      </span>
++    );
++  const confirmation = saved !== undefined && (
++    <span role="status" className={successText}>
++      {" "}
++      · Cap saved
++    </span>
++  );
++  if (cap === null)
++    return (
++      <span className="block">
++        No cap
++        {confirmation}
++      </span>
++    );
++  const tone = capTone(cap);
++  return (
++    <>
++      <span className="block">
++        <span className={capText[tone]}>{format.cost(cap.used)}</span> of {format.cost(cap.weekly)}
++        {confirmation}
++      </span>
++      <span className="block">
++        {tone === "reached" ? (
++          <span className="text-destructive">Cap reached</span>
++        ) : (
++          `${format.cost(cap.remaining)} left`
++        )}{" "}
++        · resets <LocalTime value={cap.resetAt} options={resetDay} title={resetMoment} />
++      </span>
++    </>
++  );
++}
++
++/** The first draft for a person starts from their saved cap. */
++export const openDraft = (member: PoolUsageMember, previous: CapDraft | undefined): CapDraft => ({
++  mode: "cap",
++  value: member.cap === null ? "" : capInput(member.cap.weekly),
++  invalid: false,
++  status: "editing",
++  attempt: previous?.attempt ?? 0,
++});
++
++/**
++ * Normal form controls with explicit Save and Cancel. Saving disables the form, so one draft has at
++ * most one write in flight; a failure keeps the draft for another try.
++ */
++export function CapEditor({
++  organization,
++  app,
++  after,
++  member,
++  label,
++  draft,
++  onDraft,
++  onSettled,
++}: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  /** The cursor of the page this person is on; a save reads that page again. */
++  readonly after: string | undefined;
++  readonly member: PoolUsageMember;
++  readonly label: string;
++  readonly draft: CapDraft;
++  readonly onDraft: (change: (draft: CapDraft | undefined) => CapDraft | undefined) => void;
++  readonly onSettled: (
++    attempt: number,
++    weekly: number | null,
++    exit: Exit.Exit<unknown, HostedError>,
++  ) => void;
++}) {
++  const id = useId();
++  const amountInput = useRef<HTMLInputElement>(null);
++  const save = useAtomSet(setPoolCapAtom({ organization, app, member: member.member }), {
++    mode: "promiseExit",
++  });
++  useEffect(() => {
++    // Opening replaced the focused "Set cap" control, so focus has nowhere else to be. A draft
++    // shown again with its page leaves focus where the person put it.
++    const active = document.activeElement;
++    if (active === null || active === document.body) amountInput.current?.focus();
++  }, []);
++  const saving = draft.status === "saving";
++  const submit = async () => {
++    if (saving) return;
++    let weekly: number | null = null;
++    if (draft.mode === "cap") {
++      const parsed = parseCap(draft.value);
++      if (parsed === undefined) {
++        onDraft((current) => current && { ...current, invalid: true });
++        amountInput.current?.focus();
++        return;
++      }
++      weekly = parsed;
++    }
++    const attempt = draft.attempt + 1;
++    onDraft(
++      (current) =>
++        current && { ...current, invalid: false, status: "saving", error: undefined, attempt },
++    );
++    onSettled(attempt, weekly, await save({ weekly, after }));
++  };
++  return (
++    <form
++      noValidate
++      aria-busy={saving}
++      className="mx-1 mb-3 grid gap-3 rounded-lg border bg-muted/60 px-4 py-3"
++      onSubmit={(event) => {
++        event.preventDefault();
++        void submit();
++      }}
++    >
++      <fieldset disabled={saving} className="m-0 grid gap-2.5 border-0 p-0">
++        <legend className="mb-2.5 p-0 text-sm font-medium">Weekly cap for {label}</legend>
++        <label className="flex items-center gap-2.5 text-sm">
++          <input
++            type="radio"
++            name={`${id}-mode`}
++            className="size-4 accent-foreground"
++            checked={draft.mode === "none"}
++            onChange={() =>
++              onDraft((current) => current && { ...current, mode: "none", invalid: false })
++            }
++          />
++          No cap
++        </label>
++        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 text-sm">
++          <input
++            id={`${id}-cap`}
++            type="radio"
++            name={`${id}-mode`}
++            className="size-4 accent-foreground"
++            checked={draft.mode === "cap"}
++            onChange={() => {
++              onDraft((current) => current && { ...current, mode: "cap" });
++              amountInput.current?.focus();
++            }}
++          />
++          <label htmlFor={`${id}-cap`}>Cap at</label>
++          <span className="relative w-34">
++            <span
++              aria-hidden="true"
++              className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted-foreground"
++            >
++              $
++            </span>
++            <Input
++              ref={amountInput}
++              inputMode="decimal"
++              autoComplete="off"
++              className="pl-5.5 tabular-nums"
++              aria-label={`Weekly cap for ${label}, in US dollars`}
++              aria-invalid={draft.invalid || undefined}
++              aria-describedby={draft.invalid ? `${id}-invalid` : undefined}
++              value={draft.value}
++              onChange={(event) => {
++                const value = event.target.value;
++                // Typing an amount means capping, whichever option was chosen before.
++                onDraft((current) => current && { ...current, value, mode: "cap", invalid: false });
++              }}
++            />
++          </span>
++          <span className="text-muted-foreground">a week</span>
++          {draft.invalid && (
++            <span
++              id={`${id}-invalid`}
++              role="alert"
++              className="basis-full pl-6.5 text-xs text-destructive"
++            >
++              Enter an amount from $0.01 to $100,000, to the cent.
++            </span>
++          )}
++        </div>
++      </fieldset>
++      {draft.status === "failed" && draft.error !== undefined && (
++        <SharingFailure
++          title="Cap not saved"
++          message={`${draft.error} Your change is kept; save again to retry.`}
++        />
++      )}
++      <div className="flex flex-wrap items-center gap-3">
++        <Button type="submit" size="sm" loading={saving} aria-label="Save weekly cap">
++          Save
++        </Button>
++        <Button
++          type="button"
++          variant="outline"
++          size="sm"
++          disabled={saving}
++          onClick={() => onDraft(() => undefined)}
++        >
++          Cancel
++        </Button>
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
+new file mode 100644
+index 0000000..d13c1a9
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
+@@ -0,0 +1,333 @@
++/** One person's pool usage: a daily chart by model, the per-model list and their weekly cap. */
++import { LocalTime } from "@executor-js/ui/components/local-time";
++import type { PoolUsageMember } from "../../contracts/pool-usage.ts";
++import {
++  amount,
++  capBar,
++  capText,
++  capTone,
++  chartColumns,
++  chartSeries,
++  dayRange,
++  modelKey,
++  modelShade,
++  otherShade,
++  providerName,
++  rankModels,
++  share,
++  type Cap,
++  type Formats,
++  type Metric,
++  type ModelUsage,
++} from "./pool-usage-format.ts";
++
++const percent = (fraction: number) => `${Math.round(fraction * 10_000) / 100}%`;
++/** Reset moments read in the reader's own time zone, with the exact time on hover. */
++export const resetDay: Intl.DateTimeFormatOptions = {
++  weekday: "short",
++  day: "numeric",
++  month: "short",
++};
++export const resetMoment: Intl.DateTimeFormatOptions = {
++  ...resetDay,
++  hour: "numeric",
++  minute: "2-digit",
++  timeZoneName: "short",
++};
++
++export function PoolMemberDetails({
++  id,
++  label,
++  member,
++  from,
++  to,
++  metric,
++  onMetric,
++  format,
++}: {
++  readonly id: string;
++  readonly label: string;
++  readonly member: PoolUsageMember;
++  readonly from: string;
++  readonly to: string;
++  readonly metric: Metric;
++  readonly onMetric: (metric: Metric) => void;
++  readonly format: Formats;
++}) {
++  const { tokens } = member;
++  return (
++    <div id={id} role="group" aria-label={`Usage of ${label}`} className="grid gap-4 px-1 pb-4">
++      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
++        <MetricSwitch metric={metric} onChange={onMetric} />
++        <span className="text-xs text-muted-foreground tabular-nums">
++          {format.tokens(tokens.input)} input · {format.tokens(tokens.cacheRead)} cached ·{" "}
++          {format.tokens(tokens.cacheWrite)} cache writes · {format.tokens(tokens.output)} output
++        </span>
++      </div>
++      {member.cap !== null && <CapMeter cap={member.cap} format={format} />}
++      <UsageChart member={member} from={from} to={to} metric={metric} format={format} />
++      <ModelList
++        models={member.models}
++        total={amount(member, metric)}
++        metric={metric}
++        format={format}
++      />
++    </div>
++  );
++}
++
++function MetricSwitch({
++  metric,
++  onChange,
++}: {
++  readonly metric: Metric;
++  readonly onChange: (metric: Metric) => void;
++}) {
++  const options = [
++    { id: "tokens", label: "Tokens" },
++    { id: "cost", label: "API cost" },
++  ] as const;
++  return (
++    <div
++      role="group"
++      aria-label="Chart and list show"
++      className="inline-flex h-8 w-fit rounded-md border p-0.5 max-[740px]:h-11"
++    >
++      {options.map((option) => (
++        // A two-state toggle reads as pressed or not, so plain buttons keep Tab order simple.
++        <button
++          key={option.id}
++          type="button"
++          aria-pressed={metric === option.id}
++          onClick={() => onChange(option.id)}
++          className="rounded-[4px] px-3 text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-pressed:bg-accent aria-pressed:text-foreground"
++        >
++          {option.label}
++        </button>
++      ))}
++    </div>
++  );
++}
++
++function CapMeter({ cap, format }: { readonly cap: Cap; readonly format: Formats }) {
++  const tone = capTone(cap);
++  const left = share(cap.remaining, cap.weekly);
++  const remaining = format.cost(Math.max(0, cap.remaining));
++  return (
++    <div className="grid gap-2 rounded-md border px-4 py-3">
++      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 text-sm">
++        <span className="font-medium">Weekly cap</span>
++        <span className="text-xs text-muted-foreground tabular-nums">
++          {tone === "reached" ? (
++            <span className={capText.reached}>Cap reached</span>
++          ) : (
++            <>
++              <span className={capText[tone]}>{remaining}</span> of {format.cost(cap.weekly)} left
++            </>
++          )}{" "}
++          · {format.cost(cap.used)} used · resets{" "}
++          <LocalTime value={cap.resetAt} options={resetMoment} />
++        </span>
++      </div>
++      <div
++        role="meter"
++        aria-label="Weekly cap left"
++        aria-valuemin={0}
++        aria-valuemax={100}
++        aria-valuenow={Math.round(left * 100)}
++        aria-valuetext={`${remaining} of ${format.cost(cap.weekly)} left`}
++        className={`h-1.5 rounded-full ${tone === "reached" ? "bg-destructive/20" : "bg-accent"}`}
++      >
++        <div className={`h-full rounded-full ${capBar[tone]}`} style={{ width: percent(left) }} />
++      </div>
++    </div>
++  );
++}
++
++function Swatch({ className }: { readonly className: string }) {
++  return <span aria-hidden="true" className={`size-2 shrink-0 rounded-[2px] ${className}`} />;
++}
++
++function UsageChart({
++  member,
++  from,
++  to,
++  metric,
++  format,
++}: {
++  readonly member: PoolUsageMember;
++  readonly from: string;
++  readonly to: string;
++  readonly metric: Metric;
++  readonly format: Formats;
++}) {
++  const range = dayRange(from, to);
++  const first = range[0];
++  const last = range.at(-1);
++  const { top, other } = chartSeries(member.models, metric);
++  const keys = top.map(modelKey);
++  const shadeOf = new Map(top.map((model) => [modelKey(model), modelShade(model)]));
++  const columns = chartColumns(member.days, range, keys, metric);
++  const peak = Math.max(0, ...columns.map((column) => column.total));
++  const metricLabel = metric === "tokens" ? "Tokens" : "API cost";
++  if (peak === 0)
++    return (
++      <p className="text-sm text-muted-foreground">
++        {metric === "cost"
++          ? "None of these requests has a known API price."
++          : "No tokens recorded in this period."}
++      </p>
++    );
++  return (
++    <figure className="m-0 grid gap-2">
++      <div
++        aria-hidden="true"
++        className="grid h-28 grid-flow-col items-end gap-[3px] border-b"
++        style={{ gridAutoColumns: "minmax(0, 1fr)" }}
++      >
++        {columns.map((column) => (
++          <div
++            key={column.day}
++            className="flex h-full flex-col-reverse rounded-t-[2px] [@media(pointer:fine)]:hover:bg-accent/60"
++            title={`${format.day(column.day)}: ${format.metric(column.total, metric)}`}
++          >
++            {column.parts.map((part) => (
++              <div
++                key={part.key}
++                className={`w-full last:rounded-t-[2px] ${shadeOf.get(part.key) ?? otherShade}`}
++                style={{ height: percent(part.amount / peak) }}
++              />
++            ))}
++          </div>
++        ))}
++      </div>
++      <div
++        aria-hidden="true"
++        className="flex justify-between text-xs text-muted-foreground tabular-nums"
++      >
++        <span>{first !== undefined && format.day(first)}</span>
++        <span>{last !== undefined && format.day(last)}</span>
++      </div>
++      <figcaption className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
++        <span className="sr-only">{metricLabel} per day by model:</span>
++        {top.map((model) => (
++          <span key={modelKey(model)} className="inline-flex min-w-0 items-center gap-1.5">
++            <Swatch className={modelShade(model)} />
++            <span className="truncate" title={`${model.model} · ${providerName(model.provider)}`}>
++              {model.model}
++            </span>
++          </span>
++        ))}
++        {other && (
++          <span className="inline-flex items-center gap-1.5">
++            <Swatch className={otherShade} />
++            Other models
++          </span>
++        )}
++      </figcaption>
++      {/* The wrapper clips the table's minimum width without hiding its accessible rows. */}
++      <div className="sr-only">
++        <table>
++          <caption>{metricLabel} per day</caption>
++          <thead>
++            <tr>
++              <th scope="col">Day</th>
++              <th scope="col">Total</th>
++              {top.map((model) => (
++                <th key={modelKey(model)} scope="col">
++                  {model.model}
++                </th>
++              ))}
++              {other && <th scope="col">Other models</th>}
++            </tr>
++          </thead>
++          <tbody>
++            {columns
++              .filter((column) => column.total > 0)
++              .map((column) => (
++                <tr key={column.day}>
++                  <th scope="row">{format.day(column.day)}</th>
++                  <td>{format.metric(column.total, metric)}</td>
++                  {keys.map((key) => (
++                    <td key={key}>
++                      {format.metric(
++                        column.parts.find((part) => part.key === key)?.amount ?? 0,
++                        metric,
++                      )}
++                    </td>
++                  ))}
++                  {other && (
++                    <td>
++                      {format.metric(
++                        column.parts.find((part) => part.key === "")?.amount ?? 0,
++                        metric,
++                      )}
++                    </td>
++                  )}
++                </tr>
++              ))}
++          </tbody>
++        </table>
++      </div>
++    </figure>
++  );
++}
++
++function ModelList({
++  models,
++  total,
++  metric,
++  format,
++}: {
++  readonly models: readonly ModelUsage[];
++  readonly total: number;
++  readonly metric: Metric;
++  readonly format: Formats;
++}) {
++  if (models.length === 0) return null;
++  return (
++    <div className="grid gap-1">
++      <h3 className="text-sm font-medium">By model</h3>
++      <ul aria-label="By model" className="m-0 list-none border-t p-0">
++        {rankModels(models, metric).map((model) => {
++          const value = amount(model, metric);
++          return (
++            <li
++              key={modelKey(model)}
++              className="grid grid-cols-[minmax(0,12rem)_1fr_minmax(9rem,auto)] items-center gap-x-6 gap-y-1.5 border-b px-1 py-2.5 max-[740px]:grid-cols-[minmax(0,1fr)_auto]"
++            >
++              <div className="min-w-0">
++                <span className="block truncate font-medium" title={model.model}>
++                  {model.model}
++                </span>
++                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
++                  <Swatch className={modelShade(model)} />
++                  {providerName(model.provider)}
++                </span>
++              </div>
++              <div
++                aria-hidden="true"
++                className="h-1.5 rounded-full bg-accent max-[740px]:order-last max-[740px]:col-span-2"
++              >
++                <div
++                  className={`h-full rounded-full ${modelShade(model)}`}
++                  style={{ width: percent(share(value, total)) }}
++                />
++              </div>
++              <span className="text-right text-xs text-muted-foreground tabular-nums">
++                <span className="font-medium text-foreground">{format.metric(value, metric)}</span>
++                {" · "}
++                {metric === "tokens"
++                  ? `${format.cost(model.cost)} API cost`
++                  : `${format.tokens(model.tokens.total)} tokens`}
++                {" · "}
++                {format.count(model.requests)} {model.requests === 1 ? "request" : "requests"}
++                {model.unpriced > 0 && <> · {format.count(model.unpriced)} unpriced</>}
++              </span>
++            </li>
++          );
++        })}
++      </ul>
++    </div>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-format.ts b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
+new file mode 100644
+index 0000000..a555958
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-format.ts
+@@ -0,0 +1,214 @@
++/**
++ * Formatting, chart series and model colours for pool usage in Settings. The pool's own usage view
++ * formats the same backend data the same way; it ships separately, so nothing is shared at runtime.
++ */
++import { Schema } from "effect";
++import { WeeklyPoolCap } from "@executor-js/hosted-server/pool-usage";
++import { formatMoment } from "@executor-js/ui/hooks/display-format";
++import type { DisplayFormat } from "@executor-js/ui/contracts/display";
++import type { PoolUsageMember } from "../../contracts/pool-usage.ts";
++
++export type Metric = "tokens" | "cost";
++type Usage = Pick<PoolUsageMember, "requests" | "cost" | "unpriced" | "tokens">;
++export type ModelUsage = PoolUsageMember["models"][number];
++export type DayUsage = PoolUsageMember["days"][number];
++export type Cap = NonNullable<PoolUsageMember["cap"]>;
++
++/** Number and day formats in the reader's locale. Days are UTC calendar days, as the backend counts. */
++export const formats = (format: DisplayFormat) => {
++  const compact = new Intl.NumberFormat(format.locale, {
++    notation: "compact",
++    maximumFractionDigits: 1,
++  });
++  const dollars = new Intl.NumberFormat(format.locale, {
++    style: "currency",
++    currency: "USD",
++    minimumFractionDigits: 2,
++    maximumFractionDigits: 2,
++  });
++  const whole = new Intl.NumberFormat(format.locale);
++  const tokens = (value: number) => compact.format(Math.max(0, value));
++  // Under a cent reads "<$0.01" so a small spend never looks free.
++  const cost = (value: number) =>
++    value <= 0
++      ? dollars.format(0)
++      : value < 0.01
++        ? `<${dollars.format(0.01)}`
++        : dollars.format(value);
++  const day = (value: string) => {
++    const at = Date.parse(`${value}T00:00:00Z`);
++    return Number.isNaN(at)
++      ? value
++      : formatMoment(at, format, { day: "numeric", month: "short", timeZone: "UTC" });
++  };
++  return {
++    tokens,
++    cost,
++    count: (value: number) => whole.format(value),
++    day,
++    metric: (amount: number, metric: Metric) =>
++      metric === "tokens" ? tokens(amount) : cost(amount),
++  };
++};
++export type Formats = ReturnType<typeof formats>;
++
++export const amount = (usage: Usage, metric: Metric) =>
++  metric === "tokens" ? usage.tokens.total : usage.cost;
++
++/** Every UTC day from `from` up to `to`, so the chart keeps the days nobody used. */
++export const dayRange = (from: string, to: string): readonly string[] => {
++  const start = Date.parse(from);
++  const end = Date.parse(to);
++  if (Number.isNaN(start) || Number.isNaN(end)) return [];
++  const first = new Date(start);
++  const days: string[] = [];
++  for (
++    let at = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate());
++    at < end && days.length < 31;
++    at += 86_400_000
++  )
++    days.push(new Date(at).toISOString().slice(0, 10));
++  return days;
++};
++
++/** One model through one provider; the same model name can come through two. */
++export const modelKey = (model: Pick<ModelUsage, "provider" | "model">) =>
++  `${model.provider}:${model.model}`;
++
++/** Biggest first by the chosen metric, then by name, so ties never reorder between reads. */
++export const rankModels = (models: readonly ModelUsage[], metric: Metric) =>
++  [...models].sort(
++    (left, right) =>
++      amount(right, metric) - amount(left, metric) || left.model.localeCompare(right.model),
++  );
++
++/** The biggest models get their own series; the rest fold into Other. */
++export const chartSeries = (models: readonly ModelUsage[], metric: Metric, limit = 4) => {
++  const ranked = rankModels(models, metric).filter((model) => amount(model, metric) > 0);
++  return { top: ranked.slice(0, limit), other: ranked.length > limit };
++};
++
++export interface Column {
++  readonly day: string;
++  readonly total: number;
++  /** Per model key, then "" for Other models when any remain. */
++  readonly parts: readonly { readonly key: string; readonly amount: number }[];
++}
++export const chartColumns = (
++  days: readonly DayUsage[],
++  range: readonly string[],
++  keys: readonly string[],
++  metric: Metric,
++): readonly Column[] => {
++  const byDay = new Map(days.map((day) => [day.day, day]));
++  return range.map((day) => {
++    const usage = byDay.get(day);
++    if (usage === undefined) return { day, total: 0, parts: [] };
++    const parts = keys.map((key) => ({
++      key,
++      amount: usage.models
++        .filter((model) => modelKey(model) === key)
++        .reduce((sum, model) => sum + amount(model, metric), 0),
++    }));
++    const named = parts.reduce((sum, part) => sum + part.amount, 0);
++    const total = amount(usage, metric);
++    return {
++      day,
++      total,
++      parts: total - named > 1e-9 ? [...parts, { key: "", amount: total - named }] : parts,
++    };
++  });
++};
++
++export const share = (part: number, whole: number) =>
++  whole > 0 ? Math.min(1, Math.max(0, part / whole)) : 0;
++
++/**
++ * Provider ids are the pool backend's own. Two are named here because their product names differ
++ * from their ids; any other id is shown as sent rather than guessed.
++ */
++const providerNames: Readonly<Record<string, string>> = { claude: "Claude", codex: "ChatGPT" };
++export const providerName = (provider: string) => providerNames[provider] ?? provider;
++
++type Lab = "anthropic" | "openai" | "google" | "other";
++/**
++ * The model's maker decides its colour family, read from the model name first because one
++ * provider can serve another lab's models. An unrecognised model gets a neutral colour.
++ */
++const lab = (model: ModelUsage): Lab => {
++  const name = model.model.toLowerCase();
++  if (name.startsWith("claude")) return "anthropic";
++  if (/^(gpt|chatgpt|codex|o\d)/.test(name)) return "openai";
++  if (name.startsWith("gemini")) return "google";
++  if (model.provider === "claude") return "anthropic";
++  if (model.provider === "codex") return "openai";
++  return "other";
++};
++// Tailwind only sees complete class names, so every shade is written out. Light and dark pairs keep
++// the same order. Claude is orange; OpenAI is black on light and white on dark.
++const shades: Readonly<Record<Lab, readonly string[]>> = {
++  anthropic: [
++    "bg-[#b95533] dark:bg-[#f1b198]",
++    "bg-[#d97757] dark:bg-[#d97757]",
++    "bg-[#9f705c] dark:bg-[#a36e58]",
++    "bg-[#e8a487] dark:bg-[#c25f3c]",
++  ],
++  openai: [
++    "bg-[#111111] dark:bg-[#f5f5f5]",
++    "bg-[#626262] dark:bg-[#b2b2b2]",
++    "bg-[#3a3a3a] dark:bg-[#dcdcdc]",
++  ],
++  google: ["bg-[#1a73e8] dark:bg-[#8ab4f8]", "bg-[#5e97f6] dark:bg-[#aecbfa]"],
++  other: ["bg-slate-500 dark:bg-slate-400", "bg-stone-500 dark:bg-stone-400"],
++};
++/** Models outside the chart's named series. */
++export const otherShade = "bg-muted-foreground/35";
++
++const hash = (text: string) => {
++  let value = 0;
++  for (const char of text) value = (value * 31 + char.charCodeAt(0)) >>> 0;
++  return value;
++};
++/**
++ * A model keeps one colour wherever it appears, whatever its rank, page or metric: the shade
++ * comes from its name alone. Known tiers get fixed shades; the rest are spread by a stable hash.
++ */
++export const modelShade = (model: ModelUsage) => {
++  const family = lab(model);
++  const palette = shades[family];
++  const name = model.model.toLowerCase();
++  const tier =
++    family === "anthropic"
++      ? ["opus", "sonnet", "haiku"].findIndex((word) => name.includes(word))
++      : family === "openai" && /mini|nano|luna/.test(name)
++        ? 1
++        : -1;
++  return palette[tier >= 0 ? tier : hash(modelKey(model)) % palette.length] ?? otherShade;
++};
++
++/** Spent, close to spent, or within the cap. Close means under 15% of the cap left. */
++export type CapTone = "reached" | "low" | "ok";
++export const capTone = (cap: Cap): CapTone =>
++  cap.remaining <= 0 ? "reached" : cap.remaining / cap.weekly < 0.15 ? "low" : "ok";
++export const capText: Readonly<Record<CapTone, string>> = {
++  reached: "font-medium text-destructive",
++  low: "font-medium text-amber-700 dark:text-amber-400",
++  ok: "font-medium text-foreground",
++};
++export const capBar: Readonly<Record<CapTone, string>> = {
++  reached: "bg-destructive",
++  low: "bg-amber-500 dark:bg-amber-400",
++  ok: "bg-emerald-600 dark:bg-emerald-400",
++};
++export const successText = "text-emerald-700 dark:text-emerald-400";
++
++/** Dollars a week as typed: positive, to the cent, at most the backend's limit. */
++export const parseCap = (text: string): number | undefined => {
++  const plain = text.replace(/[$,\s]/g, "");
++  if (!/^\d+(\.\d{1,2})?$/.test(plain)) return undefined;
++  const value = Number(plain);
++  return Schema.is(WeeklyPoolCap)(value) ? value : undefined;
++};
++/** The saved cap as an editable amount, such as "50" or "12.50". */
++export const capInput = (weekly: number) =>
++  Number.isInteger(weekly) ? String(weekly) : weekly.toFixed(2);
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx
+new file mode 100644
+index 0000000..4b7cff3
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-row.tsx
+@@ -0,0 +1,178 @@
++/** One person in a pool's usage list: their totals, weekly cap and expandable details. */
++import type { Exit } from "effect";
++import { useEffect, useId, useRef } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
++import type { AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { Button } from "@executor-js/ui/components/button";
++import type { PoolUsageMember } from "../../contracts/pool-usage.ts";
++import type { HostedError } from "../../contracts/errors.ts";
++import { CapEditor, CapSummary, openDraft, type CapDraft } from "./pool-usage-cap.tsx";
++import { PoolMemberDetails } from "./pool-usage-details.tsx";
++import type { Formats, Metric } from "./pool-usage-format.ts";
++
++/** Shared by the column header and every row, so they stay aligned. */
++export const rowColumns =
++  "grid grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_6rem_11.5rem_2.25rem] items-start gap-x-4 max-[740px]:grid-cols-3 max-[740px]:gap-y-2";
++// Column headers are visual only; each value carries its own label for screen readers and phones.
++const valueLabel =
++  "sr-only max-[740px]:not-sr-only max-[740px]:block text-xs text-muted-foreground";
++
++/** A person has a name, an email, or both; the backend sends empty strings for missing ones. */
++const personLabel = (member: Pick<PoolUsageMember, "name" | "email">) =>
++  member.name.trim() || member.email || "Unnamed person";
++
++export function PoolMemberRow({
++  organization,
++  app,
++  after,
++  member,
++  you,
++  expanded,
++  onToggle,
++  metric,
++  onMetric,
++  draft,
++  onDraft,
++  onSettled,
++  saved,
++  from,
++  to,
++  format,
++}: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly after: string | undefined;
++  readonly member: PoolUsageMember;
++  readonly you: boolean;
++  readonly expanded: boolean;
++  readonly onToggle: () => void;
++  readonly metric: Metric;
++  readonly onMetric: (metric: Metric) => void;
++  readonly draft: CapDraft | undefined;
++  readonly onDraft: (change: (draft: CapDraft | undefined) => CapDraft | undefined) => void;
++  readonly onSettled: (
++    attempt: number,
++    weekly: number | null,
++    exit: Exit.Exit<unknown, HostedError>,
++  ) => void;
++  readonly saved: { readonly weekly: number | null } | undefined;
++  readonly from: string;
++  readonly to: string;
++  readonly format: Formats;
++}) {
++  const id = useId();
++  const label = personLabel(member);
++  const row = useRef<HTMLLIElement>(null);
++  const edit = useRef<HTMLButtonElement>(null);
++  // Closing the editor, by Cancel or a confirmed save, returns focus to the control that opened
++  // it, unless the person has already moved elsewhere.
++  const hadDraft = useRef(draft !== undefined);
++  useEffect(() => {
++    const active = document.activeElement;
++    if (
++      hadDraft.current &&
++      draft === undefined &&
++      (active === null || active === document.body || row.current?.contains(active) === true)
++    )
++      edit.current?.focus();
++    hadDraft.current = draft !== undefined;
++  }, [draft]);
++
++  return (
++    <li ref={row} className="border-b">
++      <div className={`${rowColumns} px-1 py-3 max-[740px]:relative max-[740px]:pr-12`}>
++        <div className="min-w-0 max-[740px]:col-span-3">
++          <span className="block truncate font-medium" title={label}>
++            {label}
++            {you && <span className="font-normal text-muted-foreground"> (you)</span>}
++            {member.owner && <span className="font-normal text-muted-foreground"> · Owner</span>}
++          </span>
++          {member.name.trim() !== "" && member.email !== "" && (
++            <span className="block truncate text-xs text-muted-foreground" title={member.email}>
++              {member.email}
++            </span>
++          )}
++        </div>
++        <div className="text-right tabular-nums max-[740px]:text-left">
++          <span className={valueLabel}>Requests</span>
++          {format.count(member.requests)}
++        </div>
++        <div className="text-right tabular-nums max-[740px]:text-left">
++          <span className={valueLabel}>Tokens</span>
++          {member.requests > 0 ? format.tokens(member.tokens.total) : "—"}
++        </div>
++        <div className="text-right tabular-nums max-[740px]:text-left">
++          <span className={valueLabel}>API cost</span>
++          {format.cost(member.cost)}
++          {member.unpriced > 0 && (
++            <span className="block text-xs text-muted-foreground">
++              {format.count(member.unpriced)} unpriced
++            </span>
++          )}
++        </div>
++        <div className="pt-0.5 text-xs text-muted-foreground tabular-nums max-[740px]:col-span-3">
++          <span className="sr-only">Weekly cap: </span>
++          <CapSummary member={member} saved={saved} format={format} />
++          {!member.owner && draft === undefined && (
++            <Button
++              ref={edit}
++              type="button"
++              variant="link"
++              size="xs"
++              className="mt-0.5 h-auto px-0 text-xs text-muted-foreground hover:text-foreground"
++              aria-label={`${member.cap === null ? "Set" : "Change"} weekly cap for ${label}`}
++              onClick={() => onDraft((previous) => openDraft(member, previous))}
++            >
++              {member.cap === null ? "Set cap" : "Change cap"}
++            </Button>
++          )}
++        </div>
++        <div className="max-[740px]:absolute max-[740px]:top-1 max-[740px]:right-0">
++          {member.requests > 0 && (
++            <Button
++              type="button"
++              variant="ghost"
++              size="icon-sm"
++              aria-expanded={expanded}
++              aria-controls={`${id}-details`}
++              aria-label={`${expanded ? "Hide" : "Show"} usage details for ${label}`}
++              onClick={onToggle}
++            >
++              <HugeiconsIcon
++                icon={ArrowDown01Icon}
++                className={`transition-transform duration-150 motion-reduce:transition-none ${expanded ? "rotate-180" : ""}`}
++                aria-hidden
++              />
++            </Button>
++          )}
++        </div>
++      </div>
++      {draft !== undefined && !member.owner && (
++        <CapEditor
++          organization={organization}
++          app={app}
++          after={after}
++          member={member}
++          label={label}
++          draft={draft}
++          onDraft={onDraft}
++          onSettled={onSettled}
++        />
++      )}
++      {expanded && member.requests > 0 && (
++        <PoolMemberDetails
++          id={`${id}-details`}
++          label={label}
++          member={member}
++          from={from}
++          to={to}
++          metric={metric}
++          onMetric={onMetric}
++          format={format}
++        />
++      )}
++    </li>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+new file mode 100644
+index 0000000..0cf6177
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -0,0 +1,303 @@
++/** Pool usage and weekly caps in an app's Settings. Ordinary apps answer null and show nothing. */
++import { useAtomValue } from "@effect/atom-react";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { useEffect, useId, useRef, useState } from "react";
++import type { AppId } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { LocalTime } from "@executor-js/ui/components/local-time";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { useDisplayFormat } from "@executor-js/ui/hooks/display-format";
++import { sessionAtom } from "../../contracts/auth.ts";
++import { poolUsagePageAtom, type PoolUsagePage } from "../../contracts/pool-usage.ts";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { editDraft, noEdits, savingAny, settleSave } from "./pool-usage-cap.tsx";
++import { dayRange, formats, type Formats, type Metric } from "./pool-usage-format.ts";
++import { PoolMemberRow, rowColumns } from "./pool-usage-row.tsx";
++
++/** A page is its cursor and how many people came before it, in the backend's order. */
++interface PageEntry {
++  readonly after: string | undefined;
++  readonly offset: number;
++}
++
++/**
++ * Managers only: the read requires manage access. `canUse` is the caller's own app access, which
++ * says whether managing this pool also lets them use it.
++ */
++export function PoolUsageSection({
++  app,
++  canUse,
++}: {
++  readonly app: AppId;
++  readonly canUse: boolean;
++}) {
++  const { organization } = useOrganizationRoute();
++  const format = formats(useDisplayFormat());
++  const session = AsyncResult.value(useAtomValue(sessionAtom));
++  const viewer = Option.isSome(session) ? session.value?.user.id : undefined;
++  const titleId = useId();
++
++  // Every page stays reachable: Next pushes the backend's cursor, Previous pops back to the last.
++  const [pages, setPages] = useState<readonly [PageEntry, ...PageEntry[]]>(() => [
++    { after: undefined, offset: 0 },
++  ]);
++  const current = pages[pages.length - 1] ?? pages[0];
++  const query = useQuery(poolUsagePageAtom({ organization, app, after: current.after }));
++  const result = query.result;
++  const loaded = Option.getOrUndefined(query.data);
++  const failed = AsyncResult.isFailure(result);
++
++  // While the next page loads, the page being left stays in view, marked busy, not a skeleton.
++  const [shown, setShown] = useState<{ readonly entry: PageEntry; readonly page: PoolUsagePage }>();
++  if (loaded != null && (shown?.page !== loaded || shown.entry !== current))
++    setShown({ entry: current, page: loaded });
++  const paging = loaded === undefined && !failed && shown !== undefined && shown.entry !== current;
++  const page = loaded ?? (paging ? shown?.page : undefined);
++  const rowsAfter = paging ? shown?.entry.after : current.after;
++
++  const [edits, setEdits] = useState(noEdits);
++  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
++  const [metrics, setMetrics] = useState<ReadonlyMap<string, Metric>>(() => new Map());
++  const saving = savingAny(edits);
++
++  // A new page moves focus to the heading, so keyboard focus is not left on a control that just
++  // disappeared or became disabled.
++  const heading = useRef<HTMLHeadingElement>(null);
++  const moved = useRef(false);
++  useEffect(() => {
++    if (!moved.current || loaded == null) return;
++    moved.current = false;
++    heading.current?.focus();
++  }, [loaded]);
++  const go = (next: readonly [PageEntry, ...PageEntry[]]) => {
++    moved.current = true;
++    setPages(next);
++  };
++
++  if (loaded === null) return null;
++  // An app's first read shows nothing until it says the app is a pool, so ordinary apps never
++  // flash a pool section.
++  if (page === undefined && !failed) return null;
++
++  const busyReason = saving ? "Wait for the cap to finish saving." : undefined;
++  const range = page === undefined ? null : rangeOf(page);
++  return (
++    <section aria-labelledby={titleId} className="rounded-lg border p-5">
++      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
++        <h2 ref={heading} id={titleId} tabIndex={-1} className="text-base font-medium outline-none">
++          Pool usage
++        </h2>
++        {page !== undefined && (
++          <span className="text-xs text-muted-foreground tabular-nums">
++            {range !== null && (
++              <>
++                Last {format.count(range.days)} days · {format.day(range.first)} –{" "}
++                {format.day(range.last)}
++              </>
++            )}
++            {page.readAt !== null && (
++              <>
++                {range !== null && " · "}as of{" "}
++                <LocalTime
++                  value={page.readAt}
++                  options={{ hour: "numeric", minute: "2-digit" }}
++                  title={{ dateStyle: "medium", timeStyle: "long" }}
++                />
++              </>
++            )}
++            {loaded !== undefined && result.waiting && <span role="status"> · updating…</span>}
++          </span>
++        )}
++      </div>
++      <p className="mt-2 max-w-xl text-sm text-pretty text-muted-foreground">
++        Each person&apos;s requests through this pool. API cost is what the same tokens would cost
++        at the providers&apos; API prices; unpriced requests used a model without a known price. A
++        weekly cap stops a person&apos;s requests through this pool until it resets.
++      </p>
++      {!canUse &&
++        page !== undefined &&
++        !page.members.some((member) => member.member === viewer) && (
++          <p className="mt-3 text-xs text-muted-foreground">
++            You manage this pool but can&apos;t use it. Managing it doesn&apos;t let you send
++            requests through it or use its accounts.
++          </p>
++        )}
++      {failed && (
++        <div className="mt-4">
++          <HostedFailure
++            cause={result.cause}
++            retry={query.refresh}
++            retrying={result.waiting}
++            layout={page === undefined ? undefined : "compact"}
++          />
++        </div>
++      )}
++      {page !== undefined &&
++        (page.members.length === 0 && current.offset === 0 ? (
++          <p className="mt-4 rounded-lg border border-dashed p-6 text-sm text-pretty text-muted-foreground">
++            {page.native
++              ? "Nobody can use this pool yet. Choose who can under App access."
++              : "Nobody can use this pool yet."}
++          </p>
++        ) : (
++          <>
++            <Totals
++              page={page}
++              offset={(paging ? shown?.entry.offset : undefined) ?? current.offset}
++              paged={pages.length > 1 || page.next !== null}
++              format={format}
++            />
++            <div
++              aria-hidden="true"
++              className={`${rowColumns} mt-4 px-1 pb-2 text-xs text-muted-foreground max-[740px]:hidden`}
++            >
++              <span>Person</span>
++              <span className="text-right">Requests</span>
++              <span className="text-right">Tokens</span>
++              <span className="text-right">API cost</span>
++              <span>Weekly cap</span>
++              <span />
++            </div>
++            <ul
++              aria-label="People who can use this pool"
++              aria-busy={paging}
++              inert={paging}
++              className={`m-0 list-none border-t p-0 max-[740px]:mt-4 ${paging ? "opacity-60" : ""}`}
++            >
++              {page.members.map((member) => (
++                <PoolMemberRow
++                  key={member.member}
++                  organization={organization}
++                  app={app}
++                  after={rowsAfter}
++                  member={member}
++                  you={member.member === viewer}
++                  expanded={expanded.has(member.member)}
++                  onToggle={() =>
++                    setExpanded((open) => {
++                      const next = new Set(open);
++                      if (!next.delete(member.member)) next.add(member.member);
++                      return next;
++                    })
++                  }
++                  metric={metrics.get(member.member) ?? "tokens"}
++                  onMetric={(metric) =>
++                    setMetrics((all) => new Map(all).set(member.member, metric))
++                  }
++                  draft={edits.drafts.get(member.member)}
++                  onDraft={(change) => setEdits((all) => editDraft(all, member.member, change))}
++                  onSettled={(attempt, weekly, exit) =>
++                    setEdits((all) => settleSave(all, member.member, attempt, weekly, exit))
++                  }
++                  saved={edits.saved.get(member.member)}
++                  from={page.from}
++                  to={page.to}
++                  format={format}
++                />
++              ))}
++            </ul>
++          </>
++        ))}
++      {(pages.length > 1 || loaded?.next != null) && (
++        <nav
++          aria-label="Pool usage pages"
++          className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
++        >
++          <span role="status" className="text-xs text-muted-foreground tabular-nums">
++            {paging
++              ? `Loading people from ${format.count(current.offset + 1)}…`
++              : loaded !== undefined && loaded.members.length > 0
++                ? `People ${format.count(current.offset + 1)}–${format.count(current.offset + loaded.members.length)}`
++                : null}
++          </span>
++          <div className="flex gap-2">
++            <Button
++              type="button"
++              variant="outline"
++              size="sm"
++              disabled={pages.length < 2 || paging}
++              disabledReason={busyReason}
++              onClick={() => {
++                const [first, ...rest] = pages;
++                go([first, ...rest.slice(0, -1)]);
++              }}
++            >
++              Previous
++            </Button>
++            <Button
++              type="button"
++              variant="outline"
++              size="sm"
++              disabled={loaded?.next == null}
++              disabledReason={busyReason}
++              onClick={() => {
++                if (loaded?.next == null) return;
++                go([
++                  ...pages,
++                  { after: loaded.next, offset: current.offset + loaded.members.length },
++                ]);
++              }}
++            >
++              Next
++            </Button>
++          </div>
++        </nav>
++      )}
++    </section>
++  );
++}
++
++/** The backend's own interval as UTC days; the last one is the day still in progress. */
++const rangeOf = (page: PoolUsagePage) => {
++  const days = dayRange(page.from, page.to);
++  const first = days[0];
++  const last = days.at(-1);
++  return first === undefined || last === undefined ? null : { days: days.length, first, last };
++};
++
++/** What the listed people used, summed from the backend's per-person totals. */
++function Totals({
++  page,
++  offset,
++  paged,
++  format,
++}: {
++  readonly page: PoolUsagePage;
++  readonly offset: number;
++  readonly paged: boolean;
++  readonly format: Formats;
++}) {
++  const sum = page.members.reduce(
++    (total, member) => ({
++      requests: total.requests + member.requests,
++      tokens: total.tokens + member.tokens.total,
++      cost: total.cost + member.cost,
++      unpriced: total.unpriced + member.unpriced,
++      active: total.active + (member.requests > 0 ? 1 : 0),
++    }),
++    { requests: 0, tokens: 0, cost: 0, unpriced: 0, active: 0 },
++  );
++  const people = page.members.length;
++  return (
++    <p className="mt-4 text-sm text-muted-foreground tabular-nums">
++      {paged ? (
++        <>
++          Of people {format.count(offset + 1)}–{format.count(offset + people)},{" "}
++          <span className="font-medium text-foreground">{format.count(sum.active)}</span> used it
++        </>
++      ) : (
++        <>
++          <span className="font-medium text-foreground">
++            {format.count(sum.active)} of {format.count(people)}
++          </span>{" "}
++          {people === 1 ? "person" : "people"} used it
++        </>
++      )}{" "}
++      · {format.count(sum.requests)} {sum.requests === 1 ? "request" : "requests"} ·{" "}
++      {format.tokens(sum.tokens)} tokens · {format.cost(sum.cost)} API cost
++      {sum.unpriced > 0 && <> · {format.count(sum.unpriced)} unpriced</>}
++    </p>
++  );
++}
+diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
+index 330e8ae..78986c9 100644
+--- a/e2e/support/pool-usage-backend.ts
++++ b/e2e/support/pool-usage-backend.ts
+@@ -21,6 +21,7 @@ export const poolUsageBackend = Effect.gen(function* () {
+   const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
+   const caps = new Map<string, number>();
+   let unavailable = false;
++  let rich = false;
+   let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+   const handler = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+@@ -71,6 +72,26 @@ export const poolUsageBackend = Effect.gen(function* () {
+       tokens: { input: 75, cacheRead: 10, cacheWrite: 5, output: 10, total: 100 },
+     };
+     const model = { ...usage, provider: "codex", model: "synthetic-model" };
++    const models = rich
++      ? [
++          { provider: "claude", model: "claude-opus", share: 0.4 },
++          { provider: "codex", model: "gpt-codex", share: 0.25 },
++          { provider: "claude", model: "claude-sonnet", share: 0.2 },
++          { provider: "codex", model: "gpt-mini", share: 0.1 },
++          { provider: "gemini", model: "gemini-pro", share: 0.05 },
++        ].map(({ share, ...identity }) => ({
++          ...usage,
++          ...identity,
++          cost: usage.cost * share,
++          tokens: {
++            input: 75 * share,
++            cacheRead: 10 * share,
++            cacheWrite: 5 * share,
++            output: 10 * share,
++            total: 100 * share,
++          },
++        }))
++      : [model];
+     return HttpServerResponse.jsonUnsafe({
+       from: "2026-10-01T00:00:00Z",
+       to: "2026-10-31T00:00:00Z",
+@@ -80,8 +101,8 @@ export const poolUsageBackend = Effect.gen(function* () {
+         return {
+           member,
+           ...usage,
+-          models: [model],
+-          days: [{ ...usage, day: "2026-10-30", models: [model] }],
++          models,
++          days: [{ ...usage, day: "2026-10-30", models }],
+           cap:
+             weekly === undefined
+               ? null
+@@ -106,6 +127,9 @@ export const poolUsageBackend = Effect.gen(function* () {
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
+     calls: Ref.get(calls),
++    rich: Effect.sync(() => {
++      rich = true;
++    }),
+     unavailable: (value: boolean) =>
+       Effect.sync(() => {
+         unavailable = value;
+diff --git a/e2e/support/pool-usage-ui-fixture.ts b/e2e/support/pool-usage-ui-fixture.ts
+new file mode 100644
+index 0000000..383b0a6
+--- /dev/null
++++ b/e2e/support/pool-usage-ui-fixture.ts
+@@ -0,0 +1,64 @@
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body, type Session } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import { App } from "./contracts.ts";
++import { poolUsageBackend } from "./pool-usage-backend.ts";
++
++const source = `import {defineApp,query,object,router} from "apps";
++export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++
++/** Both UI journeys deploy actual apps and boot them over the same retained pool format. */
++export const poolUsageUiFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    backend = yield* poolUsageBackend;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const read = <A>(
++    schema: Schema.ConstraintDecoder<A, never>,
++    ...args: Parameters<typeof api.request>
++  ) => api.request(...args).pipe(Effect.flatMap((response) => body(schema, response)));
++  const deploy = (actor: Session, name: string) =>
++    read(App, actor, "POST", `${prefix}/apps/deploy`, {
++      name,
++      files: [{ path: "index.ts", content: source }, appsManifest],
++    });
++  const identities = yield* Effect.forEach([actors.owner, actors.admin, actors.member], (actor) =>
++    read(Schema.Struct({ userId: Schema.String }), actor, "GET", "/api/viewer"),
++  );
++  const [owner, admin, person] = identities.map((value) => value.userId);
++  if (owner === undefined || admin === undefined || person === undefined)
++    return yield* Effect.die("Missing pool UI actors");
++  const retained = (pools: readonly { readonly owner: string; readonly app: string }[]) => ({
++    sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++    params: [
++      JSON.stringify(
++        Object.fromEntries(
++          pools.map((pool) => [
++            pool.owner,
++            { app: pool.app, version: "retained-version", authorization: "executor-app-v1" },
++          ]),
++        ),
++      ),
++      actors.organization.id,
++    ],
++  });
++  // The real actors must stay on page one regardless of their randomly assigned IDs.
++  const seedPrefix = `${[owner, admin, person].sort().at(-1)}-pool-ui-`;
++  const paging = [
++    {
++      sql: `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
++        select $1 || lpad(n::text, 3, '0'), 'Pool UI person ' || n,
++          'pool-ui-person-' || n || '@example.test', true, now(), now()
++        from generate_series(1, 101) n`,
++      params: [seedPrefix],
++    },
++    {
++      sql: `insert into member (id, "organizationId", "userId", role, "createdAt")
++        select $1 || 'member-' || n, $2, $1 || lpad(n::text, 3, '0'), 'member', now()
++        from generate_series(1, 101) n`,
++      params: [seedPrefix, actors.organization.id],
++    },
++  ];
++  return { api, actors, backend, prefix, read, deploy, owner, admin, person, retained, paging };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..acae3b1 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8448,6 +8448,29 @@ export const scenarios = plan({
+       local: na("Uses hosted account HTTP endpoints."),
+     },
+   },
++  poolUsageUi: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-usage-ui.spec.ts",
++    title: "native pool usage renders model charts and retains cap drafts through failed saves",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
++      local: na("Uses hosted organization policy and the native Settings page."),
++    },
++  },
++  poolUsageNavigation: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-usage-navigation.spec.ts",
++    title:
++      "native pool usage preserves paging drafts, resets between pools and polls only while visible",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
++      local: na("Uses hosted organization policy and the native Settings page."),
++    },
++  },
+   poolSharingUi: {
+     fixtures: "actors",
+     file: "pool-sharing-ui.spec.ts",
+diff --git a/e2e/tests/pool-usage-navigation.spec.ts b/e2e/tests/pool-usage-navigation.spec.ts
+new file mode 100644
+index 0000000..8d51fd6
+--- /dev/null
++++ b/e2e/tests/pool-usage-navigation.spec.ts
+@@ -0,0 +1,465 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page, Route } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolUsageUiFixture } from "../support/pool-usage-ui-fixture.ts";
++import {
++  advanceToReconciliation,
++  holdQuery,
++  installBrowserClock,
++  refreshVisiblePage,
++} from "../support/query-transition.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const Access = Schema.Struct({
++  revision: Schema.String,
++  canManage: Schema.Boolean,
++  canUse: Schema.Boolean,
++});
++const UsagePage = Schema.Struct({
++  next: Schema.NullOr(Schema.String),
++  members: Schema.Array(Schema.Struct({ member: Schema.String })),
++});
++const section = (page: Page) => page.getByRole("region", { name: "Pool usage", exact: true });
++const people = (page: Page) =>
++  section(page).locator('ul[aria-label="People who can use this pool"]');
++const member = (page: Page) =>
++  people(page).locator(":scope > li").filter({ hasText: "member@example.test" });
++
++layer(HostedLive, { excludeTestServices: true })("Native pool usage navigation", (it) => {
++  it.effect(scenarios.poolUsageNavigation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const {
++          api,
++          actors,
++          backend,
++          prefix,
++          read,
++          deploy,
++          owner,
++          admin,
++          person,
++          retained,
++          paging,
++        } = yield* poolUsageUiFixture;
++        const browser = yield* Browser;
++        const first = yield* deploy(actors.owner, "First usage navigation pool"),
++          second = yield* deploy(actors.admin, "Second usage navigation pool"),
++          ordinary = yield* deploy(actors.owner, "Ordinary navigation app");
++        const group = yield* read(Resource, actors.owner, "POST", `${prefix}/groups`, {
++          name: "Empty native pool audience",
++          description: "",
++          memberIds: [],
++        });
++        const appPath = (app: string) => `${prefix}/apps/${app}`;
++        const share = (app: string, audience: unknown) =>
++          Effect.gen(function* () {
++            const access = yield* read(Access, actors.owner, "GET", `${appPath(app)}/access`);
++            expect(
++              (yield* api.request(actors.owner, "PATCH", `${appPath(app)}/access`, {
++                revision: access.revision,
++                audience,
++              })).status,
++            ).toBe(200);
++          });
++        yield* share(first.id, { kind: "everyone" });
++        yield* share(second.id, { kind: "groups", groups: [group.id] });
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          retained([
++            { owner, app: first.id },
++            { owner: admin, app: second.id },
++          ]),
++          ...paging,
++        ]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        const firstPage = yield* read(
++          UsagePage,
++          actors.owner,
++          "GET",
++          `${appPath(first.id)}/pool-usage`,
++        );
++        expect(firstPage.members).toHaveLength(100);
++        expect(firstPage.members.map((row) => row.member)).toEqual(
++          expect.arrayContaining([owner, admin, person]),
++        );
++        expect(firstPage.next).not.toBeNull();
++        const paths = (app: string) =>
++          [actors.organization.id, actors.organization.slug].map(
++            (organization) => `/api/organizations/${organization}/apps/${app}/pool-usage`,
++          );
++        const settings = (app: string) =>
++          `/org/${actors.organization.slug}/apps/${app}?view=settings`;
++        yield* browser.login(actors.owner);
++        yield* installBrowserClock;
++        yield* browser.use("Start from a hydrated dashboard", (page) =>
++          page.goto(`/org/${actors.organization.slug}/connect`),
++        );
++
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const observed = yield* Effect.acquireRelease(
++              browser.use("Observe any ordinary-app pool section flash", (page) =>
++                page.evaluateHandle(() => {
++                  const state = { seen: false };
++                  const observer = new MutationObserver(() => {
++                    state.seen ||= Array.from(document.querySelectorAll("section h2")).some(
++                      (heading) => heading.textContent === "Pool usage",
++                    );
++                  });
++                  observer.observe(document.body, { childList: true, subtree: true });
++                  return { state, observer };
++                }),
++              ),
++              (handle) =>
++                browser
++                  .use("Stop the ordinary-app section observer", () =>
++                    handle
++                      .evaluate((value) => value.observer.disconnect())
++                      .then(() => handle.dispose()),
++                  )
++                  .pipe(Effect.orDie),
++            );
++            const held = yield* holdQuery(paths(ordinary.id), "continue");
++            yield* openInApp("Open ordinary Settings in the running app", settings(ordinary.id));
++            yield* held.requested;
++            expect(
++              yield* browser.use("Ordinary app has no section while its first read waits", (page) =>
++                section(page).count(),
++              ),
++            ).toBe(0);
++            const response = yield* browser.use(
++              "Observe the real ordinary-app null response",
++              (page) =>
++                Promise.resolve({
++                  read: page.waitForResponse(
++                    (value) =>
++                      paths(ordinary.id).includes(new URL(value.url()).pathname) && value.ok(),
++                  ),
++                }),
++            );
++            yield* held.release;
++            expect(
++              yield* browser.use("The hosted service identifies the ordinary app as null", () =>
++                response.read.then((value) => value.json()),
++              ),
++            ).toBeNull();
++            yield* browser.use("Ordinary Settings is available after the read", (page) =>
++              page.getByRole("heading", { name: "App access", exact: true }).waitFor(),
++            );
++            expect(
++              yield* browser.use("Ordinary app still has no pool section", (page) =>
++                section(page).count(),
++              ),
++            ).toBe(0);
++            expect(
++              yield* browser.use("No pool section flashed during the ordinary read", () =>
++                observed.evaluate((value) => value.state.seen),
++              ),
++            ).toBe(false);
++          }),
++        );
++
++        expect(
++          yield* read(Access, actors.owner, "GET", `${appPath(second.id)}/access`),
++        ).toMatchObject({
++          canManage: true,
++          canUse: false,
++        });
++        expect(
++          (yield* api.request(actors.owner, "POST", `${appPath(second.id)}/tools/call`, {
++            tool: "identity",
++            kind: "query",
++            input: {},
++          })).status,
++        ).toBe(403);
++        yield* openInApp("Open the empty native pool", settings(second.id));
++        yield* browser.use("Empty native usage points to App access", (page) =>
++          section(page)
++            .getByText("Nobody can use this pool yet. Choose who can under App access.", {
++              exact: true,
++            })
++            .waitFor(),
++        );
++        yield* browser.use("Management does not grant use", (page) =>
++          section(page)
++            .getByText(
++              "You manage this pool but can't use it. Managing it doesn't let you send requests through it or use its accounts.",
++              { exact: true },
++            )
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use("Empty pool lists nobody", (page) =>
++            people(page).locator(":scope > li").count(),
++          ),
++        ).toBe(0);
++        yield* share(second.id, { kind: "everyone" });
++        yield* refreshVisiblePage;
++        yield* browser.use("The second real pool now includes the same draft person", (page) =>
++          member(page).waitFor(),
++        );
++
++        yield* backend.unavailable(true);
++        yield* openInApp("Open the first pool with its first read unavailable", settings(first.id));
++        yield* browser.use("The first-read failure is visible", (page) =>
++          section(page)
++            .getByText("Pool usage could not be reached. Try again.", { exact: true })
++            .waitFor(),
++        );
++        yield* browser.use("The first-read failure offers a retry", (page) =>
++          section(page).getByRole("button", { name: "Retry", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Failed first read has no invented people", (page) =>
++            people(page).locator(":scope > li").count(),
++          ),
++        ).toBe(0);
++        yield* backend.unavailable(false);
++        yield* browser.use("Retry the first read with the real service", (page) =>
++          section(page).getByRole("button", { name: "Retry", exact: true }).press("Enter"),
++        );
++        yield* browser.use("Recovered usage shows the actual member", (page) =>
++          member(page).waitFor(),
++        );
++        expect(
++          yield* browser.use("Recovered usage lists the first hundred", (page) =>
++            people(page).locator(":scope > li").count(),
++          ),
++        ).toBe(100);
++        expect(
++          yield* browser.use("Recovery clears the failure", (page) =>
++            section(page).getByRole("button", { name: "Retry", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Open a keyboard cap draft", (page) =>
++          member(page)
++            .getByRole("button", { name: /Set weekly cap/ })
++            .press("Enter"),
++        );
++        yield* browser.use("Keep an unsaved amount", (page) =>
++          page.getByRole("textbox", { name: /Weekly cap for/ }).fill("37.25"),
++        );
++        yield* browser.use("Expand this person's usage", (page) =>
++          member(page)
++            .getByRole("button", { name: /Show usage details/ })
++            .click(),
++        );
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const held = yield* holdQuery(paths(first.id), "continue", {
++              query: { after: firstPage.next! },
++            });
++            yield* browser.use("Page forward with the keyboard", (page) =>
++              section(page).getByRole("button", { name: "Next", exact: true }).press("Enter"),
++            );
++            yield* held.requested;
++            yield* browser.use("Paging marks the old list busy", (page) =>
++              section(page)
++                .locator('ul[aria-label="People who can use this pool"][aria-busy="true"]')
++                .waitFor(),
++            );
++            expect(
++              yield* browser.use("Paging disables old rows", (page) =>
++                people(page).getAttribute("inert"),
++              ),
++            ).not.toBeNull();
++            expect(
++              yield* browser.use("Paging retains the old hundred rows", (page) =>
++                people(page).locator(":scope > li").count(),
++              ),
++            ).toBe(100);
++            expect(
++              yield* browser.use("Paging retains the unsaved draft", (page) =>
++                people(page).locator('input[aria-label^="Weekly cap for"]').inputValue(),
++              ),
++            ).toBe("37.25");
++            yield* held.release;
++            yield* browser.use("The next page loads", (page) =>
++              section(page)
++                .getByRole("status")
++                .filter({ hasText: /People 101.104/ })
++                .waitFor(),
++            );
++            expect(
++              yield* browser.use("The last four people are listed", (page) =>
++                people(page).locator(":scope > li").count(),
++              ),
++            ).toBe(4);
++            expect(
++              yield* browser.use("The new page receives heading focus", (page) =>
++                section(page)
++                  .getByRole("heading", { name: "Pool usage", exact: true })
++                  .evaluate((heading) => heading === document.activeElement),
++              ),
++            ).toBe(true);
++            expect(
++              yield* browser.use("The first-page draft is not on another person's page", (page) =>
++                page.getByRole("textbox", { name: /Weekly cap for/ }).count(),
++              ),
++            ).toBe(0);
++          }),
++        );
++        yield* browser.use("Page back with the keyboard", (page) =>
++          section(page).getByRole("button", { name: "Previous", exact: true }).press("Enter"),
++        );
++        yield* browser.use("The previous page restores its editor", (page) =>
++          page.getByRole("textbox", { name: /Weekly cap for/ }).waitFor(),
++        );
++        expect(
++          yield* browser.use("The previous page restores the same draft", (page) =>
++            page.getByRole("textbox", { name: /Weekly cap for/ }).inputValue(),
++          ),
++        ).toBe("37.25");
++        expect(
++          yield* browser.use("The previous page restores a hundred people", (page) =>
++            people(page).locator(":scope > li").count(),
++          ),
++        ).toBe(100);
++        expect(
++          yield* browser.use("The previous page restores expansion", (page) =>
++            member(page)
++              .getByRole("button", { name: /Hide usage details/ })
++              .getAttribute("aria-expanded"),
++          ),
++        ).toBe("true");
++        expect(
++          yield* browser.use("The previous page receives heading focus", (page) =>
++            section(page)
++              .getByRole("heading", { name: "Pool usage", exact: true })
++              .evaluate((heading) => heading === document.activeElement),
++          ),
++        ).toBe(true);
++
++        for (const app of [second, first]) {
++          yield* openInApp("Switch between the two actual pool Settings pages", settings(app.id));
++          yield* browser.use("The app identity changed", (page) =>
++            page.getByRole("link", { name: `${app.name} overview`, exact: true }).waitFor(),
++          );
++          yield* browser.use("The new pool includes the same person", (page) =>
++            member(page).waitFor(),
++          );
++          expect(
++            yield* browser.use("Changing pools clears the draft", (page) =>
++              page.getByRole("textbox", { name: /Weekly cap for/ }).count(),
++            ),
++          ).toBe(0);
++          expect(
++            yield* browser.use("Changing pools collapses details", (page) =>
++              member(page)
++                .getByRole("button", { name: /Show usage details/ })
++                .getAttribute("aria-expanded"),
++            ),
++          ).toBe("false");
++          expect(
++            yield* browser.use("Changing pools removes the old chart", (page) =>
++              section(page)
++                .getByRole("group", { name: "Usage of Test member", exact: true })
++                .count(),
++            ),
++          ).toBe(0);
++          expect(
++            yield* browser.use("Changing pools starts at the first page", (page) =>
++              section(page).getByRole("button", { name: "Previous", exact: true }).isDisabled(),
++            ),
++          ).toBe(true);
++        }
++
++        yield* browser.use(
++          "Finish any retained-page reconciliation before measuring polling",
++          (page) =>
++            section(page)
++              .getByRole("status")
++              .filter({ hasText: "updating" })
++              .waitFor({ state: "hidden" }),
++        );
++        const usageCalls = () =>
++          backend.calls.pipe(
++            Effect.map(
++              (calls) =>
++                calls.filter((call) => call.action === "managed-usage" && call.pool === first.id)
++                  .length,
++            ),
++          );
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const held = yield* holdQuery(paths(first.id), "continue");
++            const before = yield* usageCalls();
++            yield* advanceToReconciliation;
++            yield* held.requested;
++            yield* browser.use("Visible polling keeps usage on screen while updating", (page) =>
++              section(page).getByRole("status").filter({ hasText: "updating" }).waitFor(),
++            );
++            expect(yield* usageCalls()).toBe(before);
++            yield* held.release;
++            yield* browser.use("Visible polling completes through the real backend", (page) =>
++              section(page)
++                .getByRole("status")
++                .filter({ hasText: "updating" })
++                .waitFor({ state: "hidden" }),
++            );
++            expect(yield* usageCalls()).toBe(before + 1);
++          }),
++        );
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            let hiddenReads = 0;
++            const match = (url: URL) => paths(first.id).includes(url.pathname);
++            const observe = (route: Route) => {
++              hiddenReads++;
++              return route.fallback();
++            };
++            yield* Effect.acquireRelease(
++              browser.use("Observe actual hidden pool reads", (page) => page.route(match, observe)),
++              () =>
++                browser
++                  .use("Stop observing hidden pool reads", (page) => page.unroute(match, observe))
++                  .pipe(Effect.orDie),
++            );
++            yield* Effect.acquireRelease(
++              browser.use("Hide the page from the product's visibility timer", (page) =>
++                page.evaluate(() => {
++                  Object.defineProperty(document, "visibilityState", {
++                    configurable: true,
++                    get: () => "hidden",
++                  });
++                  window.dispatchEvent(new Event("visibilitychange"));
++                }),
++              ),
++              () =>
++                browser
++                  .use("Restore page visibility and the browser clock", (page) =>
++                    page
++                      .evaluate(() => {
++                        Reflect.deleteProperty(document, "visibilityState");
++                      })
++                      .then(() => page.context().clock.resume()),
++                  )
++                  .pipe(Effect.orDie),
++            );
++            const before = yield* usageCalls();
++            yield* advanceToReconciliation;
++            yield* advanceToReconciliation;
++            expect(hiddenReads).toBe(0);
++            expect(yield* usageCalls()).toBe(before);
++          }),
++        );
++        expect((yield* backend.calls).filter((call) => call.action === "managed-cap")).toHaveLength(
++          0,
++        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/pool-usage-ui.spec.ts b/e2e/tests/pool-usage-ui.spec.ts
+new file mode 100644
+index 0000000..3e1e3e5
+--- /dev/null
++++ b/e2e/tests/pool-usage-ui.spec.ts
+@@ -0,0 +1,229 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolUsageUiFixture } from "../support/pool-usage-ui-fixture.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Native pool usage UI", (it) => {
++  it.effect(scenarios.poolUsageUi.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { api, actors, backend, prefix, read, deploy, owner, retained } =
++          yield* poolUsageUiFixture;
++        const browser = yield* Browser;
++        yield* backend.rich;
++        const app = yield* deploy(actors.owner, "Pool usage proof");
++        const access = yield* read(
++          Schema.Struct({ revision: Schema.String }),
++          actors.owner,
++          "GET",
++          `${prefix}/apps/${app.id}/access`,
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        yield* serverControl("stop");
++        yield* legacyStorage([retained([{ owner, app: app.id }])]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open pool Settings", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=settings`),
++        );
++        yield* browser.use("Wait for actual usage", (page) =>
++          page.getByRole("region", { name: "Pool usage", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Owner has no cap editor", (page) =>
++            page
++              .getByRole("list", { name: "People who can use this pool" })
++              .getByRole("listitem")
++              .filter({ hasText: "owner@example.test" })
++              .getByRole("button", { name: /weekly cap/ })
++              .count(),
++          ),
++        ).toBe(0);
++        const editAdmin = () =>
++          browser.use("Edit the admin's cap", (page) =>
++            page
++              .getByRole("listitem")
++              .filter({ hasText: "admin@example.test" })
++              .getByRole("button", { name: /Set weekly cap/ })
++              .click(),
++          );
++        yield* editAdmin();
++        yield* browser.use("Enter an invalid cap", (page) =>
++          page.getByRole("textbox", { name: /Weekly cap for/ }).fill("0"),
++        );
++        yield* browser.use("Reject an invalid cap before any write", (page) =>
++          page.getByRole("button", { name: "Save weekly cap", exact: true }).click(),
++        );
++        yield* browser.use("Show cap validation", (page) =>
++          page.getByRole("alert").filter({ hasText: "Enter an amount" }).waitFor(),
++        );
++        expect((yield* backend.calls).filter((call) => call.action === "managed-cap")).toHaveLength(
++          0,
++        );
++        yield* browser.use("Keep a valid draft", (page) =>
++          page.getByRole("textbox", { name: /Weekly cap for/ }).fill("20.50"),
++        );
++        yield* backend.unavailable(true);
++        yield* browser.use("Try the unavailable backend", (page) =>
++          page.getByRole("button", { name: "Save weekly cap", exact: true }).click(),
++        );
++        yield* browser.use("Show the failed save", (page) =>
++          page.getByText("Cap not saved", { exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Keep the draft after failure", (page) =>
++            page.getByRole("textbox", { name: /Weekly cap for/ }).inputValue(),
++          ),
++        ).toBe("20.50");
++        yield* backend.unavailable(false);
++        const hold = yield* backend.hold;
++        const saving = yield* browser
++          .use("Retry the saved draft", (page) =>
++            page.getByRole("button", { name: "Save weekly cap", exact: true }).click(),
++          )
++          .pipe(Effect.forkChild);
++        yield* hold.started;
++        expect(
++          yield* browser.use("Saving cannot be submitted twice", (page) =>
++            page.getByRole("button", { name: "Save weekly cap", exact: true }).isDisabled(),
++          ),
++        ).toBe(true);
++        yield* hold.release;
++        yield* Fiber.join(saving);
++        yield* browser.use("Confirm the saved cap", (page) =>
++          page.getByText("Cap saved", { exact: false }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Saving returns focus to the original person's edit button", (page) =>
++            page
++              .getByRole("listitem")
++              .filter({ hasText: "admin@example.test" })
++              .getByRole("button", { name: /Change weekly cap/ })
++              .evaluate((button) => button === document.activeElement),
++          ),
++        ).toBe(true);
++        yield* browser.use("Open per-model usage", (page) =>
++          page
++            .getByRole("listitem")
++            .filter({ hasText: "admin@example.test" })
++            .getByRole("button", { name: /Show usage details/ })
++            .click(),
++        );
++        yield* browser.use("Show cost without losing model identity", (page) =>
++          page
++            .getByRole("group", { name: "Chart and list show" })
++            .getByRole("button", { name: "API cost", exact: true })
++            .click(),
++        );
++        // Checkpoints need the settled theme and chevron, without changing product motion.
++        yield* browser.use("Disable transitions only for the screenshot checkpoints", (page) =>
++          page.evaluate(() => {
++            const style = document.createElement("style");
++            style.id = "checkpoint-no-transitions";
++            style.textContent = "*, *::before, *::after { transition: none !important; }";
++            document.head.append(style);
++          }),
++        );
++        for (const width of [1280, 390])
++          for (const theme of ["light", "dark"] as const) {
++            yield* browser.use("Set the native viewport", (page) =>
++              page.setViewportSize({ width, height: 1000 }),
++            );
++            yield* browser.use("Set the colour preference", (page) =>
++              page.emulateMedia({ colorScheme: theme }),
++            );
++            // Start each capture at the section heading; the previous pass left the page scrolled.
++            // Scroll only the content scroller, so the app shell stays in place.
++            yield* browser.use("Show the usage section from its heading", (page) =>
++              page.getByRole("region", { name: "Pool usage", exact: true }).evaluate((section) => {
++                let scroller = section.parentElement;
++                while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY))
++                  scroller = scroller.parentElement;
++                if (scroller)
++                  scroller.scrollTop +=
++                    section.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
++              }),
++            );
++            const layout = yield* browser.use("Inspect pool usage layout", (page) =>
++              page.getByRole("region", { name: "Pool usage", exact: true }).evaluate((section) => ({
++                document: document.documentElement.scrollWidth,
++                viewport: innerWidth,
++                section: section.getBoundingClientRect().width,
++                client: section.clientWidth,
++                scroll: section.scrollWidth,
++                overflow: Array.from(section.querySelectorAll("*")).flatMap((node) => {
++                  const bounds = node.getBoundingClientRect();
++                  return bounds.width > 0 &&
++                    bounds.right > section.getBoundingClientRect().right + 1
++                    ? [
++                        {
++                          tag: node.tagName,
++                          classes: node.className,
++                          width: bounds.width,
++                          right: bounds.right,
++                          text: node.textContent?.slice(0, 120),
++                        },
++                      ]
++                    : [];
++                }),
++              })),
++            );
++            expect(layout.document, JSON.stringify(layout)).toBeLessThanOrEqual(layout.viewport);
++            expect(layout.scroll, JSON.stringify(layout)).toBeLessThanOrEqual(layout.client + 1);
++            yield* browser.checkpoint(`Pool usage ${width}px ${theme}`);
++            yield* browser.use("Inspect the chart and model breakdown", (page) =>
++              page
++                .getByRole("group", { name: "Usage of Test admin", exact: true })
++                .scrollIntoViewIfNeeded(),
++            );
++            yield* browser.checkpoint(`Model breakdown ${width}px ${theme}`);
++          }
++        yield* browser.use("Restore transitions after the checkpoints", (page) =>
++          page.evaluate(() => document.getElementById("checkpoint-no-transitions")?.remove()),
++        );
++        yield* browser.use("Open a second draft", (page) =>
++          page
++            .getByRole("listitem")
++            .filter({ hasText: "admin@example.test" })
++            .getByRole("button", { name: /Change weekly cap/ })
++            .click(),
++        );
++        yield* browser.use("Change the draft", (page) =>
++          page.getByRole("textbox", { name: /Weekly cap for/ }).fill("99"),
++        );
++        yield* browser.use("Cancel the edit", (page) =>
++          page.getByRole("button", { name: "Cancel", exact: true }).press("Enter"),
++        );
++        expect(
++          yield* browser.use("Cancel returns focus to the original person's edit button", (page) =>
++            page
++              .getByRole("listitem")
++              .filter({ hasText: "admin@example.test" })
++              .getByRole("button", { name: /Change weekly cap/ })
++              .evaluate((button) => button === document.activeElement),
++          ),
++        ).toBe(true);
++        expect(
++          yield* browser.use("Cancel keeps the saved cap", (page) =>
++            page.getByRole("listitem").filter({ hasText: "admin@example.test" }).textContent(),
++          ),
++        ).toContain("20.50");
++      }),
++    ),
++  );
++});
