@@ -98,18 +98,27 @@ async function readUsageSeries(
   const input = seriesInput(raw);
   if (personScope === undefined) authorizeSeries(input, authority);
   else {
-    if (!/^[a-f0-9]{64}$/.test(personScope)
-      || input.accounts !== undefined
-      || input.by.some((dimension) => ["account", "app", "attribution", "source"].includes(dimension)))
+    if (
+      !/^[a-f0-9]{64}$/.test(personScope) ||
+      input.accounts !== undefined ||
+      input.by.some((dimension) => ["account", "app", "attribution", "source"].includes(dimension))
+    )
       throw new HistoryInputError();
   }
   const scope = await cursorScope(input, authority, personScope),
     after = readSeriesCursor(input.after, scope, input.by);
-  if (transaction === "owned") await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  if (transaction === "owned")
+    await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     const query = await seriesQuery(db, input, authority, after, personScope);
-    const { coverage, asOf } = await seriesCoverage(db, query, input, authority, personScope !== undefined);
+    const { coverage, asOf } = await seriesCoverage(
+      db,
+      query,
+      input,
+      authority,
+      personScope !== undefined,
+    );
     const rows = (await db.query(query.text, query.values)).rows;
     const result: PoolUsageSeriesResult = {
       from: input.from,
@@ -184,7 +193,16 @@ export async function poolPersonalUsageSeries(
   if (!/^[a-f0-9]{64}$/.test(person)) throw new HistoryInputError();
   const input = seriesInput(raw);
   const allowedSources = [await digest("home-local-v1"), await digest("pool-gateway-v1")];
-  if (input.sources?.length !== allowedSources.length
-    || !allowedSources.every((source) => input.sources?.includes(source))) throw new HistoryInputError();
-  return readUsageSeries(db, raw, { canManage: false, mappingProven: false, accounts: [] }, transaction, person);
+  if (
+    input.sources?.length !== allowedSources.length ||
+    !allowedSources.every((source) => input.sources?.includes(source))
+  )
+    throw new HistoryInputError();
+  return readUsageSeries(
+    db,
+    raw,
+    { canManage: false, mappingProven: false, accounts: [] },
+    transaction,
+    person,
+  );
 }

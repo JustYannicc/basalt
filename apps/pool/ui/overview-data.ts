@@ -10,12 +10,22 @@ import { coherentOverview } from "./overview-snapshot.ts";
 export type RangeDays = 7 | 30;
 
 /** The same UTC hour boundary and end instant drive every answer in one refresh. */
-export function seriesRange(days: RangeDays, now: number): Pick<SeriesQuery, "from" | "to" | "bucket"> {
-  return { from: new Date(Math.floor((now - days * 86_400_000) / 3_600_000) * 3_600_000).toISOString(), to: new Date(now).toISOString(), bucket: "day" };
+export function seriesRange(
+  days: RangeDays,
+  now: number,
+): Pick<SeriesQuery, "from" | "to" | "bucket"> {
+  return {
+    from: new Date(Math.floor((now - days * 86_400_000) / 3_600_000) * 3_600_000).toISOString(),
+    to: new Date(now).toISOString(),
+    bucket: "day",
+  };
 }
 
 export const managersOnly = (result: Result<unknown> | undefined) =>
-  result !== undefined && !result.ok && result.error === "unauthorized" && /managers only/i.test(result.message);
+  result !== undefined &&
+  !result.ok &&
+  result.error === "unauthorized" &&
+  /managers only/i.test(result.message);
 
 export interface Overview {
   readonly capacity?: Result<PoolCapacityHistory>;
@@ -29,8 +39,13 @@ export interface Overview {
 const refresh = 5 * 60_000;
 
 export function seriesRead(result: PoolUsageSeriesResult, partial: boolean): SeriesRead {
-  return { groups: result.groups, coverage: result.coverage, asOf: result.asOf,
-    asOfChanged: false, truncated: partial || result.next !== null };
+  return {
+    groups: result.groups,
+    coverage: result.coverage,
+    asOf: result.asOf,
+    asOfChanged: false,
+    truncated: partial || result.next !== null,
+  };
 }
 
 /** Commit one refresh together. Never combine a retained good part with a newer failed read. */
@@ -60,23 +75,50 @@ export function useOverview(api: PoolApi, days: RangeDays) {
     const value = usage.value;
     const coherent = capacity.ok && coherentOverview(capacity.value, value, range);
     const completeHours = new Set(value.homeCapture.completeHours.map((at) => Date.parse(at)));
-    const hourly = new Map(value.requestsByHour.map((point) => [JSON.stringify([point.provider, Date.parse(point.at)]), point]));
-    const withRequests = !capacity.ok ? capacity : { ok: true as const, value: { ...capacity.value,
-      points: capacity.value.points.map((point) => {
-        const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
-        const complete = completeHours.has(point.hour);
-        return { ...point, requests: requests?.requests ?? (complete ? 0 : null), coverage: requests?.coverage ?? (complete ? 1 : null),
-          sourceAt: requests?.sourceAt ? Date.parse(requests.sourceAt) : complete && value.homeCapture.capturedAt ? Date.parse(value.homeCapture.capturedAt) : null };
-      }),
-    } };
-    setState({ capacity: withRequests, usage, people: { ok: true, value: seriesRead(value.people, value.partial) },
-      models: { ok: true, value: seriesRead(value.models, value.partial) }, coherent });
+    const hourly = new Map(
+      value.requestsByHour.map((point) => [
+        JSON.stringify([point.provider, Date.parse(point.at)]),
+        point,
+      ]),
+    );
+    const withRequests = !capacity.ok
+      ? capacity
+      : {
+          ok: true as const,
+          value: {
+            ...capacity.value,
+            points: capacity.value.points.map((point) => {
+              const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
+              const complete = completeHours.has(point.hour);
+              return {
+                ...point,
+                requests: requests?.requests ?? (complete ? 0 : null),
+                coverage: requests?.coverage ?? (complete ? 1 : null),
+                sourceAt: requests?.sourceAt
+                  ? Date.parse(requests.sourceAt)
+                  : complete && value.homeCapture.capturedAt
+                    ? Date.parse(value.homeCapture.capturedAt)
+                    : null,
+              };
+            }),
+          },
+        };
+    setState({
+      capacity: withRequests,
+      usage,
+      people: { ok: true, value: seriesRead(value.people, value.partial) },
+      models: { ok: true, value: seriesRead(value.models, value.partial) },
+      coherent,
+    });
   }, [api, days]);
   useEffect(() => {
     setState({});
     void load();
     const stop = api.poll(() => void load(), refresh);
-    return () => { latest.current++; stop(); };
+    return () => {
+      latest.current++;
+      stop();
+    };
   }, [api, load]);
   return { ...state, reload: load, member: managersOnly(state.usage) };
 }

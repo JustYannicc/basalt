@@ -130,17 +130,53 @@ test("ordinary pool tokens, non-management assertions, expired assertions and cr
 
 test("personal overview binds its signed person to the authenticated host user and rejects manager authority", async () => {
   const user = "fixture-member";
-  const personalInput = { pool: input.pool, person: await digest("different-member"), from: input.from, to: input.to, days: 7, offerings: [] };
-  const signed = async (changes: Record<string, unknown> = {}) => new Request(`https://pool.example.test${poolPersonalOverviewPath}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ envelope: await signEnvelope(signingKey, "sbs1", {
-      action: "poolPersonalOverview", pool: input.pool, user, organization: "fixture-organization",
-      expiresAt: Date.now() + 30_000, input: personalInput, ...changes,
-    }) }),
-  });
+  const personalInput = {
+    pool: input.pool,
+    person: await digest("different-member"),
+    from: input.from,
+    to: input.to,
+    days: 7,
+    offerings: [],
+  };
+  const signed = async (changes: Record<string, unknown> = {}) =>
+    new Request(`https://pool.example.test${poolPersonalOverviewPath}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        envelope: await signEnvelope(signingKey, "sbs1", {
+          action: "poolPersonalOverview",
+          pool: input.pool,
+          user,
+          organization: "fixture-organization",
+          expiresAt: Date.now() + 30_000,
+          input: personalInput,
+          ...changes,
+        }),
+      }),
+    });
   const access = { signingKey, connectionString: undefined };
   assert.equal((await handleUsageSeries(await signed(), access)).status, 401);
-  assert.equal((await handleUsageSeries(await signed({ input: { ...personalInput, person: await digest(user) }, authority: { canManage: true, accounts: [] } }), access)).status, 401);
-  assert.equal((await handleUsageSeries(await signed({ input: { ...personalInput, person: await digest(user), accounts: ["private-account"] } }), access)).status, 400);
+  assert.equal(
+    (
+      await handleUsageSeries(
+        await signed({
+          input: { ...personalInput, person: await digest(user) },
+          authority: { canManage: true, accounts: [] },
+        }),
+        access,
+      )
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await handleUsageSeries(
+        await signed({
+          input: { ...personalInput, person: await digest(user), accounts: ["private-account"] },
+        }),
+        access,
+      )
+    ).status,
+    400,
+  );
 });

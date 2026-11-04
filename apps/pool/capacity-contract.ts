@@ -1,4 +1,8 @@
-export type CapacityWeightSource = "reference-plan" | "published-session-multiplier" | "unknown-plan" | "reported-absolute";
+export type CapacityWeightSource =
+  | "reference-plan"
+  | "published-session-multiplier"
+  | "unknown-plan"
+  | "reported-absolute";
 
 export interface CapacityAggregate {
   readonly remaining: number;
@@ -11,7 +15,11 @@ export interface CapacityAggregate {
   readonly accountCount: number;
   readonly knownWeightCount: number;
   readonly unknownWeightCount: number;
-  readonly weights: readonly { readonly source: CapacityWeightSource; readonly revision: string; readonly accountCount: number }[];
+  readonly weights: readonly {
+    readonly source: CapacityWeightSource;
+    readonly revision: string;
+    readonly accountCount: number;
+  }[];
 }
 
 export interface CapacityPlanHistory {
@@ -66,7 +74,11 @@ export interface CapacityShortfallStretch {
 export interface CapacityForecastShortfall {
   readonly amount: number;
   readonly stretches: readonly CapacityShortfallStretch[];
-  readonly candidate?: { readonly label: string; readonly capacity: number; readonly source: "reported" | "table" | "unit" } | null;
+  readonly candidate?: {
+    readonly label: string;
+    readonly capacity: number;
+    readonly source: "reported" | "table" | "unit";
+  } | null;
   readonly accounts: number | null;
   readonly exclusions: readonly string[];
   readonly accountBasis: "recurring-pattern" | "sustained-trend" | null;
@@ -79,9 +91,22 @@ export interface CapacityForecast {
   readonly unit: { readonly id: string; readonly label: string };
   readonly status: "learning" | "estimated" | "unavailable";
   readonly reasons: readonly string[];
-  readonly history: { readonly expectedHours: number; readonly observedHours: number; readonly coverage: number; readonly completedWeeks: number };
-  readonly backtest: { readonly heldOutWeeks: number; readonly seasonalMae: number | null; readonly naiveMae: number | null; readonly beatsSeasonalNaive: boolean } | null;
-  readonly residualCalibration: { readonly heldOutWeeks: number; readonly residualHours: number } | null;
+  readonly history: {
+    readonly expectedHours: number;
+    readonly observedHours: number;
+    readonly coverage: number;
+    readonly completedWeeks: number;
+  };
+  readonly backtest: {
+    readonly heldOutWeeks: number;
+    readonly seasonalMae: number | null;
+    readonly naiveMae: number | null;
+    readonly beatsSeasonalNaive: boolean;
+  } | null;
+  readonly residualCalibration: {
+    readonly heldOutWeeks: number;
+    readonly residualHours: number;
+  } | null;
   readonly classification: "normal" | "above" | "trend" | null;
   readonly streak: number;
   readonly recurringPeak: number | null;
@@ -113,5 +138,8 @@ export interface PoolCapacityHistory {
   readonly points: readonly CapacityHistoryPoint[];
   readonly forecasts: readonly CapacityForecast[];
   readonly refillEvents: readonly CapacityRefillEvent[];
-  readonly estimate: { readonly status: "learning" | "estimated" | "unavailable"; readonly reason: string };
+  readonly estimate: {
+    readonly status: "learning" | "estimated" | "unavailable";
+    readonly reason: string;
+  };
 }
