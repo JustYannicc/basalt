@@ -154,11 +154,26 @@ index 8c3ec05..f5d18b8 100644
          const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
            page
              .setViewportSize({ width: 1280, height: 900 })
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 767c9df..3f34daf 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -301,7 +301,9 @@ export function AccountRowCells({
+       <span className={cn("flex min-w-0 items-center", empty)}>{health}</span>
+       <span
+         className={cn(
+-          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground",
++          // On a phone the users cell fills the rest of its line, or a line of its own when less
++          // than 10rem is left, so a long app chip truncates instead of stacking.
++          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground @max-[640px]/account-rows:min-w-40 @max-[640px]/account-rows:flex-1",
+           empty,
+         )}
+       >
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index b140659..8f39324 100644
+index b140659..6675206 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -48,7 +48,19 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
+@@ -48,7 +48,20 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
  
@@ -168,8 +183,9 @@ index b140659..8f39324 100644
 +
 +/**
 + * A row lists at most this many apps as chips, as the compact rows mock does; past that it shows
-+ * the first app and "+N more", which lists the rest. On wide lists the cell is one line: chips
-+ * truncate and "+N more" keeps its room; only the phone layout wraps.
++ * the first app and "+N more", which lists the rest. The chips stay on one line at every width:
++ * the first chip truncates and "+N more" keeps its room. On a phone the line shares the row's
++ * second line with the other cells when it fits, and otherwise takes a line of its own.
 + */
 +const usedByChips = 2;
 +
@@ -178,7 +194,7 @@ index b140659..8f39324 100644
  export function AccountsPage<E>({
    query,
    Failure,
-@@ -237,6 +249,17 @@ function AccountsList({
+@@ -237,6 +250,17 @@ function AccountsList({
                const app = apps.find((item) => item.id === id);
                return app === undefined ? "an app" : appDisplayName(app, brand);
              };
@@ -196,7 +212,7 @@ index b140659..8f39324 100644
  
              return (
                <AccountRowProvider key={account.id}>
-@@ -280,26 +303,44 @@ function AccountsList({
+@@ -280,26 +304,44 @@ function AccountsList({
                      }
                      usersLabel="Used by"
                      users={
@@ -205,7 +221,7 @@ index b140659..8f39324 100644
 +                        className={cn(
 +                          appReferences,
 +                          // The margin keeps room for the focus ring inside the clipped line.
-+                          "-m-1 flex-nowrap items-center overflow-hidden p-1 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:overflow-visible",
++                          "-m-1 flex-nowrap items-center overflow-hidden p-1 @max-[640px]/account-rows:flex-1",
 +                        )}
 +                        data-used-by
 +                      >

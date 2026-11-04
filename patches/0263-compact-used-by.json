@@ -1,7 +1,7 @@
 {
   "identity": "basalt-compact-used-by",
   "file": "0263-compact-used-by.patch",
-  "content_sha256": "9dc4e368a9c5c99bfdffba352802ab50bf219b79b0590bde90459c813310237e",
+  "content_sha256": "1192c8e04b132a15f09d3334cb2b98a827296cf52b3a68e32fa0d75a258f3289",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
