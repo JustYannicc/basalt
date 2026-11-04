@@ -33,6 +33,7 @@ import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websock
 import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
+import { handleUsageSeries, lastSuccessAtPath, poolUsageSeriesPath } from "./model-history/series-http.ts";
 import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -54,6 +55,7 @@ import { importRemovalPath } from "./import-removal/contract.ts";
 import { ImportRemoval } from "./import-removal/operation.ts";
 import { handleImportRemoval } from "./import-removal/http.ts";
 import { removalSnapshot } from "./import-removal/snapshot.ts";
+import { handleRuntimeRecovery, RuntimeRecovery, runtimeRecoveryPath } from "./runtime-recovery.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
@@ -82,6 +84,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private modelStreams = new NativeStreams();
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
+  private recovery: RuntimeRecovery;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
@@ -90,6 +93,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     // Requests that never warm the pool, like an hourly inventory or setup polling, did exactly that.
     if (ctx.container?.running) ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
     this.lifecycle = createPoolLifecycle(ctx, env);
+    this.recovery = new RuntimeRecovery({
+      get instanceId() { return ctx.id.toString(); }, imageHash: env.POOL_IMAGE_HASH,
+      running: () => ctx.container?.running ?? false,
+      status: () => {
+        if (!ctx.container) throw new Error("Pool container unavailable");
+        return readRuntimeHealth(ctx.container.getTcpPort(8318), env.POOL_MANAGEMENT_KEY, AbortSignal.timeout(2_000));
+      },
+      restart: async () => {
+        this.managementReadyUntil = 0;
+        return (await this.lifecycle).restart();
+      },
+    }, ctx.storage);
     this.protection = new RuntimeProtection(this.modelStreams, {
       check: (signal) => {
         if (!ctx.container) throw new Error("Pool container unavailable");
@@ -240,6 +255,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === runtimeRecoveryPath) return handleRuntimeRecovery(request, {
+      inspectRuntimeRecovery: id => this.recovery.inspect(id),
+      recoverRuntime: approval => this.recovery.run(approval),
+    }, this.env.POOL_APP_SIGNING_KEY);
     if (pathname === importRemovalPath) return handleImportRemoval(request, this.importRemoval,
       this.env.POOL_APP_SIGNING_KEY, `https://${brand.host}`);
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
@@ -270,6 +289,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         });
       } catch (error) { return failureResponse(error); }
     }
+    if (pathname === poolUsageSeriesPath || pathname === lastSuccessAtPath) return handleUsageSeries(request, {
+      signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+    });
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);
@@ -346,6 +369,7 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
+    if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
       return handleModelHistoryOperation(request, this.env.POOL_DATABASE_URL);
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });

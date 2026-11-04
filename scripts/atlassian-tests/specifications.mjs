@@ -15,6 +15,8 @@ export async function loadSpecifications(root, directory) {
     let bytes;
     if (process.env.ATLASSIAN_SPEC_DIRECTORY) {
       bytes = await readFile(join(process.env.ATLASSIAN_SPEC_DIRECTORY, `${name}.json`));
+    } else if (api.asset) {
+      bytes = await readFile(join(root, api.asset));
     } else {
       const response = await fetch(api.url, {
         redirect: "error",

@@ -78,8 +78,8 @@
   ],
   "apis": {
     "jira": {
-      "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
-      "sha256": "30d96390297b247d3e734110a689c9314209021b00badacea12fdf2a34f97ad4",
+      "url": "https://app.signalbox.run/catalog/openapi/atlassian/5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72.json",
+      "sha256": "5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72",
       "declaredOperations": 630,
       "retainedOperations": 595,
       "scopes": [
@@ -89,11 +89,13 @@
         "read:jira-user",
         "read:jira-work",
         "write:jira-work"
-      ]
+      ],
+      "vendorUrl": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
+      "asset": "public/catalog/openapi/atlassian/5dc3ab3fb5735724ff4d815f2c8d776910dab5d7d6f97e11c224ddb0bf35aa72.json"
     },
     "serviceManagement": {
-      "url": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
-      "sha256": "511d6e039a28c094e7a369dc3f17b7dbd6d067ba6e2071d6c2b86d939f8d0e17",
+      "url": "https://app.signalbox.run/catalog/openapi/atlassian/81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797.json",
+      "sha256": "81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797",
       "declaredOperations": 75,
       "retainedOperations": 73,
       "scopes": [
@@ -107,7 +109,9 @@
         "read:user:jira",
         "write:requesttype:jira-service-management",
         "write:servicedesk-request"
-      ]
+      ],
+      "vendorUrl": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
+      "asset": "public/catalog/openapi/atlassian/81962a3574f9ad48b40b66a83a9bc187412274f6723bf1fa42b389fd5c2be797.json"
     },
     "confluence": {
       "url": "https://developer.atlassian.com/cloud/confluence/swagger.v3.json",

@@ -16,7 +16,7 @@ import { startPoolFixture } from "./pool-fixture.mjs";
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Localize the actual verified pool seed and operator config, preserving native provisioning. */
-const localPoolSetup = async (directory, registry) => {
+const localPoolSetup = async (directory, registry, resetOptions) => {
   const upstream = join(root, ".upstream");
   const assetDirectory = join(upstream, "apps/hosted/cloud/.generated/pool-app");
   const sourcePath = join(upstream, "apps/hosted/server/src/implementation/pool-app-source.ts");
@@ -32,6 +32,15 @@ const localPoolSetup = async (directory, registry) => {
       await readFile(join(assetDirectory, name)),
     ]),
   );
+  const resetPaths = resetOptions
+    ? [
+        "apps/hosted/cloud/src/infrastructure/executor.ts",
+        "apps/hosted/cloud/src/infrastructure/product-services.ts",
+      ]
+    : [];
+  const resetSources = await Promise.all(
+    resetPaths.map(async (path) => [path, await readFile(join(upstream, path))]),
+  );
   const signingKey = randomBytes(32).toString("hex");
   const fixture = await startPoolFixture(signingKey);
   const previous = { path: process.env.PATH, setup: process.env.BASALT_E2E_POOL_SETUP };
@@ -45,9 +54,20 @@ const localPoolSetup = async (directory, registry) => {
     for (const [name, bytes] of assets) await writeFile(join(assetDirectory, name), bytes);
     await writeFile(sourcePath, source);
     await writeFile(accessHookPath, accessHook);
+    for (const [path, bytes] of resetSources) await writeFile(join(upstream, path), bytes);
     await rm(join(directory, "bin"), { recursive: true, force: true });
   };
   try {
+    for (const [path, bytes] of resetSources) {
+      const declaration = "const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;";
+      assert.equal(bytes.toString().split(declaration).length, 2);
+      await writeFile(
+        join(upstream, path),
+        bytes
+          .toString()
+          .replace(declaration, `const poolOrigin = ${JSON.stringify(fixture.origin)};`),
+      );
+    }
     // The emulated Cloud has no outer Basalt router. Localize only that external receiver address.
     const destination = "new URL(accessPath, origin).href";
     assert.equal(accessHook.toString().split(destination).length, 2);
@@ -89,11 +109,11 @@ const localPoolSetup = async (directory, registry) => {
   }
 };
 
-export const poolCloudHarness = (directory) =>
+export const poolCloudHarness = (directory, { resets = false } = {}) =>
   Effect.gen(function* () {
     const registry = yield* lockedNpmRegistry;
     const setup = yield* Effect.acquireRelease(
-      Effect.promise(() => localPoolSetup(directory, registry)),
+      Effect.promise(() => localPoolSetup(directory, registry, resets)),
       (setup) => Effect.promise(() => setup.restore()),
     );
     const base = yield* startEnvironment({ target: "cloud", headless: true });
@@ -103,7 +123,8 @@ export const poolCloudHarness = (directory) =>
     );
     const api = Context.get(services, SessionClients);
     let actors = yield* createCloudScenarioActors.pipe(Effect.provideContext(services));
-    const raw = (role, method, path, input) => api.request(actors[role], method, path, input);
+    const raw = (role, method, path, input, headers) =>
+      api.request(actors[role], method, path, input, headers);
     const requestAs = (role, method, path, input) =>
       raw(role, method, path, input).pipe(
         Effect.map((response) => {

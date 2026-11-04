@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { brand } from "../brand.ts";
+import { servedFrameworkVersion } from "../framework-release.ts";
 
 export interface PoolAppFile {
   readonly path: string;
   readonly content: string;
 }
 
-export const poolFrameworkVersion = "0.0.1-beta.104-basalt.2";
+export const poolFrameworkVersion = servedFrameworkVersion;
 
 const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
 
@@ -52,6 +53,8 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
   const framework: { version: string } = JSON.parse(
     readFileSync(join(upstream, "packages/apps/package.json"), "utf8"),
   );
+  if (framework.version !== servedFrameworkVersion)
+    throw new Error(`Prepared framework ${framework.version} differs from served release ${servedFrameworkVersion}`);
   const files: PoolAppFile[] = [];
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -71,7 +74,7 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
           content = content.replace('"../../src/pool/provider-accounts/definitions.ts"', '"./provider-definitions.ts"');
         if (name === "package.json") {
           const manifest = JSON.parse(content);
-          manifest.dependencies = { ...manifest.dependencies, apps: framework.version };
+          manifest.dependencies = { ...manifest.dependencies, apps: servedFrameworkVersion };
           content = `${JSON.stringify(manifest, null, 2)}\n`;
         }
         files.push({ path: name, content });
