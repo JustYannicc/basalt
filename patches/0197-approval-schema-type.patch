@@ -1,0 +1,21 @@
+diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
+index 83a4958d..71515b53 100644
+--- a/packages/sdk/src/implementation/tool-policy.ts
++++ b/packages/sdk/src/implementation/tool-policy.ts
+@@ -1,13 +1,13 @@
+ import { AppCallWorkflow } from "./app-calls.ts";
+-import { Effect } from "effect";
++import { Effect, Schema } from "effect";
+ import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
+ import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
+ import type { InvocationSnapshot } from "./tools.ts";
+ import { Validator } from "@cfworker/json-schema";
+ import draft7Schema from "ajv/dist/refs/json-schema-draft-07.json" with { type: "json" };
+-import type { Json, JsonObject } from "../contracts/shared.ts";
++import { JsonObject, type Json } from "../contracts/shared.ts";
+ 
+-const metaSchema: JsonObject = draft7Schema;
++const metaSchema = Schema.decodeUnknownSync(JsonObject)(draft7Schema);
+ const constraintSchema = new Validator(metaSchema, "7", false);
+ 
+ const StandingPolicy = Symbol("executor.StandingToolPolicy");
