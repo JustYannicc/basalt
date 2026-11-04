@@ -68,6 +68,19 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   return errors;
 }
 
+// Compare syntax tokens so formatting and comments cannot change a modelled transport.
+function bindingTokens(expression: string): string {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+    expression,
+  );
+  const tokens: string[] = [];
+  while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) tokens.push(scanner.getTokenText());
+  return JSON.stringify(tokens);
+}
+
 function fetchBinding(
   call: ts.CallExpression,
   module: Module,
@@ -78,11 +91,11 @@ function fetchBinding(
   const receiver = call.expression.expression;
   const names = [receiver.getText(source)];
   if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
+  const candidates = names.map(bindingTokens);
   return module.bindings.find((binding) => {
-    const name = binding.split("=")[0];
-    return names.some(
-      (candidate) =>
-        candidate === name || candidate === `env.${name}` || candidate === `this.env.${name}`,
+    const name = binding.split("=")[0]!;
+    return [name, `env.${name}`, `this.env.${name}`].some((candidate) =>
+      candidates.includes(bindingTokens(candidate)),
     );
   });
 }
