@@ -246,17 +246,37 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted
  });
  export type LastSuccessAtInput = typeof LastSuccessAtInput.Type;
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
-index c03bee3..9806f0c 100644
+index c03bee3..e0a4c3f 100644
 --- a/apps/hosted/server/src/implementation/pool-membership.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
-@@ -109,7 +109,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+@@ -36,6 +36,7 @@ const NativePoolAccountRow = Schema.Struct({
+   owner: OwnerId,
+   requirementScope: Schema.NullOr(Schema.String),
+   requirementProvider: Schema.NullOr(ProviderId),
++  requirementProvisioned: Schema.Boolean,
+ });
+ 
+ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type) =>
+@@ -98,7 +99,10 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
+             from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider"
++            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
++          coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
++              @> '{"type":"secrets","provisioned":true}'::jsonb
++            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
+         from ${yield* usableAppLinks(sql, [pool])}
+           and not exists (select 1 from executor_account_acquisitions retiring
+             where retiring.account = a.id and retiring.removal is not null)
+@@ -109,7 +113,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
        const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
        const accounts = yield* Effect.forEach(linked, (row) =>
          Effect.gen(function* () {
 -          if (row.requirementScope !== "app" || row.requirementProvider !== row.provider)
-+          // The pool access token authorizes calls; it is not a provider credential for Home.
++          // Only the provisioned control token is outside Home; a model slot may also be named pool.
 +          if (
-+            row.requirement === "pool" ||
++            (row.requirement === "pool" && row.method === "token" && row.requirementProvisioned) ||
 +            row.requirementScope !== "app" ||
 +            row.requirementProvider !== row.provider
 +          )
