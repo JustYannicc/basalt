@@ -1412,12 +1412,13 @@ index 3643ce7..06d8267 100644
      };
    });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+index ddd7b7e..a7b789b 100644
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
-@@ -57,6 +57,25 @@
+@@ -56,6 +56,24 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
+       ].every((endpoint) => endpoint.startsWith(`${baseUrl}/`)),
    ),
  );
- 
 +const RoutesFixture = Schema.Struct({
 +  baseUrl: Schema.String.check(
 +    Schema.makeFilter((value) => {
@@ -1436,11 +1437,10 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +  ),
 +  token: Schema.NonEmptyString,
 +});
-+
+ 
  /** The fields of v1 WorkOS listings that seeding reads back. */
  const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
- const V1Organization = Schema.Struct({ metadata: Schema.Record(Schema.String, Schema.String) });
-@@ -74,6 +93,7 @@
+@@ -74,6 +92,7 @@ export const EmulatorFixture = Schema.Struct({
    version: Schema.Literal(4),
    origin: Schema.String,
    services: Schema.Struct({
@@ -1448,10 +1448,35 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
      google: GoogleProvider,
      github: Provider,
      mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-@@ -493,6 +513,44 @@
+@@ -493,47 +512,51 @@ const make = Effect.gen(function* () {
        ),
      );
    return {
+-    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
+-      Effect.gen(function* () {
+-        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
+-        if (!match?.[1])
+-          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
+-        return yield* request(
+-          value.services.billing.baseUrl,
+-          "/v1/customers.get",
+-          { customer_id: `${match[1]}:organization:${input.organizationId}` },
+-          value.services.billing.token,
+-        ).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({
+-                balances: Schema.Record(
+-                  Schema.String,
+-                  Schema.Struct({
+-                    feature_id: Schema.String,
+-                    usage: Schema.Number,
+-                    remaining: Schema.Number,
+-                    unlimited: Schema.Boolean,
+-                  }),
+-                ),
+-                subscriptions: Schema.Array(
+-                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
 +    mapsRoutes:
 +      value.services.mapsRoutes === undefined
 +        ? undefined
@@ -1480,7 +1505,12 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +                      ),
 +                    }),
 +                  ),
-+                ),
+                 ),
+-              }),
+-            ),
+-          ),
+-        );
+-      }),
 +              ),
 +            reset: () =>
 +              request(
@@ -1490,11 +1520,23 @@ diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 +                value.services.mapsRoutes!.token,
 +              ).pipe(Effect.asVoid),
 +          },
-     billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
+     billingSubscription: (input: {
+       readonly organizationId: string;
+       readonly planId: string;
+       readonly status: "active" | "trialing" | "scheduled" | "expired";
+     }) =>
        Effect.gen(function* () {
-         const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
+-        const match =
+-          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
+-            input.planId,
+-          );
++        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
+         if (!match?.[1])
+           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
+         yield* request(
 diff --git a/e2e/support/maps-routes-emulator.ts b/e2e/support/maps-routes-emulator.ts
 new file mode 100644
+index 0000000..5984ec5
 --- /dev/null
 +++ b/e2e/support/maps-routes-emulator.ts
 @@ -0,0 +1,168 @@
@@ -1592,15 +1634,15 @@ new file mode 100644
 +    ] as const;
 +    const source = replaceText(input.document.source, replacements);
 +    const entry = input.document.entry;
-+    const routes = Layer.mergeAll(
-+      HttpRouter.add(
++    const routes = HttpRouter.addAll([
++      HttpRouter.route(
 +        "GET",
 +        "/catalog/index.json",
 +        HttpServerResponse.json({ version: 1, apps: [entry] }),
 +      ),
-+      HttpRouter.add("GET", "/catalog/apps/google-maps.json", HttpServerResponse.json(source)),
-+      HttpRouter.add("GET", "/catalog/icons/*", HttpServerResponse.empty({ status: 404 })),
-+      HttpRouter.add(
++      HttpRouter.route("GET", "/catalog/apps/google-maps.json", HttpServerResponse.json(source)),
++      HttpRouter.route("GET", "/catalog/icons/*", HttpServerResponse.empty({ status: 404 })),
++      HttpRouter.route(
 +        "GET",
 +        "/__fixture/state",
 +        Effect.gen(function* () {
@@ -1610,7 +1652,7 @@ new file mode 100644
 +          return yield* HttpServerResponse.json(yield* Ref.get(state));
 +        }),
 +      ),
-+      HttpRouter.add(
++      HttpRouter.route(
 +        "POST",
 +        "/__fixture/reset",
 +        Effect.gen(function* () {
@@ -1621,7 +1663,7 @@ new file mode 100644
 +          return yield* HttpServerResponse.json({ ok: true });
 +        }),
 +      ),
-+      HttpRouter.add(
++      HttpRouter.route(
 +        "POST",
 +        expectedPath,
 +        Effect.gen(function* () {
@@ -1655,8 +1697,8 @@ new file mode 100644
 +          return yield* HttpServerResponse.json(routeResponse);
 +        }),
 +      ),
-+      HttpRouter.add("*", "/*", HttpServerResponse.json({ error: "not_found" }, { status: 404 })),
-+    );
++      HttpRouter.route("*", "/*", HttpServerResponse.json({ error: "not_found" }, { status: 404 })),
++    ]);
 +    const services = yield* Layer.build(
 +      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
 +        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
