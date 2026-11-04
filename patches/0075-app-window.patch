@@ -1,10 +1,10 @@
 diff --git a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
-index ddea19f..ff24978 100644
+index 0deb15c1..8e687136 100644
 --- a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
 +++ b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
-@@ -47,6 +47,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+@@ -47,6 +47,7 @@ import { Route as OrgOrganizationSlugSetupAssistantRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/org.$organizationSlug.apps.$appId_.setup'
  import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
- import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
  import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
 +import { Route as OrgOrganizationSlugAppsAppIdWindowRouteImport } from './routes/org.$organizationSlug_.apps.$appId.window'
  import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
@@ -24,48 +24,48 @@ index ddea19f..ff24978 100644
    OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport.update({
      id: '/approvals/workflow/$app/$input',
 @@ -305,6 +312,7 @@ export interface FileRoutesByFullPath {
+   '/org/$organizationSlug/setup/': typeof OrgOrganizationSlugSetupIndexRoute
    '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -343,6 +351,7 @@ export interface FileRoutesByTo {
+   '/org/$organizationSlug/setup': typeof OrgOrganizationSlugSetupIndexRoute
    '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -385,6 +394,7 @@ export interface FileRoutesById {
+   '/org/$organizationSlug_/setup/': typeof OrgOrganizationSlugSetupIndexRoute
    '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug_/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -428,6 +438,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/setup/'
      | '/org/$organizationSlug/apps/$appId/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug/apps/$appId/window'
      | '/org/$organizationSlug/apps/add/'
      | '/org/$organizationSlug/approvals/workflow/$app/$input'
    fileRoutesByTo: FileRoutesByTo
 @@ -466,6 +477,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/setup'
      | '/org/$organizationSlug/apps/$appId/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug/apps/$appId/window'
      | '/org/$organizationSlug/apps/add'
      | '/org/$organizationSlug/approvals/workflow/$app/$input'
    id:
 @@ -507,6 +519,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug_/setup/'
      | '/org/$organizationSlug/apps/$appId_/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug_/apps/$appId/window'
      | '/org/$organizationSlug/apps/add/'
@@ -93,7 +93,7 @@ index ddea19f..ff24978 100644
      '/org/$organizationSlug/approvals/workflow/$app/$input': {
        id: '/org/$organizationSlug/approvals/workflow/$app/$input'
        path: '/approvals/workflow/$app/$input'
-@@ -909,6 +930,8 @@ const rootRouteChildren: RootRouteChildren = {
+@@ -910,6 +931,8 @@ const rootRouteChildren: RootRouteChildren = {
    OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,
    McpApproveRequestIdRoute: McpApproveRequestIdRoute,
    OrgOrganizationSlugSetupRoute: OrgOrganizationSlugSetupRouteWithChildren,
@@ -104,7 +104,7 @@ index ddea19f..ff24978 100644
    ._addFileChildren(rootRouteChildren)
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
 new file mode 100644
-index 0000000..0da3d62
+index 00000000..0da3d621
 --- /dev/null
 +++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
 @@ -0,0 +1,31 @@
@@ -140,12 +140,12 @@ index 0000000..0da3d62
 +  );
 +}
 diff --git a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
-index ad9a86d..491fe11 100644
+index cc41a748..883b48b3 100644
 --- a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
 +++ b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
-@@ -42,6 +42,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+@@ -42,6 +42,7 @@ import { Route as OrgOrganizationSlugSetupAssistantRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/org.$organizationSlug.apps.$appId_.setup'
  import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
- import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
  import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
 +import { Route as OrgOrganizationSlugAppsAppIdWindowRouteImport } from './routes/org.$organizationSlug_.apps.$appId.window'
  import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
@@ -165,48 +165,48 @@ index ad9a86d..491fe11 100644
    OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport.update({
      id: '/approvals/workflow/$app/$input',
 @@ -268,6 +275,7 @@ export interface FileRoutesByFullPath {
+   '/org/$organizationSlug/groups/': typeof OrgOrganizationSlugGroupsIndexRoute
    '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -302,6 +310,7 @@ export interface FileRoutesByTo {
+   '/org/$organizationSlug/groups': typeof OrgOrganizationSlugGroupsIndexRoute
    '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -339,6 +348,7 @@ export interface FileRoutesById {
+   '/org/$organizationSlug/groups/': typeof OrgOrganizationSlugGroupsIndexRoute
    '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
 +  '/org/$organizationSlug_/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
    '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
 @@ -377,6 +387,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/groups/'
      | '/org/$organizationSlug/apps/$appId/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug/apps/$appId/window'
      | '/org/$organizationSlug/apps/add/'
      | '/org/$organizationSlug/approvals/workflow/$app/$input'
    fileRoutesByTo: FileRoutesByTo
 @@ -411,6 +422,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/groups'
      | '/org/$organizationSlug/apps/$appId/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug/apps/$appId/window'
      | '/org/$organizationSlug/apps/add'
      | '/org/$organizationSlug/approvals/workflow/$app/$input'
    id:
 @@ -447,6 +459,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/groups/'
      | '/org/$organizationSlug/apps/$appId_/setup'
-     | '/org/$organizationSlug/apps/add/custom'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
 +    | '/org/$organizationSlug_/apps/$appId/window'
      | '/org/$organizationSlug/apps/add/'
@@ -234,7 +234,7 @@ index ad9a86d..491fe11 100644
      '/org/$organizationSlug/approvals/workflow/$app/$input': {
        id: '/org/$organizationSlug/approvals/workflow/$app/$input'
        path: '/approvals/workflow/$app/$input'
-@@ -804,6 +825,8 @@ const rootRouteChildren: RootRouteChildren = {
+@@ -805,6 +826,8 @@ const rootRouteChildren: RootRouteChildren = {
    OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,
    McpApproveRequestIdRoute: McpApproveRequestIdRoute,
    OrgOrganizationSlugSetupRoute: OrgOrganizationSlugSetupRouteWithChildren,
@@ -245,7 +245,7 @@ index ad9a86d..491fe11 100644
    ._addFileChildren(rootRouteChildren)
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
 new file mode 100644
-index 0000000..0da3d62
+index 00000000..0da3d621
 --- /dev/null
 +++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
 @@ -0,0 +1,31 @@
@@ -281,7 +281,7 @@ index 0000000..0da3d62
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
-index fe3f39f..e427beb 100644
+index fe3f39fc..e427beb6 100644
 --- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 @@ -87,7 +87,7 @@ function ScreenStatus({
@@ -294,7 +294,7 @@ index fe3f39f..e427beb 100644
      <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
        <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
 diff --git a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
-index a2c0320..329600c 100644
+index a2c03203..329600c2 100644
 --- a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
 @@ -1,6 +1,7 @@
@@ -349,7 +349,7 @@ index a2c0320..329600c 100644
    );
 diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/hosted/web/src/implementation/pages/app-window.tsx
 new file mode 100644
-index 0000000..06a5836
+index 00000000..06a5836a
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-window.tsx
 @@ -0,0 +1,47 @@
@@ -401,7 +401,7 @@ index 0000000..06a5836
 +  );
 +}
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
-index 9571efc..1ffb0a8 100644
+index 9571efc7..1ffb0a8e 100644
 --- a/e2e/tests/embedded-app-ui.spec.ts
 +++ b/e2e/tests/embedded-app-ui.spec.ts
 @@ -237,7 +237,8 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>

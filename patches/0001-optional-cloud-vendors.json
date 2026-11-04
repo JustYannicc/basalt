@@ -1,10 +1,12 @@
 {
   "identity": "executor-optional-cloud-vendors",
   "file": "0001-optional-cloud-vendors.patch",
-  "content_sha256": "384d49ad8e3c8be1e13aab68e38573049c0ce62131664a2dd8d506a594e43f0e",
+  "content_sha256": "c6e806fb3f1944f005346f3968f118dc1bc78ae17d298ce4abbc88486730887f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "upstream_issue": 2378
+  "upstream_issue": 2378,
+  "rebased_from": "384d49ad8e3c8be1e13aab68e38573049c0ce62131664a2dd8d506a594e43f0e",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

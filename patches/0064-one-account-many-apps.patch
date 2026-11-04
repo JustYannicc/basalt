@@ -104,7 +104,7 @@ index 00000000..8e10df1c
 +  return { policy, client } satisfies HostEgress;
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index 89d85633..1ff5355d 100644
+index 167b2daf..c09c2e37 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
 @@ -1,5 +1,6 @@
@@ -114,8 +114,8 @@ index 89d85633..1ff5355d 100644
 -import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
  import { makeRegistryStorage } from "@executor-js/app-registry";
- import { firstPartyOAuthClients } from "@executor-js/hosted-server";
-@@ -17,7 +18,6 @@ import { SqlClient } from "effect/sql";
+ import {
+@@ -24,7 +25,6 @@ import { SqlClient } from "effect/sql";
  import { makeBatchExecutionMemo } from "./batch-execution.ts";
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, FiberSet, Option } from "effect";
@@ -123,7 +123,7 @@ index 89d85633..1ff5355d 100644
  import { cachedVersionSources } from "../implementation/version-source-cache.ts";
  import { organizationPublishers } from "../implementation/publishers.ts";
  import type { AppSources } from "./source.ts";
-@@ -42,17 +42,6 @@ import { cloudClientMetadata } from "./client-metadata.ts";
+@@ -49,17 +49,6 @@ import { cloudClientMetadata } from "./client-metadata.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
  import { productBrandConfig } from "@executor-js/utils/product-brand";
  
@@ -300,10 +300,10 @@ index 05d01689..8a0acbf6 100644
      Layer.succeed(HostManagedAccountRecords, poolAccessRecords),
      Layer.succeed(HostManagedAccountRecovery, poolAccountRecovery(Option.isSome(poolKey))),
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-index 1bc9f0c0..4de9b10c 100644
+index 3bdfc9aa..e736050a 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
 +++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-@@ -11,6 +11,7 @@ import {
+@@ -12,6 +12,7 @@ import {
  } from "./worker-upload.ts";
  
  export type WorkerName =
@@ -311,7 +311,7 @@ index 1bc9f0c0..4de9b10c 100644
    | "api"
    | "app-data"
    | "app-pages"
-@@ -30,6 +31,7 @@ export type WorkerName =
+@@ -31,6 +32,7 @@ export type WorkerName =
   * authoring reference to `authoring` and MCP sessions to `mcp-server`.
   */
  const uploadBudgets: Record<WorkerName, number> = {
@@ -319,24 +319,23 @@ index 1bc9f0c0..4de9b10c 100644
    api: 5_460_000,
    // App runners and data supervisors: a cold tool call starts both isolates.
    "app-data": 700_000,
-@@ -158,6 +160,20 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
+@@ -188,9 +190,16 @@ export const workerBuild = (
    worker === "compiler"
      ? { output: { plugins: [uploadedModules(worker)] } }
      : {
-+        ...(worker === "oauth-wire"
-+          ? {}
-+          : {
-+              input: {
-+                resolve: {
-+                  alias: {
-+                    "@executor-js/sdk/oauth-protocol": new URL(
-+                      "./oauth-protocol.ts",
-+                      import.meta.url,
-+                    ).pathname,
-+                  },
-+                },
-+              },
-+            }),
+-        ...(options.localTestHooks === true
+-          ? { input: { resolve: { alias: localTestHooks() } } }
+-          : {}),
++        input: {
++          resolve: {
++            alias: {
++              ...(worker === "oauth-wire" ? {} : {
++                "@executor-js/sdk/oauth-protocol": new URL("./oauth-protocol.ts", import.meta.url).pathname,
++              }),
++              ...(options.localTestHooks === true ? localTestHooks() : {}),
++            },
++          },
++        },
          output: {
            entryFileNames: `${worker}-[name].js`,
            chunkFileNames: `${worker}-[name]-[hash].js`,
@@ -524,7 +523,7 @@ index 7c5d891c..61745d51 100644
      }).annotate(RequiredAction, "manage"),
    )
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b35393ff..9a2de46c 100644
+index 43294e72..8cc61068 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -7,6 +7,13 @@ import {
@@ -541,7 +540,7 @@ index b35393ff..9a2de46c 100644
  import { accountOAuthRedirectUri } from "./auth.ts";
  import { ScheduleWakeup } from "../contracts/schedules.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -128,6 +135,11 @@ export const checkCredentials = (
+@@ -129,6 +136,11 @@ export const checkCredentials = (
      );
    });
  /** Run the checks of the apps the caller linked the account to, with their own account access. */
@@ -553,7 +552,7 @@ index b35393ff..9a2de46c 100644
  export const checkAccount = Effect.gen(function* () {
    const { owner, account } = yield* AccountGrants.use;
    const executor = yield* Effect.flatten(HostedExecutor);
-@@ -331,9 +343,7 @@ export const startOAuth = (
+@@ -339,9 +351,7 @@ export const startOAuth = (
  ) =>
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
@@ -564,7 +563,7 @@ index b35393ff..9a2de46c 100644
      const client = yield* connectionClient(executor, owner, input);
      const { client: _selected, ...rest } = input;
      return yield* executor.accountConnections
-@@ -347,9 +357,7 @@ export const completeOAuth = (
+@@ -355,9 +365,7 @@ export const completeOAuth = (
  ) =>
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
@@ -575,7 +574,7 @@ index b35393ff..9a2de46c 100644
      return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
        accountDestination(intent.destination),
        Effect.tapError(() =>
-@@ -382,6 +390,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+@@ -390,6 +398,7 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
            checkCredentials(owner, { app: params.app, ...payload }),
          ),
        )
@@ -583,7 +582,7 @@ index b35393ff..9a2de46c 100644
        .handle("check", () => checkAccount)
        .handle("disconnect", () => disconnectAccount)
        .handle("update", ({ payload }) => updateAccount(payload))
-@@ -421,6 +430,21 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+@@ -429,6 +438,21 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
            submitConnection(owner, { connection: params.connection, ...payload }),
          ),
        )
@@ -746,10 +745,10 @@ index 445fb3db..931955cb 100644
          Effect.gen(function* () {
            const organization = yield* organizationOf(account.owner);
 diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
-index c9208552..a64008ec 100644
+index a9954f15..74740cb9 100644
 --- a/apps/hosted/web/src/contracts/accounts.ts
 +++ b/apps/hosted/web/src/contracts/accounts.ts
-@@ -188,3 +188,17 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
+@@ -191,3 +191,17 @@ export const checkCredentialsAtom = HostedClient.runtime.fn(
        }),
      ),
  );
@@ -1049,10 +1048,10 @@ index 00000000..a4387f78
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
-index ff095589..7ef08169 100644
+index 16a213e2..f7b4e573 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
-@@ -1,151 +1,26 @@
+@@ -1,153 +1,27 @@
 -import { useState } from "react";
 -import type { AccountId } from "@executor-js/sdk";
 -import {
@@ -1065,7 +1064,7 @@ index ff095589..7ef08169 100644
 -import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 -import { Button } from "@executor-js/ui/components/button";
 -import { Link } from "@tanstack/react-router";
--import { useQuery } from "@executor-js/ui/dashboard/context";
+-import { usePreload, useQuery } from "@executor-js/ui/dashboard/context";
 -import { HostedFailure } from "../components/dashboard-bindings.tsx";
 -import {
 -  type OrganizationPageReads,
@@ -1074,17 +1073,18 @@ index ff095589..7ef08169 100644
 -} from "../components/organization.tsx";
 -import { OAuthClientsDialog } from "./oauth-clients.tsx";
 -import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
--import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
--
 +import { lazy, Suspense } from "react";
 +import { useHydrated } from "@executor-js/ui/hooks/hydrated";
 +import type { AccountsPage as AccountsClient } from "./accounts-client.tsx";
 +import type { OrganizationPageReads } from "../components/organization.tsx";
-+import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+-
+-/** Each account's access and the account list, keyed by the URL. */
 +import { AccountRowsSkeleton } from "@executor-js/ui/dashboard/loading";
- /** The organization's account directory. */
++/** The organization's account directory. */
  export const accountsPageReads: OrganizationPageReads = (organization) => [
    resourceDirectoryAtom(organization),
+   resourceInventoryAtom(organization),
  ];
  
 -/**
@@ -1099,6 +1099,7 @@ index ff095589..7ef08169 100644
 -  readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
 -}) {
 -  const { organization, slug: organizationSlug } = useOrganizationRoute();
+-  usePreload(...accountsPageReads(organization, {}));
 -  const directory = useQuery(resourceDirectoryAtom(organization));
 -  const inventory = useQuery(resourceInventoryAtom(organization));
 -  const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
@@ -1237,10 +1238,10 @@ index 00000000..78a0dd0d
 +    .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 new file mode 100644
-index 00000000..5c4e7be5
+index 00000000..4329d4a6
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,561 @@
 +import { methodsOf } from "./app-account-methods.ts";
 +export { methodsOf } from "./app-account-methods.ts";
 +import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
@@ -1756,6 +1757,7 @@ index 00000000..5c4e7be5
 +            redirectUri: value.redirectUri,
 +            ...(account ? { reconnect: true } : {}),
 +            manualClient: value.manualClient,
++            ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
 +            ...(returnTo === undefined ? {} : { returnTo }),
 +          },
 +          value.authorizationUrl,
@@ -1802,10 +1804,10 @@ index 00000000..5c4e7be5
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index a7fab6b0..2e8f67ad 100644
+index eef4e0da..2e8f67ad 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-@@ -1,505 +1,33 @@
+@@ -1,506 +1,33 @@
 -import { use, useContext, useState } from "react";
 -import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
 -import { AsyncResult, AtomRegistry } from "effect/reactivity";
@@ -2326,6 +2328,7 @@ index a7fab6b0..2e8f67ad 100644
 -            redirectUri: value.redirectUri,
 -            ...(account ? { reconnect: true } : {}),
 -            manualClient: value.manualClient,
+-            ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
 -            ...(returnTo === undefined ? {} : { returnTo }),
 -          },
 -          value.authorizationUrl,
@@ -2342,10 +2345,10 @@ index a7fab6b0..2e8f67ad 100644
 +  ) : null;
  }
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index be1a89cd..1fa00616 100644
+index f5dec534..5ba655df 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
-@@ -216,6 +216,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
+@@ -217,6 +217,7 @@ const accountConnectApi = HttpApi.make("account-connect").add(
            OAuthClientUnavailable,
            OAuthClientNotFound,
            OAuthSetupFailed,
@@ -2354,7 +2357,7 @@ index be1a89cd..1fa00616 100644
        }),
      )
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 0b45053c..d21e48a8 100644
+index c487adfc..bf687b5f 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -2362,7 +2365,7 @@ index 0b45053c..d21e48a8 100644
  import { AccountAcquisitionUnavailable } from "@executor-js/sdk/core";
  import { AccountObservationView } from "@executor-js/sdk/core";
  import { AccountProvisioned } from "@executor-js/sdk/core";
-@@ -27,13 +28,18 @@ import { AccountWebhooksActive } from "@executor-js/sdk/core";
+@@ -28,13 +29,18 @@ import { AccountWebhooksActive } from "@executor-js/sdk/core";
  import { AppWebhooksActive } from "@executor-js/sdk/core";
  /** Browser-safe read contracts for inspecting the local Executor instance. */
  import {
@@ -2383,7 +2386,7 @@ index 0b45053c..d21e48a8 100644
    AccountConnectionClosed,
    Account,
    AccountHealth,
-@@ -117,7 +123,7 @@ import {
+@@ -118,7 +124,7 @@ import {
  import { ConnectionSignIn } from "./account-connections.ts";
  import { RequirementMismatch } from "./requirement-mismatch.ts";
  import { AuthStorageError } from "./auth.ts";
@@ -2392,7 +2395,7 @@ index 0b45053c..d21e48a8 100644
  import {
    HttpApi,
    HttpApiEndpoint,
-@@ -379,6 +385,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+@@ -380,6 +386,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
          OAuthClientUnavailable,
          OAuthClientNotFound,
          OAuthSetupFailed,
@@ -2400,7 +2403,7 @@ index 0b45053c..d21e48a8 100644
        ],
      }).annotate(
        OpenApi.Description,
-@@ -608,6 +615,70 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -609,6 +616,70 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          error: [StorageError, AppNotFound],
        }),
      )
@@ -2542,7 +2545,7 @@ index 00000000..3a29d735
 +  };
 +};
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index bebb75b1..6540807a 100644
+index c3cf1302..0c905eaa 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -2689,7 +2692,7 @@ index 00000000..b38ed868
 +  };
 +};
 diff --git a/apps/local/web/src/implementation/app.tsx b/apps/local/web/src/implementation/app.tsx
-index 2260a60f..16ec8d85 100644
+index 6b2d2515..da086244 100644
 --- a/apps/local/web/src/implementation/app.tsx
 +++ b/apps/local/web/src/implementation/app.tsx
 @@ -19,6 +19,7 @@ import { usePairingLinks } from "./connection.ts";
@@ -2700,7 +2703,7 @@ index 2260a60f..16ec8d85 100644
  import { LocalDashboard } from "./dashboard-bindings.tsx";
  import { DashboardShell } from "@executor-js/ui/dashboard/shell";
  import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
-@@ -164,7 +165,7 @@ function Dashboard() {
+@@ -169,7 +170,7 @@ function Dashboard() {
            >
              <HugeiconsIcon icon={UserCircleIcon} strokeWidth={2} aria-hidden size={16} />
              Accounts
@@ -3349,10 +3352,10 @@ index 8facdd75..9228f4a9 100644
    { sql: "DROP INDEX executor_schedules_app" },
    { sql: "DROP INDEX executor_workflow_runs_scope_key" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 25380afc..956f241d 100644
+index 707a0e79..bc13699f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -121,6 +121,133 @@ export const scenarios = plan({
+@@ -127,6 +127,133 @@ export const scenarios = plan({
        cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
      },
    },
@@ -3486,7 +3489,7 @@ index 25380afc..956f241d 100644
    cloudRoleHostRoutes: {
      fixtures: "actors",
      file: "cloud-role-hosts.spec.ts",
-@@ -3002,7 +3129,7 @@ export const scenarios = plan({
+@@ -3525,7 +3652,7 @@ export const scenarios = plan({
        "OAuth classifies token and callback error responses, ignores ID tokens it cannot validate on sign-in, and renews when a refreshed ID token names another subject",
      targets: {
        "self-host": scheduled,
@@ -3495,7 +3498,7 @@ index 25380afc..956f241d 100644
        local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
      },
    },
-@@ -3753,7 +3880,7 @@ export const scenarios = plan({
+@@ -4312,7 +4439,7 @@ export const scenarios = plan({
      title: "Agents learn safely when an MCP server needs them to write the app",
      targets: {
        "self-host": scheduled,
@@ -3504,7 +3507,7 @@ index 25380afc..956f241d 100644
        local: na("The shared importer is exercised through the hosted import route."),
      },
    },
-@@ -4599,7 +4726,7 @@ export const scenarios = plan({
+@@ -5271,7 +5398,7 @@ export const scenarios = plan({
        "OAuth clients authenticate to services that accept only Basic credentials, read them literally, or read only the request body, through sign-in, registration, refresh and revocation",
      targets: {
        "self-host": scheduled,
@@ -4587,10 +4590,10 @@ index 1c148332..a3601283 100644
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
 diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
-index 4b0fe77a..764d3eda 100644
+index 16805620..2753091e 100644
 --- a/e2e/tests/credential-placement.spec.ts
 +++ b/e2e/tests/credential-placement.spec.ts
-@@ -1091,47 +1091,44 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1102,46 +1102,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
          });
@@ -4657,13 +4660,19 @@ index 4b0fe77a..764d3eda 100644
 -          scopes: ["openid", "email", "profile"],
 +          scopes: ["openid", "email"],
          });
+         // Each approved product must offer the shared client and forward its exact scopes.
+         for (const [key, scopes] of [
+@@ -1161,6 +1155,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+           expect(url.searchParams.get("client_id"), key).toBe(clientId);
+           expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+         }
 +        expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
 +        const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
 +        expect(defaultsUrl.searchParams.get("scope")).toBe("openid email");
          expect(defaults.setup.scopes).not.toContain(adminDirectoryUser);
          expect(admin.setup).toMatchObject({
            mode: "automatic",
-@@ -1143,9 +1140,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1172,9 +1169,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
          const adminUrl = new URL((yield* body(Redirect, admin.started)).authorizationUrl);
          expect(adminUrl.origin + adminUrl.pathname).toBe(google.authorizationUrl);
          expect(adminUrl.searchParams.get("client_id")).toBe(clientId);
@@ -8523,11 +8532,11 @@ index 00000000..535549f2
 +});
 +export type StoredAccountIdentity = typeof StoredAccountIdentity.Type;
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 944112ea..58ad02c6 100644
+index 7b291ba5..0c931b9e 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -14,6 +14,7 @@ import type { App, AppAccounts } from "./apps.ts";
- import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
  import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
  import { SiteOrigin } from "@executor-js/utils/account-site";
 +import { AccountIdentity } from "./account-identity.ts";
@@ -8543,7 +8552,7 @@ index 944112ea..58ad02c6 100644
  });
  
  export type Account = typeof Account.Type;
-@@ -349,6 +352,18 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -415,6 +418,18 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
      }),
    )
@@ -8563,7 +8572,7 @@ index 944112ea..58ad02c6 100644
      HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
        params: accountParams,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 020b6c0d..962dde49 100644
+index 992d6d1d..40372f0f 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -122,6 +122,19 @@ export interface HostAccessLifecycle {
@@ -8587,7 +8596,7 @@ index 020b6c0d..962dde49 100644
     * The user links a subject has to an app whose accounts they may still use, oldest link first,
     * each naming its requirement, for background work: each run resolves its actor's accounts here,
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index aa84f22f..338f179e 100644
+index 47bc208a..3c935edc 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -7,6 +7,8 @@ export * from "./provider.ts";
@@ -8651,14 +8660,15 @@ index 00000000..8c6aa1d8
 +      }
 +    : undefined;
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index a9687bea..772b1975 100644
+index 91c62d37..11117187 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -14,8 +14,10 @@ import {
+@@ -19,8 +19,11 @@ import {
    OAuthTokenResponse,
    PlacementHeaderName,
  } from "apps/contracts";
--import { Account } from "./account.ts";
+-import { Account, type AccountFieldsInvalid } from "./account.ts";
++import type { AccountFieldsInvalid } from "./account.ts";
  import { SiteOrigin } from "@executor-js/utils/account-site";
 +import { AccountIdentityId } from "./account-identity.ts";
 +import { Account } from "./account.ts";
@@ -8666,7 +8676,7 @@ index a9687bea..772b1975 100644
  export { OAuthClientAuth } from "apps/contracts";
  import type { HttpClient } from "effect/http";
  import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
-@@ -735,6 +737,9 @@ export const OAuthCompletionReason = Schema.Literals([
+@@ -782,6 +785,9 @@ export const OAuthCompletionReason = Schema.Literals([
    "sign_in_expired",
    "sign_in_used",
    "account_unavailable",
@@ -8676,7 +8686,7 @@ index a9687bea..772b1975 100644
    // The stored client the sign-in started with is no longer one the caller may use.
    "client_unavailable",
    // The service's authorization response, validated before its `error` is read.
-@@ -856,6 +861,27 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -997,6 +1003,27 @@ export const OAuthCompletionFailed = UserFacingError.define({
                  "Compare the issuer the app's provider definition declares, or the issuer its discovery URL publishes, with the service's documented issuer. Prefer the service's discovery document, or declare its exact issuer alongside explicit endpoints. Do not disable issuer validation (RFC 9207).",
              },
            },
@@ -8704,7 +8714,7 @@ index a9687bea..772b1975 100644
            denied: {
              title: "Sign-in was cancelled",
              description: "Access was not approved on the service’s sign-in page.",
-@@ -1014,6 +1040,9 @@ export const oauthCompletionRecovery = {
+@@ -1156,6 +1183,9 @@ export const oauthCompletionRecovery = {
    sign_in_expired: "restart",
    sign_in_used: "restart",
    account_unavailable: "account",
@@ -8714,7 +8724,7 @@ index a9687bea..772b1975 100644
    client_unavailable: "restart",
    issuer_mismatch: "configuration",
    denied: "cancelled",
-@@ -1203,6 +1232,7 @@ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
+@@ -1346,6 +1376,7 @@ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
  
  /** Validated subset of authorization-server metadata used for saved grants. */
  export const OAuthTokenServer = Schema.Struct({
@@ -8722,7 +8732,7 @@ index a9687bea..772b1975 100644
    /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
    issuer: HttpUrl,
    /**
-@@ -1340,6 +1370,24 @@ export const OAuthClientUse = Schema.Struct({
+@@ -1483,6 +1514,24 @@ export const OAuthClientUse = Schema.Struct({
    fresh: Schema.Boolean,
  });
  export type OAuthClientUse = typeof OAuthClientUse.Type;
@@ -8747,7 +8757,7 @@ index a9687bea..772b1975 100644
  /** What every sign-in attempt keeps, whichever client it uses. */
  const attemptFields = {
    connection: AccountConnectionId,
-@@ -1356,6 +1404,11 @@ const attemptFields = {
+@@ -1499,6 +1548,11 @@ const attemptFields = {
    response: JsonObject,
    /** The origin selected when its account connection was created. */
    site: Schema.optionalKey(SiteOrigin),
@@ -8759,7 +8769,7 @@ index a9687bea..772b1975 100644
  };
  /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
  export const OAuthAttempt = Schema.Struct({
-@@ -1410,10 +1463,20 @@ const grantFields = {
+@@ -1555,10 +1609,20 @@ const grantFields = {
   * current generation, since every sign-in since then records it.
   */
  const grantGeneration = Schema.optional(Schema.Int);
@@ -8780,7 +8790,7 @@ index a9687bea..772b1975 100644
      grant: Schema.optionalKey(Schema.Literal("authorization_code")),
      server: OAuthServer,
      client: OAuthRegistration,
-@@ -1450,6 +1513,7 @@ export const OAuthGrant = Schema.Union([
+@@ -1599,6 +1663,7 @@ export const OAuthGrant = Schema.Union([
     */
    Schema.Struct({
      grant: Schema.Literal("authorization_code"),
@@ -9177,40 +9187,32 @@ index 00000000..1452049b
 +    }),
 +  );
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 2eaee7d9..d1cbf0aa 100644
+index d11f228f..a41a5c8b 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
 @@ -1,3 +1,4 @@
 +import { AccountIdentityId } from "../contracts/account-identity.ts";
  import { AccountWorkflowsActive } from "../contracts/account.ts";
- import { AccountWebhooksActive } from "../contracts/account.ts";
+ import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
  /** Reusable account operations. Owners remain lookup predicates, not authorization. */
-@@ -14,6 +15,8 @@ import { Provider, ProviderNotFound } from "../contracts/provider.ts";
- import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+@@ -20,6 +21,8 @@ import {
+ } from "../contracts/shared.ts";
  import { StoredAccount, StoredAccountMetadata, type Credentials } from "../contracts/storage.ts";
  import { query, transaction, type Query } from "./database.ts";
 +import { accountGrantId, accountIdentity } from "./account-identities.ts";
 +import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
- import { validateFields } from "./provider.ts";
+ import { canonical, validateFields } from "./provider.ts";
  
  /** A stable digest of stored ciphertext; any credential write changes it. */
-@@ -63,6 +66,15 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
+@@ -123,6 +126,7 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
      return label;
    });
  
-+export const resumeWaitingSources = (tx: Query, account: AccountId) =>
-+  query(() =>
-+    tx.updateMany("webhookSources", {
-+      where: (b) =>
-+        b.and(b("account", "=", account), b("failure", "=", "accounts"), b("lease", "is", null)),
-+      set: { leaseUntil: new Date(0), retries: 0 },
-+    }),
-+  );
 +
  /** Apply the caller's owner filter before reading or mutating a saved account. */
  export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
    storedAccount(db, input.account, input.owner);
-@@ -167,7 +179,8 @@ export const makeAccounts = (
+@@ -227,7 +231,8 @@ export const makeAccounts = (
    get: (input: Parameters<Executor["accounts"]["get"]>[0]) =>
      Effect.gen(function* () {
        const row = yield* ownedAccount(db, input);
@@ -9220,22 +9222,21 @@ index 2eaee7d9..d1cbf0aa 100644
      }).pipe(Effect.withSpan("sdk.accounts.get")),
    provider: (input: Parameters<Executor["accounts"]["provider"]>[0]) =>
      Effect.gen(function* () {
-@@ -260,12 +273,10 @@ export const makeAccounts = (
+@@ -328,12 +333,7 @@ export const makeAccounts = (
              yield* query(() =>
-               tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
+               tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
              );
 -            const grant = yield* query(() =>
 -              tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
 -            );
-             yield* query(() =>
+-            yield* query(() =>
 -              tx.deleteMany("oauthGrants", { where: (b) => b("id", "=", input.account) }),
-+              tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
-             );
+-            );
 +
              yield* query(() =>
                tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
              );
-@@ -291,9 +302,7 @@ export const makeAccounts = (
+@@ -359,9 +359,7 @@ export const makeAccounts = (
              yield* query(() =>
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
@@ -9246,7 +9247,7 @@ index 2eaee7d9..d1cbf0aa 100644
            }
            return undefined;
          }),
-@@ -316,6 +325,7 @@ export const makeAccounts = (
+@@ -384,6 +382,7 @@ export const makeAccounts = (
              "owner",
              "createdAt",
              "site",
@@ -9254,7 +9255,7 @@ index 2eaee7d9..d1cbf0aa 100644
            ],
            where: (b) =>
              b.and(
-@@ -325,10 +335,23 @@ export const makeAccounts = (
+@@ -393,10 +392,23 @@ export const makeAccounts = (
            orderBy: ["id", "asc"],
          }),
        );
@@ -9282,7 +9283,7 @@ index 2eaee7d9..d1cbf0aa 100644
      }).pipe(Effect.withSpan("sdk.accounts.list")),
    providers: (input: Parameters<Executor["accounts"]["providers"]>[0]) =>
      Effect.gen(function* () {
-@@ -354,9 +377,7 @@ export const makeAccounts = (
+@@ -422,9 +434,7 @@ export const makeAccounts = (
    signIn: (input: Parameters<Executor["accounts"]["signIn"]>[0]) =>
      Effect.gen(function* () {
        const account = yield* ownedAccount(db, input);
@@ -9293,7 +9294,7 @@ index 2eaee7d9..d1cbf0aa 100644
        const unavailable: AccountSignIn = { state: "unavailable", credentialsFingerprint };
        const row = yield* query(() =>
          db.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
-@@ -374,16 +395,19 @@ export const makeAccounts = (
+@@ -442,16 +452,19 @@ export const makeAccounts = (
            credentialsFingerprint,
          } satisfies AccountSignIn;
        const grant = yield* query(() =>
@@ -9318,7 +9319,7 @@ index 2eaee7d9..d1cbf0aa 100644
        if (decoded._tag === "None") return unavailable;
        const saved = decoded.value;
        const reconnectAt =
-@@ -426,12 +450,14 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
+@@ -494,13 +507,15 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
      if (method === undefined) return false;
      if (method.type === "secrets" || method.type === "interactive") return true;
      const grant = yield* query(() =>
@@ -9338,6 +9339,7 @@ index 2eaee7d9..d1cbf0aa 100644
 +      );
      return Option.isSome(decoded);
    }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
+ 
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
 index cb577e16..9d11a12e 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
@@ -9392,7 +9394,7 @@ index a7b985d5..b636a83f 100644
  /** Claim by revision inside a transaction, including on databases without explicit row-lock APIs. */
  export const lockConnection = (
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index a04bb487..8772d55d 100644
+index 0cb55441..2d145543 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -4,6 +4,9 @@ import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
@@ -9405,8 +9407,8 @@ index a04bb487..8772d55d 100644
  import { WebhookSourceHost } from "../contracts/webhooks.ts";
  import { makeWebhookSources } from "./webhook-sources.ts";
  import { WorkflowHost } from "../contracts/workflow-runtime.ts";
-@@ -73,6 +76,8 @@ import { makeSkills } from "./skills.ts";
- import { toEffectRuntime } from "./runtime.ts";
+@@ -79,6 +82,8 @@ import { toEffectRuntime } from "./runtime.ts";
+ import { validateFields } from "./provider.ts";
  import { database } from "./database.ts";
  import { makeOAuth } from "./oauth.ts";
 +import { makeAccountIdentification } from "./account-identification.ts";
@@ -9414,7 +9416,7 @@ index a04bb487..8772d55d 100644
  import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
  import { makeListings } from "./listings.ts";
  import { makeToolSearch } from "./tool-search.ts";
-@@ -381,6 +386,8 @@ export const createExecutor = (
+@@ -399,6 +404,8 @@ export const createExecutor = (
            }),
          ...accountHealth,
          ...observationOperations,
@@ -9423,7 +9425,7 @@ index a04bb487..8772d55d 100644
          revocation: (input) =>
            storedAccount(db, input.account, input.owner).pipe(
              Effect.flatMap((account) => oauth.revocation(account.id)),
-@@ -412,6 +419,12 @@ export const createExecutor = (
+@@ -430,6 +437,12 @@ export const createExecutor = (
            interactive
              .clearAttempt({ ...input, type: "oauth2" })
              .pipe(Effect.andThen(oauth.connections.startOAuth(input))),
@@ -9437,10 +9439,10 @@ index a04bb487..8772d55d 100644
            Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
              Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 53ae43d7..065695da 100644
+index bbda3ced..1f010476 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -7,9 +7,11 @@ import type { ExecutorDatabase } from "./storage.ts";
+@@ -9,9 +9,11 @@ import type { ExecutorDatabase } from "./storage.ts";
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
  export const database = (storage: ExecutorDatabase) => ({
@@ -9452,7 +9454,7 @@ index 53ae43d7..065695da 100644
 +
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
 index 8f7cc238..27c3440f 100644
 --- a/packages/sdk/src/implementation/handlers.ts
@@ -10399,10 +10401,10 @@ index 00000000..52e7d8f6
 +    }).pipe(Effect.withSpan("sdk.connections.reuseOAuth"));
 diff --git a/packages/sdk/src/implementation/oauth-protocol-native.ts b/packages/sdk/src/implementation/oauth-protocol-native.ts
 new file mode 100644
-index 00000000..7a5e4ca7
+index 00000000..5333cb6c
 --- /dev/null
 +++ b/packages/sdk/src/implementation/oauth-protocol-native.ts
-@@ -0,0 +1,1810 @@
+@@ -0,0 +1,1860 @@
 +import {
 +  OAuthProtocolFailed,
 +  ProtocolCode,
@@ -10529,15 +10531,19 @@ index 00000000..7a5e4ca7
 +
 +/**
 + * RFC 6749 §5.2: a JSON object with an `error` code and no access token is an error response,
-+ * whatever its HTTP status.
++ * whatever its HTTP status. Supabase Auth's OAuth server answers a refused refresh in its own
++ * shape, `{"code": 400, "error_code": "refresh_token_already_used", "msg": "..."}`, with no
++ * `error`; its code and message stand in for RFC 6749's.
 + */
 +const oauthErrorBody = (body: unknown) => {
-+  if (!isObject(body)) return undefined;
++  if (!isObject(body) || Reflect.get(body, "access_token") !== undefined) return undefined;
 +  const error = Reflect.get(body, "error");
-+  return typeof error === "string" &&
-+    error !== "" &&
-+    Reflect.get(body, "access_token") === undefined
-+    ? { error, description: Reflect.get(body, "error_description") }
++  if (typeof error === "string" && error !== "")
++    return { error, description: Reflect.get(body, "error_description") };
++  const supabase = Reflect.get(body, "error_code");
++  const message = Reflect.get(body, "msg");
++  return typeof supabase === "string" && supabase !== "" && typeof message === "string"
++    ? { error: supabase, description: message }
 +    : undefined;
 +};
 +
@@ -10723,9 +10729,39 @@ index 00000000..7a5e4ca7
 +  error === "invalid_client_id" ||
 +  error.startsWith("invalid_client:");
 +
++/**
++ * Services' own codes for a refresh token that can never be used again, their RFC 6749
++ * `invalid_grant`:
++ *
++ * - Supabase Auth: the token was already used outside the reuse interval, which also revokes every
++ *   token of its session, or it or its session no longer exists or has expired.
++ * - GitHub (`bad_refresh_token`, with HTTP 200): the token is invalid or expired.
++ * - Slack (with HTTP 200): `invalid_refresh_token`, or `token_revoked` for a deleted user or
++ *   workspace or a removed app.
++ * - AWS Sign-In: `TOKEN_EXPIRED` (HTTP 401) once the refresh token's session has ended, at most
++ *   12 hours after sign-in, and `USER_CREDENTIALS_CHANGED` (HTTP 403) after the user's password
++ *   changed, which revokes its refresh tokens.
++ * - OpenID Connect's `login_required` from a token endpoint: the user must sign in again. Tesla
++ *   answers it with HTTP 401 for a refresh token already used, after a password reset, or once the
++ *   user revoked the app.
++ *
++ * Several of these come with HTTP 401, which alone would read as a refusal of the client.
++ */
++const isEndedGrant = (error: string) =>
++  error === "refresh_token_already_used" ||
++  error === "refresh_token_not_found" ||
++  error === "session_expired" ||
++  error === "session_not_found" ||
++  error === "bad_refresh_token" ||
++  error === "invalid_refresh_token" ||
++  error === "token_revoked" ||
++  error === "TOKEN_EXPIRED" ||
++  error === "USER_CREDENTIALS_CHANGED" ||
++  error === "login_required";
++
 +/** The reason an RFC 6749 §5.2 error code gives for a failed token request. */
 +const errorReason = (error: string) =>
-+  error === "invalid_grant"
++  error === "invalid_grant" || isEndedGrant(error)
 +    ? ("invalid_grant" as const)
 +    : isClientRejection(error)
 +      ? ("invalid_client" as const)
@@ -11206,6 +11242,18 @@ index 00000000..7a5e4ca7
 +    : "web";
 +
 +/**
++ * Authorization parameters a server needs before it issues a renewable grant, where its metadata
++ * cannot say so. Google issues a refresh token only for `access_type=offline` and, once a person
++ * has consented, again only with `prompt=consent`; it neither advertises nor accepts
++ * `offline_access`. Without them every Google sign-in, including each reconnect, lasts an hour.
++ * A value the endpoint's own query or the method's `authorizationParams` sets replaces these.
++ */
++const renewableGrantParams = (endpoint: URL): Readonly<Record<string, string>> =>
++  endpoint.protocol === "https:" && endpoint.host === "accounts.google.com"
++    ? { access_type: "offline", prompt: "consent" }
++    : {};
++
++/**
 + * A token request as the JSON object some services require instead of RFC 6749's form. The
 + * library's parameters and client authentication are kept; only their encoding changes.
 + */
@@ -11664,13 +11712,22 @@ index 00000000..7a5e4ca7
 +      )
 +        scopes.add("offline_access");
 +      // A declared resource, or an explicit null, always applies. A discovered one is not
-+      // sent to a server that takes the audience from the scopes instead.
++      // sent to a server whose metadata suggests it takes the audience from the scopes instead;
++      // that is Executor's inference from the server's own claims, and its source says so.
 +      const resourceIndicator =
 +        method.resource !== undefined
 +          ? method.resource
 +          : audienceFromScopes
 +            ? undefined
 +            : found?.resource;
++      const resourceSource =
++        method.resource !== undefined
++          ? ("declared" as const)
++          : found?.resource === undefined
++            ? ("none" as const)
++            : audienceFromScopes
++              ? ("inferred_scope_audience" as const)
++              : ("metadata" as const);
 +      // Scopes only the resource metadata lists are what the resource offers, not what an
 +      // operation requires, so an operator's client may ask for fewer of them.
 +      const advertised =
@@ -11697,14 +11754,7 @@ index 00000000..7a5e4ca7
 +              ),
 +            }),
 +        ...(resourceIndicator == null ? {} : { resource: resourceIndicator }),
-+        resourceSource:
-+          method.resource !== undefined
-+            ? ("declared" as const)
-+            : found?.resource === undefined
-+              ? ("none" as const)
-+              : audienceFromScopes
-+                ? ("inferred_scope_audience" as const)
-+                : ("metadata" as const),
++        resourceSource,
 +      };
 +      return { settings, ...(document === undefined ? {} : { document }) };
 +    });
@@ -12016,6 +12066,8 @@ index 00000000..7a5e4ca7
 +        const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
 +        const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
 +        const url = new URL(input.server.authorization_endpoint);
++        for (const [key, value] of Object.entries(renewableGrantParams(url)))
++          if (!url.searchParams.has(key)) url.searchParams.set(key, value);
 +        // Declared extras go first so the protocol parameters below always win.
 +        for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
 +          url.searchParams.set(key, value);
@@ -12351,10 +12403,10 @@ index 00000000..622ba72b
 +    ? ["authorization_code", "refresh_token"]
 +    : ["authorization_code"];
 diff --git a/packages/sdk/src/implementation/oauth-protocol.ts b/packages/sdk/src/implementation/oauth-protocol.ts
-index 2aa24489..dafbdcd7 100644
+index 51a8ccb3..dafbdcd7 100644
 --- a/packages/sdk/src/implementation/oauth-protocol.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol.ts
-@@ -1,1857 +1,9 @@
+@@ -1,1917 +1,9 @@
 -/** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
 -import { RecordedMessage } from "@executor-js/utils/recorded-message";
 -import { parseDestination } from "@executor-js/utils/url-policy";
@@ -12550,15 +12602,19 @@ index 2aa24489..dafbdcd7 100644
 -
 -/**
 - * RFC 6749 §5.2: a JSON object with an `error` code and no access token is an error response,
-- * whatever its HTTP status.
+- * whatever its HTTP status. Supabase Auth's OAuth server answers a refused refresh in its own
+- * shape, `{"code": 400, "error_code": "refresh_token_already_used", "msg": "..."}`, with no
+- * `error`; its code and message stand in for RFC 6749's.
 - */
 -const oauthErrorBody = (body: unknown) => {
--  if (!isObject(body)) return undefined;
+-  if (!isObject(body) || Reflect.get(body, "access_token") !== undefined) return undefined;
 -  const error = Reflect.get(body, "error");
--  return typeof error === "string" &&
--    error !== "" &&
--    Reflect.get(body, "access_token") === undefined
--    ? { error, description: Reflect.get(body, "error_description") }
+-  if (typeof error === "string" && error !== "")
+-    return { error, description: Reflect.get(body, "error_description") };
+-  const supabase = Reflect.get(body, "error_code");
+-  const message = Reflect.get(body, "msg");
+-  return typeof supabase === "string" && supabase !== "" && typeof message === "string"
+-    ? { error: supabase, description: message }
 -    : undefined;
 -};
 -
@@ -12744,9 +12800,39 @@ index 2aa24489..dafbdcd7 100644
 -  error === "invalid_client_id" ||
 -  error.startsWith("invalid_client:");
 -
+-/**
+- * Services' own codes for a refresh token that can never be used again, their RFC 6749
+- * `invalid_grant`:
+- *
+- * - Supabase Auth: the token was already used outside the reuse interval, which also revokes every
+- *   token of its session, or it or its session no longer exists or has expired.
+- * - GitHub (`bad_refresh_token`, with HTTP 200): the token is invalid or expired.
+- * - Slack (with HTTP 200): `invalid_refresh_token`, or `token_revoked` for a deleted user or
+- *   workspace or a removed app.
+- * - AWS Sign-In: `TOKEN_EXPIRED` (HTTP 401) once the refresh token's session has ended, at most
+- *   12 hours after sign-in, and `USER_CREDENTIALS_CHANGED` (HTTP 403) after the user's password
+- *   changed, which revokes its refresh tokens.
+- * - OpenID Connect's `login_required` from a token endpoint: the user must sign in again. Tesla
+- *   answers it with HTTP 401 for a refresh token already used, after a password reset, or once the
+- *   user revoked the app.
+- *
+- * Several of these come with HTTP 401, which alone would read as a refusal of the client.
+- */
+-const isEndedGrant = (error: string) =>
+-  error === "refresh_token_already_used" ||
+-  error === "refresh_token_not_found" ||
+-  error === "session_expired" ||
+-  error === "session_not_found" ||
+-  error === "bad_refresh_token" ||
+-  error === "invalid_refresh_token" ||
+-  error === "token_revoked" ||
+-  error === "TOKEN_EXPIRED" ||
+-  error === "USER_CREDENTIALS_CHANGED" ||
+-  error === "login_required";
+-
 -/** The reason an RFC 6749 §5.2 error code gives for a failed token request. */
 -const errorReason = (error: string) =>
--  error === "invalid_grant"
+-  error === "invalid_grant" || isEndedGrant(error)
 -    ? ("invalid_grant" as const)
 -    : isClientRejection(error)
 -      ? ("invalid_client" as const)
@@ -13243,6 +13329,18 @@ index 2aa24489..dafbdcd7 100644
 -    : "web";
 -
 -/**
+- * Authorization parameters a server needs before it issues a renewable grant, where its metadata
+- * cannot say so. Google issues a refresh token only for `access_type=offline` and, once a person
+- * has consented, again only with `prompt=consent`; it neither advertises nor accepts
+- * `offline_access`. Without them every Google sign-in, including each reconnect, lasts an hour.
+- * A value the endpoint's own query or the method's `authorizationParams` sets replaces these.
+- */
+-const renewableGrantParams = (endpoint: URL): Readonly<Record<string, string>> =>
+-  endpoint.protocol === "https:" && endpoint.host === "accounts.google.com"
+-    ? { access_type: "offline", prompt: "consent" }
+-    : {};
+-
+-/**
 - * A token request as the JSON object some services require instead of RFC 6749's form. The
 - * library's parameters and client authentication are kept; only their encoding changes.
 - */
@@ -13728,13 +13826,22 @@ index 2aa24489..dafbdcd7 100644
 -      )
 -        scopes.add("offline_access");
 -      // A declared resource, or an explicit null, always applies. A discovered one is not
--      // sent to a server that takes the audience from the scopes instead.
+-      // sent to a server whose metadata suggests it takes the audience from the scopes instead;
+-      // that is Executor's inference from the server's own claims, and its source says so.
 -      const resourceIndicator =
 -        method.resource !== undefined
 -          ? method.resource
 -          : audienceFromScopes
 -            ? undefined
 -            : found?.resource;
+-      const resourceSource =
+-        method.resource !== undefined
+-          ? ("declared" as const)
+-          : found?.resource === undefined
+-            ? ("none" as const)
+-            : audienceFromScopes
+-              ? ("inferred_scope_audience" as const)
+-              : ("metadata" as const);
 -      // Scopes only the resource metadata lists are what the resource offers, not what an
 -      // operation requires, so an operator's client may ask for fewer of them.
 -      const advertised =
@@ -13761,6 +13868,7 @@ index 2aa24489..dafbdcd7 100644
 -              ),
 -            }),
 -        ...(resourceIndicator == null ? {} : { resource: resourceIndicator }),
+-        resourceSource,
 -      };
 -      return { settings, ...(document === undefined ? {} : { document }) };
 -    });
@@ -13841,6 +13949,8 @@ index 2aa24489..dafbdcd7 100644
 -              // Undeclared means the client decides: with nothing advertised, a secret uses Basic.
 -              tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
 -              ...(method.resource == null ? {} : { resource: method.resource }),
+-              resourceSource:
+-                method.resource === undefined ? ("none" as const) : ("declared" as const),
 -            };
 -          }
 -          const resource = yield* secureUrl(method.discover);
@@ -14015,6 +14125,8 @@ index 2aa24489..dafbdcd7 100644
 -        const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
 -        const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
 -        const url = new URL(input.server.authorization_endpoint);
+-        for (const [key, value] of Object.entries(renewableGrantParams(url)))
+-          if (!url.searchParams.has(key)) url.searchParams.set(key, value);
 -        // Declared extras go first so the protocol parameters below always win.
 -        for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
 -          url.searchParams.set(key, value);
@@ -14222,7 +14334,7 @@ index 2aa24489..dafbdcd7 100644
 +  registrationGrantTypes,
 +} from "./oauth-protocol-shared.ts";
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 4c2b904d..1512ce0e 100644
+index 28cc7dd2..22a52d9b 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,4 +1,5 @@
@@ -14231,12 +14343,10 @@ index 4c2b904d..1512ce0e 100644
  import type { BackgroundWork } from "../contracts/declarations.ts";
  /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
  import {
-@@ -121,8 +122,17 @@ import {
-   registrationGrantTypes,
+@@ -125,7 +126,16 @@ import {
    type OAuthProtocolFailed,
  } from "./oauth-protocol.ts";
--import { accountMetadata, defaultLabel, ownedAccount } from "./accounts.ts";
-+import { accountMetadata, defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
+ import { accountMetadata, defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 +import { accountGrantId, accountIdentity, recordAccountIdentity } from "./account-identities.ts";
 +import { inspectOAuthConnection } from "./oauth-connection-plan.ts";
 +import {
@@ -14250,7 +14360,7 @@ index 4c2b904d..1512ce0e 100644
  import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
  
  /**
-@@ -595,9 +605,9 @@ export const makeOAuth = (
+@@ -639,9 +649,9 @@ export const makeOAuth = (
     * held (§6). Scopes are whitespace-delimited, and also split on the server's
     * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
     */
@@ -14262,7 +14372,7 @@ index 4c2b904d..1512ce0e 100644
      return scope
        .split(/\s+/u)
        .flatMap((part) => (separator === undefined ? [part] : part.split(separator)))
-@@ -1508,26 +1518,52 @@ export const makeOAuth = (
+@@ -1584,26 +1594,52 @@ export const makeOAuth = (
      },
      resolved: Resolved,
      existing: Account | undefined,
@@ -14318,7 +14428,7 @@ index 4c2b904d..1512ce0e 100644
        if (choice === undefined) {
          const reusable =
            previous === undefined ||
-@@ -1570,13 +1606,19 @@ export const makeOAuth = (
+@@ -1646,13 +1682,19 @@ export const makeOAuth = (
            // registered client is automatic: the sign-in finds it again while it is usable, and
            // keeps it when the service offers no other. Either way a refusal fails rather than
            // fall back to the copy the grant holds of the same client.
@@ -14339,7 +14449,7 @@ index 4c2b904d..1512ce0e 100644
          return yield* automaticChoice(input, resolved, reconnecting).pipe(
            Effect.catchTag("OAuthClientUnavailable", (error) =>
              reusable === undefined
-@@ -1643,19 +1685,102 @@ export const makeOAuth = (
+@@ -1719,19 +1761,102 @@ export const makeOAuth = (
          return yield* new OAuthClientUnavailable(input);
        const explicitClient =
          input.client !== undefined && !Schema.is(OAuthAutomaticClient)(input.client);
@@ -14445,7 +14555,7 @@ index 4c2b904d..1512ce0e 100644
          );
        const stored = chosen.kind === "stored" ? chosen.use : undefined;
        const save = "save" in chosen && chosen.save === true;
-@@ -1781,6 +1906,11 @@ export const makeOAuth = (
+@@ -1859,6 +1984,11 @@ export const makeOAuth = (
          ...(stored === undefined ? {} : { storedClient: stored }),
          ...(save ? { saveClient: true } : {}),
          response: method.response,
@@ -14457,7 +14567,7 @@ index 4c2b904d..1512ce0e 100644
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
      }).pipe(Effect.withSpan("oauth.beginOAuth"));
-@@ -1796,14 +1926,49 @@ export const makeOAuth = (
+@@ -1874,14 +2004,49 @@ export const makeOAuth = (
        const now = yield* Clock.currentTimeMillis;
        const encrypted = yield* encrypt(id, attempt);
        const pending = yield* openConnection(db, input);
@@ -14510,7 +14620,7 @@ index 4c2b904d..1512ce0e 100644
          }),
        );
        return {
-@@ -1830,9 +1995,16 @@ export const makeOAuth = (
+@@ -1908,9 +2073,16 @@ export const makeOAuth = (
        readonly site?: string | undefined;
      },
      existing: Account | undefined,
@@ -14528,7 +14638,7 @@ index 4c2b904d..1512ce0e 100644
    ) =>
      Effect.gen(function* () {
        if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
-@@ -1848,7 +2020,17 @@ export const makeOAuth = (
+@@ -1926,7 +2098,17 @@ export const makeOAuth = (
            redirectUri: redirect.href,
            scopes: firstParty.scopes,
            ...(scopeSeparator === undefined ? {} : { scopeSeparator }),
@@ -14547,7 +14657,7 @@ index 4c2b904d..1512ce0e 100644
            ...(resource === undefined ? {} : { resource }),
          })
          .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
-@@ -1862,6 +2044,9 @@ export const makeOAuth = (
+@@ -1940,6 +2122,9 @@ export const makeOAuth = (
          firstParty: firstParty.client.id,
          ...(input.site === undefined ? {} : { site: input.site }),
          response,
@@ -14557,7 +14667,7 @@ index 4c2b904d..1512ce0e 100644
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
      }).pipe(Effect.withSpan("oauth.beginFirstParty"));
-@@ -1892,6 +2077,9 @@ export const makeOAuth = (
+@@ -1970,6 +2155,9 @@ export const makeOAuth = (
        return yield* beginOAuth(
          {
            ...rest,
@@ -14567,7 +14677,7 @@ index 4c2b904d..1512ce0e 100644
            owner: connection.owner,
            provider: connection.provider,
            ...(connection.target.site === undefined ? {} : { site: connection.target.site }),
-@@ -1903,7 +2091,7 @@ export const makeOAuth = (
+@@ -1981,7 +2169,7 @@ export const makeOAuth = (
        ).pipe(
          // Agents reading the request learn what the person connecting was shown.
          Effect.tapError((error) =>
@@ -14576,7 +14686,7 @@ index 4c2b904d..1512ce0e 100644
              ? recordSignInFailure(db, crypto, input, connection.oauthAttempt, error)
              : Effect.void,
          ),
-@@ -2018,6 +2206,13 @@ export const makeOAuth = (
+@@ -2096,6 +2284,13 @@ export const makeOAuth = (
        if (attempt.connection !== input.connection) return yield* failed("sign_in_replaced");
        const connection = yield* openConnection(db, input);
        if (connection.oauthAttempt !== id) return yield* failed("sign_in_replaced");
@@ -14590,7 +14700,7 @@ index 4c2b904d..1512ce0e 100644
        const redirect = new URL(attempt.redirectUri);
        if (
          callback.origin !== redirect.origin ||
-@@ -2052,7 +2247,15 @@ export const makeOAuth = (
+@@ -2130,7 +2325,15 @@ export const makeOAuth = (
            Schema.is(OAuthCompletionFailed)(error) ||
            Schema.is(AccountConnectionRefused)(error) ||
            Schema.is(AccountConnectionTargetChanged)(error)
@@ -14607,9 +14717,9 @@ index 4c2b904d..1512ce0e 100644
              : Effect.void,
          ),
        );
-@@ -2212,9 +2415,36 @@ export const makeOAuth = (
-             }),
-         ),
+@@ -2299,9 +2502,36 @@ export const makeOAuth = (
+         "oauth.grant.refresh_token",
+         tokens.refresh_token !== undefined,
        );
 +      const verified =
 +        attempt.identity === undefined
@@ -14644,7 +14754,7 @@ index 4c2b904d..1512ce0e 100644
          response: attempt.response,
          fields,
          redirectUri: attempt.redirectUri,
-@@ -2254,7 +2484,7 @@ export const makeOAuth = (
+@@ -2341,7 +2571,7 @@ export const makeOAuth = (
          ? undefined
          : (savedClient?.row.id ?? holding?.id ?? attempt.storedClient?.id);
        /** The grant for the account's credential generation it starts. */
@@ -14653,7 +14763,7 @@ index 4c2b904d..1512ce0e 100644
          decode(
            OAuthGrant,
            isFirstPartyAttempt(attempt)
-@@ -2273,7 +2503,9 @@ export const makeOAuth = (
+@@ -2360,7 +2590,9 @@ export const makeOAuth = (
                    : { tokenResponse: attempt.tokenResponse }),
                  generation,
                },
@@ -14664,7 +14774,7 @@ index 4c2b904d..1512ce0e 100644
        const encryptedCredentials = yield* encrypt(attempt.account, fields);
        const ready = `ready_${yield* nextId}`;
        return yield* savingConnection(
-@@ -2281,7 +2513,16 @@ export const makeOAuth = (
+@@ -2368,7 +2600,16 @@ export const makeOAuth = (
          input.connection,
          transaction(db, (tx) =>
            Effect.gen(function* () {
@@ -14682,7 +14792,7 @@ index 4c2b904d..1512ce0e 100644
              // A newer sign-in started while the token exchange was running.
              if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
              // A person may have removed the stored client while its code was being exchanged. The
-@@ -2326,10 +2567,13 @@ export const makeOAuth = (
+@@ -2413,6 +2654,8 @@ export const makeOAuth = (
                    set: {
                      encryptedCredentials,
                      credentialGeneration: generation,
@@ -14691,12 +14801,7 @@ index 4c2b904d..1512ce0e 100644
                      site: target.site,
                    },
                  }),
-               );
-+              yield* resumeWaitingSources(tx, target.id);
-             } else {
-               yield* query(() =>
-                 tx.create("accounts", {
-@@ -2341,6 +2585,7 @@ export const makeOAuth = (
+@@ -2429,6 +2672,7 @@ export const makeOAuth = (
                );
                if (lifecycle) yield* lifecycle.accountCreated(saved);
              }
@@ -14704,7 +14809,7 @@ index 4c2b904d..1512ce0e 100644
              const grant = {
                encrypted: yield* grantOf(generation),
                status: ready,
-@@ -2353,6 +2598,21 @@ export const makeOAuth = (
+@@ -2441,6 +2685,21 @@ export const makeOAuth = (
                  update: grant,
                }),
              );
@@ -14726,7 +14831,7 @@ index 4c2b904d..1512ce0e 100644
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
                  where: (b) => b("id", "=", id),
-@@ -2366,7 +2626,13 @@ export const makeOAuth = (
+@@ -2454,7 +2713,13 @@ export const makeOAuth = (
                  reconnectAccount: current.reconnectAccount,
                  target: { app: current.target.app, requirement: current.target.requirement },
                });
@@ -14741,7 +14846,7 @@ index 4c2b904d..1512ce0e 100644
              // Credentials a client was registered with during this sign-in are that client's and
              // are not saved again. The grant then names a client that does not exist, which is
              // harmless: its copy of the credentials still resolves to the client holding them.
-@@ -2381,7 +2647,7 @@ export const makeOAuth = (
+@@ -2469,7 +2734,7 @@ export const makeOAuth = (
                    set: { confirmed: true },
                  }),
                );
@@ -14750,7 +14855,7 @@ index 4c2b904d..1512ce0e 100644
            }),
          ),
        );
-@@ -2419,6 +2685,12 @@ export const makeOAuth = (
+@@ -2507,6 +2772,12 @@ export const makeOAuth = (
        /** Record why the grant cannot be used on this span; only fixed vocabularies and codes. */
        const reconnect = (reason: ReconnectReason, cause?: OAuthFailureCause) =>
          reconnectRequired("oauth.resolve", account.id, reason, cause);
@@ -14763,7 +14868,7 @@ index 4c2b904d..1512ce0e 100644
        // Set once this call has waited for another renewal of the grant. The token it then reads
        // is that renewal's result, and is used until it expires rather than renewed ahead again.
        let awaited = false;
-@@ -2426,16 +2698,29 @@ export const makeOAuth = (
+@@ -2514,16 +2785,29 @@ export const makeOAuth = (
        while (true) {
          const ahead =
            readAhead !== undefined && !awaited && !resolution.contested
@@ -14797,7 +14902,7 @@ index 4c2b904d..1512ce0e 100644
          if (row.status === "reconnect") return yield* reconnect("grant_unusable");
          const now = yield* Clock.currentTimeMillis;
          // A renewal holds the grant. Its row still carries the grant it started from.
-@@ -2453,7 +2738,30 @@ export const makeOAuth = (
+@@ -2541,7 +2825,30 @@ export const makeOAuth = (
          // An unconfirmed claim was abandoned by a process that stopped before saving a result.
          // Renew again from the saved grant, as it would have. See renewalLease.
          const abandoned = claimed;
@@ -14829,7 +14934,7 @@ index 4c2b904d..1512ce0e 100644
          const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
          // The service refused exactly the credentials this grant still holds. A grant another
          // call has renewed since then holds different ones, which this call uses instead.
-@@ -2462,7 +2770,10 @@ export const makeOAuth = (
+@@ -2550,7 +2857,10 @@ export const makeOAuth = (
          const held = (fields: JsonObject): AccountCredential => ({
            fields: Redacted.make(fields),
            firstParty: isFirstPartyGrant(grant) ? grant.firstParty : undefined,
@@ -14841,7 +14946,7 @@ index 4c2b904d..1512ce0e 100644
          });
          if (refused && !renewable) return held(grant.fields);
          if (
-@@ -2537,12 +2848,12 @@ export const makeOAuth = (
+@@ -2625,12 +2935,12 @@ export const makeOAuth = (
              const settled = yield* transaction(db, (tx) =>
                Effect.gen(function* () {
                  const current = yield* query(() =>
@@ -14856,7 +14961,7 @@ index 4c2b904d..1512ce0e 100644
                      // Anything but a refusal releases the claim with the grant and its refresh
                      // token unchanged, so a later call can renew it.
                      set:
-@@ -2615,40 +2926,44 @@ export const makeOAuth = (
+@@ -2703,40 +3013,44 @@ export const makeOAuth = (
              decode(OAuthGrant, {
                ...Struct.omit(base, ["expiresAt"]),
                fields,
@@ -14909,7 +15014,7 @@ index 4c2b904d..1512ce0e 100644
                          b("status", "=", claim),
                          b("encrypted", "=", current.encrypted),
                        ),
-@@ -2656,16 +2971,17 @@ export const makeOAuth = (
+@@ -2744,16 +3058,17 @@ export const makeOAuth = (
                    }),
                  );
                  const written = yield* query(() =>
@@ -14934,7 +15039,7 @@ index 4c2b904d..1512ce0e 100644
                return true;
              }),
            );
-@@ -2674,7 +2990,8 @@ export const makeOAuth = (
+@@ -2762,7 +3077,8 @@ export const makeOAuth = (
              return undefined;
            }
            yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
@@ -14944,7 +15049,7 @@ index 4c2b904d..1512ce0e 100644
          });
          // From claiming the grant to settling it, the renewal cannot be interrupted: a caller that
          // times out or disconnects would otherwise abandon a live claim, and with it any rotated
-@@ -2687,12 +3004,12 @@ export const makeOAuth = (
+@@ -2775,12 +3091,12 @@ export const makeOAuth = (
              const claimedAt = new Date(yield* Clock.currentTimeMillis);
              yield* query(() =>
                db.updateMany("oauthGrants", {
@@ -14959,7 +15064,7 @@ index 4c2b904d..1512ce0e 100644
              );
              if (current?.status !== claim) return undefined;
              heldClaims.add(claim);
-@@ -2713,7 +3030,7 @@ export const makeOAuth = (
+@@ -2801,7 +3117,7 @@ export const makeOAuth = (
                  Effect.flatMap((confirmedAt) =>
                    query(() =>
                      db.updateMany("oauthGrants", {
@@ -14968,164 +15073,62 @@ index 4c2b904d..1512ce0e 100644
                        set: { updatedAt: new Date(confirmedAt) },
                      }),
                    ),
-@@ -2853,34 +3170,55 @@ export const makeOAuth = (
-    * outcome is known only once a live resolve renews it. A grant that needs reconnecting is
-    * recorded as the span's outcome, as `resolve` records it, and fails only after the span.
-    */
--  const usable = (account: StoredAccount, provider: ProviderDefinition) =>
-+  const usable = (
-+    checks: ReadonlyArray<{
-+      readonly account: StoredAccount;
-+      readonly provider: ProviderDefinition;
-+    }>,
-+  ) =>
-     Effect.gen(function* () {
--      yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
--      if (
--        provider.auth[account.method]?.type === "secrets" ||
--        provider.auth[account.method]?.type === "interactive"
--      )
--        return;
--      const reconnect = (reason: ReconnectReason) =>
--        reconnectRequired("oauth.usable", account.id, reason);
--      const row = yield* query(() =>
--        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
--      );
--      if (row === null) return yield* reconnect("grant_missing");
--      if (row.status === "reconnect") return yield* reconnect("grant_unusable");
--      // A renewal in progress, or one a stopped process abandoned, is settled by the next live
--      // resolve; its outcome is not known until then.
--      if (!row.status.startsWith("ready_")) return;
--      const now = yield* Clock.currentTimeMillis;
--      const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
--      const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
--      if (
--        grant.expiresAt === undefined ||
--        grant.expiresAt > now + 30_000 ||
--        (!renewable && grant.expiresAt > now)
--      )
--        return;
--      if (protocol === undefined || !renewable) return yield* reconnect("not_renewable");
-+      yield* Effect.annotateCurrentSpan("oauth.usable.accounts", checks.length);
-+      const granted = [
-+        ...new Set(
-+          checks
-+            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+@@ -2957,7 +3273,7 @@ export const makeOAuth = (
+         ...new Set(
+           checks
+             .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
+-            .map(({ account }) => account.id),
 +            .map(({ account }) => accountGrantId(account)),
-+        ),
-+      ];
-+      const rows =
-+        granted.length === 0
-+          ? []
-+          : yield* query(() =>
-+              db.findMany("oauthGrants", { where: (b) => b("id", "in", granted) }),
-+            );
-+      const grants = new Map(rows.map((row) => [row.id, row] as const));
-+      for (const { account, provider } of checks) {
-+        // The provider of the account checked last: on failure, the one that failed.
-+        yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
+         ),
+       ];
+       const rows =
+@@ -2970,17 +3286,21 @@ export const makeOAuth = (
+       for (const { account, provider } of checks) {
+         // The provider of the account checked last: on failure, the one that failed.
+         yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
+-        if (provider.auth[account.method]?.type === "secrets" || provider.auth[account.method]?.type === "interactive") continue;
 +        if (
 +          provider.auth[account.method]?.type === "secrets" ||
 +          provider.auth[account.method]?.type === "interactive"
 +        )
 +          continue;
-+        const reconnect = (reason: ReconnectReason) =>
-+          reconnectRequired("oauth.usable", account.id, reason);
+         const reconnect = (reason: ReconnectReason) =>
+           reconnectRequired("oauth.usable", account.id, reason);
+-        const row = grants.get(account.id);
 +        const row = grants.get(accountGrantId(account));
-+        if (row === undefined) return yield* reconnect("grant_missing");
-+        if (row.status === "reconnect") return yield* reconnect("grant_unusable");
-+        // A renewal in progress, or one a stopped process abandoned, is settled by the next live
-+        // resolve; its outcome is not known until then.
-+        if (!row.status.startsWith("ready_")) continue;
-+        const now = yield* Clock.currentTimeMillis;
+         if (row === undefined) return yield* reconnect("grant_missing");
+         if (row.status === "reconnect") return yield* reconnect("grant_unusable");
+         // A renewal in progress, or one a stopped process abandoned, is settled by the next live
+         // resolve; its outcome is not known until then.
+         if (!row.status.startsWith("ready_")) continue;
+         const now = yield* Clock.currentTimeMillis;
+-        const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
 +        const grant = yield* decrypt(accountGrantId(account), row.encrypted, OAuthGrant);
-+        const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
-+        if (
-+          grant.expiresAt === undefined ||
-+          grant.expiresAt > now + 30_000 ||
-+          (!renewable && grant.expiresAt > now)
-+        )
-+          continue;
-+        if (protocol === undefined || !renewable) return yield* reconnect("not_renewable");
-+      }
-     }).pipe(
-       Effect.withSpan("oauth.usable"),
-       Effect.flatMap((checked) =>
-@@ -3048,23 +3386,57 @@ export const makeOAuth = (
-       selected,
-     ),
+         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
+         if (
+           grant.expiresAt === undefined ||
+@@ -3195,14 +3515,17 @@ export const makeOAuth = (
    ) =>
--    Effect.flatMap(authority, (checked) => {
--      const recheck = selectionAuthorized(use, selected);
--      return Effect.forEach(selected, ({ account, provider }) =>
--        Effect.gen(function* () {
--          const credential = yield* resolveAuthorized(
--            account,
--            provider,
--            checked,
--            { contested: false },
--            undefined,
--            recheck,
--          );
--          /** The account as one slot's invocation sends it, under that slot's definition. */
--          return (definition: ProviderDefinition) =>
--            invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
--        }),
-+    Effect.flatMap(authority, (checked) =>
-+      Effect.gen(function* () {
-+        const recheck = selectionAuthorized(use, selected);
-+        // Without grant rows the caller read in its own batch, the selection's grants are read
-+        // here in one query and stand in for each grant's first read, as the caller's would.
-+        const readAhead = (yield* GrantReadAhead) ?? (yield* selectionGrants(selected));
-+        return yield* Effect.forEach(selected, ({ account, provider }) =>
-+          Effect.gen(function* () {
-+            const credential = yield* resolveAuthorized(
-+              account,
-+              provider,
-+              checked,
-+              { contested: false },
-+              undefined,
-+              recheck,
-+            );
-+            /** The account as one slot's invocation sends it, under that slot's definition. */
-+            return (definition: ProviderDefinition) =>
-+              invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
-+          }),
-+        ).pipe(Effect.provideService(GrantReadAhead, readAhead));
-+      }),
-+    );
-+  /**
-+   * The grant rows of the selected accounts that sign in with OAuth, read in one query, by
-+   * account. An account without a row maps to null, as a missing grant reads.
-+   */
-+  const selectionGrants = (
-+    selected: ReadonlyArray<{
-+      readonly account: StoredAccount;
-+      readonly provider: ProviderDefinition;
-+    }>,
-+  ) =>
-+    Effect.gen(function* () {
-+      const ids = selected
-+        .filter(
-+          ({ account, provider }) =>
-+            provider.auth[account.method]?.type !== "secrets" &&
-+            provider.auth[account.method]?.type !== "interactive",
-+        )
+     Effect.gen(function* () {
+       const ids = selected
+-        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+-        .map(({ account }) => account.id);
++        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
 +        .map(({ account }) => accountGrantId(account));
-+      if (ids.length === 0) return undefined;
-+      const rows = yield* query(() =>
-+        db.findMany("oauthGrants", { where: (b) => b("id", "in", ids) }),
+       if (ids.length === 0) return undefined;
+       const rows = yield* query(() =>
+         db.findMany("oauthGrants", { where: (b) => b("id", "in", ids) }),
        );
-+      const byId = new Map<AccountId, GrantRow | null>(ids.map((id) => [id, null]));
+       const byId = new Map<AccountId, GrantRow | null>(ids.map((id) => [id, null]));
+-      for (const row of rows) if (byId.has(row.id as AccountId)) byId.set(row.id as AccountId, row);
 +      for (const row of rows) {
 +        const id = AccountId.make(row.id);
 +        if (byId.has(id)) byId.set(id, row);
 +      }
-+      return byId;
+       return byId;
      });
    /**
-    * The service refused these credentials. Renew the grant once, or read a renewal another call
-@@ -3190,11 +3562,14 @@ export const makeOAuth = (
+@@ -3329,11 +3652,14 @@ export const makeOAuth = (
    const revocation = (account: AccountId) =>
      Effect.gen(function* () {
        if (protocol === undefined) return { revocation: "manual" as const };
@@ -15142,17 +15145,6 @@ index 4c2b904d..1512ce0e 100644
        if (grant === undefined) return { revocation: "manual" as const };
        const accessToken = grant.fields["access_token"];
        const token =
-@@ -3420,7 +3795,9 @@ export const makeOAuth = (
-     resolveOwnedFirstParty,
-     resolveSelected,
-     renewRejected,
--    usable,
-+    usable: (account: StoredAccount, provider: ProviderDefinition) =>
-+      usable([{ account, provider }]),
-+    usableAll: usable,
-     revokeRemoved,
-   };
- };
 diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
 index 410d9a30..da0777f7 100644
 --- a/packages/sdk/src/implementation/owner-moves.ts
@@ -15270,19 +15262,10 @@ index 2f89eebd..91c073fc 100644
          run(StartConnectionOAuth, input, executor.accountConnections.startOAuth),
        findOAuth: (input) => run(FindConnectionOAuth, input, executor.accountConnections.findOAuth),
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index c7777e0f..4b0c4b42 100644
+index 8cecc5af..ff2e1c65 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
-@@ -17,7 +17,7 @@ import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts"
- import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
- import { JsonObject } from "../contracts/shared.ts";
- 
--function canonical(value: Json): string {
-+export function canonical(value: Json): string {
-   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-   if (value !== null && typeof value === "object") {
-     return `{${Object.entries(value)
-@@ -89,6 +89,10 @@ const withoutDisplayText = (schema: Json): Json => {
+@@ -90,6 +90,10 @@ const withoutDisplayText = (schema: Json): Json => {
   * `description` of its fields. What remains decides how the credential is obtained and used.
   */
  export const methodCredential = (method: ProviderDefinition["auth"][string]) => {
@@ -15379,7 +15362,7 @@ index dfb5871b..08354ba5 100644
      }
      return byClient;
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 3434ff39..d76665b0 100644
+index 938d4e8c..24ddd27d 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -22,6 +22,8 @@ import {
@@ -15391,7 +15374,7 @@ index 3434ff39..d76665b0 100644
    workflowInputIndexes,
    appScheduleIndex,
    scopedRunKeyIndex,
-@@ -76,6 +78,7 @@ const appViewIndexes = [
+@@ -77,6 +79,7 @@ const appViewIndexes = [
  export const currentIndexes = [
    ...appViewIndexes,
    ...workflowInputIndexes,
@@ -15399,7 +15382,7 @@ index 3434ff39..d76665b0 100644
    scopedRunKeyIndex,
    webhooksContextKey,
    schedulesCopy,
-@@ -771,6 +774,25 @@ export const storageSchemas = [
+@@ -776,6 +779,25 @@ export const storageSchemas = [
          ]),
        ),
    }),
@@ -15426,7 +15409,7 @@ index 3434ff39..d76665b0 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index 6080ea88..a9ba32c3 100644
+index 67b6ca3b..0d841499 100644
 --- a/packages/sdk/src/implementation/storage-schema.ts
 +++ b/packages/sdk/src/implementation/storage-schema.ts
 @@ -4,6 +4,7 @@ import { accountObservations } from "./account-observation-schema.ts";
@@ -15437,7 +15420,7 @@ index 6080ea88..a9ba32c3 100644
  /** Table layouts of each schema version. Versions and upgrades are registered in storage-migrations.ts. */
  import { SourceCommit } from "../contracts/source.ts";
  import {
-@@ -943,3 +944,54 @@ export const workflowInputIndexes = [
+@@ -958,3 +959,54 @@ export const workflowInputIndexes = [
    "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_wake ON executor_workflow_inputs (wake_pending, id)",
    "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_run ON executor_workflow_inputs (run)",
  ] as const;
@@ -15493,10 +15476,10 @@ index 6080ea88..a9ba32c3 100644
 +  "CREATE INDEX IF NOT EXISTS executor_accounts_oauth_grant ON executor_accounts (oauth_grant_id)",
 +] as const;
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index d953ed5c..2ae8646d 100644
+index c424550f..793f3791 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,8 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -25,7 +25,8 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -15506,7 +15489,7 @@ index d953ed5c..2ae8646d 100644
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -77,13 +78,15 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -80,13 +81,15 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -15688,10 +15671,10 @@ index 00000000..21607e18
 +    });
 +};
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index f1eb0287..5660a312 100644
+index 1ce10424..9a0dbc6d 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -41,12 +41,22 @@ const tones = {
+@@ -45,12 +45,22 @@ const tones = {
  /**
   * One app's latest check as a dot on its app reference. A result from before the account's
   * credentials or the app changed is shown as outdated, never as the current state. Apps without a
@@ -15701,7 +15684,7 @@ index f1eb0287..5660a312 100644
  export function AccountCheckDot({ health }: { readonly health: AccountAppHealth | undefined }) {
    const format = useDisplayFormat();
    const check = health?.check;
--  if (check === null || check === undefined) return null;
+-  if (check === null || check === undefined || health?.checkable !== true) return null;
 +  if (health?.checkable !== true) return null;
 +  if (check === null || check === undefined)
 +    return (

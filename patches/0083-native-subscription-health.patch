@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+index c9d0e53e..a409e4ef 100644
 --- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-@@ -3,11 +3,17 @@
+@@ -3,11 +3,17 @@ import {
    AccountAcquisitionUnavailable,
    identifyProvider,
    type AccountAcquisitionContext,
@@ -21,7 +22,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
  import { providers } from "./pool-provider-definitions.ts";
  import { providerCapabilities } from "./pool-provider-capabilities.ts";
  import {
-@@ -91,6 +97,27 @@
+@@ -91,6 +97,27 @@ export const poolAccountAcquisition = (
            else await mirror.remove(context);
          },
          ...(oauth ? {} : { mirror: mirror.mirror }),
@@ -50,9 +51,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
        // The previous label-sensitive identity can still name an account deployed by an older app.
        for (const provider of new Set([identified.identity, identified.legacy]))
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index 8a524f43..53833aac 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
-@@ -91,13 +91,13 @@
+@@ -91,13 +91,13 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
          !managed.has(account.id) && (policy.tools.kind === "all" || linked.has(account.id)),
      );
      const providers = new Map<ProviderId, Provider>();
@@ -70,6 +72,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hos
      );
 diff --git a/e2e/support/subscription-health-backend.ts b/e2e/support/subscription-health-backend.ts
 new file mode 100644
+index 00000000..bf428b5d
 --- /dev/null
 +++ b/e2e/support/subscription-health-backend.ts
 @@ -0,0 +1,83 @@
@@ -157,9 +160,10 @@ new file mode 100644
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 6fd184bd..5c7774f8 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8179,6 +8179,27 @@
+@@ -9279,6 +9279,27 @@ export const scenarios = plan({
        cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
      },
    },
@@ -188,9 +192,10 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      fixtures: "actors",
      file: "account-create-before-link.spec.ts",
 diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
+index ab4f5407..a1aeb497 100644
 --- a/e2e/tests/account-acquisition-observations.spec.ts
 +++ b/e2e/tests/account-acquisition-observations.spec.ts
-@@ -143,6 +143,9 @@
+@@ -143,6 +143,9 @@ layer(HostedLive, { excludeTestServices: true })("Driver account readings", (it)
            (yield* f.backend.calls).filter((call) => ["check", "observe"].includes(call.step)),
          ).toEqual([]);
          yield* f.configure({ check: "void", observe: false });
@@ -202,6 +207,7 @@ diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/acco
          });
 diff --git a/e2e/tests/account-directory-health.spec.ts b/e2e/tests/account-directory-health.spec.ts
 new file mode 100644
+index 00000000..8f37220d
 --- /dev/null
 +++ b/e2e/tests/account-directory-health.spec.ts
 @@ -0,0 +1,168 @@
@@ -375,6 +381,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
 new file mode 100644
+index 00000000..82c8632f
 --- /dev/null
 +++ b/e2e/tests/native-subscription-health.spec.ts
 @@ -0,0 +1,242 @@
@@ -621,9 +628,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index e58fe498..219f8512 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -91,7 +91,7 @@
+@@ -91,7 +91,7 @@ export const AccountDriverHealth = Schema.Struct({
      id: Schema.NonEmptyString,
      version: Schema.NonEmptyString,
    }),
@@ -633,9 +641,10 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
    check: Schema.NullOr(
      Schema.Struct({
 diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+index 531a265c..7d2841af 100644
 --- a/packages/sdk/src/implementation/account-driver-health.ts
 +++ b/packages/sdk/src/implementation/account-driver-health.ts
-@@ -44,6 +44,12 @@
+@@ -44,6 +44,12 @@ export const makeDriverAccountHealth = (
      Effect.gen(function* () {
        const binding = yield* retainedDriverBinding(acquisition, account);
        if (binding === undefined) return undefined;
@@ -648,7 +657,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
        const saved =
          row !== undefined && row.driver === binding.driver && row.owner === account.owner
            ? row
-@@ -63,7 +69,7 @@
+@@ -63,7 +69,7 @@ export const makeDriverAccountHealth = (
              id: binding.driver,
              version: saved?.driverRevision ?? binding.driverRevision,
            },
@@ -658,17 +667,18 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
              saved?.status == null
                ? null
 diff --git a/packages/sdk/src/implementation/account-driver-source.ts b/packages/sdk/src/implementation/account-driver-source.ts
+index 82f97e64..19d737e4 100644
 --- a/packages/sdk/src/implementation/account-driver-source.ts
 +++ b/packages/sdk/src/implementation/account-driver-source.ts
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,7 @@ import type {
    AccountAcquisitionBinding,
    AccountAcquisitionHost,
    AccountAcquisitionSource,
 +  AccountAcquisitionUnavailable,
  } from "../contracts/account-acquisition-driver.ts";
  import type { StoredAccount } from "../contracts/storage.ts";
-
-@@ -10,7 +11,12 @@
+ 
+@@ -10,7 +11,12 @@ export type DriverAccount = Pick<
    StoredAccount,
    "id" | "owner" | "provider" | "method" | "credentialGeneration"
  >;
@@ -679,13 +689,14 @@ diff --git a/packages/sdk/src/implementation/account-driver-source.ts b/packages
 +    binding: AccountAcquisitionBinding,
 +  ) => Effect.Effect<boolean, AccountAcquisitionUnavailable>;
 +};
-
+ 
  export const driverBindingMatches = (binding: AccountAcquisitionBinding, account: DriverAccount) =>
    binding.account === account.id &&
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 263a0e63..a7fd4f88 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -124,7 +124,7 @@
+@@ -126,7 +126,7 @@ const statusOf = (error: unknown): AccountCheckStatus =>
   * Why a check failed: the message of an error the app's check threw, the answer of a service that
   * refused it without a recognized reason, or, once the app's deadline passed, that it ran out of
   * time. The host reports an app that outlasts its deadline as an engine failure, so the time is what
@@ -694,7 +705,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
   */
  const messageOf = (error: unknown, late: boolean): string | undefined => {
    if (Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== "")
-@@ -136,7 +136,10 @@
+@@ -138,7 +138,10 @@ const messageOf = (error: unknown, late: boolean): string | undefined => {
          : `: ${error.upstream.code}${error.upstream.message === undefined ? "" : ` (${error.upstream.message})`}`;
      return `${error.status === undefined ? "The service refused the check" : `The service answered HTTP ${error.status}`}${stated}.`;
    }
@@ -704,12 +715,13 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
 +    ? "The check could not verify this account. Try checking again."
 +    : undefined;
  };
-
+ 
  export const makeAccountHealth = (
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index b3674743..3b2dc21d 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -52,6 +52,7 @@
+@@ -52,6 +52,7 @@ import { InteractiveHost } from "../contracts/interactive-accounts.ts";
  import {
    AccountAcquisitionConfiguration,
    AccountAcquisitionHost,
@@ -717,7 +729,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  } from "../contracts/account-acquisition-driver.ts";
  import { makeAcquisitionRegistry } from "./account-acquisition-registry.ts";
  import { makeAcquisitionRuntime } from "./account-acquisition-runtime.ts";
-@@ -106,6 +107,11 @@
+@@ -112,6 +113,11 @@ export const createExecutor = (
        binding: (input: Parameters<AccountAcquisitionHost["binding"]>[0]) =>
          acquisitionBinding(db, input),
        source: acquisitionRuntime.source,
@@ -730,20 +742,21 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
      const retireAcquisition = makeAcquisitionRetirement(
        db,
 diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+index 29ade88a..2202cf31 100644
 --- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
-@@ -7,7 +7,7 @@
+@@ -7,7 +7,7 @@ import { Button, buttonVariants } from "../components/button.tsx";
  import { LocalTime, shortMoment } from "../components/local-time.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { cn } from "../lib/utils.ts";
 -import { describeAccountCheck } from "./account-health.tsx";
 +import { describeAccountCheck, driverCanCheck } from "./account-health.tsx";
  import { useDashboard } from "./context.tsx";
-
+ 
  const severity: readonly AccountCheckStatus[] = [
-@@ -31,9 +31,10 @@
+@@ -31,9 +31,10 @@ const states = {
  };
-
+ 
  /**
 - * The latest check of each app, one line per result, worst first. Only a current rejection offers
 - * Reconnect, in the app that reported it; a failed or timed-out check makes no claim about the
@@ -755,7 +768,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
   */
  export function AccountHealthLine<E>({
    account,
-@@ -57,21 +58,31 @@
+@@ -57,21 +58,31 @@ export function AccountHealthLine<E>({
    const entries = (account.health?.apps ?? []).filter((entry) =>
      apps.some((app) => app.id === entry.app),
    );
@@ -798,7 +811,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
    );
    const run = async () => {
      if (pending) return;
-@@ -93,9 +104,11 @@
+@@ -93,9 +104,11 @@ export function AccountHealthLine<E>({
        Check now
      </Button>
    );
@@ -812,7 +825,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
      .find((app) => app !== undefined && canReconnect?.(app) === true);
    if (!showStatus)
      return (
-@@ -121,7 +134,11 @@
+@@ -121,7 +134,11 @@ export function AccountHealthLine<E>({
            .map((entry) => entry.check.message)
            .find((value) => value !== undefined);
          return (
@@ -825,7 +838,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
              <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
                <span
                  aria-hidden
-@@ -134,15 +151,20 @@
+@@ -134,15 +151,20 @@ export function AccountHealthLine<E>({
                >
                  {group.current ? label : `${label} · outdated`}
                </span>
@@ -855,6 +868,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
                {index === 0 && action}
                {index === 0 && reconnect !== undefined && (
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 9a0dbc6d..dedda3ba 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
 @@ -1,4 +1,9 @@
@@ -868,18 +882,18 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
  import { Exit, Match, type Cause } from "effect";
  import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
  import { HugeiconsIcon } from "@hugeicons/react";
-@@ -30,6 +35,10 @@
-     Match.when("check_failed", () => ({ label: "Check failed", tone: "muted" as const })),
+@@ -35,6 +40,10 @@ export const describeAccountCheck = (status: AccountCheckStatus) =>
      Match.exhaustive,
    );
-+
+ 
 +/** Capability comes from the retained driver, independently of its last result. */
 +export const driverCanCheck = (driver: AccountDriverHealth | undefined) =>
 +  driver?.checkable === true;
-
++
  const tones = {
    good: "bg-emerald-500",
-@@ -186,11 +195,15 @@
+   bad: "bg-destructive",
+@@ -190,7 +199,9 @@ export function AccountHealthPanel<E>({
    const { apps, health } = data;
    const [pending, setPending] = useState(false);
    const [error, setError] = useState<Cause.Cause<E>>();
@@ -887,18 +901,29 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
 +  const driver = health?.driver;
 +  const driverCheckable = driverCanCheck(driver);
 +  const checkable = (health?.apps.some((entry) => entry.checkable) ?? false) || driverCheckable;
-   const stale =
--    health?.apps.some(
-+    (health?.apps.some(
-       (entry) => entry.checkable && (entry.check === null || !entry.check.current),
--    ) ?? false;
-+    ) ??
-+      false) ||
-+    (driverCheckable && driver?.check?.current !== true);
    const run = async () => {
      setPending(true);
      setError(undefined);
-@@ -216,12 +229,21 @@
+@@ -200,11 +211,17 @@ export function AccountHealthPanel<E>({
+   };
+   // Each missing or outdated result is checked once while the panel is open, so a redeploy or new
+   // credentials meanwhile check again.
+-  const staleResults =
++  const appStaleResults =
+     health?.apps
+       .filter((entry) => entry.checkable && (entry.check === null || !entry.check.current))
+       .map((entry) => `${entry.app}:${entry.check?.checkedAt.getTime() ?? "none"}`)
+       .join(",") ?? "";
++  const staleResults = [
++    appStaleResults,
++    driverCheckable && driver?.check?.current !== true
++      ? `driver:${driver?.check?.checkedAt.getTime() ?? "none"}`
++      : "",
++  ].filter(Boolean).join(",");
+   const checked = useRef(new Set<string>());
+   useEffect(() => {
+     if (staleResults === "" || checked.current.has(staleResults)) return;
+@@ -223,12 +240,21 @@ export function AccountHealthPanel<E>({
            <AccountIdentity info={health.info} />
          </p>
        )}
@@ -921,33 +946,35 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
            {apps.map((app) => {
              const entry = health?.apps.find((item) => item.app === app.id);
              return (
-@@ -250,12 +272,15 @@
-   );
+@@ -258,8 +284,8 @@ export function AccountHealthPanel<E>({
  }
-
--/** One app's latest check, spelled out with its time and, when it failed, the reason given. */
-+/**
-+ * One app's or the sign-in driver's latest check, spelled out with its time and, when it failed,
-+ * the reason given.
-+ */
+ 
+ /**
+- * One app's latest check, spelled out with its time and, when it failed, the reason given. While
+- * `checking`, a missing or outdated result gives way to the check in progress.
++ * One app's or sign-in driver's latest check, with its time and failure reason. While checking,
++ * a missing or outdated result gives way to the check in progress.
+  */
  export function AccountCheckResult({
    health,
-   part = "all",
+@@ -268,7 +294,7 @@ export function AccountCheckResult({
+   retry,
  }: {
+   readonly part?: "all" | "header" | "details";
 -  readonly health: AccountAppHealth | undefined;
 +  readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
-   readonly part?: "all" | "header" | "details";
- }) {
-   if (part === "details" && (health === undefined || health.check === null)) return null;
-@@ -264,6 +289,7 @@
-   if (health.check === null && part === "details") return null;
+   readonly checking?: boolean;
+   /** Offered when checking again could not run, while the result is still missing or outdated. */
+   readonly retry?: (() => void) | undefined;
+@@ -303,6 +329,7 @@ export function AccountCheckResult({
+     );
    if (health.check === null)
      return <span className="text-[12px] text-muted-foreground">Not checked</span>;
 +  const displayStatus = "displayStatus" in health.check ? health.check.displayStatus : undefined;
    const { label, tone } = describeAccountCheck(health.check.status);
    const badge = (
      <span
-@@ -276,9 +302,9 @@
+@@ -316,9 +343,9 @@ export function AccountCheckResult({
    );
    const details = (
      <>
@@ -959,7 +986,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
            current={health.check.current}
            part="details"
          />
-@@ -295,9 +321,9 @@
+@@ -335,9 +362,9 @@ export function AccountCheckResult({
        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
          {badge}
          <LocalTime value={health.check.checkedAt} options={shortMoment} />

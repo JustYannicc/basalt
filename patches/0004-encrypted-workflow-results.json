@@ -1,9 +1,11 @@
 {
   "identity": "executor-encrypted-workflow-results",
   "file": "0004-encrypted-workflow-results.patch",
-  "content_sha256": "945f3bb1b20fc210e666fc8ba513cbdaf8f1043dc9f67416d0b9745dfbab08d2",
+  "content_sha256": "b8513d2028083f876cd5db7629850eb8a332c75c3bdf2de783a692a1bfd4a952",
   "kind": "upstream",
   "upstream_pull_request": 2369,
   "database_sensitive": true,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "945f3bb1b20fc210e666fc8ba513cbdaf8f1043dc9f67416d0b9745dfbab08d2",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

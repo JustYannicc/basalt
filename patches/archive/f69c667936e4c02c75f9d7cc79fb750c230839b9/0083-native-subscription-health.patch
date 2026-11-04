@@ -1,0 +1,973 @@
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+--- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -3,11 +3,17 @@
+   AccountAcquisitionUnavailable,
+   identifyProvider,
+   type AccountAcquisitionContext,
++  type AccountAcquisitionAccountContext,
+   type AccountAcquisitionRegistration,
+ } from "@executor-js/sdk/core";
+ import { providerDeclaration } from "apps/host";
+-import { InteractiveStart, InteractiveStatus } from "apps/contracts";
+-import { Crypto, Effect, Option, Redacted, Schema } from "effect";
++import {
++  AccountCheckResult,
++  InteractiveStart,
++  InteractiveStatus,
++  ProviderError,
++} from "apps/contracts";
++import { Crypto, Effect, Option, Redacted, Schema, Struct } from "effect";
+ import { providers } from "./pool-provider-definitions.ts";
+ import { providerCapabilities } from "./pool-provider-capabilities.ts";
+ import {
+@@ -91,6 +97,27 @@
+           else await mirror.remove(context);
+         },
+         ...(oauth ? {} : { mirror: mirror.mirror }),
++        ...(oauth
++          ? {
++              check: async (context: AccountAcquisitionAccountContext) => {
++                const answer = await send(context, "check", {
++                  reference: Redacted.value(context.reference),
++                });
++                const failure = Schema.Struct({ failure: ProviderError.fields.reason });
++                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
++                const { result } = Schema.decodeUnknownSync(
++                  Schema.Struct({ result: Schema.Unknown }),
++                )(answer);
++                const health = Schema.decodeUnknownSync(
++                  AccountCheckResult.mapFields(Struct.omit(["observation", "observationInvalid"])),
++                )(result);
++                const combined = Schema.decodeUnknownOption(AccountCheckResult)(result);
++                return Option.isSome(combined)
++                  ? combined.value
++                  : { ...health, observationInvalid: true as const };
++              },
++            }
++          : {}),
+       });
+       // The previous label-sensitive identity can still name an account deployed by an older app.
+       for (const provider of new Set([identified.identity, identified.legacy]))
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -91,13 +91,13 @@
+         !managed.has(account.id) && (policy.tools.kind === "all" || linked.has(account.id)),
+     );
+     const providers = new Map<ProviderId, Provider>();
+-    // Checks are reported for the apps the caller linked each account to.
++    // App-scoped links check the same saved accounts without a caller-specific link.
+     const health = new Map(
+       (accounts.length === 0
+         ? []
+         : yield* executor.accounts.listHealth({
+             owner,
+-            links: links.map((link) => ({ account: link.id, app: link.app })),
++            links: [...links, ...appLinked].map((link) => ({ account: link.id, app: link.app })),
+           })
+       ).map((entry) => [entry.account, entry]),
+     );
+diff --git a/e2e/support/subscription-health-backend.ts b/e2e/support/subscription-health-backend.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/subscription-health-backend.ts
+@@ -0,0 +1,83 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++/** A signed external credential custodian for the production subscription registration. */
++export const subscriptionHealthBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<readonly string[]>([]);
++  const answer = yield* Ref.make<Schema.Json>({
++    result: { accountInfo: { displayName: "Synthetic subscriber" } },
++  });
++  const route = HttpRouter.add(
++    "POST",
++    "/pool/v1/account-acquisitions",
++    Effect.gen(function* () {
++      const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++        Schema.Struct({ envelope: Schema.String }),
++      );
++      const [prefix, payload, signature, extra] = envelope.split(".");
++      if (
++        prefix !== "sbaa1" ||
++        payload === undefined ||
++        signature === undefined ||
++        extra !== undefined
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++        .update(`${prefix}.${payload}`)
++        .digest();
++      const actual = Buffer.from(signature, "base64url");
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const input = yield* Schema.decodeUnknownEffect(
++        Schema.Struct({
++          action: Schema.String,
++          provider: Schema.String,
++          owner: Schema.String,
++          operation: Schema.String,
++          at: Schema.Number,
++          expiresAt: Schema.Number,
++          reference: Schema.optionalKey(Schema.String),
++        }),
++      )(JSON.parse(Buffer.from(payload, "base64url").toString())).pipe(Effect.orDie);
++      if (
++        input.provider !== "codex" ||
++        input.at > Date.now() ||
++        input.expiresAt <= Date.now() ||
++        input.expiresAt > input.at + 30_000
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      if (input.action === "start")
++        return HttpServerResponse.jsonUnsafe({
++          session: "synthetic-subscription-session",
++          url: "https://provider.example.test/device",
++          expiresAt: Date.now() + 60_000,
++        });
++      if (input.action === "status")
++        return HttpServerResponse.jsonUnsafe({
++          state: "connected",
++          ref: "opaque-subscription-reference",
++        });
++      if (input.action === "remove" || input.action === "cancel")
++        return HttpServerResponse.jsonUnsafe(null);
++      if (input.action !== "check" || input.reference !== "opaque-subscription-reference")
++        return HttpServerResponse.empty({ status: 400 });
++      yield* Ref.update(calls, (values) => [...values, input.owner]);
++      return HttpServerResponse.jsonUnsafe(yield* Ref.get(answer));
++    }),
++  );
++  const context = yield* Layer.build(
++    HttpRouter.serve(route, { disableLogger: true, disableListenLog: true }).pipe(
++      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++    ),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++  if (!("port" in server.address)) return yield* Effect.die("Expected subscription fixture port");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    answer: (value: Schema.Json) => Ref.set(answer, value),
++  };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8179,6 +8179,27 @@
+       cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
+     },
+   },
++  accountDirectoryHealth: {
++    fixtures: "actors",
++    file: "account-directory-health.spec.ts",
++    title: "Accounts retains app-scoped checks and explains an unclassified check failure",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises the hosted resource directory and app-scoped authorization."),
++      cloud: scheduled,
++    },
++  },
++  nativeSubscriptionHealth: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "native-subscription-health.spec.ts",
++    title: "native subscriptions check current credentials through the production registration",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted production provider registrations and authorization."),
++      cloud: na("Uses a process-owned registration and loopback credential custodian."),
++    },
++  },
+   accountCreateBeforeLink: {
+     fixtures: "actors",
+     file: "account-create-before-link.spec.ts",
+diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
+--- a/e2e/tests/account-acquisition-observations.spec.ts
++++ b/e2e/tests/account-acquisition-observations.spec.ts
+@@ -143,6 +143,9 @@
+           (yield* f.backend.calls).filter((call) => ["check", "observe"].includes(call.step)),
+         ).toEqual([]);
+         yield* f.configure({ check: "void", observe: false });
++        expect((yield* f.api.request(f.actors.owner, "GET", path)).body).toMatchObject({
++          health: { driver: { checkable: true, check: null } },
++        });
+         expect((yield* check()).body).toMatchObject({
+           driver: { checkable: true, check: { status: "healthy" } },
+         });
+diff --git a/e2e/tests/account-directory-health.spec.ts b/e2e/tests/account-directory-health.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/account-directory-health.spec.ts
+@@ -0,0 +1,168 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = (
++  health: string,
++) => `import { defineApp, defineProvider, object, secrets, string } from "apps";
++const service = defineProvider({name: "Directory health fixture", auth: {
++  key: secrets({label: "Key", fields: object({token: string()})})
++}, ${health}});
++export default defineApp({app: {accounts: {service}}}, {});`;
++const Health = Schema.Struct({
++  apps: Schema.Array(
++    Schema.Struct({
++      app: Schema.String,
++      checkable: Schema.Boolean,
++      check: Schema.NullOr(
++        Schema.Struct({
++          status: Schema.String,
++          current: Schema.Boolean,
++          message: Schema.optionalKey(Schema.String),
++        }),
++      ),
++    }),
++  ),
++});
++const Directory = Schema.Struct({
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Resource,
++      health: Schema.optionalKey(Health),
++    }),
++  ),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account directory health", (it) => {
++  it.effect(scenarios.accountDirectoryHealth.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const files = (health: string) => [
++          { path: "index.ts", content: source(health) },
++          appsManifest,
++        ];
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "App-owned check",
++          files: files("async health() { return {}; }"),
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed);
++        let account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
++            if (account !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/apps/${app.id}/accounts/app/service/connections`,
++            {},
++          ),
++        );
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          {
++            method: "key",
++            label: "App-scoped account",
++            fields: { token: "synthetic-directory-token" },
++          },
++        );
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        account = (yield* body(Resource, saved)).id;
++        const accountPath = `${prefix}/accounts/${account}`;
++        const check = () => api.request(actors.owner, "POST", `${accountPath}/health`);
++        const result = yield* check();
++        expect(result.status, JSON.stringify(result.body)).toBe(200);
++        expect(result.body).toMatchObject({
++          apps: [{ app: app.id, checkable: true, check: { status: "healthy", current: true } }],
++        });
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open the app-scoped account in Accounts", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/accounts`)
++            .then(() =>
++              page
++                .getByRole("group", { name: "Usage and health of App-scoped account", exact: true })
++                .waitFor(),
++            ),
++        );
++        for (const scheme of ["light", "dark"] as const) {
++          const image = yield* browser.use(`Capture app-scoped health in ${scheme}`, (page) =>
++            page.emulateMedia({ colorScheme: scheme }).then(() =>
++              page
++                .getByRole("group", {
++                  name: "Usage and health of App-scoped account",
++                  exact: true,
++                })
++                .locator(
++                  "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]",
++                )
++                .screenshot({ animations: "disabled" }),
++            ),
++          );
++          yield* evidence.attach(`app-scoped-account-health-${scheme}.png`, "image/png", image);
++        }
++        const directory = yield* body(
++          Directory,
++          yield* api.request(actors.owner, "GET", `${prefix}/resources`),
++        );
++        expect(
++          directory.accounts.find((entry) => entry.account.id === account)?.health?.apps,
++        ).toMatchObject([
++          { app: app.id, checkable: true, check: { status: "healthy", current: true } },
++        ]);
++        expect(
++          yield* browser.use("The Accounts row retains the app's health", (page) =>
++            page
++              .getByRole("group", { name: "Usage and health of App-scoped account", exact: true })
++              .locator("[data-account-health]")
++              .innerText(),
++          ),
++        ).toContain("Healthy");
++        const changed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/deploy`,
++          {
++            files: files(
++              'async health() { return JSON.parse(\'{"accountInfo":{"displayName":[]}}\'); }',
++            ),
++          },
++        );
++        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
++        const failed = yield* body(Health, yield* check());
++        expect(failed.apps[0]?.check).toMatchObject({
++          status: "check_failed",
++          current: true,
++          message: "The check could not verify this account. Try checking again.",
++        });
++        expect(JSON.stringify(failed)).not.toContain("synthetic-directory-token");
++        const retained = yield* body(
++          Schema.Struct({ health: Health }),
++          yield* api.request(actors.owner, "GET", accountPath),
++        );
++        expect(retained.health.apps[0]?.check?.message).toBe(failed.apps[0]?.check?.message);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -0,0 +1,242 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { ObservationView } from "../support/account-observation-fixture.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { serverControl } from "../support/server-control.ts";
++import { subscriptionHealthBackend } from "../support/subscription-health-backend.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, interactive, object, secrets, string } from "apps";
++const openai = defineProvider({ name: "OpenAI", hosts: ["api.openai.com", "chatgpt.com"], auth: {
++  codex: interactive({ label: "ChatGPT subscription", acquisition: "host" }),
++  apiKey: secrets({ label: "OpenAI API key", fields: object({ token: string({ minLength: 1 }) }) }),
++} });
++export default defineApp({ user: { accounts: { openai: openai.many() } } }, {});`;
++
++const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
++const DriverMessage = Schema.Struct({
++  driver: Schema.Struct({
++    check: Schema.Struct({ message: Schema.optionalKey(Schema.String) }),
++  }),
++});
++// The row's own container, so captures show the account, its apps and the health line together.
++const inventoryRow =
++  "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]";
++
++layer(HostedLive, { excludeTestServices: true })("Native subscription health", (it) => {
++  it.effect(scenarios.nativeSubscriptionHealth.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          backend = yield* subscriptionHealthBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        let account: string | undefined;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Subscription health fixture",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
++            if (account !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(backend.origin);
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/accounts/user/openai/connections`,
++          {},
++        );
++        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++        const connection = yield* body(Resource, pending);
++        const path = `${prefix}/connections/${connection.id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${path}/start`, { method: "codex" })).status,
++        ).toBe(200);
++        const saved = yield* api.request(actors.owner, "GET", `${path}/status`);
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        account = (yield* body(Schema.Struct({ account: Resource }), saved)).account.id;
++        const accountPath = `${prefix}/accounts/${account}`;
++        const check = () => api.request(actors.owner, "POST", `${accountPath}/health`);
++        const healthy = yield* check();
++        expect(healthy.status, JSON.stringify(healthy.body)).toBe(200);
++        expect(healthy.body).toMatchObject({
++          driver: { checkable: true, check: { status: "healthy", current: true } },
++          info: { displayName: "Synthetic subscriber" },
++        });
++
++        // The Accounts row shows the driver's own result; the fixture app defines no check.
++        const label =
++          (yield* body(Detail, yield* api.request(actors.owner, "GET", accountPath))).account
++            .label || "Unnamed account";
++        const line = (page: Page) =>
++          page
++            .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
++            .locator("[data-account-health]");
++        const driverStatus = (page: Page) =>
++          line(page).locator('[data-check-source="driver"] [data-check-status]');
++        const checkNow = (page: Page) =>
++          line(page).getByRole("button", { name: "Check now", exact: true });
++        const capture = (stage: string) =>
++          Effect.forEach(["light", "dark"] as const, (scheme) =>
++            Effect.gen(function* () {
++              const image = yield* browser.use(
++                `Capture the ${stage} row in ${scheme} mode`,
++                (page) =>
++                  page
++                    .emulateMedia({ colorScheme: scheme })
++                    .then(() =>
++                      line(page).locator(inventoryRow).screenshot({ animations: "disabled" }),
++                    ),
++              );
++              yield* evidence.attach(
++                `native-subscription-row-${stage}-${scheme}.png`,
++                "image/png",
++                image,
++              );
++            }),
++          );
++        const readRow = (step: string) =>
++          browser.use(step, (page) =>
++            Promise.all([
++              line(page).innerText(),
++              driverStatus(page).evaluateAll(
++                (nodes) => nodes[0]?.getAttribute("data-check-status") ?? null,
++              ),
++              driverStatus(page).evaluateAll(
++                (nodes) => nodes[0]?.getAttribute("data-check-current") ?? null,
++              ),
++              checkNow(page).isEnabled(),
++              line(page)
++                .locator('[data-check-source="driver"] [data-check-message]')
++                .allInnerTexts(),
++              line(page)
++                .getByRole("link", { name: /^Reconnect/ })
++                .count(),
++            ]),
++          );
++        const accounts = `/org/${actors.organization.slug}/accounts`;
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open Accounts as the subscriber", (page) =>
++          page.goto(accounts).then(() => line(page).waitFor()),
++        );
++        // Captured before asserting, so a run without the fix still records its row.
++        yield* capture("healthy");
++        const shown = yield* readRow("Read the healthy subscription row");
++        expect(shown[0]).not.toContain("No app checks this account");
++        expect(shown[0]).toContain("sign-in checked");
++        expect(shown[0], "the driver's result is never attributed to an app").not.toContain(
++          "Subscription health fixture",
++        );
++        expect(shown.slice(1, 4)).toEqual(["healthy", "true", true]);
++        expect(shown[4]).toEqual([]);
++        expect(shown[5]).toBe(0);
++
++        let failed = healthy;
++        for (const [reason, status] of [
++          ["unauthorized", "credentials_rejected"],
++          ["rate_limited", "upstream_unavailable"],
++          ["unavailable", "upstream_unavailable"],
++        ] as const) {
++          yield* backend.answer({ failure: reason });
++          const result = yield* check();
++          expect(result.status, JSON.stringify(result.body)).toBe(200);
++          expect(result.body).toMatchObject({ driver: { check: { status, current: true } } });
++          expect(JSON.stringify(result.body)).not.toContain("opaque-subscription-reference");
++          failed = result;
++        }
++
++        // A current failure keeps the line compact and shows the reason the driver gave.
++        const reported = (yield* body(DriverMessage, failed)).driver.check.message;
++        yield* browser.use("Reload Accounts after the service stops answering", (page) =>
++          page.reload().then(() => driverStatus(page).waitFor()),
++        );
++        yield* capture("unavailable");
++        const unavailable = yield* readRow("Read the unavailable subscription row");
++        expect(unavailable.slice(1, 4)).toEqual(["upstream_unavailable", "true", true]);
++        expect(unavailable[4]).toEqual(reported === undefined ? [] : [reported]);
++        expect(unavailable[5], "an unavailable service never asks to reconnect").toBe(0);
++        const calls = (yield* backend.calls).length;
++        expect((yield* api.request(actors.member, "POST", `${accountPath}/health`)).status).toBe(
++          403,
++        );
++        expect((yield* backend.calls).length).toBe(calls);
++        yield* backend.answer({ result: {} });
++        yield* browser.use("Check the subscription from its row", (page) =>
++          checkNow(page)
++            .click()
++            .then(() =>
++              line(page)
++                .locator('[data-check-source="driver"] [data-check-status="healthy"]')
++                .waitFor(),
++            ),
++        );
++        expect(yield* backend.calls, "Check now reaches the subscription's driver").toHaveLength(
++          calls + 1,
++        );
++        expect((yield* check()).body).toMatchObject({ driver: { check: { status: "healthy" } } });
++        yield* backend.answer({
++          result: { accountInfo: { displayName: "Synthetic subscriber" }, observation: {} },
++        });
++        const malformedAllowance = yield* check();
++        expect(malformedAllowance.status, JSON.stringify(malformedAllowance.body)).toBe(200);
++        expect(malformedAllowance.body).toMatchObject({
++          driver: { check: { status: "healthy", current: true } },
++          info: { displayName: "Synthetic subscriber" },
++        });
++        const observations = yield* body(
++          ObservationView,
++          yield* api.request(actors.owner, "GET", `${accountPath}/observations`),
++        );
++        expect(observations.reports[0]?.lastAttempt?.outcome).toBe("invalid");
++        yield* backend.answer({ result: {} });
++
++        // A retained reference can be unreadable without affecting another person's directory.
++        const reference = (value: { readonly ref?: string }) =>
++          legacyStorage([
++            {
++              sql: "update executor_accounts set encrypted_credentials = $1 where id = $2",
++              params: [{ sealed: { id: account!, value } }, account!],
++            },
++          ]).pipe(Effect.andThen(serverControl("start")));
++        yield* Effect.acquireUseRelease(
++          reference({}),
++          () =>
++            Effect.gen(function* () {
++              const directory = yield* api.request(actors.member, "GET", `${prefix}/resources`);
++              expect(directory.status, JSON.stringify(directory.body)).toBe(200);
++              expect(JSON.stringify(directory.body)).not.toContain(account);
++              const shown = yield* api.request(actors.owner, "GET", accountPath);
++              expect(shown.status, JSON.stringify(shown.body)).toBe(200);
++              expect(shown.body).toMatchObject({ health: { driver: { checkable: true } } });
++              expect((yield* check()).status).toBe(500);
++            }),
++          () => reference({ ref: "opaque-subscription-reference" }).pipe(Effect.orDie),
++        );
++        yield* serverControl("restart");
++        const retained = yield* api.request(actors.owner, "GET", accountPath);
++        expect(retained.body).toMatchObject({
++          health: { driver: { check: { status: "healthy", current: true } } },
++        });
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -91,7 +91,7 @@
+     id: Schema.NonEmptyString,
+     version: Schema.NonEmptyString,
+   }),
+-  /** Whether this binding's last check found an implemented hook. */
++  /** The retained driver for this binding currently implements a credential check. */
+   checkable: Schema.Boolean,
+   check: Schema.NullOr(
+     Schema.Struct({
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -44,6 +44,12 @@
+     Effect.gen(function* () {
+       const binding = yield* retainedDriverBinding(acquisition, account);
+       if (binding === undefined) return undefined;
++      const checkable =
++        binding.removal !== null || acquisition === undefined
++          ? false
++          : yield* acquisition
++              .checkable(binding)
++              .pipe(Effect.catchTag("AccountAcquisitionUnavailable", () => Effect.succeed(false)));
+       const saved =
+         row !== undefined && row.driver === binding.driver && row.owner === account.owner
+           ? row
+@@ -63,7 +69,7 @@
+             id: binding.driver,
+             version: saved?.driverRevision ?? binding.driverRevision,
+           },
+-          checkable: current && saved?.checkable === true,
++          checkable,
+           check:
+             saved?.status == null
+               ? null
+diff --git a/packages/sdk/src/implementation/account-driver-source.ts b/packages/sdk/src/implementation/account-driver-source.ts
+--- a/packages/sdk/src/implementation/account-driver-source.ts
++++ b/packages/sdk/src/implementation/account-driver-source.ts
+@@ -3,6 +3,7 @@
+   AccountAcquisitionBinding,
+   AccountAcquisitionHost,
+   AccountAcquisitionSource,
++  AccountAcquisitionUnavailable,
+ } from "../contracts/account-acquisition-driver.ts";
+ import type { StoredAccount } from "../contracts/storage.ts";
+
+@@ -10,7 +11,12 @@
+   StoredAccount,
+   "id" | "owner" | "provider" | "method" | "credentialGeneration"
+ >;
+-export type AccountDriverResolver = Pick<AccountAcquisitionHost, "binding" | "source">;
++export type AccountDriverResolver = Pick<AccountAcquisitionHost, "binding" | "source"> & {
++  /** Registration metadata only; listing health must never resolve a private reference. */
++  readonly checkable: (
++    binding: AccountAcquisitionBinding,
++  ) => Effect.Effect<boolean, AccountAcquisitionUnavailable>;
++};
+
+ export const driverBindingMatches = (binding: AccountAcquisitionBinding, account: DriverAccount) =>
+   binding.account === account.id &&
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -124,7 +124,7 @@
+  * Why a check failed: the message of an error the app's check threw, the answer of a service that
+  * refused it without a recognized reason, or, once the app's deadline passed, that it ran out of
+  * time. The host reports an app that outlasts its deadline as an engine failure, so the time is what
+- * tells. Other failures keep their causes private.
++ * tells. Unclassified failures get a fixed retry message without exposing their causes.
+  */
+ const messageOf = (error: unknown, late: boolean): string | undefined => {
+   if (Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== "")
+@@ -136,7 +136,10 @@
+         : `: ${error.upstream.code}${error.upstream.message === undefined ? "" : ` (${error.upstream.message})`}`;
+     return `${error.status === undefined ? "The service refused the check" : `The service answered HTTP ${error.status}`}${stated}.`;
+   }
+-  return late ? `The check did not finish within ${checkMillis / 1_000} seconds.` : undefined;
++  if (late) return `The check did not finish within ${checkMillis / 1_000} seconds.`;
++  return statusOf(error) === "check_failed"
++    ? "The check could not verify this account. Try checking again."
++    : undefined;
+ };
+
+ export const makeAccountHealth = (
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -52,6 +52,7 @@
+ import {
+   AccountAcquisitionConfiguration,
+   AccountAcquisitionHost,
++  type AccountAcquisitionBinding,
+ } from "../contracts/account-acquisition-driver.ts";
+ import { makeAcquisitionRegistry } from "./account-acquisition-registry.ts";
+ import { makeAcquisitionRuntime } from "./account-acquisition-runtime.ts";
+@@ -106,6 +107,11 @@
+       binding: (input: Parameters<AccountAcquisitionHost["binding"]>[0]) =>
+         acquisitionBinding(db, input),
+       source: acquisitionRuntime.source,
++      checkable: (binding: AccountAcquisitionBinding) =>
++        Effect.gen(function* () {
++          const registration = yield* acquisitionRegistry.retained(binding);
++          return registration.driver.check !== undefined;
++        }),
+     };
+     const retireAcquisition = makeAcquisitionRetirement(
+       db,
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -7,7 +7,7 @@
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { cn } from "../lib/utils.ts";
+-import { describeAccountCheck } from "./account-health.tsx";
++import { describeAccountCheck, driverCanCheck } from "./account-health.tsx";
+ import { useDashboard } from "./context.tsx";
+
+ const severity: readonly AccountCheckStatus[] = [
+@@ -31,9 +31,10 @@
+ };
+
+ /**
+- * The latest check of each app, one line per result, worst first. Only a current rejection offers
+- * Reconnect, in the app that reported it; a failed or timed-out check makes no claim about the
+- * sign-in.
++ * The latest check of each app and of the account's sign-in driver, one line per result, worst
++ * first. The driver's result stands on its own line and is never attributed to an app. Only a
++ * current rejection in an app offers Reconnect, in the app that reported it; a failed or timed-out
++ * check makes no claim about the sign-in.
+  */
+ export function AccountHealthLine<E>({
+   account,
+@@ -57,21 +58,31 @@
+   const entries = (account.health?.apps ?? []).filter((entry) =>
+     apps.some((app) => app.id === entry.app),
+   );
+-  const checkable = entries.some((entry) => entry.checkable);
+-  const name = (id: string) => {
++  const driver = account.health?.driver;
++  const checkable = entries.some((entry) => entry.checkable) || driverCanCheck(driver);
++  const name = (id: string | undefined) => {
+     const app = apps.find((item) => item.id === id);
+     return app === undefined ? "an app" : appDisplayName(app, brand);
+   };
++  const results = [
++    ...(driver?.check == null ? [] : [{ source: "driver" as const, check: driver.check }]),
++    ...entries.flatMap((entry) =>
++      entry.check === null ? [] : [{ source: "app" as const, app: entry.app, check: entry.check }],
++    ),
++  ];
+   const groups = [true, false].flatMap((current) =>
+-    severity.flatMap((status) => {
+-      const matching = entries.flatMap((entry) =>
+-        entry.check !== null && entry.check.current === current && entry.check.status === status
+-          ? [{ app: entry.app, check: entry.check }]
+-          : [],
+-      );
+-      const [first] = matching;
+-      return first === undefined ? [] : [{ status, current, matching, first }];
+-    }),
++    severity.flatMap((status) =>
++      (["driver", "app"] as const).flatMap((source) => {
++        const matching = results.filter(
++          (result) =>
++            result.source === source &&
++            result.check.current === current &&
++            result.check.status === status,
++        );
++        const [first] = matching;
++        return first === undefined ? [] : [{ source, status, current, matching, first }];
++      }),
++    ),
+   );
+   const run = async () => {
+     if (pending) return;
+@@ -93,9 +104,11 @@
+       Check now
+     </Button>
+   );
+-  const rejected = groups.find((group) => group.current && group.status === "credentials_rejected");
++  const rejected = groups.find(
++    (group) => group.source === "app" && group.current && group.status === "credentials_rejected",
++  );
+   const reconnect = rejected?.matching
+-    .map((entry) => apps.find((app) => app.id === entry.app))
++    .map((entry) => apps.find((app) => "app" in entry && app.id === entry.app))
+     .find((app) => app !== undefined && canReconnect?.(app) === true);
+   if (!showStatus)
+     return (
+@@ -121,7 +134,11 @@
+           .map((entry) => entry.check.message)
+           .find((value) => value !== undefined);
+         return (
+-          <div key={`${group.status}:${group.current}`} className="flex min-w-0 flex-col gap-0.75">
++          <div
++            key={`${group.source}:${group.status}:${group.current}`}
++            className="flex min-w-0 flex-col gap-0.75"
++            data-check-source={group.source}
++          >
+             <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+               <span
+                 aria-hidden
+@@ -134,15 +151,20 @@
+               >
+                 {group.current ? label : `${label} · outdated`}
+               </span>
++              {group.source === "app" && (
++                <>
++                  <span>
++                    in{" "}
++                    {group.matching.length === 1
++                      ? name("app" in group.first ? group.first.app : undefined)
++                      : `${group.matching.length} apps`}
++                  </span>
++                  <span aria-hidden>·</span>
++                </>
++              )}
+               <span>
+-                in{" "}
+-                {group.matching.length === 1
+-                  ? name(group.first.app)
+-                  : `${group.matching.length} apps`}
+-              </span>
+-              <span aria-hidden>·</span>
+-              <span>
+-                checked <LocalTime value={latest} options={shortMoment} />
++                {group.source === "driver" ? "sign-in checked" : "checked"}{" "}
++                <LocalTime value={latest} options={shortMoment} />
+               </span>
+               {index === 0 && action}
+               {index === 0 && reconnect !== undefined && (
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -1,4 +1,9 @@
+-import type { AccountAppHealth, AccountCheckStatus, AccountHealth } from "@executor-js/sdk";
++import type {
++  AccountAppHealth,
++  AccountCheckStatus,
++  AccountDriverHealth,
++  AccountHealth,
++} from "@executor-js/sdk";
+ import { Exit, Match, type Cause } from "effect";
+ import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -30,6 +35,10 @@
+     Match.when("check_failed", () => ({ label: "Check failed", tone: "muted" as const })),
+     Match.exhaustive,
+   );
++
++/** Capability comes from the retained driver, independently of its last result. */
++export const driverCanCheck = (driver: AccountDriverHealth | undefined) =>
++  driver?.checkable === true;
+
+ const tones = {
+   good: "bg-emerald-500",
+@@ -186,11 +195,15 @@
+   const { apps, health } = data;
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+-  const checkable = health?.apps.some((entry) => entry.checkable) ?? false;
++  const driver = health?.driver;
++  const driverCheckable = driverCanCheck(driver);
++  const checkable = (health?.apps.some((entry) => entry.checkable) ?? false) || driverCheckable;
+   const stale =
+-    health?.apps.some(
++    (health?.apps.some(
+       (entry) => entry.checkable && (entry.check === null || !entry.check.current),
+-    ) ?? false;
++    ) ??
++      false) ||
++    (driverCheckable && driver?.check?.current !== true);
+   const run = async () => {
+     setPending(true);
+     setError(undefined);
+@@ -216,12 +229,21 @@
+           <AccountIdentity info={health.info} />
+         </p>
+       )}
+-      {apps.length === 0 ? (
++      {apps.length === 0 && driver === undefined ? (
+         <p className="text-[13px] text-muted-foreground">
+           No apps use this account, so nothing checks it.
+         </p>
+       ) : (
+         <ul className="flex flex-col text-[13px] [&_>_li+li]:border-t [&_>_li+li]:border-t-border">
++          {driver !== undefined && (
++            <li
++              className="flex items-center justify-between gap-3 py-2.5"
++              data-check-source="driver"
++            >
++              <span className="min-w-0 wrap-anywhere">Sign-in</span>
++              <AccountCheckResult health={{ checkable: driverCheckable, check: driver.check }} />
++            </li>
++          )}
+           {apps.map((app) => {
+             const entry = health?.apps.find((item) => item.app === app.id);
+             return (
+@@ -250,12 +272,15 @@
+   );
+ }
+
+-/** One app's latest check, spelled out with its time and, when it failed, the reason given. */
++/**
++ * One app's or the sign-in driver's latest check, spelled out with its time and, when it failed,
++ * the reason given.
++ */
+ export function AccountCheckResult({
+   health,
+   part = "all",
+ }: {
+-  readonly health: AccountAppHealth | undefined;
++  readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
+   readonly part?: "all" | "header" | "details";
+ }) {
+   if (part === "details" && (health === undefined || health.check === null)) return null;
+@@ -264,6 +289,7 @@
+   if (health.check === null && part === "details") return null;
+   if (health.check === null)
+     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
++  const displayStatus = "displayStatus" in health.check ? health.check.displayStatus : undefined;
+   const { label, tone } = describeAccountCheck(health.check.status);
+   const badge = (
+     <span
+@@ -276,9 +302,9 @@
+   );
+   const details = (
+     <>
+-      {health.check.displayStatus !== undefined && (
++      {displayStatus !== undefined && (
+         <AccountDisplayStatus
+-          status={health.check.displayStatus}
++          status={displayStatus}
+           current={health.check.current}
+           part="details"
+         />
+@@ -295,9 +321,9 @@
+       <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+         {badge}
+         <LocalTime value={health.check.checkedAt} options={shortMoment} />
+-        {health.check.displayStatus !== undefined && (
++        {displayStatus !== undefined && (
+           <AccountDisplayStatus
+-            status={health.check.displayStatus}
++            status={displayStatus}
+             current={health.check.current}
+             part="badges"
+           />

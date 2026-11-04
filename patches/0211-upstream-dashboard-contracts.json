@@ -1,0 +1,9 @@
+{
+  "identity": "executor-upstream-dashboard-contracts",
+  "file": "0211-upstream-dashboard-contracts.patch",
+  "content_sha256": "ae7b1731f82a26f68c360bf85763968dd498ca0e0c2bd9007c45104ad9d713f3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

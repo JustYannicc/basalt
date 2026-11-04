@@ -1,9 +1,11 @@
 {
   "identity": "basalt-product-feedback",
   "file": "0047-product-feedback.patch",
-  "content_sha256": "9e93d6226dc1cc562be50a63124a0cbe6a2d68439114c105052659b69bbaa551",
+  "content_sha256": "5eaaa57639ca8d352132a1e002d5c16bd7a8f4f1c5f92832bc47911431063d61",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "9e93d6226dc1cc562be50a63124a0cbe6a2d68439114c105052659b69bbaa551",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

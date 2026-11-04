@@ -1,6 +1,6 @@
 diff --git a/.changeset/slack-rest-user-oauth.md b/.changeset/slack-rest-user-oauth.md
 new file mode 100644
-index 0000000..6edfeb8
+index 00000000..6edfeb82
 --- /dev/null
 +++ b/.changeset/slack-rest-user-oauth.md
 @@ -0,0 +1,7 @@
@@ -12,10 +12,10 @@ index 0000000..6edfeb8
 +
 +Add a Slack REST OAuth client that requests only user scopes and requires its nested user grant on exchange.
 diff --git a/apps/hosted/cloud/alchemy.github.ts b/apps/hosted/cloud/alchemy.github.ts
-index 504def1..e553423 100644
+index fb59181e..b9a312e7 100644
 --- a/apps/hosted/cloud/alchemy.github.ts
 +++ b/apps/hosted/cloud/alchemy.github.ts
-@@ -42,6 +42,7 @@ import {
+@@ -40,6 +40,7 @@ import {
    firstPartyGitHubSettings,
    firstPartyGoogleSettings,
    firstPartySlackSettings,
@@ -23,7 +23,7 @@ index 504def1..e553423 100644
    missingFirstPartyGitHubClient,
    partialFirstPartyGoogleClient,
    partialFirstPartySlackClient,
-@@ -436,8 +437,9 @@ export default Alchemy.Stack(
+@@ -418,8 +419,9 @@ export default Alchemy.Stack(
      /**
       * The operator's OAuth clients' credentials (`first-party-oauth-settings.ts`). Production
       * offers v1's Executor.sh GitHub App, so this stack refuses to apply without its client ID and
@@ -35,7 +35,7 @@ index 504def1..e553423 100644
       */
      const credentials = (names: { readonly clientId: string; readonly clientSecret: string }) =>
        Effect.all([nonEmptySecret(names.clientId), nonEmptySecret(names.clientSecret)]);
-@@ -450,6 +452,7 @@ export default Alchemy.Stack(
+@@ -432,6 +434,7 @@ export default Alchemy.Stack(
      const [slackId, slackSecret] = yield* credentials(firstPartySlackSettings);
      if (Option.isSome(slackId) !== Option.isSome(slackSecret))
        return yield* Effect.die(new Error(partialFirstPartySlackClient));
@@ -43,7 +43,7 @@ index 504def1..e553423 100644
      const firstPartySecrets = [
        [firstPartyGitHubSettings.clientId, githubId.value],
        [firstPartyGitHubSettings.clientSecret, githubSecret.value],
-@@ -465,6 +468,12 @@ export default Alchemy.Stack(
+@@ -447,6 +450,12 @@ export default Alchemy.Stack(
              [firstPartySlackSettings.clientSecret, slackSecret.value],
            ] as const)
          : []),
@@ -57,7 +57,7 @@ index 504def1..e553423 100644
      yield* Effect.forEach(firstPartySecrets, ([secret, value]) =>
        GitHub.Secret(`production-${secret}`, {
 diff --git a/apps/hosted/cloud/src/infrastructure/first-party-oauth-settings.ts b/apps/hosted/cloud/src/infrastructure/first-party-oauth-settings.ts
-index d2702ef..45e4543 100644
+index d2702ef6..45e45431 100644
 --- a/apps/hosted/cloud/src/infrastructure/first-party-oauth-settings.ts
 +++ b/apps/hosted/cloud/src/infrastructure/first-party-oauth-settings.ts
 @@ -2,7 +2,8 @@
@@ -84,10 +84,10 @@ index d2702ef..45e4543 100644
  export const firstPartyGitHubItem = "Executor.sh GitHub App";
  
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index af9bf62..bed3df6 100644
+index 3a15b541..1378a2bb 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -140,6 +140,48 @@ const zendeskClientDefinition = (
+@@ -210,6 +210,48 @@ const zendeskClientDefinition = (productName: string): FirstPartyOAuthClientDefi
    };
  };
  
@@ -136,7 +136,7 @@ index af9bf62..bed3df6 100644
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -174,6 +216,10 @@ const githubRestScopes = [
+@@ -244,6 +286,10 @@ const githubRestScopes = [
   *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
   *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
   *   those it already holds. Its tokens go only to Slack's MCP server.
@@ -147,7 +147,7 @@ index af9bf62..bed3df6 100644
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    ...zohoOAuthClients,
-@@ -282,6 +328,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -362,6 +408,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
      placement: { hosts: ["mcp.slack.com"] },
      unlisted: true,
    },
@@ -169,7 +169,7 @@ index af9bf62..bed3df6 100644
  ];
  
  /** The two settings that hold the credentials of the client `id`. */
-@@ -412,7 +473,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+@@ -479,7 +540,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
                ? "GitLab"
                : definition.id === "miro"
                  ? "Miro"
@@ -179,7 +179,7 @@ index af9bf62..bed3df6 100644
                    : definition.id === "atlassian"
                      ? "Atlassian"
 diff --git a/e2e/tests/oauth-provider-token-responses.spec.ts b/e2e/tests/oauth-provider-token-responses.spec.ts
-index 1807e16..87a1e88 100644
+index 1807e162..87a1e88f 100644
 --- a/e2e/tests/oauth-provider-token-responses.spec.ts
 +++ b/e2e/tests/oauth-provider-token-responses.spec.ts
 @@ -1,7 +1,7 @@
@@ -278,7 +278,7 @@ index 1807e16..87a1e88 100644
    );
  
 diff --git a/packages/apps/protocols/14.json b/packages/apps/protocols/14.json
-index 736d79a..f813fdf 100644
+index 736d79a0..f813fdf2 100644
 --- a/packages/apps/protocols/14.json
 +++ b/packages/apps/protocols/14.json
 @@ -164,12 +164,527 @@
@@ -2579,7 +2579,7 @@ index 736d79a..f813fdf 100644
 +  }
  }
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index f266b34..bc3feab 100644
+index f266b346..bc3feabf 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -97,10 +97,13 @@ export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
@@ -2611,10 +2611,10 @@ index f266b34..bc3feab 100644
    tokenResponse: Schema.optionalKey(OAuthTokenResponse),
    grant: Schema.optionalKey(Schema.Literal("authorization_code")),
 diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
-index 42f849a..c71908a 100644
+index 767da90f..799422a1 100644
 --- a/packages/apps/src/implementation/account-router.ts
 +++ b/packages/apps/src/implementation/account-router.ts
-@@ -45,7 +45,7 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
+@@ -55,7 +55,7 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
    return {
      type: "object",
      ...($defs === undefined ? {} : { $defs }),
@@ -2624,27 +2624,27 @@ index 42f849a..c71908a 100644
        return {
          type: "object",
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 5297915..56b4494 100644
+index 50108656..b9664148 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -352,6 +352,7 @@ export const FirstPartyOAuthServer = Schema.Struct({
-   /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+@@ -399,6 +399,7 @@ export const FirstPartyOAuthServer = Schema.Struct({
+    */
    authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
    tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
 +  /** How the token response carries its grant; strict path requirements apply only on exchange. */
    tokenResponse: Schema.optionalKey(OAuthTokenResponse),
    /**
     * The RFC 8707 resource sent on the authorization request, the code exchange and every renewal,
-@@ -1323,7 +1324,7 @@ export const OAuthAttempt = Schema.Struct({
-   /** An entered client registered under the attempt's owner once it completes. */
-   saveClient: Schema.optionalKey(Schema.Literal(true)),
+@@ -1468,7 +1469,7 @@ export const OAuthAttempt = Schema.Struct({
    resource: Schema.optional(HttpUrl),
+   /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
+   resourceSource: Schema.optional(OAuthResourceSource),
 -  /** Token request encoding and nested grant location, as the provider declared them. */
 +  /** Token request encoding and nested grant location; strict path requirements apply on exchange. */
    tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
    tokenResponse: Schema.optional(OAuthTokenResponse),
  });
-@@ -1382,7 +1383,7 @@ export const OAuthGrant = Schema.Union([
+@@ -1531,7 +1532,7 @@ export const OAuthGrant = Schema.Union([
       * granted (RFC 6749 §6).
       */
      scopes: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -2654,10 +2654,10 @@ index 5297915..56b4494 100644
      generation: grantGeneration,
    }),
 diff --git a/packages/sdk/src/implementation/oauth-protocol.ts b/packages/sdk/src/implementation/oauth-protocol.ts
-index e57f4a2..7f537d9 100644
+index 16f944c9..3b36839d 100644
 --- a/packages/sdk/src/implementation/oauth-protocol.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol.ts
-@@ -671,15 +671,20 @@ const isObject = (value: unknown): value is object =>
+@@ -705,15 +705,20 @@ const isObject = (value: unknown): value is object =>
    typeof value === "object" && value !== null && !Array.isArray(value);
  
  /**
@@ -2683,7 +2683,7 @@ index e57f4a2..7f537d9 100644
      typeof Reflect.get(body, "access_token") === "string" &&
      typeof scope === "string" &&
      scope !== ""
-@@ -688,7 +693,10 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
+@@ -722,7 +727,10 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
    let grant: unknown = body;
    for (const member of nested.path.split("."))
      grant = isObject(grant) ? Reflect.get(grant, member) : undefined;
@@ -2695,7 +2695,7 @@ index e57f4a2..7f537d9 100644
    const merged: Record<string, unknown> = {};
    for (const [key, value] of Object.entries(body))
      if (!grantMembers.includes(key)) merged[key] = value;
-@@ -706,10 +714,15 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
+@@ -740,10 +748,15 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
  /**
   * An RFC 6749 §5.2 error body is an error response, whatever its HTTP status. Some services send
   * it with HTTP 200; with a 401 WWW-Authenticate challenge, oauth4webapi reports the challenge
@@ -2714,7 +2714,7 @@ index e57f4a2..7f537d9 100644
    const body = await jsonObject(response);
    if (body === undefined) return response;
    const refused = oauthErrorBody(body);
-@@ -724,10 +737,13 @@ const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) =>
+@@ -758,10 +771,13 @@ const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) =>
        },
      });
    if (response.status !== 200) return response;
@@ -2732,7 +2732,7 @@ index e57f4a2..7f537d9 100644
  };
  
  /**
-@@ -1696,6 +1712,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1756,6 +1772,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
                },
              ),
              input.tokenResponse,

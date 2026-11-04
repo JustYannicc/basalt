@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
-index 4d34ed7..4bf0364 100644
+index 4d34ed70..4bf03640 100644
 --- a/apps/hosted/cloud/src/implementation/access-hooks.ts
 +++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
 @@ -7,6 +7,11 @@ import { Schema } from "effect";
@@ -33,7 +33,7 @@ index 4d34ed7..4bf0364 100644
        // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
 diff --git a/apps/hosted/cloud/src/implementation/organization-access-request.ts b/apps/hosted/cloud/src/implementation/organization-access-request.ts
 new file mode 100644
-index 0000000..568d5c3
+index 00000000..568d5c34
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/organization-access-request.ts
 @@ -0,0 +1,39 @@
@@ -77,7 +77,7 @@ index 0000000..568d5c3
 +    );
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-index 8d5472c..904d54e 100644
+index 8d5472c9..904d54e4 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
 @@ -15,6 +15,7 @@ import {
@@ -285,7 +285,7 @@ index 8d5472c..904d54e 100644
    }),
  );
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index e3b5647..899ad2a 100644
+index f9c7a0db..216b6397 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
 @@ -2,6 +2,7 @@ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook
@@ -296,15 +296,15 @@ index e3b5647..899ad2a 100644
  import { AsyncLocalStorage } from "node:async_hooks";
  import { APIError } from "better-auth/api";
  import { OrganizationId } from "@executor-js/hosted-server";
-@@ -40,6 +41,7 @@ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+@@ -41,6 +42,7 @@ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
  import { RuntimeContext } from "alchemy";
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
 +import { SqlClient } from "effect/sql";
  import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
  import type { SendAuthEmail } from "../contracts/email.ts";
- import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
-@@ -163,6 +165,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+ import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
+@@ -166,6 +168,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
        {
          memberRemoving: (organization, member) =>
            runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
@@ -315,7 +315,7 @@ index e3b5647..899ad2a 100644
          membersAdded: (organization) =>
            runCallback(
              withSql(
-@@ -322,16 +328,31 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -325,16 +331,31 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
      const requestHandler = Effect.gen(function* () {
        const request = yield* HttpServerRequest.HttpServerRequest;
        const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
@@ -358,7 +358,7 @@ index e3b5647..899ad2a 100644
        // the request's cleanup, including Better Auth queries the request left running.
 diff --git a/apps/hosted/server/src/implementation/app-policy.ts b/apps/hosted/server/src/implementation/app-policy.ts
 new file mode 100644
-index 0000000..d223c5d
+index 00000000..d223c5d0
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/app-policy.ts
 @@ -0,0 +1,33 @@
@@ -397,7 +397,7 @@ index 0000000..d223c5d
 +};
 diff --git a/apps/hosted/server/src/implementation/application-audience.ts b/apps/hosted/server/src/implementation/application-audience.ts
 new file mode 100644
-index 0000000..44c4ec0
+index 00000000..44c4ec02
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/application-audience.ts
 @@ -0,0 +1,56 @@
@@ -458,7 +458,7 @@ index 0000000..44c4ec0
 +    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
 +  );
 diff --git a/apps/hosted/server/src/implementation/groups.ts b/apps/hosted/server/src/implementation/groups.ts
-index afd99cd..092d6e2 100644
+index afd99cd4..092d6e26 100644
 --- a/apps/hosted/server/src/implementation/groups.ts
 +++ b/apps/hosted/server/src/implementation/groups.ts
 @@ -2,6 +2,7 @@
@@ -479,7 +479,7 @@ index afd99cd..092d6e2 100644
    if (allowed.length !== 1) return yield* new OrganizationForbidden();
 diff --git a/apps/hosted/server/src/implementation/organization-access-lock.ts b/apps/hosted/server/src/implementation/organization-access-lock.ts
 new file mode 100644
-index 0000000..1c6b130
+index 00000000..1c6b130d
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/organization-access-lock.ts
 @@ -0,0 +1,20 @@
@@ -504,7 +504,7 @@ index 0000000..1c6b130
 +    );
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
-index 86e037d..c880e13 100644
+index 86e037da..c880e138 100644
 --- a/apps/hosted/server/src/implementation/pool-access-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
 @@ -1,16 +1,22 @@
@@ -619,7 +619,7 @@ index 86e037d..c880e13 100644
        Effect.gen(function* () {
          if (Option.isNone(key)) return yield* send({ action: "pool-deleted", pool: app });
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index 2983978..f61649d 100644
+index 29839786..f61649d3 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -141,9 +141,14 @@ export const poolDefaults = (
@@ -658,7 +658,7 @@ index 2983978..f61649d 100644
            version: locked.activeVersion,
            bundle: poolAppVersion,
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index 55cd660..a7a5fb0 100644
+index 3c2d8cf9..62894552 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
 @@ -10,7 +10,7 @@ import {
@@ -721,7 +721,7 @@ index 55cd660..a7a5fb0 100644
  export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
    Effect.gen(function* () {
 diff --git a/e2e/tests/cloud-auth-rate-limit.spec.ts b/e2e/tests/cloud-auth-rate-limit.spec.ts
-index 0dabd38..ed4115a 100644
+index 0dabd383..ed4115a5 100644
 --- a/e2e/tests/cloud-auth-rate-limit.spec.ts
 +++ b/e2e/tests/cloud-auth-rate-limit.spec.ts
 @@ -201,6 +201,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) =>
@@ -795,7 +795,7 @@ index 0dabd38..ed4115a 100644
      ),
    );
 diff --git a/e2e/tests/groups.spec.ts b/e2e/tests/groups.spec.ts
-index a61e305..dd73456 100644
+index a61e305b..dd73456c 100644
 --- a/e2e/tests/groups.spec.ts
 +++ b/e2e/tests/groups.spec.ts
 @@ -436,6 +436,44 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) =>
@@ -844,7 +844,7 @@ index a61e305..dd73456 100644
      ),
    );
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 5a6b7ab..f539fbd 100644
+index c4617ec6..00f0c5a0 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -95,6 +95,12 @@ export interface HostAccessLifecycle {

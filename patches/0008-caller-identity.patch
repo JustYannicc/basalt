@@ -1,5 +1,5 @@
 diff --git a/apps/docs/content/author-an-app.mdx b/apps/docs/content/author-an-app.mdx
-index d9d56ff7e1..6aee5f0d89 100644
+index d9d56ff7..6aee5f0d 100644
 --- a/apps/docs/content/author-an-app.mdx
 +++ b/apps/docs/content/author-an-app.mdx
 @@ -140,6 +140,7 @@ const requirements = {
@@ -10,25 +10,12 @@ index d9d56ff7e1..6aee5f0d89 100644
    ctx.user.accounts.github; // the caller's own linked account
  };
  ```
-diff --git a/bun.lock b/bun.lock
-index afc8616d7c..04fd035bc6 100644
---- a/bun.lock
-+++ b/bun.lock
-@@ -486,7 +486,7 @@
-     },
-     "packages/apps": {
-       "name": "apps",
--      "version": "0.0.1-beta.103",
-+      "version": "0.0.1-beta.104",
-       "dependencies": {
-         "@cfworker/json-schema": "4.1.1",
-         "@csstools/css-tokenizer": "4.0.2",
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index caed05bc63..97bfaf5a09 100644
+index 57e273c5..d1855b61 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7212,6 +7212,25 @@ export const scenarios = plan({
-       local: na("This scenario uses hosted memberships, API keys and MCP."),
+@@ -8309,6 +8309,25 @@ export const scenarios = plan({
+       local: na("This scenario uses hosted app management routes."),
      },
    },
 +  appCallerIdentity: {
@@ -55,10 +42,10 @@ index caed05bc63..97bfaf5a09 100644
      file: "workflows.spec.ts",
 diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
 new file mode 100644
-index 0000000000..d40d9e7574
+index 00000000..f450dae9
 --- /dev/null
 +++ b/e2e/tests/app-caller-identity.spec.ts
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,291 @@
 +/** A shared app's handlers and cached dynamic declarations stay bound to the calling user. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -74,6 +61,25 @@ index 0000000000..d40d9e7574
 +const source = `import {
 +  defineApp, dynamicRouter, mutation, object, query, router, string, workflow
 +} from "apps";
++import { createAppHandler, hostContext } from "apps/host";
++const portable = createAppHandler(defineApp({}, {
++  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
++    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
++  })) }),
++}));
++const direct = query({ input: object({}) }, async (ctx) => {
++  const invoke = async (accounts, caller) => {
++    const response = await portable(new Request("https://app.invalid", {
++      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
++    }), hostContext(accounts, undefined, caller));
++    return { status: response.status, body: await response.json() };
++  };
++  return {
++    caller: await invoke({ app: {} }, ctx.user.id),
++    app: await invoke({ app: {} }, undefined),
++    subjectless: await invoke({ app: {}, user: {} }, undefined),
++  };
++});
 +const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
 +const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
 +  callerId: ctx.user.id ?? "missing",
@@ -96,7 +102,7 @@ index 0000000000..d40d9e7574
 +    }],
 +    resolve: async (requested) => requested === name ? fromFactory : undefined,
 +  });
-+  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
++  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
 +});`;
 +
 +const SessionIdentity = Schema.NullOr(
@@ -200,6 +206,15 @@ index 0000000000..d40d9e7574
 +        expect(yield* query(actors.owner)).toBe(ownerId);
 +        expect(yield* query(actors.member)).toBe(memberId);
 +        expect(yield* query(actors.owner)).toBe(ownerId);
++
++        // Portable hosts can supply a caller without any user-account requirements.
++        const direct = yield* call(actors.member, "direct", "query", {});
++        expect(direct.status).toBe(200);
++        expect(direct.body).toEqual({
++          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
++          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
++          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
++        });
 +
 +        // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
 +        const subscribe = (actor: Session) =>
@@ -323,7 +338,7 @@ index 0000000000..d40d9e7574
 +  );
 +});
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index b4f2ab14da..06dfc1122c 100644
+index b4f2ab14..06dfc112 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -337,7 +352,7 @@ index b4f2ab14da..06dfc1122c 100644
          expect(
 diff --git a/e2e/tests/local-app-caller-identity.spec.ts b/e2e/tests/local-app-caller-identity.spec.ts
 new file mode 100644
-index 0000000000..baa5fb269a
+index 00000000..baa5fb26
 --- /dev/null
 +++ b/e2e/tests/local-app-caller-identity.spec.ts
 @@ -0,0 +1,64 @@
@@ -406,7 +421,7 @@ index 0000000000..baa5fb269a
 +  );
 +});
 diff --git a/packages/apps/README.md b/packages/apps/README.md
-index 779c2247f7..b398f7f812 100644
+index 779c2247..b398f7f8 100644
 --- a/packages/apps/README.md
 +++ b/packages/apps/README.md
 @@ -71,6 +71,18 @@ Accounts bind at execution time. Live documents cannot change credential
@@ -428,21 +443,9 @@ index 779c2247f7..b398f7f812 100644
  Requirements are declared by scope. `user: { accounts }` holds each caller's
  own accounts, read as `ctx.user.accounts`; `app: { accounts }` holds the app's
  own accounts, which people who can edit the app link for everyone, read as
-diff --git a/packages/apps/package.json b/packages/apps/package.json
-index 5a4523803e..570fd05b61 100644
---- a/packages/apps/package.json
-+++ b/packages/apps/package.json
-@@ -1,6 +1,6 @@
- {
-   "name": "apps",
--  "version": "0.0.1-beta.103",
-+  "version": "0.0.1-beta.104",
-   "private": true,
-   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
-   "type": "module",
 diff --git a/packages/apps/protocols/14.json b/packages/apps/protocols/14.json
 new file mode 100644
-index 0000000000..736d79a088
+index 00000000..736d79a0
 --- /dev/null
 +++ b/packages/apps/protocols/14.json
 @@ -0,0 +1,190 @@
@@ -637,7 +640,7 @@ index 0000000000..736d79a088
 +  "shared": {}
 +}
 diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/app.ts
-index 7f51e36391..eae8ca21d1 100644
+index 7f51e363..eae8ca21 100644
 --- a/packages/apps/src/contracts/app.ts
 +++ b/packages/apps/src/contracts/app.ts
 @@ -96,7 +96,11 @@ export interface AppAccountsContext<Slots extends AccountSlots> {
@@ -654,7 +657,7 @@ index 7f51e36391..eae8ca21d1 100644
  
  /**
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 75a74bec22..63569098c9 100644
+index 75a74bec..63569098 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -87,8 +87,9 @@ export { protocol9 } from "./protocols/9.ts";
@@ -678,7 +681,7 @@ index 75a74bec22..63569098c9 100644
    readonly deadline?: typeof InvocationDeadline.Type;
    /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index f0ab1c6d9e..095656f48d 100644
+index f0ab1c6d..095656f4 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -689,7 +692,7 @@ index f0ab1c6d9e..095656f48d 100644
 +export const frameworkProtocol = 14;
 diff --git a/packages/apps/src/contracts/protocols/13.ts b/packages/apps/src/contracts/protocols/13.ts
 new file mode 100644
-index 0000000000..cb18e16af4
+index 00000000..cb18e16a
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/13.ts
 @@ -0,0 +1,102 @@
@@ -796,10 +799,10 @@ index 0000000000..cb18e16af4
 +  },
 +} as const;
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 09e48ec241..294dcb08cd 100644
+index c1683dbc..22ea9e1b 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
-@@ -571,6 +571,8 @@ export type HostResponse = typeof HostResponse.Type;
+@@ -575,6 +575,8 @@ export type HostResponse = typeof HostResponse.Type;
  export const HostInvocation = Schema.Struct({
    command: HostRequest,
    accounts: ResolvedAccounts,
@@ -809,7 +812,7 @@ index 09e48ec241..294dcb08cd 100644
    replay: Schema.optionalKey(WorkflowReplay),
    deadline: Schema.optionalKey(InvocationDeadline),
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index e2368feb16..0c5187ac1e 100644
+index e2368feb..0c5187ac 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -15,6 +15,7 @@ import { protocol9 } from "./9.ts";
@@ -827,7 +830,7 @@ index e2368feb16..0c5187ac1e 100644
 +  protocol13,
  ] as const;
 diff --git a/packages/apps/src/host.ts b/packages/apps/src/host.ts
-index e84dd66eb3..671942e06a 100644
+index e84dd66e..671942e0 100644
 --- a/packages/apps/src/host.ts
 +++ b/packages/apps/src/host.ts
 @@ -22,8 +22,21 @@ import {
@@ -855,14 +858,28 @@ index e84dd66eb3..671942e06a 100644
      ? {}
      : {
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 3e7dc3f155..ac3f8677d0 100644
+index 3e7dc3f1..4a5b39e7 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -352,7 +352,11 @@ function bindAccounts(
+@@ -336,7 +336,7 @@ function bindScope(
+ 
+ /**
+  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
+- * the invocation has a caller. Without `user` accounts the context has no `user`.
++ * the host supplies a caller or a user-account scope. App-only work has neither.
+  */
+ function bindAccounts(
+   slots: ScopedSlots,
+@@ -350,9 +350,14 @@ function bindAccounts(
+           Redacted.value(context.accounts),
+         );
          const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
-         if (selected.user === undefined) return { app: { accounts: app } };
-         const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
+-        if (selected.user === undefined) return { app: { accounts: app } };
+-        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
 -        return { app: { accounts: app }, user: { accounts: user } };
++        if (selected.user === undefined && context.caller === undefined)
++          return { app: { accounts: app } };
++        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
 +        const id =
 +          context.caller === undefined
 +            ? undefined
@@ -871,7 +888,7 @@ index 3e7dc3f155..ac3f8677d0 100644
        }),
      new HostAccountsInvalid(),
    );
-@@ -715,7 +719,12 @@ function dispatch(
+@@ -715,7 +720,12 @@ function dispatch(
              Effect.gen(function* () {
                const current = yield* execution.resolve();
                const accounts = yield* safe(
@@ -886,10 +903,10 @@ index 3e7dc3f155..ac3f8677d0 100644
                );
                return {
 diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
-index 0a22f0dea3..d3429fce3b 100644
+index b579bb09..d369c029 100644
 --- a/packages/sdk/src/contracts/workerd-host.ts
 +++ b/packages/sdk/src/contracts/workerd-host.ts
-@@ -30,6 +30,7 @@ export const WorkerInvocation = Schema.Struct({
+@@ -33,6 +33,7 @@ export const WorkerInvocation = Schema.Struct({
    database: Schema.Boolean,
    command: HostRequest,
    accounts: HostAccounts,
@@ -897,7 +914,7 @@ index 0a22f0dea3..d3429fce3b 100644
    approval: Schema.optionalKey(TrustedToolApproval),
    replay: Schema.optionalKey(WorkflowReplay),
    deadline: Schema.optionalKey(InvocationDeadline),
-@@ -126,5 +127,6 @@ export const PreparedWorkflow = Schema.Union([
+@@ -129,5 +130,6 @@ export const PreparedWorkflow = Schema.Union([
      state: Schema.Literal("execute"),
      seed: WorkflowSeed,
      accounts: HostAccounts,
@@ -905,7 +922,7 @@ index 0a22f0dea3..d3429fce3b 100644
    }),
  ]);
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index d63bcdba56..8d5f264cde 100644
+index d63bcdba..8d5f264c 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -57,11 +57,11 @@ export interface AppProtocol {
@@ -969,18 +986,18 @@ index d63bcdba56..8d5f264cde 100644
  );
  
 diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
-index bea73bfe11..d371a18b65 100644
+index f23217cb..40ec30f2 100644
 --- a/packages/sdk/src/implementation/app-runner.ts
 +++ b/packages/sdk/src/implementation/app-runner.ts
-@@ -124,6 +124,7 @@ export interface AppRunnerHost {
+@@ -126,6 +126,7 @@ export interface AppRunnerHost {
  
  /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
  export interface AppInvocation {
 +  readonly caller?: string;
    readonly app: string;
    readonly build: string;
-   readonly database: boolean;
-@@ -837,6 +838,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+   /**
+@@ -856,6 +857,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
          const body = protocol.invocation({
            command: invocation.command,
            accounts,
@@ -989,23 +1006,23 @@ index bea73bfe11..d371a18b65 100644
            ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
            ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index 2fbd374a2f..af3eab0c42 100644
+index d0dbf30a..e5c49a3c 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
-@@ -169,6 +169,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
+@@ -187,6 +187,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
              database: input.database,
              command,
              accounts: Redacted.value(input.accounts),
 +            ...(input.caller === undefined ? {} : { caller: input.caller }),
              // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
              headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
-             ...(input.approval === undefined ? {} : { approval: input.approval }),
+             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
 diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/implementation/declarations.ts
-index ed259a9b07..6281381f1c 100644
+index 8e58ad91..f30120c9 100644
 --- a/packages/sdk/src/implementation/declarations.ts
 +++ b/packages/sdk/src/implementation/declarations.ts
-@@ -115,6 +115,8 @@ export const makeDeclarations = (options: {
-             state.version.build,
+@@ -149,6 +149,8 @@ export const makeDeclarations = (options: {
+             appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
              // A caller's evaluation and actorless work see different contexts: only one has `user`.
              state.scope,
 +            // Factories may vary tools and skills by caller, even with no user accounts.
@@ -1014,7 +1031,7 @@ index ed259a9b07..6281381f1c 100644
            ]),
          ),
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
-index 4dd137bc57..be63c3d4ca 100644
+index ee541bf5..c6ae90a8 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
 @@ -41,11 +41,15 @@ export interface ResolvedAppRuntime {
@@ -1078,10 +1095,10 @@ index 4dd137bc57..be63c3d4ca 100644
      readonly kind?: "query" | "mutation";
      readonly input: Json;
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 16f3aa5121..522eff8fb6 100644
+index 7235eada..260f9d25 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -467,7 +467,10 @@ function resolveFor(
+@@ -503,7 +503,10 @@ function resolveFor(
        state.scope === "app"
          ? { app: selections.app }
          : { app: selections.app, user: selections.user };
@@ -1093,7 +1110,7 @@ index 16f3aa5121..522eff8fb6 100644
    });
  }
  
-@@ -555,7 +558,7 @@ const renewRefused = (
+@@ -591,7 +594,7 @@ const renewRefused = (
        accounts.user === undefined
          ? { app: replaceScope(accounts.app) }
          : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
@@ -1103,7 +1120,7 @@ index 16f3aa5121..522eff8fb6 100644
  
  function invocation(
 diff --git a/packages/sdk/src/implementation/worker-bridge.ts b/packages/sdk/src/implementation/worker-bridge.ts
-index 910c6ee413..6ae119bcfa 100644
+index 910c6ee4..6ae119bc 100644
 --- a/packages/sdk/src/implementation/worker-bridge.ts
 +++ b/packages/sdk/src/implementation/worker-bridge.ts
 @@ -35,14 +35,14 @@ export default {
@@ -1133,7 +1150,7 @@ index 910c6ee413..6ae119bcfa 100644
  
  /**
 diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
-index 88931948fc..804161c9af 100644
+index d93a7bf6..adb2f602 100644
 --- a/packages/sdk/src/implementation/workerd-client.ts
 +++ b/packages/sdk/src/implementation/workerd-client.ts
 @@ -93,6 +93,7 @@ export const workerdHostHandler = (options: {
@@ -1145,10 +1162,10 @@ index 88931948fc..804161c9af 100644
            }
            case "load": {
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
-index bf9a830855..67bc6c1b27 100644
+index 656e3e8b..0db5f616 100644
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
-@@ -443,7 +443,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
+@@ -454,7 +454,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
              run: Schema.decodeUnknownSync(WorkflowRunId)(event.payload.run),
            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(PreparedWorkflow)));
            if (prepared.state === "complete") return prepared.output;
@@ -1157,91 +1174,11 @@ index bf9a830855..67bc6c1b27 100644
            const native = <A>(work: () => Promise<A>) =>
              Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
            const execution: WorkflowExecution = {
-@@ -497,6 +497,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
-                 build: seed.build,
+@@ -509,6 +509,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
+                 ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
                  database: false,
                  accounts,
 +                ...(caller === undefined ? {} : { caller }),
                  command: { operation: "workflow-run", name: seed.name, input: seed.input },
                  headers: {},
                },
-diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
-index d40d9e7574..f450dae9d8 100644
---- a/e2e/tests/app-caller-identity.spec.ts
-+++ b/e2e/tests/app-caller-identity.spec.ts
-@@ -13,6 +13,25 @@ import { Browser } from "../support/browser.ts";
- const source = `import {
-   defineApp, dynamicRouter, mutation, object, query, router, string, workflow
- } from "apps";
-+import { createAppHandler, hostContext } from "apps/host";
-+const portable = createAppHandler(defineApp({}, {
-+  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
-+    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
-+  })) }),
-+}));
-+const direct = query({ input: object({}) }, async (ctx) => {
-+  const invoke = async (accounts, caller) => {
-+    const response = await portable(new Request("https://app.invalid", {
-+      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
-+    }), hostContext(accounts, undefined, caller));
-+    return { status: response.status, body: await response.json() };
-+  };
-+  return {
-+    caller: await invoke({ app: {} }, ctx.user.id),
-+    app: await invoke({ app: {} }, undefined),
-+    subjectless: await invoke({ app: {}, user: {} }, undefined),
-+  };
-+});
- const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
- const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
-   callerId: ctx.user.id ?? "missing",
-@@ -35,7 +54,7 @@ export default defineApp({}, async (ctx) => {
-     }],
-     resolve: async (requested) => requested === name ? fromFactory : undefined,
-   });
--  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
-+  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
- });`;
- 
- const SessionIdentity = Schema.NullOr(
-@@ -140,6 +159,15 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) =>
-         expect(yield* query(actors.member)).toBe(memberId);
-         expect(yield* query(actors.owner)).toBe(ownerId);
- 
-+        // Portable hosts can supply a caller without any user-account requirements.
-+        const direct = yield* call(actors.member, "direct", "query", {});
-+        expect(direct.status).toBe(200);
-+        expect(direct.body).toEqual({
-+          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
-+          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
-+          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
-+        });
-+
-         // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
-         const subscribe = (actor: Session) =>
-           Effect.gen(function* () {
-diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index ac3f8677d0..4a5b39e752 100644
---- a/packages/apps/src/implementation/host.ts
-+++ b/packages/apps/src/implementation/host.ts
-@@ -336,7 +336,7 @@ function bindScope(
- 
- /**
-  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
-- * the invocation has a caller. Without `user` accounts the context has no `user`.
-+ * the host supplies a caller or a user-account scope. App-only work has neither.
-  */
- function bindAccounts(
-   slots: ScopedSlots,
-@@ -350,8 +350,9 @@ function bindAccounts(
-           Redacted.value(context.accounts),
-         );
-         const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
--        if (selected.user === undefined) return { app: { accounts: app } };
--        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
-+        if (selected.user === undefined && context.caller === undefined)
-+          return { app: { accounts: app } };
-+        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
-         const id =
-           context.caller === undefined
-             ? undefined

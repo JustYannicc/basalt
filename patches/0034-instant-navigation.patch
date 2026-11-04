@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/web/src/implementation/router.tsx b/apps/hosted/cloud/web/src/implementation/router.tsx
-index ca287ac..3fc97d0 100644
+index ca287ac5..3fc97d0c 100644
 --- a/apps/hosted/cloud/web/src/implementation/router.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/router.tsx
 @@ -1,6 +1,7 @@
@@ -27,66 +27,8 @@ index ca287ac..3fc97d0 100644
    );
  };
  
-diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-index a41ef72..09194f1 100644
---- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-+++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-@@ -1,10 +1,11 @@
- import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
- import { createFileRoute } from "@tanstack/react-router";
--import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
-+import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
- 
- /** Hosted account inventory. */
- export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
-   validateSearch: parseAccountsSearch,
-+  staticData: { organizationReads: accountsPageReads },
-   component: Page,
- });
- 
-diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-index 3244f94..42e7e89 100644
---- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-+++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-@@ -1,5 +1,6 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { ApprovalsPage } from "@executor-js/hosted-web/pages/approvals";
-+import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
- export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
-   component: ApprovalsPage,
-+  staticData: { organizationReads: approvalsPageReads },
- });
-diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-index ca6700c..cfd609f 100644
---- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-+++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-@@ -1,4 +1,7 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
-+import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
- 
--export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
-+export const Route = createFileRoute("/org/$organizationSlug/connect")({
-+  component: ConnectPage,
-+  staticData: { organizationReads: connectPageReads },
-+});
-diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-index 23a0519..56905d4 100644
---- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-+++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-@@ -1,5 +1,8 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
-+import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
- 
- /** Group directory shared by hosted products. */
--export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
-+export const Route = createFileRoute("/org/$organizationSlug/groups/")({
-+  component: GroupsPage,
-+  staticData: { organizationReads: groupsPageReads },
-+});
 diff --git a/apps/hosted/self-host/web/src/implementation/router.tsx b/apps/hosted/self-host/web/src/implementation/router.tsx
-index f91cacf..600e14a 100644
+index f91cacf0..600e14ae 100644
 --- a/apps/hosted/self-host/web/src/implementation/router.tsx
 +++ b/apps/hosted/self-host/web/src/implementation/router.tsx
 @@ -2,6 +2,7 @@ import { PagePending } from "@executor-js/hosted-web/page-pending";
@@ -113,66 +55,8 @@ index f91cacf..600e14a 100644
    );
  };
  
-diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-index a41ef72..09194f1 100644
---- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-+++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
-@@ -1,10 +1,11 @@
- import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
- import { createFileRoute } from "@tanstack/react-router";
--import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
-+import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
- 
- /** Hosted account inventory. */
- export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
-   validateSearch: parseAccountsSearch,
-+  staticData: { organizationReads: accountsPageReads },
-   component: Page,
- });
- 
-diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-index 3244f94..42e7e89 100644
---- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-+++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
-@@ -1,5 +1,6 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { ApprovalsPage } from "@executor-js/hosted-web/pages/approvals";
-+import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
- export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
-   component: ApprovalsPage,
-+  staticData: { organizationReads: approvalsPageReads },
- });
-diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-index ca6700c..cfd609f 100644
---- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-+++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
-@@ -1,4 +1,7 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
-+import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
- 
--export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
-+export const Route = createFileRoute("/org/$organizationSlug/connect")({
-+  component: ConnectPage,
-+  staticData: { organizationReads: connectPageReads },
-+});
-diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-index 23a0519..56905d4 100644
---- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-+++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
-@@ -1,5 +1,8 @@
- import { createFileRoute } from "@tanstack/react-router";
--import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
-+import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
- 
- /** Group directory shared by hosted products. */
--export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
-+export const Route = createFileRoute("/org/$organizationSlug/groups/")({
-+  component: GroupsPage,
-+  staticData: { organizationReads: groupsPageReads },
-+});
 diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index 9d2862b..a0687fb 100644
+index 9d2862b0..a0687fb0 100644
 --- a/apps/hosted/web/src/contracts/resource-access.ts
 +++ b/apps/hosted/web/src/contracts/resource-access.ts
 @@ -1,5 +1,6 @@
@@ -204,7 +88,7 @@ index 9d2862b..a0687fb 100644
  export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
    appAccess(new AppKey(key));
 diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
-index a861a5c..795102e 100644
+index a861a5c6..795102ef 100644
 --- a/apps/hosted/web/src/implementation/components/organization.tsx
 +++ b/apps/hosted/web/src/implementation/components/organization.tsx
 @@ -1,5 +1,5 @@
@@ -301,11 +185,11 @@ index a861a5c..795102e 100644
  const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
    AsyncResult.isFailure(access) &&
 diff --git a/apps/hosted/web/src/implementation/components/page-pending.tsx b/apps/hosted/web/src/implementation/components/page-pending.tsx
-index 28e1ee7..182bcdc 100644
+index 4f72f4cd..2cb22542 100644
 --- a/apps/hosted/web/src/implementation/components/page-pending.tsx
 +++ b/apps/hosted/web/src/implementation/components/page-pending.tsx
-@@ -3,6 +3,13 @@ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
- import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
+@@ -4,6 +4,13 @@ import { OrganizationSettingsPending } from "./organization-settings-pending.tsx
+ import { AddAppBack } from "./add-app.tsx";
  import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
 +import { appScreenTab, type AppScreenTab } from "@executor-js/ui/dashboard/app-detail";
@@ -318,7 +202,7 @@ index 28e1ee7..182bcdc 100644
  import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
  import { parseAppSearch } from "../../contracts/navigation.ts";
  import { Link, useLocation } from "@tanstack/react-router";
-@@ -99,6 +106,72 @@ export function UnknownPagePending({ fullScreen = false }: { readonly fullScreen
+@@ -101,6 +108,72 @@ export function UnknownPagePending({ fullScreen = false }: { readonly fullScreen
    );
  }
  
@@ -391,7 +275,7 @@ index 28e1ee7..182bcdc 100644
  /**
   * Lazy pages load inside the existing organization layout with the destination's content shape.
   * Each shape is the page's own loading state, so the page replaces it without moving. Nothing is
-@@ -116,27 +189,15 @@ export function PagePending({
+@@ -118,27 +191,15 @@ export function PagePending({
    if (root !== "org" || organizationSlug === undefined) return <UnknownPagePending fullScreen />;
    // Older setup links open the app's Accounts view. Sign-in can still return to one, so this
    // shape shows until the server redirects it there.
@@ -425,33 +309,8 @@ index 28e1ee7..182bcdc 100644
    if (page === "apps" && item === undefined)
      return (
        <InventoryPageSkeleton
-diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
-index 2a3ff58..39b330e 100644
---- a/apps/hosted/web/src/implementation/pages/accounts.tsx
-+++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
-@@ -12,9 +12,19 @@ import { Button } from "@executor-js/ui/components/button";
- import { Link } from "@tanstack/react-router";
- import { useQuery } from "@executor-js/ui/dashboard/context";
- import { HostedFailure } from "../components/dashboard-bindings.tsx";
--import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
-+import {
-+  type OrganizationPageReads,
-+  useOrganizationDetails,
-+  useOrganizationRoute,
-+} from "../components/organization.tsx";
- import { OAuthClientsDialog } from "./oauth-clients.tsx";
- import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
-+
-+/** The organization's account directory. */
-+export const accountsPageReads: OrganizationPageReads = (organization) => [
-+  resourceDirectoryAtom(organization),
-+];
-+
- /**
-  * Personal and shared credentials use one list. Administrators also manage the organization's
-  * OAuth clients from here, since those clients only exist to connect accounts.
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index 75ea7bb..ac4f2c6 100644
+index 75ea7bbc..ac4f2c67 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -14,7 +14,7 @@ import {
@@ -567,81 +426,11 @@ index 75ea7bb..ac4f2c6 100644
        view={selectedView}
        canInspectSource={canManage}
        appScreen={screenTab}
-diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
-index cc100f2..0dc8705 100644
---- a/apps/hosted/web/src/implementation/pages/approvals.tsx
-+++ b/apps/hosted/web/src/implementation/pages/approvals.tsx
-@@ -3,8 +3,14 @@ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/
- import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval";
- import { pendingApprovalsAtom, scheduledReviewAtoms } from "../../contracts/schedules.ts";
- import { HostedFailure } from "../components/dashboard-bindings.tsx";
--import { useOrganizationRoute } from "../components/organization.tsx";
-+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
- import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
-+
-+/** Runs waiting for a decision. */
-+export const approvalsPageReads: OrganizationPageReads = (organization) => [
-+  pendingApprovalsAtom(organization),
-+];
-+
- /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
- export function ApprovalsPage() {
-   const { organization, slug: organizationSlug } = useOrganizationRoute();
-diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
-index 2030dc5..17ef904 100644
---- a/apps/hosted/web/src/implementation/pages/connect.tsx
-+++ b/apps/hosted/web/src/implementation/pages/connect.tsx
-@@ -5,7 +5,7 @@ import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
- import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
- import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
- import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
--import { useOrganizationRoute } from "../components/organization.tsx";
-+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
- import { HostedFailure } from "../components/dashboard-bindings.tsx";
- import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
- import { connectionToolListAtom } from "../../contracts/apps.ts";
-@@ -65,6 +65,13 @@ function PersonalTokenSetup({
-   );
- }
- 
-+/** Installed apps, MCP connections and connected agents. */
-+export const connectPageReads: OrganizationPageReads = (organization) => [
-+  resourceInventoryAtom(organization),
-+  mcpConnectionsAtom(organization),
-+  mcpAgentsAtom(organization),
-+];
-+
- /** The member's full-access URL, scoped connections and connected agents for this organization. */
- export function ConnectPage() {
-   const origins = useResourceOrigins();
-diff --git a/apps/hosted/web/src/implementation/pages/groups.tsx b/apps/hosted/web/src/implementation/pages/groups.tsx
-index dfbede9..9cd3d11 100644
---- a/apps/hosted/web/src/implementation/pages/groups.tsx
-+++ b/apps/hosted/web/src/implementation/pages/groups.tsx
-@@ -26,7 +26,7 @@ import {
- } from "@executor-js/ui/components/dialog";
- import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
- import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
--import { useOrganizationRoute } from "../components/organization.tsx";
-+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
- import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
- import { HostedFailure } from "../components/dashboard-bindings.tsx";
- import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
-@@ -36,6 +36,9 @@ import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/
- import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
- import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
- 
-+/** The organization's groups. */
-+export const groupsPageReads: OrganizationPageReads = (organization) => [groupsAtom(organization)];
-+
- /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
- export function GroupsPage({ id }: { readonly id?: string }) {
-   const { organization } = useOrganizationRoute();
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 964edb1..d845546 100644
+index df25d580..0b094223 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4695,6 +4695,17 @@ export const scenarios = plan({
+@@ -5400,6 +5400,17 @@ export const scenarios = plan({
        local: na("This journey checks hosted app metadata requests."),
      },
    },
@@ -659,7 +448,7 @@ index 964edb1..d845546 100644
    organizationIcon: {
      fixtures: "actors",
      file: "organization-icon.spec.ts",
-@@ -4940,6 +4951,27 @@ export const scenarios = plan({
+@@ -5690,6 +5701,27 @@ export const scenarios = plan({
        local: na("Local does not host app origins."),
      },
    },
@@ -688,7 +477,7 @@ index 964edb1..d845546 100644
      fixtures: "actors",
      managementApps: ["owner"],
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
-index 241c4e2..3c689bb 100644
+index 241c4e21..3c689bb7 100644
 --- a/e2e/tests/embedded-app-navigation.spec.ts
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
 @@ -270,4 +270,75 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
@@ -769,7 +558,7 @@ index 241c4e2..3c689bb 100644
  });
 diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
 new file mode 100644
-index 0000000..99d63bd
+index 00000000..99d63bdb
 --- /dev/null
 +++ b/e2e/tests/navigation-intent.spec.ts
 @@ -0,0 +1,104 @@
@@ -878,7 +667,7 @@ index 0000000..99d63bd
 +  );
 +});
 diff --git a/packages/dashboard-start/package.json b/packages/dashboard-start/package.json
-index ae72537..8c6137a 100644
+index ae725379..8c6137a8 100644
 --- a/packages/dashboard-start/package.json
 +++ b/packages/dashboard-start/package.json
 @@ -9,6 +9,7 @@
@@ -891,7 +680,7 @@ index ae72537..8c6137a 100644
      "./document-api": "./src/contracts/document.ts",
 diff --git a/packages/dashboard-start/src/implementation/loaded-value.ts b/packages/dashboard-start/src/implementation/loaded-value.ts
 new file mode 100644
-index 0000000..97d1d73
+index 00000000..97d1d732
 --- /dev/null
 +++ b/packages/dashboard-start/src/implementation/loaded-value.ts
 @@ -0,0 +1,21 @@
@@ -917,7 +706,7 @@ index 0000000..97d1d73
 +  return node.value() as A;
 +};
 diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
-index 567d471..1fbabf1 100644
+index 567d4712..1fbabf1c 100644
 --- a/packages/dashboard-start/src/implementation/registry.tsx
 +++ b/packages/dashboard-start/src/implementation/registry.tsx
 @@ -7,10 +7,11 @@
@@ -1007,7 +796,7 @@ index 567d471..1fbabf1 100644
      },
      Wrap: ({ children }: { readonly children: ReactNode }) => (
 diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
-index 7bc172b..76e2064 100644
+index 7bc172b5..76e20648 100644
 --- a/packages/ui/src/contracts/refresh.ts
 +++ b/packages/ui/src/contracts/refresh.ts
 @@ -18,7 +18,7 @@ const pageFocus = Atom.readable((get) => {

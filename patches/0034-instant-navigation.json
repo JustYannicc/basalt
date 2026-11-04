@@ -1,9 +1,11 @@
 {
   "identity": "executor-instant-navigation",
   "file": "0034-instant-navigation.patch",
-  "content_sha256": "e964c14f380a51412bdaddd5628156aaf4d77d9847d99982914504344c61c25c",
+  "content_sha256": "28e0cba8aae0927346bf8ec98e6d30944a9360c3bd10029da73b64f1cc2998a4",
   "kind": "upstream",
   "upstream_pull_request": 2437,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "e964c14f380a51412bdaddd5628156aaf4d77d9847d99982914504344c61c25c",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

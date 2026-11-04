@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
+index 2857c0e2..d3e7fcd8 100644
 --- a/apps/hosted/cloud/src/implementation/default-app.ts
 +++ b/apps/hosted/cloud/src/implementation/default-app.ts
 @@ -2,7 +2,8 @@
@@ -11,7 +12,7 @@ diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/c
  export { executorCloudApiDocument } from "../contracts/api.ts";
  
  /** Load the management contract behind this feature's module boundary. */
-@@ -10,4 +11,9 @@
+@@ -10,4 +11,9 @@ export const defaultApp = (
    executor: Executor,
    origin: string,
    document: Effect.Effect<HostedApiDocument>,
@@ -23,9 +24,10 @@ diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/c
 +    return yield* withPoolDefaults(executor, poolKey, initialize);
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
+index 5928c75b..93d0a420 100644
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
 +++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
-@@ -18,9 +18,11 @@
+@@ -23,10 +23,12 @@ import {
    hostedAppCopies,
    ScheduleWakeup,
  } from "@executor-js/hosted-server";
@@ -34,11 +36,12 @@ diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cl
 +import { queuePoolAppUpgrades } from "@executor-js/hosted-server/pool-app-upgrades";
  import { SqlClient } from "effect/sql";
  import { cloudBlobs } from "./blobs.ts";
+ import { jobUnitCounts } from "../contracts/job-outcome.ts";
 +import { PoolAppSigningKey } from "../contracts/pools.ts";
  
  /** A tick stops starting items after this long, then resumes from its cursor on the next tick. */
  const tickBudgetMs = 20_000;
-@@ -56,11 +58,17 @@
+@@ -70,11 +72,17 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
      const applyThrough = named === "" ? reviewedThrough : named;
      // The build framework step rewrites retained builds in the same bucket the executor reads.
      const blobs = yield* cloudBlobs;
@@ -57,18 +60,19 @@ diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cl
        const steps = hostDataSteps({
          executor,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
+index f751072b..cafe26a2 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
-@@ -19,7 +19,7 @@
+@@ -19,7 +19,7 @@ import { AppRepositoryRecovery, RepositoryHost, StorageError } from "@executor-j
  import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
  import { RuntimeContext } from "alchemy";
  import type * as Cloudflare from "alchemy/Cloudflare";
 -import { Effect, Layer } from "effect";
 +import { Config, Effect, Layer } from "effect";
  import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+ import { RemovedOrganizations } from "../implementation/organization-removal.ts";
  import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
- import { UiFailed } from "apps/ui/contracts";
-@@ -28,6 +28,9 @@
+@@ -29,6 +29,9 @@ import { cloudProductServices } from "./product-services.ts";
  import { cloudAppSources } from "./source.ts";
  import { cloudHosts } from "./stage.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
@@ -78,7 +82,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud
  
  /**
   * Every hosted service the cloud Workers provide, composed over {@link cloudProductServices}. The
-@@ -57,6 +60,8 @@
+@@ -58,6 +61,8 @@ export const cloudProduct = Effect.fn(function* (
    // Keep the default management app's API document, templates and authoring files off the
    // startup path of requests that do not install it. The document depends only on the origin, so the isolate keeps the first one
    // generated for later provisioning runs instead of regenerating it per execution.
@@ -87,7 +91,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud
    let document: HostedApiDocument | undefined;
    const defaults = yield* makeExecutionMemo(
      Effect.gen(function* () {
-@@ -68,7 +73,8 @@
+@@ -69,7 +74,8 @@ export const cloudProduct = Effect.fn(function* (
            yield* sdk,
            apiOrigin,
            Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
@@ -97,7 +101,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud
        );
      }).pipe(
        Effect.mapError(() => new StorageError()),
-@@ -82,6 +88,8 @@
+@@ -83,6 +89,8 @@ export const cloudProduct = Effect.fn(function* (
    );
    return Layer.mergeAll(
      services,
@@ -107,6 +111,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud
        AppManagementHost,
        Effect.all({
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 34616221..98b2382e 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -26,7 +26,9 @@
@@ -121,9 +126,10 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
    "dependencies": {
      "@better-auth/api-key": "1.7.5",
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 520d3444..136acfa4 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -37,6 +37,23 @@
+@@ -37,6 +37,23 @@ type AppCreation =
  const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
    defaultValue: () => ({ kind: "member" }),
  });
@@ -147,7 +153,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
  type AccountCreation =
    | typeof ConnectionDestination.Type
    | { readonly kind: "attributed-personal"; readonly user: string };
-@@ -412,6 +429,18 @@
+@@ -412,6 +429,18 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
              SchemaError: () => new StorageError(),
            }),
          ),
@@ -168,6 +174,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
            const organization = yield* organizationOf(app.owner);
 diff --git a/apps/hosted/cloud/src/contracts/pools.ts b/apps/hosted/cloud/src/contracts/pools.ts
 new file mode 100644
+index 00000000..c985cff2
 --- /dev/null
 +++ b/apps/hosted/cloud/src/contracts/pools.ts
 @@ -0,0 +1,7 @@
@@ -180,7 +187,7 @@ new file mode 100644
 +>()("cloud/PoolAppSigningKey") {}
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
 new file mode 100644
-index 0000000..64b051e
+index 00000000..29839786
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -0,0 +1,401 @@
@@ -587,7 +594,7 @@ index 0000000..64b051e
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 new file mode 100644
-index 0000000..4496047
+index 00000000..44960471
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 @@ -0,0 +1,77 @@
@@ -670,6 +677,7 @@ index 0000000..4496047
 +};
 diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted/server/src/implementation/pool-account.ts
 new file mode 100644
+index 00000000..4621a206
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account.ts
 @@ -0,0 +1,118 @@
@@ -792,18 +800,19 @@ new file mode 100644
 +    return { account: account.id, changed: true };
 +  });
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index ea0fd06f..95b280bb 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,7 +1,7 @@
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
  import { ApiError } from "@executor-js/utils/api-error";
  /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
--import { type Effect, Schema } from "effect";
-+import { type Effect, type Redacted, Schema } from "effect";
+-import { type Effect, Schema, SchemaGetter } from "effect";
++import { type Effect, type Redacted, Schema, SchemaGetter } from "effect";
  import { StorageError, CredentialsError } from "./shared.ts";
  import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
  import { AccountInfo } from "apps/contracts";
-@@ -161,7 +161,7 @@
+@@ -161,7 +161,7 @@ export const AccountFieldsInvalid = ApiError.define({
  export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
  
  /**
@@ -812,7 +821,7 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
   * request; products use these for accounts they provision themselves, such as their own API access.
   */
  export const ManagedAccountInputs = {
-@@ -185,6 +185,14 @@
+@@ -185,6 +185,14 @@ export const ManagedAccountInputs = {
  
  /** Host-only: not part of the HTTP API or the Promise SDK. */
  export interface ManagedAccounts {
@@ -828,9 +837,10 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
      input: typeof ManagedAccountInputs.add.Type,
    ) => Effect.Effect<
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index 89da349c..56d4995d 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -83,6 +83,11 @@
+@@ -143,6 +143,11 @@ export const makeAccounts = (
    /** Best-effort provider-side revocation; it never fails and runs only after the delete commits. */
    revokeRemoved?: (removed: RemovedGrant) => Effect.Effect<void>,
  ) => ({
@@ -843,9 +853,10 @@ diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/impl
      Effect.gen(function* () {
        const row = yield* query(() =>
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index c0cd6235..fdbbac97 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -159,7 +159,7 @@
+@@ -166,7 +166,7 @@ export const createExecutor = (
        options.hooks,
      );
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks);
@@ -854,7 +865,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        db,
        credentials,
        crypto,
-@@ -253,7 +253,7 @@
+@@ -271,7 +271,7 @@ export const createExecutor = (
              Effect.withSpan("sdk.accounts.revocation"),
            ),
        },
@@ -864,9 +875,10 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          ...connections,
          ...oauth.connections,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 45ebb692..9715a867 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -163,6 +163,11 @@
+@@ -163,6 +163,11 @@ export interface ResourceLifecycle {
    readonly connectionCompleting: (
      connection: AccountConnectionCompletion,
    ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
@@ -879,9 +891,10 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
    /** Called after active-work checks, before deleting the app in the same transaction. */
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 7ec7b177..3126344c 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -403,6 +403,7 @@
+@@ -406,6 +406,7 @@ export const makeApps = (
            ? null
            : yield* transaction(db, (tx) =>
                Effect.gen(function* () {
@@ -889,7 +902,7 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
                  const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
                  const deploySequence = current.deploySequence + 1;
                  yield* query(() =>
-@@ -530,6 +531,7 @@
+@@ -533,6 +534,7 @@ export const makeApps = (
        if (before === null) yield* writeInitialSource(blobs, code, retainedFiles);
        return yield* transaction(db, (tx) =>
          Effect.gen(function* () {
@@ -898,13 +911,21 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
              tx.findFirst("apps", {
                where: (b) =>
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index aef27f16..73ff037b 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -4,2 +4,3 @@
+@@ -3,6 +3,7 @@ import { StorageError } from "@executor-js/sdk/core";
+ import { Effect, Exit, Schedule, Schema } from "effect";
  import { SqlClient } from "effect/sql";
+ import { traceFailure } from "@executor-js/telemetry/failed-span";
 +import { PoolTokenRotation, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
  import { OrganizationId } from "../contracts/organization.ts";
-@@ -131,3 +132,8 @@
+ import {
+   OrganizationDefaults,
+@@ -129,16 +130,23 @@ const attempt = <E, R>(
+     Effect.withSpan("hosted.provision"),
+   );
+ 
 -/** Owners and admins whose managed key member setup links; read live. */
 -const managers = (organization: OrganizationId, requireVerifiedEmail: boolean, user?: string) =>
 +/** Team setup reads managers; token jobs may revisit an existing pool holder of any role. */
@@ -915,7 +936,9 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
 +  rotationOnly = false,
 +) =>
    Effect.gen(function* () {
-@@ -137,5 +143,7 @@
+     const sql = yield* SqlClient.SqlClient;
+     return yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
+       where member."organizationId" = ${organization}
        and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
 -      and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
 -      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))),
@@ -926,11 +949,16 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
 +          and coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) ? member."userId"
 +        )))`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))));
    });
-@@ -178,2 +186,3 @@
+ 
+ /** Install the organization's defaults. Concurrent runs are safe: defaults install one app. */
+@@ -177,12 +185,17 @@ export const provision = (id: string, services: ProvisioningServices) =>
+           return yield* services.domain;
+         case "member": {
            const initialize = yield* OrganizationDefaults;
 +          const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
            const [member] = yield* managers(
-@@ -182,4 +191,8 @@
+             job.organization_id,
+             services.requireVerifiedEmail,
              job.user_id,
 +            rotationOnly,
            );
@@ -940,8 +968,11 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
 +              Effect.provideService(PoolTokenRotation, rotationOnly),
 +            );
            return;
+         }
+       }
 diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
 new file mode 100644
+index 00000000..25ac4486
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/pool-defaults.ts
 @@ -0,0 +1,17 @@
@@ -963,22 +994,26 @@ new file mode 100644
 +  }
 +>()("hosted/PoolAppSource") {}
 diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts/build-site.ts
+index 9f809e8b..e1239a1f 100644
 --- a/apps/hosted/cloud/scripts/build-site.ts
 +++ b/apps/hosted/cloud/scripts/build-site.ts
-@@ -41,5 +41,6 @@
+@@ -41,6 +41,7 @@ const siteBuild = Effect.gen(function* () {
    // that build ships, not just the HTML: llms.txt, llms-full.txt and the .md
    // and .mdx variant of every page are the agent-facing half of the site.
    const docs = path.join(root, "apps/docs/dist");
 +  const pool = path.join(root, "apps/hosted/cloud/.generated/pool-app");
    const docsPrefix = "docs";
    const output = path.join(root, "apps/hosted/cloud/.generated/site");
-@@ -72,4 +73,5 @@
+ 
+@@ -72,6 +73,7 @@ const siteBuild = Effect.gen(function* () {
    const marketingAssets = yield* listAssets(marketing);
    const dashboardAssets = yield* listAssets(dashboard);
    const docsAssets = yield* listAssets(docs);
 +  const poolAssets = yield* listAssets(pool);
    const assets = new Map<string, Array<Asset>>();
-@@ -85,6 +87,8 @@
+ 
+   // The asset layer reads _redirects and _headers from the asset root only, so
+@@ -85,6 +87,8 @@ const siteBuild = Effect.gen(function* () {
      existing.push({ ...asset, relative });
      assets.set(relative, existing);
    };
@@ -989,6 +1024,7 @@ diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts
    for (const asset of docsAssets) addAsset(asset, path.join(docsPrefix, asset.relative));
 diff --git a/apps/hosted/cloud/src/implementation/pool-app-assets.ts b/apps/hosted/cloud/src/implementation/pool-app-assets.ts
 new file mode 100644
+index 00000000..3f485e27
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/pool-app-assets.ts
 @@ -0,0 +1,51 @@
@@ -1045,6 +1081,7 @@ new file mode 100644
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
 new file mode 100644
+index 00000000..032f891b
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
 @@ -0,0 +1,29 @@
@@ -1078,9 +1115,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+index 84f94696..f98574af 100644
 --- a/apps/hosted/cloud/src/infrastructure/site.ts
 +++ b/apps/hosted/cloud/src/infrastructure/site.ts
-@@ -3,6 +3,7 @@
+@@ -3,6 +3,7 @@ import * as Command from "alchemy/Command";
  import { AlchemyContext } from "alchemy/AlchemyContext";
  import { Stage } from "alchemy/Stage";
  import { Effect, Option } from "effect";
@@ -1088,7 +1126,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/sr
  import { chatGptSettings } from "../implementation/chatgpt-sign-in.ts";
  import { postHogBindings } from "./posthog.ts";
  import { sentryBindings } from "./sentry.ts";
-@@ -24,6 +25,8 @@
+@@ -24,6 +25,8 @@ export const cloudSite = Effect.gen(function* () {
      command: "bun run hosted:cloud:site:build",
      outdir: "apps/hosted/cloud/.generated/site",
      env: {

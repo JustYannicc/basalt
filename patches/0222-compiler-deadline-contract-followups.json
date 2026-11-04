@@ -1,9 +1,11 @@
 {
   "identity": "basalt-compiler-deadline-contract-followups",
   "file": "0222-compiler-deadline-contract-followups.patch",
-  "content_sha256": "7f20fe187e5d48511b25f70acc060e892cff717443dc9804c7bf2643d26886ee",
+  "content_sha256": "c309457aab734772a912db36dccec2845ffa94f363338e82626889ff1d2b5cde",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "7f20fe187e5d48511b25f70acc060e892cff717443dc9804c7bf2643d26886ee",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

@@ -1,21 +1,8 @@
-diff --git a/e2e/support/oauth-client-entry.ts b/e2e/support/oauth-client-entry.ts
-index 4b1391e..f991b00 100644
---- a/e2e/support/oauth-client-entry.ts
-+++ b/e2e/support/oauth-client-entry.ts
-@@ -11,7 +11,7 @@ export const enterClientDetails = (page: Page) => {
-     .click()
-     .then(() =>
-       dialog
--        .getByRole("checkbox", { name: "Enter client details for this account", exact: true })
-+        .getByRole("checkbox", { name: /^Use your own .+ app for this account$/ })
-         .check(),
-     );
- };
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0fe4d6a..ae93c09 100644
+index ffc5e67a..8f538de2 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4029,6 +4029,16 @@ export const scenarios = plan({
+@@ -4655,6 +4655,16 @@ export const scenarios = plan({
        local: na("Hosted app account controls and organization permissions."),
      },
    },
@@ -34,7 +21,7 @@ index 0fe4d6a..ae93c09 100644
      file: "oauth-client-recovery.spec.ts",
 diff --git a/e2e/tests/google-oauth-choices.spec.ts b/e2e/tests/google-oauth-choices.spec.ts
 new file mode 100644
-index 0000000..e0dcef2
+index 00000000..e0dcef2b
 --- /dev/null
 +++ b/e2e/tests/google-oauth-choices.spec.ts
 @@ -0,0 +1,228 @@
@@ -267,7 +254,7 @@ index 0000000..e0dcef2
 +  );
 +});
 diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-recovery.spec.ts
-index 3fc2d06..9bde536 100644
+index 3fc2d062..9bde5361 100644
 --- a/e2e/tests/oauth-client-recovery.spec.ts
 +++ b/e2e/tests/oauth-client-recovery.spec.ts
 @@ -60,7 +60,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client recovery", (it) =
@@ -417,11 +404,11 @@ index 3fc2d06..9bde536 100644
              )
              .then(() =>
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index e97dca4..eb4caac 100644
+index f47de7d4..a5a28609 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -150,6 +150,8 @@ export function OAuthFields<A, E>({
-   readonly missingClient?: ReactNode;
+@@ -153,6 +153,8 @@ export function OAuthFields<A, E>({
+   readonly editClient?: OAuthClientId | undefined;
  }) {
    const brand = useProductBrand();
 +  const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
@@ -429,7 +416,7 @@ index e97dca4..eb4caac 100644
    const choices =
      options === "unresolved"
        ? setupFailed
-@@ -229,7 +231,7 @@ export function OAuthFields<A, E>({
+@@ -240,7 +242,7 @@ export function OAuthFields<A, E>({
        case "automatic":
          return `${brand.name} (automatic)`;
        case "manual":
@@ -438,7 +425,7 @@ index e97dca4..eb4caac 100644
      }
    };
    const connect = () => {
-@@ -265,11 +267,15 @@ export function OAuthFields<A, E>({
+@@ -277,11 +279,15 @@ export function OAuthFields<A, E>({
        onPendingChange?.(false);
      });
    };
@@ -458,12 +445,3 @@ index e97dca4..eb4caac 100644
    const clientSelect =
      choice === undefined || choices.length < 2 ? undefined : (
        <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-@@ -316,7 +322,7 @@ export function OAuthFields<A, E>({
-           setError(undefined);
-         }}
-       />
--      Use your own {providerName} app for this account
-+      Use your own {ownAppName} app for this account
-     </label>
-   );
-   return (

@@ -1,9 +1,11 @@
 {
   "identity": "basalt-account-health-status-dot",
   "file": "0163-account-health-status-dot.patch",
-  "content_sha256": "dc5a030e462917763f7ec60dec54d4299d9e05a6f2f278635dd85167b5636967",
+  "content_sha256": "94709a27679d1eae1cba0ddb67089d9880974c0b30697a3642c88e22a8aca378",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "dc5a030e462917763f7ec60dec54d4299d9e05a6f2f278635dd85167b5636967",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

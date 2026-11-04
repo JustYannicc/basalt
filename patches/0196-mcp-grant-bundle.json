@@ -1,9 +1,11 @@
 {
   "identity": "basalt-mcp-grant-bundle",
   "file": "0196-mcp-grant-bundle.patch",
-  "content_sha256": "b1b754fb838e9187f9f0e991275c0cdd835021b92df2d5514a551c418626bb06",
+  "content_sha256": "506796d2604819424f2004e66ea16789cfb896d91b141b30e78e3cf94b0bdba5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "b1b754fb838e9187f9f0e991275c0cdd835021b92df2d5514a551c418626bb06",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

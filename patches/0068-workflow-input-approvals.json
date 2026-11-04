@@ -1,9 +1,11 @@
 {
   "identity": "executor-workflow-input-approvals",
   "file": "0068-workflow-input-approvals.patch",
-  "content_sha256": "aea5d4251f1ad3d228346cfb32d206ff8f75178ec40c962c7b0477bb9491bb89",
+  "content_sha256": "ef20601291feb715f0f2542fcbdd53cf0d9956465bcbaa20d7f04efe8a2b4488",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "aea5d4251f1ad3d228346cfb32d206ff8f75178ec40c962c7b0477bb9491bb89",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

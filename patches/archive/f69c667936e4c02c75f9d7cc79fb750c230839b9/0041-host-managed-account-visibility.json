@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-host-managed-account-visibility",
+  "file": "0041-host-managed-account-visibility.patch",
+  "content_sha256": "19c1674dabf66de96ba522bf1dcce6caea5af9938b520d0f7681d3abab46caec",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

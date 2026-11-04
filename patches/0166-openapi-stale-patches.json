@@ -1,9 +1,11 @@
 {
   "identity": "executor-openapi-stale-patches",
   "file": "0166-openapi-stale-patches.patch",
-  "content_sha256": "945ebb7f01ed9edc33fab4756abc4c815313e66ed65c01efd9e58f6d60b3e2b8",
+  "content_sha256": "a23417f45ca50fbe210dbbf2d88086500e1992c8796b68c0ba162c2596413bb4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "945ebb7f01ed9edc33fab4756abc4c815313e66ed65c01efd9e58f6d60b3e2b8",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

@@ -1,9 +1,11 @@
 {
   "identity": "executor-authoring-reference-encoding",
   "file": "0097-authoring-reference-encoding.patch",
-  "content_sha256": "f7ed02b038137c9ab3e35469ab613b6f748af71eb3230e41d8e00c17889e4db5",
+  "content_sha256": "7e1b8012fd6327a54ebdcee810a8fa62a5bbb1749c2931ced06ddc7a5e64473a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "f7ed02b038137c9ab3e35469ab613b6f748af71eb3230e41d8e00c17889e4db5",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

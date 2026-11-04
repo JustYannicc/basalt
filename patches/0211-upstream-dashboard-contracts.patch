@@ -1,0 +1,77 @@
+diff --git a/packages/ui/src/implementation/dashboard/add-app.tsx b/packages/ui/src/implementation/dashboard/add-app.tsx
+index 37151672..ee501825 100644
+--- a/packages/ui/src/implementation/dashboard/add-app.tsx
++++ b/packages/ui/src/implementation/dashboard/add-app.tsx
+@@ -1,7 +1,7 @@
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { useState, type ReactElement, type ReactNode } from "react";
+ import type { CustomAppInput } from "@executor-js/catalog/contracts";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+ import {
+   AiMagicIcon,
+@@ -31,8 +31,8 @@ import { AgentSetupPrompt, newAppPrompt } from "./agent-setup.tsx";
+ import { CustomAppForm } from "./custom-app.tsx";
+ 
+ /** The product's bindings for the custom app and MCP server dialogs. */
+-export type AddAppDialogProps<E> = MutationProps<CustomAppInput, DeployedApp, E> & {
+-  readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
++export type AddAppDialogProps<E> = MutationProps<CustomAppInput, App, E> & {
++  readonly onInstalled: (app: App) => void | Promise<void>;
+   /** This installation's MCP URL, included so an unconnected agent can connect first. */
+   readonly endpoint?: string;
+ };
+diff --git a/apps/hosted/web/src/implementation/components/add-app.tsx b/apps/hosted/web/src/implementation/components/add-app.tsx
+index 049af6a7..71d8c4d3 100644
+--- a/apps/hosted/web/src/implementation/components/add-app.tsx
++++ b/apps/hosted/web/src/implementation/components/add-app.tsx
+@@ -1,5 +1,5 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ import {
+@@ -34,7 +34,7 @@ function useAddAppDialogs() {
+     endpoint: `${mcpOrigin}/mcp`,
+     mutation: atoms.importCustom,
+     Failure: HostedFailure,
+-    onInstalled: (app: DeployedApp) =>
++    onInstalled: (app: App) =>
+       navigate({
+         to: "/org/$organizationSlug/apps/$appId",
+         search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
+diff --git a/apps/local/web/src/implementation/components/add-app.tsx b/apps/local/web/src/implementation/components/add-app.tsx
+index 051e7ea8..24d3937f 100644
+--- a/apps/local/web/src/implementation/components/add-app.tsx
++++ b/apps/local/web/src/implementation/components/add-app.tsx
+@@ -1,5 +1,5 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import {
+   MakeYourOwn as SharedMakeYourOwn,
+   AddAppMenu as SharedMenu,
+@@ -13,7 +13,7 @@ function useAddAppDialogs() {
+   return {
+     mutation: dashboardAtoms.importCustom,
+     Failure,
+-    onInstalled: (app: DeployedApp) =>
++    onInstalled: (app: App) =>
+       navigate({
+         to: Object.keys(app.requirements.accounts).length ? "/apps/$appId/setup" : "/apps/$appId",
+         params: { appId: app.id },
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+index 0b88b0d1..7065ffc8 100644
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -160,7 +160,7 @@ function ResumedConnectionDetails({
+   onPendingChange,
+ }: {
+   readonly connection: HostedAccountConnection;
+-  readonly client?: "change" | undefined;
++  readonly client?: typeof ClientRecovery.Type | undefined;
+   readonly onPendingChange: (pending: boolean) => void;
+ }) {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();

@@ -1,0 +1,862 @@
+diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
+index 4d34ed7..4bf0364 100644
+--- a/apps/hosted/cloud/src/implementation/access-hooks.ts
++++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
+@@ -7,6 +7,11 @@ import { Schema } from "effect";
+ 
+ export interface CloudAccessHooks {
+   readonly memberRemoving: (organization: string, member: string) => Promise<void>;
++  readonly memberRoleChanging?: (
++    organization: string,
++    member: string,
++    role: string,
++  ) => Promise<void>;
+   /** Grants may already be committed. The host logs failures; lazy key minting repairs them. */
+   readonly membersAdded: (organization: string) => Promise<void>;
+   readonly userDeleting: (user: string) => Promise<void>;
+@@ -54,8 +59,15 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+     beforeAcceptInvitation: async ({ invitation }) => {
+       requireMember(invitation.role);
+     },
+-    beforeUpdateMemberRole: async ({ newRole }) => {
++    beforeUpdateMemberRole: async ({ newRole, member, organization }) => {
+       requireMember(newRole);
++      try {
++        await access?.memberRoleChanging?.(organization.id, member.id, newRole);
++      } catch {
++        throw new APIError("SERVICE_UNAVAILABLE", {
++          message: "Pool permissions could not be updated. No role was changed. Try again.",
++        });
++      }
+     },
+     beforeAddMember: async ({ member, user }) => {
+       // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
+diff --git a/apps/hosted/cloud/src/implementation/organization-access-request.ts b/apps/hosted/cloud/src/implementation/organization-access-request.ts
+new file mode 100644
+index 0000000..568d5c3
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/organization-access-request.ts
+@@ -0,0 +1,39 @@
++import { withOrganizationAccessLock } from "@executor-js/hosted-server/pool-access-hook";
++import { Effect, Option, Schema } from "effect";
++
++const target = Schema.Struct({ organizationId: Schema.NonEmptyString });
++const membershipWrites = ["update-member-role", "remove-member", "leave"];
++
++/** The host lends its locked transaction through the entire native membership write. */
++export const withOrganizationAccessRequest = <A, E, R, Drain>(
++  request: Request,
++  operation: {
++    readonly run: (transaction: boolean) => Effect.Effect<A, E, R>;
++    readonly settled: Effect.Effect<void, never, Drain>;
++  },
++) =>
++  Effect.gen(function* () {
++    const path = new URL(request.url).pathname;
++    if (
++      request.method !== "POST" ||
++      !membershipWrites.some((name) => path.endsWith(`/organization/${name}`))
++    )
++      return yield* operation.run(false);
++    const body = yield* Effect.tryPromise(async () => {
++      const copy = request.clone();
++      const type = copy.headers.get("content-type")?.toLowerCase() ?? "";
++      // Native auth accepts JSON and forms. Each encoding must take the same transaction path.
++      return type.includes("application/x-www-form-urlencoded") ||
++        type.includes("multipart/form-data")
++        ? Object.fromEntries(await copy.formData())
++        : copy.json();
++    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
++    const decoded = Schema.decodeUnknownOption(target)(body);
++    if (Option.isNone(decoded)) return yield* operation.run(false);
++    // Auth's explicit-target guard validates this same organization before any membership write.
++    // Native Promise work can finish after its caller disconnects. Keep the lock until it settles.
++    return yield* withOrganizationAccessLock(
++      decoded.value.organizationId,
++      operation.run(true).pipe(Effect.ensuring(operation.settled), Effect.uninterruptible),
++    );
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+index 8d5472c..904d54e 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+@@ -15,6 +15,7 @@ import {
+   Option,
+   Schema,
+   Scope,
++  Semaphore,
+   Tracer,
+ } from "effect";
+ import { SqlClient, SqlError } from "effect/sql";
+@@ -195,6 +196,10 @@ interface AuthInvocation {
+   readonly work: InvocationWork;
+   readonly context: Context.Context<never>;
+   readonly parent: Option.Option<Tracer.AnySpan>;
++  readonly transaction?: {
++    readonly connection: Effect.Success<SqlClient.SqlClient["reserve"]>;
++    readonly gate: Semaphore.Semaphore;
++  };
+ }
+ 
+ /**
+@@ -283,8 +288,14 @@ const arrayLiteral = (values: ReadonlyArray<unknown>): string =>
+     })
+     .join(",")}}`;
+ 
+-/** One Kysely checkout: a connection reserved from the invocation's client until released. */
++let checkoutSequence = 0;
++
++/** A Kysely checkout owns a reservation or borrows an explicit host transaction. */
+ class ReservedConnection implements DatabaseConnection {
++  readonly savepoint = `executor_auth_${checkoutSequence++}`;
++  get borrowed() {
++    return this.scope === undefined;
++  }
+   /**
+    * Possibly inside a transaction Better Auth began: from `begin` until a `commit` or
+    * `rollback` succeeds.
+@@ -297,7 +308,7 @@ class ReservedConnection implements DatabaseConnection {
+   constructor(
+     private readonly connection: Effect.Success<SqlClient.SqlClient["reserve"]>,
+     private readonly owner: AuthInvocation,
+-    private readonly scope: Scope.Closeable,
++    private readonly scope: Scope.Closeable | undefined,
+   ) {
+     this.released = new Promise((resolve) => {
+       this.settle = resolve;
+@@ -305,11 +316,31 @@ class ReservedConnection implements DatabaseConnection {
+   }
+ 
+   executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
++    const connection = this.connection;
++    const execute = Effect.suspend(() =>
++      connection.executeRaw(query.sql, query.parameters.map(textParameter)),
++    );
++    const savepoint = `${this.savepoint}_statement`;
++    // Native rate limiting recovers 23505 by reading the winner's row. PostgreSQL must first
++    // leave the failed statement, without rolling back the membership transaction around it.
++    const operation =
++      this.borrowed && InsertQueryNode.is(query.query) && queryTable(query.query) === rateLimitTable
++        ? Effect.uninterruptibleMask((restore) =>
++            Effect.gen(function* () {
++              yield* connection.executeRaw(`savepoint ${savepoint}`, []);
++              const result = yield* Effect.exit(restore(execute));
++              if (Exit.isFailure(result))
++                yield* connection.executeRaw(`rollback to savepoint ${savepoint}`, []);
++              yield* connection.executeRaw(`release savepoint ${savepoint}`, []);
++              return Exit.isFailure(result) ? yield* Effect.failCause(result.cause) : result.value;
++            }),
++          )
++        : execute;
++    // Checkouts share the borrowed connection; another native query cannot enter its savepoint.
++    const serialized = this.owner.transaction?.gate.withPermits(1)(operation) ?? operation;
+     return runDriver(
+       this.owner,
+-      Effect.suspend(() =>
+-        this.connection.executeRaw(query.sql, query.parameters.map(textParameter)),
+-      ).pipe(
++      serialized.pipe(
+         // Each query already records `auth.sql.timing`; the native wire span would repeat it.
+         Effect.withTracerEnabled(false),
+         // Reject with the server's error fields (`code`, `constraint`), as node-postgres does.
+@@ -347,7 +378,7 @@ class ReservedConnection implements DatabaseConnection {
+   /** Return the connection to the pool. */
+   private readonly close: Effect.Effect<void> = Effect.suspend(() => {
+     this.owner.work.checkouts.delete(this);
+-    return Scope.close(this.scope, Exit.void);
++    return this.scope === undefined ? Effect.void : Scope.close(this.scope, Exit.void);
+   }).pipe(Effect.ensuring(Effect.sync(() => this.settle())));
+ 
+   /**
+@@ -364,6 +395,7 @@ class ReservedConnection implements DatabaseConnection {
+    * pool. Once the invocation abandoned its work, it finishes the connection itself.
+    */
+   release(): Promise<void> {
++    if (this.borrowed) return Promise.resolve();
+     if (this.owner.work.abandoned) return Promise.resolve();
+     return Effect.runPromise(this.transaction ? this.discard : this.close);
+   }
+@@ -375,6 +407,7 @@ class ReservedConnection implements DatabaseConnection {
+    * not succeed, the connection is given up rather than lent to another borrower.
+    */
+   finish(deadline: CleanupDeadline): Effect.Effect<void> {
++    if (this.borrowed) return Effect.void;
+     if (!this.transaction) return this.close;
+     return deadline
+       .within(Effect.exit(this.connection.executeRaw("rollback", [])), {
+@@ -396,15 +429,23 @@ class ReservedConnection implements DatabaseConnection {
+  */
+ const transactionControl = (connection: DatabaseConnection, sql: string, opens: boolean) => {
+   if (opens && connection instanceof ReservedConnection) connection.transaction = true;
+-  return connection.executeQuery(CompiledQuery.raw(sql)).then(() => {
++  const command =
++    connection instanceof ReservedConnection && connection.borrowed
++      ? opens
++        ? `savepoint ${connection.savepoint}`
++        : sql === "commit"
++          ? `release savepoint ${connection.savepoint}`
++          : `rollback to savepoint ${connection.savepoint}`
++      : sql;
++  return connection.executeQuery(CompiledQuery.raw(command)).then(() => {
+     if (!opens && connection instanceof ReservedConnection) connection.transaction = false;
+   });
+ };
+ 
+ /**
+  * Kysely's driver over the invocation's shared client. Each checkout reserves one connection
+- * for itself, including a whole transaction, so Better Auth never joins or commits an executor
+- * transaction. Releasing returns the connection to the client's pool.
++ * for itself unless the host explicitly lends its transaction. Native nested transactions use
++ * savepoints on that connection and cannot commit the host's transaction.
+  */
+ const invocationDriver: Driver = {
+   init: () => Promise.resolve(),
+@@ -413,6 +454,8 @@ const invocationDriver: Driver = {
+     return runDriver(
+       owner,
+       Effect.gen(function* () {
++        if (owner.transaction !== undefined)
++          return new ReservedConnection(owner.transaction.connection, owner, undefined);
+         // A reservation the invocation does not end itself stays open until the pool has shut
+         // down, so the pool closes it rather than lending it again.
+         const scope = yield* Scope.fork(owner.reservations.scope, "sequential");
+@@ -561,8 +604,16 @@ export interface AuthDatabaseService {
+    * uses this event's socket and its timing spans become children of the caller.
+    */
+   readonly bind: Effect.Effect<<A>(run: () => A) => A, never, RuntimeContext>;
++  /** Membership writes and their access projection must commit on the locked connection. */
++  readonly bindTransaction: Effect.Effect<<A>(run: () => A) => A, never, RuntimeContext>;
++  /** Drain native background queries before returning a borrowed transaction to its owner. */
++  readonly settled: Effect.Effect<void, never, RuntimeContext>;
+ }
+ 
++/**
++ * Connection lookup belongs to the calling Worker event, never the layer's initialization.
++ * @effect-expect-leaking RuntimeContext
++ */
+ export class AuthDatabase extends Context.Service<AuthDatabase, AuthDatabaseService>()(
+   "executor/cloud/AuthDatabase",
+ ) {}
+@@ -629,22 +680,40 @@ const authDatabase = Layer.effect(
+         return { sql, reservations, work };
+       }),
+     );
+-    return AuthDatabase.of({
+-      options: { db: timedAuthDatabase(), type: "postgres", transaction: true },
+-      background: (task) => void current().work.track(task),
+-      bind: Effect.gen(function* () {
++    const bind = (borrowTransaction: boolean) =>
++      Effect.gen(function* () {
+         const { sql, reservations, work } = yield* resources;
+         const parent = yield* Effect.option(Effect.currentParentSpan);
+         // This trusted host callback needs the complete invocation context.
+         const context = yield* Effect.context<never>();
+-        const owner: AuthInvocation = { sql, reservations, work, context, parent };
++        const transaction = yield* Effect.serviceOption(sql.transactionService);
++        if (borrowTransaction && Option.isNone(transaction))
++          return yield* Effect.die(new Error("Auth membership write requires a host transaction"));
++        const borrowed =
++          borrowTransaction && Option.isSome(transaction)
++            ? { connection: transaction.value[0], gate: yield* Semaphore.make(1) }
++            : undefined;
++        const owner: AuthInvocation = {
++          sql,
++          reservations,
++          work,
++          context,
++          parent,
++          ...(borrowed === undefined ? {} : { transaction: borrowed }),
++        };
+         return <A>(run: () => A) =>
+           invocation.run(owner, () => {
+             const result = run();
+             if (result instanceof Promise) work.track(result);
+             return result;
+           });
+-      }),
++      });
++    return AuthDatabase.of({
++      options: { db: timedAuthDatabase(), type: "postgres", transaction: true },
++      background: (task) => void current().work.track(task),
++      bind: bind(false),
++      bindTransaction: bind(true),
++      settled: resources.pipe(Effect.flatMap(({ work }) => Effect.promise(() => work.settled()))),
+     });
+   }),
+ );
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index e3b5647..899ad2a 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -2,6 +2,7 @@ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook
+ import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
+ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
+ import { authObservability } from "../implementation/auth-observability.ts";
++import { withOrganizationAccessRequest } from "../implementation/organization-access-request.ts";
+ import { AsyncLocalStorage } from "node:async_hooks";
+ import { APIError } from "better-auth/api";
+ import { OrganizationId } from "@executor-js/hosted-server";
+@@ -40,6 +41,7 @@ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+ import { RuntimeContext } from "alchemy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
++import { SqlClient } from "effect/sql";
+ import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import type { SendAuthEmail } from "../contracts/email.ts";
+ import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
+@@ -163,6 +165,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+       {
+         memberRemoving: (organization, member) =>
+           runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
++        memberRoleChanging: (organization, member, role) =>
++          runCallback(
++            withSql(access.memberRoleChanging?.({ organization, member, role }) ?? Effect.void),
++          ),
+         membersAdded: (organization) =>
+           runCallback(
+             withSql(
+@@ -322,16 +328,31 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+     const requestHandler = Effect.gen(function* () {
+       const request = yield* HttpServerRequest.HttpServerRequest;
+       const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+-      const [instance, bind] = yield* bound;
+-      routes ??= routeTemplates(authEndpointTemplates(instance.api));
+-      yield* routes.record(new URL(web.url).pathname);
+-      const context = yield* Effect.context<
+-        RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
+-      >();
+-      // Better Auth returns API errors as responses; it rejects only on defects.
+-      const response = yield* Effect.promise((signal) =>
+-        callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
++      const sql = yield* withSql(
++        Effect.gen(function* () {
++          return yield* SqlClient.SqlClient;
++        }),
+       );
++      const response = yield* withOrganizationAccessRequest(web, {
++        settled: database.settled.pipe(Effect.provide(RuntimeContext.phantom)),
++        run: (transaction) =>
++          Effect.gen(function* () {
++            const [instance, bind] = yield* Effect.all([
++              native,
++              transaction ? database.bindTransaction : database.bind,
++            ]).pipe(Effect.provide(RuntimeContext.phantom));
++            routes ??= routeTemplates(authEndpointTemplates(instance.api));
++            yield* routes.record(new URL(web.url).pathname);
++            const context = yield* Effect.context<
++              RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
++            >();
++            // Better Auth returns API errors as responses; it rejects only on defects.
++            const response = yield* Effect.promise((signal) =>
++              callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
++            );
++            return response;
++          }),
++      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+       if (response.body === null) return HttpServerResponse.fromWeb(response);
+       // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
+       // the request's cleanup, including Better Auth queries the request left running.
+diff --git a/apps/hosted/server/src/implementation/app-policy.ts b/apps/hosted/server/src/implementation/app-policy.ts
+new file mode 100644
+index 0000000..d223c5d
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-policy.ts
+@@ -0,0 +1,33 @@
++import { AppId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++import { GroupId } from "../contracts/groups.ts";
++import { Principal } from "../contracts/auth.ts";
++import { AccessRevision, AppAccess, type AppAudience } from "../contracts/resource-access.ts";
++import type { ResourceAuthority } from "./resource-policy.ts";
++
++export const AppPolicy = Schema.Struct({
++  app: AppId,
++  creator: Schema.NullOr(Principal.fields.userId),
++  audience: Schema.Literals(["private", "groups", "everyone"]),
++  revision: AccessRevision,
++  groups: Schema.Array(GroupId),
++  granted: Schema.Boolean,
++});
++
++export const appAccessOf = (found: typeof AppPolicy.Type, actor: ResourceAuthority) => {
++  const audience: typeof AppAudience.Type =
++    found.audience === "groups"
++      ? { kind: "groups", groups: found.groups }
++      : { kind: found.audience };
++  return {
++    app: found.app,
++    creator: found.creator,
++    audience,
++    revision: found.revision,
++    canManage: actor.role !== "member" || found.creator === actor.user,
++    canUse:
++      found.audience === "private"
++        ? found.creator === actor.user
++        : found.audience === "everyone" || found.granted,
++  } satisfies typeof AppAccess.Type;
++};
+diff --git a/apps/hosted/server/src/implementation/application-audience.ts b/apps/hosted/server/src/implementation/application-audience.ts
+new file mode 100644
+index 0000000..44c4ec0
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/application-audience.ts
+@@ -0,0 +1,56 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { Principal } from "../contracts/auth.ts";
++import { GroupMemberId } from "../contracts/groups.ts";
++import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
++import { AppPolicy, appAccessOf } from "./app-policy.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++const MemberPolicy = Schema.Struct({
++  ...AppPolicy.fields,
++  member: GroupMemberId,
++  user: Principal.fields.userId,
++  role: OrganizationRole,
++});
++
++/** External access projections use the same decision as an authenticated app request. */
++export const applicationAudiences = (
++  organization: OrganizationId,
++  apps: readonly AppId[],
++  removing?: GroupMemberId,
++  changing?: { readonly member: GroupMemberId; readonly role: typeof OrganizationRole.Type },
++) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return [];
++    const sql = yield* policyDatabase;
++    const rows = yield* sql`select p.id as app, p.creator_id as creator, p.audience, p.revision,
++      array(select g.group_id from hosted_app_groups g where g.app_id = p.id order by g.group_id) as groups,
++      m.id as member, m."userId" as "user", m.role,
++      exists(select 1 from hosted_app_groups g
++        join hosted_group_members gm on gm.group_id = g.group_id
++        where g.app_id = p.id and gm.member_id = m.id) as granted
++      from hosted_app_access p
++      join member m on m."organizationId" = p.organization_id
++      where p.organization_id = ${organization} and ${sql.in("p.id", apps)}
++        and m.id is distinct from ${removing ?? null}
++      order by p.id, m."userId"`;
++    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(MemberPolicy))(rows);
++    return apps.map((app) => {
++      const users: string[] = [];
++      const managers: string[] = [];
++      for (const policy of policies) {
++        if (policy.app !== app) continue;
++        const access = appAccessOf(policy, {
++          organization,
++          user: policy.user,
++          member: policy.member,
++          role: policy.member === changing?.member ? changing.role : policy.role,
++        });
++        if (access.canUse) users.push(policy.user);
++        if (access.canManage) managers.push(policy.user);
++      }
++      return { app, users, managers };
++    });
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
+diff --git a/apps/hosted/server/src/implementation/groups.ts b/apps/hosted/server/src/implementation/groups.ts
+index afd99cd..092d6e2 100644
+--- a/apps/hosted/server/src/implementation/groups.ts
++++ b/apps/hosted/server/src/implementation/groups.ts
+@@ -2,6 +2,7 @@
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { Effect, Schema } from "effect";
+ import { SqlClient, SqlError } from "effect/sql";
++import { lockOrganizationAccess } from "./organization-access-lock.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HostedApi } from "../contracts/api.ts";
+ import {
+@@ -46,6 +47,7 @@ const lockAdmin = Effect.gen(function* () {
+   const user = yield* CurrentUserId;
+   if (user === undefined || organization.role === "member")
+     return yield* new OrganizationForbidden();
++  yield* lockOrganizationAccess(organization.organization);
+   const allowed =
+     yield* sql`select id from member where "organizationId" = ${organization.organization} and "userId" = ${user} and role in ('owner', 'admin') for share`;
+   if (allowed.length !== 1) return yield* new OrganizationForbidden();
+diff --git a/apps/hosted/server/src/implementation/organization-access-lock.ts b/apps/hosted/server/src/implementation/organization-access-lock.ts
+new file mode 100644
+index 0000000..1c6b130
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/organization-access-lock.ts
+@@ -0,0 +1,20 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Hold before membership row locks and until the corresponding projection is acknowledged. */
++export const lockOrganizationAccess = (organization: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${organization}`}, 0))`;
++  });
++
++export const withOrganizationAccessLock = <A, E, R>(
++  organization: string,
++  operation: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      lockOrganizationAccess(organization).pipe(Effect.andThen(operation)),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
+index 86e037d..c880e13 100644
+--- a/apps/hosted/server/src/implementation/pool-access-hook.ts
++++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
+@@ -1,16 +1,22 @@
+ /** Synchronize pool audiences before an access change becomes authoritative. */
+-import { StorageError, type HostAccessLifecycle } from "@executor-js/sdk/core";
++import { AppId, StorageError, type HostAccessLifecycle } from "@executor-js/sdk/core";
+ import { Clock, Effect, Option, Redacted, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+ import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
++import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
++import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
++import { applicationAudiences } from "./application-audience.ts";
++import { withOrganizationAccessLock } from "./organization-access-lock.ts";
++export { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ 
+ const Pool = Schema.Struct({
+-  pool: Schema.String,
++  pool: AppId,
+   owner: Schema.String,
+   organization: Schema.String,
+   name: Schema.String,
++  authorization: Schema.NullOr(Schema.String),
+   users: Schema.Array(Schema.String),
+ });
+ 
+@@ -51,12 +57,18 @@ export const poolAccessLifecycle = (
+       Effect.catch(() => new StorageError()),
+     );
+ 
+-  const pools = (organization: string, apps?: readonly string[], removing?: string) =>
++  const pools = (
++    organization: string,
++    apps?: readonly string[],
++    removing?: string,
++    changing?: { readonly member: string; readonly role: string },
++  ) =>
+     Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
+       // JSON expands only this organization's recorded pools; deleted apps stay deleted.
+       const rows = yield* sql`select app.id as pool, entry.key as owner, o.id as organization,
+-        app.name, array(select distinct users.id from (
++        app.name, entry.value ->> 'authorization' as authorization,
++        array(select distinct users.id from (
+           select entry.key as id union select m."userId" from member m
+           where m."organizationId" = o.id
+           and ((access.audience = 'private' and access.creator_id = m."userId")
+@@ -71,18 +83,57 @@ export const poolAccessLifecycle = (
+         join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+         join hosted_app_access access on access.id = app.id and access.organization_id = o.id
+         where o.id = ${organization} ${apps === undefined ? sql`` : sql`and ${sql.in("app.id", apps)}`}`;
+-      return yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++      const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++      const organizationId = yield* Schema.decodeUnknownEffect(OrganizationId)(organization);
++      const member =
++        removing === undefined
++          ? undefined
++          : yield* Schema.decodeUnknownEffect(GroupMemberId)(removing);
++      const role =
++        changing === undefined
++          ? undefined
++          : yield* Schema.decodeUnknownEffect(
++              Schema.Struct({ member: GroupMemberId, role: OrganizationRole }),
++            )(changing);
++      const access = yield* applicationAudiences(
++        organizationId,
++        found.filter((pool) => pool.authorization === "executor-app-v1").map((pool) => pool.pool),
++        member,
++        role,
++      ).pipe(Effect.provideService(GroupDatabase, Effect.succeed(sql)));
++      return found.map((pool) => {
++        const { authorization, ...legacy } = pool;
++        // Existing grants change only after the reviewed inventory authorizes this pool's handoff.
++        if (authorization !== "executor-app-v1") return legacy;
++        const policy = access.find((entry) => entry.app === pool.pool);
++        return {
++          ...legacy,
++          users: policy?.users ?? [],
++          managers: policy?.managers ?? [],
++          authorization,
++        };
++      });
+     }).pipe(Effect.catch(() => new StorageError()));
+ 
+-  const audience = (organization: string, apps?: readonly string[], removing?: string) =>
+-    Effect.gen(function* () {
+-      if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
+-      const found = yield* pools(organization, apps, removing);
+-      if (found.length > 0) yield* send({ action: "audience", pools: found });
+-    });
++  const audience = (
++    organization: string,
++    apps?: readonly string[],
++    removing?: string,
++    changing?: { readonly member: string; readonly role: string },
++  ) =>
++    withOrganizationAccessLock(
++      organization,
++      Effect.gen(function* () {
++        if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
++        const found = yield* pools(organization, apps, removing, changing);
++        if (found.length > 0) yield* send({ action: "audience", pools: found });
++      }),
++    ).pipe(Effect.catch(() => new StorageError()));
+   return {
+     appAccessChanged: ({ organization, apps }) => audience(organization, apps),
+     memberRemoving: ({ organization, member }) => audience(organization, undefined, member),
++    memberRoleChanging: ({ organization, member, role }) =>
++      audience(organization, undefined, undefined, { member, role }),
+     appRemoving: (app) =>
+       Effect.gen(function* () {
+         if (Option.isNone(key)) return yield* send({ action: "pool-deleted", pool: app });
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index 2983978..f61649d 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -141,9 +141,14 @@ export const poolDefaults = (
+           for share of member, "user"`;
+         return eligible.length === 1 ? state : undefined;
+       });
+-    const record = (pools: typeof Pools.Type.pools, pool: (typeof Pools.Type.pools)[string]) =>
++    const record = (pool: (typeof Pools.Type.pools)[string]) =>
++      // Other writers own fields such as the authorization handoff. Keep their stored bytes.
+       sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
+-        array[${basaltPools}], ${JSON.stringify({ ...pools, [user]: pool })}::jsonb)::text
++        array[${basaltPools}], coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) ||
++        jsonb_build_object(${user}::text,
++          (coalesce(metadata::jsonb -> ${basaltPools} -> ${user}, '{}'::jsonb)
++            - array['app', 'version', 'bundle', 'account', 'tokenKeyVersion']::text[])
++          || ${JSON.stringify(pool)}::jsonb))::text
+         where id = ${organization}`;
+     if (saved !== undefined) {
+       // One line per pool per job says what this reconcile decided, with ids and counts only.
+@@ -278,7 +283,7 @@ export const poolDefaults = (
+             intent = true;
+             tokenRepaired = true;
+           }
+-          yield* record(current.pools, {
++          yield* record({
+             app: app.id,
+             version,
+             ...(bundle === undefined ? {} : { bundle }),
+@@ -361,7 +366,7 @@ export const poolDefaults = (
+           user,
+           locked,
+         );
+-        yield* record(current.pools, {
++        yield* record({
+           app: app.id,
+           version: locked.activeVersion,
+           bundle: poolAppVersion,
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 55cd660..a7a5fb0 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -10,7 +10,7 @@ import {
+ } from "@executor-js/sdk/core";
+ import type { OAuthClientAccess } from "../contracts/oauth-clients.ts";
+ import { Effect, Schema } from "effect";
+-import type { SqlClient } from "effect/sql";
++import { SqlClient } from "effect/sql";
+ import { GroupDatabase, GroupId, GroupMemberId } from "../contracts/groups.ts";
+ import { CurrentUserId, Principal } from "../contracts/auth.ts";
+ import {
+@@ -27,6 +27,8 @@ import {
+   type AppAudience,
+   type SharedAudience,
+ } from "../contracts/resource-access.ts";
++import { AppPolicy, appAccessOf } from "./app-policy.ts";
++import { lockOrganizationAccess } from "./organization-access-lock.ts";
+ 
+ /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
+ export const policyDatabase = Effect.flatten(GroupDatabase).pipe(
+@@ -66,34 +68,14 @@ export type ResourceAuthority = Effect.Success<ReturnType<typeof resourceAuthori
+  * checks below.
+  */
+ export const lockCurrentActor = Effect.gen(function* () {
+-  return yield* membership((yield* CurrentOrganization).organization, yield* CurrentUserId, true);
++  const organization = (yield* CurrentOrganization).organization;
++  yield* lockOrganizationAccess(organization).pipe(
++    Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
++    Effect.mapError(() => new StorageError()),
++  );
++  return yield* membership(organization, yield* CurrentUserId, true);
+ });
+ 
+-const AppPolicy = Schema.Struct({
+-  app: AppId,
+-  creator: Schema.NullOr(Principal.fields.userId),
+-  audience: Schema.Literals(["private", "groups", "everyone"]),
+-  revision: AccessRevision,
+-  groups: Schema.Array(GroupId),
+-  granted: Schema.Boolean,
+-});
+-const appAccessOf = (found: typeof AppPolicy.Type, actor: ResourceAuthority) => {
+-  const audience: typeof AppAudience.Type =
+-    found.audience === "groups"
+-      ? { kind: "groups", groups: found.groups }
+-      : { kind: found.audience };
+-  return {
+-    app: found.app,
+-    creator: found.creator,
+-    audience,
+-    revision: found.revision,
+-    canManage: actor.role !== "member" || found.creator === actor.user,
+-    canUse:
+-      found.audience === "private"
+-        ? found.creator === actor.user
+-        : found.audience === "everyone" || found.granted,
+-  } satisfies typeof AppAccess.Type;
+-};
+ /** Resolve app policies in one read, retaining tenant and group checks for every row. */
+ export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
+   Effect.gen(function* () {
+diff --git a/e2e/tests/cloud-auth-rate-limit.spec.ts b/e2e/tests/cloud-auth-rate-limit.spec.ts
+index 0dabd38..ed4115a 100644
+--- a/e2e/tests/cloud-auth-rate-limit.spec.ts
++++ b/e2e/tests/cloud-auth-rate-limit.spec.ts
+@@ -201,6 +201,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) =>
+   const forgetTokenCount = (locks: Effect.Success<typeof cloudLocks>) =>
+     locks.run({ sql: `delete from "rateLimit" where key like '%|/oauth2/token'` });
+ 
++  const membershipRequest = (organizationId: string) =>
++    Effect.gen(function* () {
++      const target = yield* Target,
++        http = yield* HttpClient.HttpClient;
++      const origin = targetHosts(target).browser;
++      const traceId = randomBytes(16).toString("hex");
++      const status = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.post(
++            `${origin}/api/auth/organization/update-member-role`,
++          ).pipe(
++            HttpClientRequest.setHeaders({
++              origin,
++              traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
++            }),
++            HttpClientRequest.bodyJson({
++              organizationId,
++              memberId: "synthetic-member",
++              role: "member",
++            }),
++          );
++          const response = yield* http.execute(request);
++          yield* response.text;
++          return response.status;
++        }),
++      ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
++      return { traceId, status };
++    });
++
+   it.effect(scenarios.cloudAuthRateLimitRace.title, (context) =>
+     withCase(
+       context,
+@@ -233,6 +262,33 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) =>
+             reported,
+           }),
+         );
++        yield* locks.run({
++          sql: `delete from "rateLimit" where key like '%|/organization/update-member-role'`,
++        });
++        const membership = yield* heldTable("share");
++        const native = yield* Effect.forkChild(
++          Effect.all(
++            [membershipRequest("org-rate-limit-a"), membershipRequest("org-rate-limit-b")],
++            { concurrency: 2 },
++          ),
++        );
++        yield* membership.blocked(`insert into "rateLimit"`, 2);
++        yield* membership.locks.release;
++        const denied = yield* Fiber.join(native);
++        // Distinct organization locks still share one address/path rate-limit row. Both requests
++        // must reach native authentication after the losing insert recovers in its transaction.
++        expect(denied.map(({ status }) => status)).toEqual([401, 401]);
++        const nativeTraces = new Set(denied.map(({ traceId }) => traceId));
++        const faults = (yield* sentryExceptions).filter(
++          ({ trace }) => trace !== undefined && nativeTraces.has(trace),
++        );
++        expect(faults).toEqual([]);
++        yield* Effect.flatMap(Evidence, (evidence) =>
++          evidence.json("membership-rate-limit-race.json", {
++            statuses: denied.map(({ status }) => status),
++            reported: faults,
++          }),
++        );
+       }),
+     ),
+   );
+diff --git a/e2e/tests/groups.spec.ts b/e2e/tests/groups.spec.ts
+index a61e305..dd73456 100644
+--- a/e2e/tests/groups.spec.ts
++++ b/e2e/tests/groups.spec.ts
+@@ -436,6 +436,44 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) =>
+         );
+         created = undefined;
+         yield* browser.checkpoint("Group deleted while organization members remain");
++        yield* evidence.step(
++          "Native role demotion removes current group management",
++          Effect.gen(function* () {
++            const members = yield* body(
++              Schema.Struct({
++                members: Schema.Array(Schema.Struct({ id: Schema.String, role: Schema.String })),
++              }),
++              yield* api.request(
++                actors.owner,
++                "GET",
++                `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
++              ),
++            );
++            const admin = members.members.find((member) => member.role === "admin");
++            if (!admin) throw new Error("Admin fixture missing");
++            expect(
++              (yield* api.request(
++                actors.owner,
++                "POST",
++                "/api/auth/organization/update-member-role",
++                {
++                  organizationId: actors.organization.id,
++                  memberId: admin.id,
++                  role: "member",
++                },
++              )).status,
++            ).toBe(200);
++            expect(
++              (yield* api.request(actors.admin, "POST", prefix, {
++                name: "Revoked management",
++                description: "",
++                memberIds: [],
++              })).status,
++            ).toBe(403);
++            const current = yield* body(Groups, yield* api.request(actors.admin, "GET", prefix));
++            expect(current.canManage).toBe(false);
++          }),
++        );
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 5a6b7ab..f539fbd 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -95,6 +95,12 @@ export interface HostAccessLifecycle {
+     /** Membership id to exclude while projecting the post-removal audience. */
+     readonly member: string;
+   }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly memberRoleChanging?: (input: {
++    readonly organization: string;
++    readonly member: string;
++    /** The host's resulting role, projected before its membership write. */
++    readonly role: string;
++  }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
+   readonly appRemoving?: (
+     app: string,
+   ) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;

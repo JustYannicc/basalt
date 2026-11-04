@@ -1,10 +1,12 @@
 {
   "identity": "basalt-member-pools",
   "file": "0010-member-pools.patch",
-  "content_sha256": "bdd83e4b29c1388bfa784b2c19a12610dc69d4e1334aff782cc42ce78ed88f03",
+  "content_sha256": "443c4c3e3b0111ebb4411738128532de5bd31f65bf877685f9e5a2fcf68ce1fe",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
   "workflow_sensitive": false,
-  "upstream_issue": 2362
+  "upstream_issue": 2362,
+  "rebased_from": "bdd83e4b29c1388bfa784b2c19a12610dc69d4e1334aff782cc42ce78ed88f03",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

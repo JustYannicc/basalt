@@ -1,9 +1,11 @@
 {
   "identity": "basalt-contributed-account-delete-contention",
   "file": "0148-contributed-account-delete-contention.patch",
-  "content_sha256": "f107762c69e1fc65b0749449bc138d39bebe7e8d15511920919240f647da7f7c",
+  "content_sha256": "72cc90f429da03672224f322fd9be3beb7f80eb5e36de7a31944b0ec2d90812b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "f107762c69e1fc65b0749449bc138d39bebe7e8d15511920919240f647da7f7c",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

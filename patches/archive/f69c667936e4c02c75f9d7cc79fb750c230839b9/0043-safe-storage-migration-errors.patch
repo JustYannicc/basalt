@@ -1,0 +1,254 @@
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index e691b7134..d54113d41 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -2,7 +2,7 @@
+ import type { BetterAuthOptions } from "better-auth";
+ import { getMigrations } from "better-auth/db/migration";
+ import { createDataStepJournal } from "@executor-js/app-management/data-steps";
+-import { makeExecutorStorage } from "@executor-js/sdk/core";
++import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/core";
+ import { Context, Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import * as Migrator from "effect/sql/Migrator";
+@@ -26,11 +26,12 @@ export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFai
+     stage: Schema.Literals(["auth", "product"]),
+     causeTags: Schema.optionalKey(Schema.Array(Schema.String)),
+     sqlState: Schema.optionalKey(Schema.String),
++    migrationVersion: Schema.optionalKey(Schema.String),
+   },
+ ) {
+   override get message() {
+     const tags = this.causeTags?.join(" > ") ?? "unknown cause";
+-    return `${this.stage} migration failed: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
++    return `${this.stage} migration failed${this.migrationVersion ? ` at executor version ${this.migrationVersion}` : ""}: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
+   }
+ }
+ 
+@@ -38,6 +39,15 @@ export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFai
+ export const migrationFailed =
+   (stage: HostedMigrationFailed["stage"]) =>
+   (cause: unknown): HostedMigrationFailed => {
++    if (cause instanceof StorageMigrationFailed)
++      return new HostedMigrationFailed({
++        stage,
++        causeTags: ["StorageMigrationFailed", ...cause.causeTags],
++        ...(cause.sqlState === undefined ? {} : { sqlState: cause.sqlState }),
++        ...(cause.migrationVersion === undefined
++          ? {}
++          : { migrationVersion: cause.migrationVersion }),
++      });
+     const causeTags: Array<string> = [];
+     let sqlState: string | undefined;
+     let current: unknown = cause;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 46af55f35..fbabe83bb 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -104,6 +104,17 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({
++  storageMigrationDiagnostics: {
++    legacyStorage: true,
++    file: "storage-migration-diagnostics.spec.ts",
++    title:
++      "failed executor upgrades report a safe SQLSTATE and version and leave the journal unchanged",
++    targets: {
++      "self-host": scheduled,
++      local: na("Hosted startup reports the migration diagnostics this scenario asserts."),
++      cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
++    },
++  },
+   cloudRoleHostRoutes: {
+     fixtures: "actors",
+     file: "cloud-role-hosts.spec.ts",
+diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage-migration-diagnostics.spec.ts
+new file mode 100644
+index 000000000..3f134314d
+--- /dev/null
++++ b/e2e/tests/storage-migration-diagnostics.spec.ts
+@@ -0,0 +1,39 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, FileSystem } from "effect";
++import { TestLive, withCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { Target } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(TestLive, { excludeTestServices: true })("Storage migration diagnostics", (it) => {
++  it.effect(scenarios.storageMigrationDiagnostics.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const target = yield* Target;
++        const fs = yield* FileSystem.FileSystem;
++        // An interrupted upgrade can leave the column present while its journal needs repair.
++        yield* legacyStorage([
++          { sql: "UPDATE private_executor_settings SET value = '4.0.1' WHERE key = 'version'" },
++        ]);
++        yield* Effect.addFinalizer(() =>
++          legacyStorage([
++            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
++          ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
++        );
++        yield* serverControl("start", 500);
++        const log = yield* fs.readFileString(`${target.directory}/server.log`);
++        expect(log).toContain("StorageMigrationFailed");
++        expect(log).toContain("4.0.2");
++        expect(log).toContain("42701");
++        expect(log).not.toContain("Failed to execute migration statement:");
++        expect(log).not.toContain('ADD COLUMN "generation"');
++        const [rows] = yield* legacyStorage([
++          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++        ]);
++        expect(rows).toEqual([{ value: "4.0.1" }]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index e7e050896..34a0e082a 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -30,6 +30,7 @@ export {
+   type ResolvedAppRuntime,
+ } from "./implementation/runtime.ts";
+ export { executorDatabase } from "./implementation/storage-migrations.ts";
++export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
+ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+ 
+ /** Optional Web Crypto adapter; callers retain signing-key custody. */
+diff --git a/packages/sdk/src/implementation/storage-migration-error.ts b/packages/sdk/src/implementation/storage-migration-error.ts
+new file mode 100644
+index 000000000..a2ba73041
+--- /dev/null
++++ b/packages/sdk/src/implementation/storage-migration-error.ts
+@@ -0,0 +1,54 @@
++/** Startup diagnostics keep codes and schema versions without retaining driver messages or SQL. */
++import { Schema } from "effect";
++
++export class StorageMigrationFailed extends Schema.TaggedError<StorageMigrationFailed>()(
++  "StorageMigrationFailed",
++  {
++    causeTags: Schema.Array(Schema.String),
++    sqlState: Schema.optionalKey(Schema.String),
++    migrationVersion: Schema.optionalKey(Schema.String),
++  },
++) {}
++
++const safeTags = new Set([
++  "StorageError",
++  "MigrationError",
++  "SqlError",
++  "ConnectionError",
++  "AuthenticationError",
++  "AuthorizationError",
++  "SqlSyntaxError",
++  "UniqueViolation",
++  "ConstraintError",
++  "DeadlockError",
++  "SerializationError",
++  "LockTimeoutError",
++  "StatementTimeoutError",
++  "UnknownError",
++  "Error",
++  "TypeError",
++  "RangeError",
++  "DatabaseError",
++]);
++const sqlStatePattern = /^(?:[0-5][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/;
++
++/** `migrationVersion` comes from the registered schemas, never the stored journal or driver. */
++export const storageMigrationFailed = (cause: unknown, migrationVersion?: string) => {
++  if (cause instanceof StorageMigrationFailed) return cause;
++  const causeTags: Array<string> = [];
++  let sqlState: string | undefined;
++  let current = cause;
++  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
++    const tag = Reflect.get(current, "_tag") ?? Reflect.get(current, "name");
++    causeTags.push(typeof tag === "string" && safeTags.has(tag) ? tag : "UnknownError");
++    const code = Reflect.get(current, "code");
++    if (sqlState === undefined && typeof code === "string" && sqlStatePattern.test(code))
++      sqlState = code;
++    current = Reflect.get(current, "cause");
++  }
++  return new StorageMigrationFailed({
++    causeTags,
++    ...(sqlState === undefined ? {} : { sqlState }),
++    ...(migrationVersion === undefined ? {} : { migrationVersion }),
++  });
++};
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 025cc6633..461c6bd06 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -12,6 +12,7 @@ import {
+   storageSchemas,
+   trailingStorageIndexVersions,
+ } from "./storage-migrations.ts";
++import { storageMigrationFailed } from "./storage-migration-error.ts";
+ import { makeToolSearchStore } from "./tool-search-store.ts";
+ 
+ /** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
+@@ -29,7 +30,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+         return yield* new StorageError();
+     }).pipe(
+       Effect.provideService(SqlClient.SqlClient, sql),
+-      Effect.mapError(() => new StorageError()),
++      Effect.mapError((cause) => storageMigrationFailed(cause)),
+     );
+     const upgrade = (stopAt: ReadonlySet<string>) =>
+       Effect.gen(function* () {
+@@ -40,10 +41,12 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+           // A new database needs the current layout and all of its indexes, not
+           // historical data conversions. FumaDB's direct diff omits custom steps.
+           // Its tables are empty, so no index build waits on or blocks a writer.
+-          yield* (yield* migrator.migrateToLatest()).execute;
+-          yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
+-            discard: true,
+-          });
++          yield* Effect.gen(function* () {
++            yield* (yield* migrator.migrateToLatest()).execute;
++            yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
++              discard: true,
++            });
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.16")));
+           return;
+         }
+         // Execute every registered upgrade in order. A direct diff to latest can skip
+@@ -52,12 +55,14 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+         const current = storageSchemas.findIndex((entry) => entry.version === version.value);
+         for (const entry of storageSchemas.slice(current + 1)) {
+           if (stopAt.has(entry.version)) return;
+-          yield* (yield* migrator.up()).execute;
++          yield* Effect.gen(function* () {
++            yield* (yield* migrator.up()).execute;
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, entry.version)));
+         }
+       }).pipe(
+         sql.withTransaction,
+         Effect.provideService(SqlClient.SqlClient, sql),
+-        Effect.mapError(() => new StorageError()),
++        Effect.mapError((cause) => storageMigrationFailed(cause)),
+       );
+     /** Every upgrade except the trailing index-only versions, which `migrate` then runs. */
+     const migrateTables = upgrade(trailingStorageIndexVersions);
+diff --git a/apps/hosted/cloud/src/implementation/migration-guard.ts b/apps/hosted/cloud/src/implementation/migration-guard.ts
+--- a/apps/hosted/cloud/src/implementation/migration-guard.ts
++++ b/apps/hosted/cloud/src/implementation/migration-guard.ts
+@@ -127,8 +127,11 @@
+ 
+ const describe = (cause: unknown) => {
+   const state = sqlStateOf(cause);
+-  if (state === "55P03") return "lock timeout (55P03)";
+-  if (state === "57014") return "statement timeout or cancel (57014)";
++  const version = cause instanceof HostedMigrationFailed && cause.migrationVersion !== undefined
++    ? ` at executor version ${cause.migrationVersion}`
++    : "";
++  if (state === "55P03") return `lock timeout (55P03)${version}`;
++  if (state === "57014") return `statement timeout or cancel (57014)${version}`;
+   // Its message holds only cause tags and a SQLSTATE.
+   if (cause instanceof HostedMigrationFailed) return cause.message;
+   return `${failureTags(cause)}${state === undefined ? "" : ` (SQLSTATE ${state})`}`;

@@ -1,9 +1,11 @@
 {
   "identity": "basalt-account-site-origin",
   "file": "0024-account-site-origin.patch",
-  "content_sha256": "f19cd69ac8182aa4628480a894c1cd3cacef6458bcf06e0e727100b956286b00",
+  "content_sha256": "59358ef30a778df55d83e49c0e4d508a733e823add75f8ad37d62d3a50de1b1f",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "f19cd69ac8182aa4628480a894c1cd3cacef6458bcf06e0e727100b956286b00",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

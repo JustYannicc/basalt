@@ -1,9 +1,11 @@
 {
   "identity": "executor-caller-identity",
   "file": "0008-caller-identity.patch",
-  "content_sha256": "58d73a63da2ca4496e38c12b59719aa1510f3f89579ea85a496433f72ac4fb2c",
+  "content_sha256": "0eab770ae2e6e2b5549bdaef555d53e7f60cbdc18bba3b8c734fc4f32e83dca3",
   "kind": "upstream",
   "upstream_pull_request": 2346,
   "database_sensitive": false,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "58d73a63da2ca4496e38c12b59719aa1510f3f89579ea85a496433f72ac4fb2c",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

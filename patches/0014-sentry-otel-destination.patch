@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 4f5e3f35..12aa378c 100644
 --- a/apps/hosted/cloud/src/implementation/error-reporting.ts
 +++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
 @@ -1,6 +1,6 @@
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
  import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
  import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
-@@ -41,7 +41,52 @@
+@@ -41,7 +41,52 @@ const Settings = Schema.Struct({
    dsn: Schema.String,
    environment: Schema.String,
    release: Schema.String,
@@ -62,7 +63,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  /** The reporting boundary never replaces the failure of a product operation. */
  export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
    "SentryTransportFailed",
-@@ -69,12 +114,14 @@
+@@ -69,12 +114,14 @@ export const withCloudSentry = <A, E, R>(
      const config = yield* Schema.decodeUnknownEffect(Settings)(value).pipe(Effect.orDie);
      const client = yield* Effect.acquireRelease(
        Effect.sync(() => {
@@ -78,7 +79,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
              createTransport(options, async (request) => {
                const response = await fetch(options.url, {
 diff --git a/apps/hosted/cloud/src/infrastructure/sentry.ts b/apps/hosted/cloud/src/infrastructure/sentry.ts
-index ee5a60c..c6b141b 100644
+index ee5a60c2..c6b141be 100644
 --- a/apps/hosted/cloud/src/infrastructure/sentry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/sentry.ts
 @@ -3,11 +3,73 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
@@ -200,7 +201,7 @@ index ee5a60c..c6b141b 100644
      yield* Config.Redacted("SENTRY_AUTH_TOKEN");
      yield* Command.Exec(sourceMapUploads[worker], {
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-index 13f6224..eedea4a 100644
+index 19d7f1a8..28722048 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 @@ -15,9 +15,23 @@ import { testStage } from "./stage.ts";
@@ -227,20 +228,20 @@ index 13f6224..eedea4a 100644
  /**
   * Configured stages own their datasets and never adopt the original Executor's telemetry.
   * Test stages share one retained set and are told apart by the environment field, so a
-@@ -120,6 +134,12 @@ export const telemetryResources = Effect.gen(function* () {
- export const cloudObservability = Effect.gen(function* () {
-   if ((yield* AlchemyContext).dev) return {};
+@@ -155,6 +169,12 @@ export const cloudObservability = Effect.gen(function* () {
+   };
+   if (!(yield* telemetryExport)) return { observability: native };
    const stage = yield* Stage;
 +  const direct = yield* directSentryOtlp;
 +  if (direct.configured) {
 +    // Cloudflare platform spans may contain raw URLs and addresses. Direct Sentry mode exports
 +    // only the Effect spans after packages/telemetry/src/isolate.ts applies strict allowlisting.
-+    return {};
++    return { observability: platformLogs };
 +  }
    const resources = yield* telemetryResources;
-   if (Option.isNone(resources)) return {};
+   if (Option.isNone(resources)) return { observability: native };
    const { names, traces, ingest } = resources.value;
-@@ -155,6 +175,25 @@ export const telemetryBindings = Effect.gen(function* () {
+@@ -196,6 +216,25 @@ export const telemetryBindings = Effect.gen(function* () {
      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
      return { [binding]: Output.asOutput(Redacted.make(encoded)) };
    }
@@ -267,7 +268,7 @@ index 13f6224..eedea4a 100644
    if (Option.isNone(resources)) return { [binding]: Output.asOutput(Redacted.make("null")) };
    const { names, traces, logs, metrics, ingest } = resources.value;
 diff --git a/packages/telemetry/src/config.ts b/packages/telemetry/src/config.ts
-index fa12c34..07043e1 100644
+index fa12c34d..07043e1e 100644
 --- a/packages/telemetry/src/config.ts
 +++ b/packages/telemetry/src/config.ts
 @@ -37,6 +37,8 @@ export const TelemetryConfig = Schema.Struct({
@@ -280,7 +281,7 @@ index fa12c34..07043e1 100644
  /** Resolved telemetry configuration. */
  export type TelemetryConfig = typeof TelemetryConfig.Type;
 diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.ts
-index 1e06fd8..bafe3dc 100644
+index 1e06fd8c..bafe3dcb 100644
 --- a/packages/telemetry/src/isolate.ts
 +++ b/packages/telemetry/src/isolate.ts
 @@ -36,6 +36,96 @@ interface Pending {

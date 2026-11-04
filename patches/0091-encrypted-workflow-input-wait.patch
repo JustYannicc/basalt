@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/workflows.ts b/apps/hosted/cloud/src/infrastructure/workflows.ts
-index ad04f66..40b5609 100644
+index ad04f662..40b5609d 100644
 --- a/apps/hosted/cloud/src/infrastructure/workflows.ts
 +++ b/apps/hosted/cloud/src/infrastructure/workflows.ts
 @@ -45,6 +45,23 @@ const runEncryptedWorkflow = (
@@ -27,23 +27,23 @@ index ad04f66..40b5609 100644
          safe(
            encryptedWorkflowTask({
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 2f38a5e..ddb722e 100644
+index 876ee8f8..fcd03c12 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@ const jobs = {
+@@ -105,7 +105,7 @@ const jobs = {
      runner: 3,
  
      pattern:
--      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+-      "Approvals (?:answers|renders)|workflow displays recheck|scheduled personal-data reports refresh identity|personal-data reports use each organization|Cloud pool migration inventory|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Cloud's gateway names an authenticated MCP request's organization",
++      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|scheduled personal-data reports refresh identity|personal-data reports use each organization|Cloud pool migration inventory|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Cloud's gateway names an authenticated MCP request's organization",
    },
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 2262db4..69132cd 100644
+index 052ccd8b..c6f1d774 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -265,6 +265,8 @@ export const startCloudEnvironment = (input: {
+@@ -282,6 +282,8 @@ export const startCloudEnvironment = (input: {
        BETTER_AUTH_URL: input.origin,
        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
@@ -54,7 +54,7 @@ index 2262db4..69132cd 100644
          : {}),
 diff --git a/e2e/support/workflow-input-acceptance-app.ts b/e2e/support/workflow-input-acceptance-app.ts
 new file mode 100644
-index 0000000..cab9423
+index 00000000..cab9423d
 --- /dev/null
 +++ b/e2e/support/workflow-input-acceptance-app.ts
 @@ -0,0 +1,29 @@
@@ -88,10 +88,10 @@ index 0000000..cab9423
 +  { path: "index.ts", content: source.replace("timeoutMs: 900000", `timeoutMs: ${timeoutMs}`) },
 +];
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 01d372e..3e33e7e 100644
+index 593e23e5..7233e735 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8541,6 +8541,26 @@ export const scenarios = plan({
+@@ -9681,6 +9681,26 @@ export const scenarios = plan({
        cloud: na("Local pairing boundary."),
      },
    },
@@ -120,7 +120,7 @@ index 01d372e..3e33e7e 100644
      file: "workflow-inputs.spec.ts",
 diff --git a/e2e/tests/workflow-input-encrypted.spec.ts b/e2e/tests/workflow-input-encrypted.spec.ts
 new file mode 100644
-index 0000000..ee15a16
+index 00000000..ee15a16d
 --- /dev/null
 +++ b/e2e/tests/workflow-input-encrypted.spec.ts
 @@ -0,0 +1,133 @@

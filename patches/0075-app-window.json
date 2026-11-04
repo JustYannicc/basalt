@@ -1,9 +1,11 @@
 {
   "identity": "basalt-app-window",
   "file": "0075-app-window.patch",
-  "content_sha256": "b443f82581c27144cab0c8e19521256b5187ae2593cd750c540d6070675165ec",
+  "content_sha256": "f9f7314336b1bd5bd6ab86bbe4b9d9bddebaeb3600e6d6630c1088a37bae56bf",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "b443f82581c27144cab0c8e19521256b5187ae2593cd750c540d6070675165ec",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

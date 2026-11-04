@@ -5,7 +5,7 @@ index bd038ab0..f831d12a 100644
 @@ -1,21 +1,60 @@
  import { Effect, Schema } from "effect";
  import { connect, createServer, type Socket } from "node:net";
-
+ 
 +const failureCodes = [
 +  "EADDRINUSE",
 +  "EACCES",
@@ -47,7 +47,7 @@ index bd038ab0..f831d12a 100644
 +      : null;
 +  return new ProductionDatabaseProxyFailed({ operation, code, errno });
 +};
-
+ 
  /** Replace a disposable database behind the same endpoint without restarting the Cloud. */
 -export const productionOpsDatabaseProxy = (port: number, original: number) =>
 +export const productionOpsDatabaseProxy = (port = 0) =>
@@ -93,10 +93,10 @@ index bd038ab0..f831d12a 100644
          Effect.sync(() => {
            target = port;
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 1117788d..f26c6e21 100644
+index 4d6e9550..91dc0bc3 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -182,8 +182,13 @@ export const startCloudEnvironment = (input: {
+@@ -187,8 +187,13 @@ export const startCloudEnvironment = (input: {
      const cloud = path.resolve("apps/hosted/cloud");
      const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
      const directory = path.resolve(input.directory);
@@ -112,8 +112,8 @@ index 1117788d..f26c6e21 100644
      const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
      if (input.manualCron && poolBackend)
        return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
-@@ -272,7 +277,7 @@ export const startCloudEnvironment = (input: {
-     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
+@@ -320,7 +325,7 @@ export const startCloudEnvironment = (input: {
+     yield* Effect.addFinalizer(() => fs.remove(v1Handoff).pipe(Effect.orDie));
      const env = {
        BASALT_E2E_DATABASE_ORIGIN: "original",
 -      BASALT_E2E_DATABASE_TARGET_PORT: String(input.databasePort),
@@ -121,16 +121,16 @@ index 1117788d..f26c6e21 100644
        BASALT_E2E_OPS_RELEASE: "reviewed-release",
        PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
          process.platform === "win32" ? ";" : ":",
-@@ -335,7 +340,7 @@ export const startCloudEnvironment = (input: {
-       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
-       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,
-       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+@@ -386,7 +391,7 @@ export const startCloudEnvironment = (input: {
+       ...(input.catalogs === undefined
+         ? {}
+         : { EXECUTOR_CATALOG_URL: `${input.catalogs}/catalog/index.json` }),
 -      CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
 +      CLOUD_DEV_DATABASE_PORT: String(databasePort),
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
-@@ -464,10 +469,6 @@ export const startCloudEnvironment = (input: {
+@@ -523,10 +528,6 @@ export const startCloudEnvironment = (input: {
        dockerEnv,
        log: `${directory}/postgres.log`,
      });
@@ -141,7 +141,7 @@ index 1117788d..f26c6e21 100644
      yield* createV1Database({
        container,
        dockerEnv,
-@@ -630,7 +631,7 @@ export const startCloudEnvironment = (input: {
+@@ -689,7 +690,7 @@ export const startCloudEnvironment = (input: {
              dockerEnv,
            });
      const bindingEnvironment = (next: string) => ({
@@ -150,7 +150,7 @@ index 1117788d..f26c6e21 100644
        BASALT_E2E_DATABASE_ORIGIN: next,
        BASALT_E2E_OPS_RELEASE: next === "release" ? "replacement-release" : "reviewed-release",
        CLOUD_DEV_DATABASE_PASSWORD:
-@@ -722,7 +723,7 @@ export const startCloudEnvironment = (input: {
+@@ -781,7 +782,7 @@ export const startCloudEnvironment = (input: {
            return {
              binding,
              databaseName: "executor",
@@ -159,7 +159,7 @@ index 1117788d..f26c6e21 100644
            };
          }
          if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
-@@ -754,7 +755,7 @@ export const startCloudEnvironment = (input: {
+@@ -813,7 +814,7 @@ export const startCloudEnvironment = (input: {
          return {
            binding,
            databaseName: "executor",
@@ -174,7 +174,7 @@ index fde906a9..44f09bc8 100644
 +++ b/e2e/alchemy-dev-output.config.ts
 @@ -1,6 +1,12 @@
  import { defineConfig } from "vitest/config";
-
+ 
 -/** Reads a child's piped output the way the managed local Cloud reads `alchemy dev`'s. */
 +/** Startup diagnostics run without building or provisioning a Cloud. */
  export default defineConfig({
@@ -189,6 +189,7 @@ index fde906a9..44f09bc8 100644
  });
 diff --git a/e2e/support/production-ops-proxy-fixtures.ts b/e2e/support/production-ops-proxy-fixtures.ts
 new file mode 100644
+index 00000000..b458e9a0
 --- /dev/null
 +++ b/e2e/support/production-ops-proxy-fixtures.ts
 @@ -0,0 +1,44 @@
@@ -238,6 +239,7 @@ new file mode 100644
 +  );
 diff --git a/e2e/tests/production-ops-database-proxy.spec.ts b/e2e/tests/production-ops-database-proxy.spec.ts
 new file mode 100644
+index 00000000..383e6c81
 --- /dev/null
 +++ b/e2e/tests/production-ops-database-proxy.spec.ts
 @@ -0,0 +1,65 @@

@@ -1,10 +1,12 @@
 {
   "identity": "executor-embedded-app-ui",
   "file": "0028-embedded-app-ui.patch",
-  "content_sha256": "84074ef29b3c919bb9c48481b4c47d3943f839e0e93d485cf936a14370abbbb9",
+  "content_sha256": "7e803dac4a35e7903247bf754f1244a6470af63acebc4f3fa87a2ff4a7ee0105",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "upstream_issue": 2419
+  "upstream_issue": 2419,
+  "rebased_from": "84074ef29b3c919bb9c48481b4c47d3943f839e0e93d485cf936a14370abbbb9",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

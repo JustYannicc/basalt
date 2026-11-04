@@ -1,0 +1,9 @@
+{
+  "identity": "executor-upstream-security-regression-controls",
+  "file": "0206-upstream-security-regression-controls.patch",
+  "content_sha256": "e68c1c851b1d5d0ac515bba394e87b2bba2f883b41eaa8ae77eacc719bc5e2e9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

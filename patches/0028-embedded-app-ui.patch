@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
-index 62f2ea8..3be897d 100644
+index 62f2ea8f..3be897dd 100644
 --- a/apps/hosted/cloud/alchemy.run.ts
 +++ b/apps/hosted/cloud/alchemy.run.ts
 @@ -9,6 +9,7 @@ import * as Docker from "alchemy/Docker";
@@ -23,7 +23,7 @@ index 62f2ea8..3be897d 100644
        const lifecycle = yield* AppDomainLifecycle("AppDomains", {
          origin: yield* cloudOrigin.pipe(Effect.orDie),
 diff --git a/apps/hosted/cloud/src/app-domains.ts b/apps/hosted/cloud/src/app-domains.ts
-index 93cdce4..8502e4e 100644
+index 2ab73983..3dcea298 100644
 --- a/apps/hosted/cloud/src/app-domains.ts
 +++ b/apps/hosted/cloud/src/app-domains.ts
 @@ -8,6 +8,7 @@ import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Cr
@@ -33,9 +33,9 @@ index 93cdce4..8502e4e 100644
 +import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui/contracts";
  import { cloudAppUiBase } from "./contracts/app-ui.ts";
  import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
- import { appDomainCertificates } from "./implementation/app-domain-inventory.ts";
-@@ -47,7 +48,11 @@ const observeDomainFailure = (phase: string, cause: Cause.Cause<unknown>) =>
-
+ import {
+@@ -69,7 +70,11 @@ const inventoryTimeout = "5 minutes";
+ 
  const makeAppDomainCoordinator = Effect.gen(function* () {
    const base = yield* cloudAppUiBase.pipe(Effect.orDie);
 -  if (base === undefined || new URL(base).protocol !== "https:") {
@@ -48,7 +48,7 @@ index 93cdce4..8502e4e 100644
        wake: () => Effect.void,
        heartbeat: () => Effect.void,
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 077cd51..88071e1 100644
+index 52b59071..aca81b90 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
 @@ -1,16 +1,23 @@
@@ -80,7 +80,7 @@ index 077cd51..88071e1 100644
 @@ -30,6 +37,55 @@ import {
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
-
+ 
 +/** Where a config read failed: key paths and issue kinds only, never the value it read. */
 +const configIssues = (error: unknown): string[] => {
 +  if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
@@ -165,7 +165,7 @@ index 077cd51..88071e1 100644
      const services = requestServices(Layer.mergeAll(appSessions, executor));
      const notFound = HttpServerResponse.empty({ status: 404 });
      const protectedRoutes = Layer.mergeAll(
-@@ -107,7 +173,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -106,7 +172,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      );
      const lifetime = yield* previewLifetime;
      return {
@@ -174,7 +174,7 @@ index 077cd51..88071e1 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
-@@ -119,16 +185,21 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -118,16 +184,21 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          analytics.wrap,
          recordRequestRejections,
          reportErrors,
@@ -205,7 +205,7 @@ index 077cd51..88071e1 100644
 +  ),
  ) {}
 diff --git a/apps/hosted/cloud/src/contracts/browser.ts b/apps/hosted/cloud/src/contracts/browser.ts
-index 731088f..2aa5f2a 100644
+index bf038135..22c8d27b 100644
 --- a/apps/hosted/cloud/src/contracts/browser.ts
 +++ b/apps/hosted/cloud/src/contracts/browser.ts
 @@ -1,4 +1,5 @@
@@ -215,7 +215,7 @@ index 731088f..2aa5f2a 100644
  import { cloudDevelopmentOrigin } from "./development.ts";
  import { LoopbackOrigin } from "@executor-js/utils/url-policy";
  import { Schema } from "effect";
-@@ -6,12 +7,12 @@ import { Schema } from "effect";
+@@ -6,10 +7,10 @@ import { Schema } from "effect";
  /** Browsers share cookies across ports, so local cloud and self-host use different names. */
  export const cloudSessionCookiePrefix = (origin: string): string => {
    if (origin === cloudDevelopmentOrigin) return "executor-cloud-dev";
@@ -226,13 +226,16 @@ index 731088f..2aa5f2a 100644
 -  return `executor-cloud-dev-${port}`;
 +  return hostCookieName(origin, `executor-cloud-dev-${port}`);
  };
-
+ 
+ /** The origin the build generates the API document for, to hash it; see `servesBuiltApiDocument`. */
+@@ -25,4 +26,4 @@ export const servesBuiltApiDocument = (origin: string) =>
+ 
  /** A routing hint only: product pages and APIs still verify the live session. */
  export const hasSessionCookie = (headers: Headers, cookiePrefix: string): boolean =>
 -  Boolean(getSessionCookie(headers, { cookiePrefix }));
 +  Boolean(parseCookies(headers.get("cookie") ?? "").get(`${cookiePrefix}.session_token`));
 diff --git a/apps/hosted/cloud/src/contracts/passkey-enrollment.ts b/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
-index 53490fd..b0809eb 100644
+index 53490fd1..b0809eb5 100644
 --- a/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
 +++ b/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
 @@ -1,5 +1,7 @@
@@ -245,10 +248,10 @@ index 53490fd..b0809eb 100644
    attributes: { path: "/", sameSite: "lax", httpOnly: false, maxAge: 60 * 60 * 24 * 365 },
  } as const;
 diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
-index 63a7757..8c4453b 100644
+index 1f33ad42..b4aabef1 100644
 --- a/apps/hosted/cloud/src/implementation/auth-options.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-options.ts
-@@ -236,7 +236,7 @@ export const cloudAuthOptions = (
+@@ -237,7 +237,7 @@ export const cloudAuthOptions = (
                  // already have a fast path, and existing-user sign-ins never
                  // recreate a dismissed prompt.
                  if (context?.path !== emailCodeSignInPath) return;
@@ -257,7 +260,7 @@ index 63a7757..8c4453b 100644
                    ...passkeyEnrollmentCookie.attributes,
                    secure: new URL(settings.url).protocol === "https:",
                  });
-@@ -252,15 +252,11 @@ export const cloudAuthOptions = (
+@@ -253,15 +253,11 @@ export const cloudAuthOptions = (
            after: async (session, context) => {
              if (onLogin !== undefined) await onLogin(session.userId);
              if (!context) return;
@@ -275,7 +278,7 @@ index 63a7757..8c4453b 100644
            },
            before: async (session, context) => {
 diff --git a/apps/hosted/cloud/src/implementation/entry.ts b/apps/hosted/cloud/src/implementation/entry.ts
-index 6872a4c..41af181 100644
+index 6872a4c5..41af181d 100644
 --- a/apps/hosted/cloud/src/implementation/entry.ts
 +++ b/apps/hosted/cloud/src/implementation/entry.ts
 @@ -22,6 +22,7 @@ export const resolveCloudEntry = (
@@ -297,7 +300,7 @@ index 6872a4c..41af181 100644
        if (enrollment)
 @@ -125,7 +126,7 @@ export const cloudEntryDocument = <E, R, E2, R2>(
    );
-
+ 
  /** The development document adapter shares the Worker's resolver through this private HTTP response. */
 -export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) =>
 +export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0], origin: string) =>
@@ -313,12 +316,12 @@ index 6872a4c..41af181 100644
      return yield* HttpServerResponse.json(result, { headers: privateHeaders });
    });
 diff --git a/apps/hosted/cloud/src/implementation/product-analytics.ts b/apps/hosted/cloud/src/implementation/product-analytics.ts
-index daa9db8..4b81e81 100644
+index eee7ce2b..97a57168 100644
 --- a/apps/hosted/cloud/src/implementation/product-analytics.ts
 +++ b/apps/hosted/cloud/src/implementation/product-analytics.ts
 @@ -66,12 +66,12 @@ const Analytics = Context.Reference<{
  });
-
+ 
  /** Called only after Better Auth creates a new verified user, never on returning sign-in. */
 -export const recordCloudSignup = (userId: string) =>
 +export const recordCloudSignup = (userId: string, origin: string) =>
@@ -333,7 +336,7 @@ index daa9db8..4b81e81 100644
        analytics.add({
          event: "$identify",
 @@ -89,7 +89,7 @@ export const recordCloudSignup = (userId: string) =>
-
+ 
  /** Prevent a later user on a shared browser from inheriting an identified site visitor. */
  export const clearSiteVisitorOnSignOut =
 -  (cookieDomain?: string) => (response: HttpServerResponse.HttpServerResponse) =>
@@ -354,7 +357,7 @@ index daa9db8..4b81e81 100644
          Effect.orDie,
        );
 diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
-index 58a010e..d6f82d6 100644
+index d1a9d280..4d30ed59 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-domains.ts
 @@ -1,7 +1,10 @@
@@ -369,7 +372,7 @@ index 58a010e..d6f82d6 100644
  import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
  import { UiFailed } from "apps/ui/contracts";
  import { Clock, Effect, Redacted, Schema } from "effect";
-@@ -50,6 +53,13 @@ const staleAfter = 15 * 60_000;
+@@ -51,6 +54,13 @@ const staleAfter = 15 * 60_000;
   * schedule if it was lost.
   */
  export const cloudAppDomains = Effect.gen(function* () {
@@ -384,10 +387,10 @@ index 58a010e..d6f82d6 100644
    const base = yield* cloudAppUiBase.pipe(Effect.orDie);
    // Local development serves apps over HTTP and provisions no domains.
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 879bcb2..e3b5647 100644
+index 2d3bf431..f9c7a0db 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -109,7 +109,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -112,7 +112,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
              ),
            ),
        },
@@ -396,7 +399,7 @@ index 879bcb2..e3b5647 100644
        (userId) => {
          observation.sessionCreated();
          return runCallback(recordCloudLogin(userId));
-@@ -344,9 +344,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -347,9 +347,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
      const handler = observation
        .observe(requestHandler)
        .pipe(
@@ -406,9 +409,9 @@ index 879bcb2..e3b5647 100644
 +        Effect.flatMap(clearSiteVisitorOnSignOut(settings.url)),
          Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
        );
-     return {
+     const browserSession = (headers: Headers) =>
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index b4f4f11..cda7ff0 100644
+index 36e10b6f..2f4131e7 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -6,7 +6,12 @@ import {
@@ -425,7 +428,7 @@ index b4f4f11..cda7ff0 100644
  import { cloudAppUiBase } from "./contracts/app-ui.ts";
  import { cloudAppDomains } from "./infrastructure/app-domains.ts";
  import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
-@@ -353,7 +358,12 @@ export default Api.make(
+@@ -366,7 +371,12 @@ export default Api.make(
        billingEnabled: (yield* Billing.pipe(Effect.provide(billing))).enabled,
      });
      const appUi = hostedAppUi(
@@ -439,7 +442,7 @@ index b4f4f11..cda7ff0 100644
        appDomains.status,
      );
      // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
-@@ -571,13 +581,14 @@ export default Api.make(
+@@ -615,13 +625,14 @@ export default Api.make(
                  page,
                  browserReturnTo(new URL(request.url, auth.origin).searchParams.get("redirect")),
                  new Headers(request.headers),
@@ -456,7 +459,7 @@ index b4f4f11..cda7ff0 100644
        ),
        apiRoutes,
 diff --git a/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts b/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
-index d2e75f9..15982df 100644
+index d2e75f9e..15982df4 100644
 --- a/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
 +++ b/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
 @@ -11,12 +11,14 @@ export const hasPasskeyEnrollment = (userId: string) =>
@@ -474,10 +477,10 @@ index d2e75f9..15982df 100644
 -      document.cookie = `${passkeyEnrollmentCookie.name}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
 +      document.cookie = `${passkeyEnrollmentCookie.name(window.location.origin)}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${window.location.protocol === "https:" ? "; Secure" : ""}`;
    });
-
+ 
  /**
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index eee4f95..82895c0 100644
+index dd81719f..423556b3 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -36,7 +36,12 @@ import {
@@ -508,7 +511,7 @@ index eee4f95..82895c0 100644
      const appUi = hostedAppUi(addresses);
      const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
      const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
-@@ -227,7 +237,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -226,7 +236,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
          Effect.gen(function* () {
            const request = yield* HttpServerRequest.HttpServerRequest;
            if (Option.isSome(addresses.fromHost(request.headers.host)))
@@ -518,7 +521,7 @@ index eee4f95..82895c0 100644
            return yield* observed(product);
          }).pipe(recordRequestRejections, Effect.provideService(CurrentProductBrand, brand)),
 diff --git a/apps/hosted/self-host/src/main.ts b/apps/hosted/self-host/src/main.ts
-index 4e49914..58aa9e2 100644
+index 4e499145..58aa9e28 100644
 --- a/apps/hosted/self-host/src/main.ts
 +++ b/apps/hosted/self-host/src/main.ts
 @@ -90,13 +90,17 @@ export const main = Effect.scoped(
@@ -542,7 +545,7 @@ index 4e49914..58aa9e2 100644
        }
      }
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index 2d2586d..6b26522 100644
+index 5d74c096..1c63fd11 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -1,3 +1,4 @@
@@ -550,7 +553,7 @@ index 2d2586d..6b26522 100644
  import { HostedAppAccounts } from "./app-accounts.ts";
  import { HostedResourceAccess } from "./resource-access.ts";
  import { HostedOAuthClients } from "./oauth-clients.ts";
-@@ -141,7 +142,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
+@@ -147,7 +148,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
          browserSession: {
            type: "apiKey",
            in: "cookie",
@@ -560,12 +563,12 @@ index 2d2586d..6b26522 100644
              "Browser-managed session. Sign in through this deployment; bearer credentials cannot call session-only endpoints.",
          },
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
-index 677230b..8cabeca 100644
+index b831cd8f..d38ae2cb 100644
 --- a/apps/hosted/server/src/contracts/app-ui.ts
 +++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -8,11 +8,13 @@ import {
-   VersionNotFound,
+@@ -9,11 +9,13 @@ import {
    HttpUrl,
+   RequestRejection,
    StorageError,
 +  type BuildId,
    type Runtime,
@@ -578,10 +581,10 @@ index 677230b..8cabeca 100644
  import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
  import { Principal } from "./auth.ts";
  import {
-@@ -25,6 +27,15 @@ import {
+@@ -26,6 +28,15 @@ import {
  } from "./organization.ts";
  export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
-
+ 
 +/** Nested remains the default. Opaque uses the reserved a-<UUID> label, independent of names. */
 +export const appUiAddressScheme = Config.Literals(
 +  ["nested", "opaque"],
@@ -594,7 +597,7 @@ index 677230b..8cabeca 100644
  /** Immutable ownership plus the exact current browser origin. Slug reuse cannot transfer a session. */
  export const AppUiTarget = Schema.Struct({
    app: AppId,
-@@ -79,16 +90,25 @@ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
+@@ -80,16 +91,25 @@ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
   * usable link. An unavailable page says why, because an app without a UI is not an outage.
   */
  export const AppUiLocation = Schema.Union([
@@ -622,10 +625,10 @@ index 677230b..8cabeca 100644
  ]);
  /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
  export const AppUiAttempt = Schema.Struct({
-@@ -170,10 +190,16 @@ export class HostedAppSessions extends Context.Service<
+@@ -171,10 +191,16 @@ export class HostedAppSessions extends Context.Service<
    }
  >()("hosted/AppSessions") {}
-
+ 
 -/** Asset access uses the same retained runtime that built and executes the app. */
 -export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Runtime, "asset">>()(
 -  "hosted/AppRuntime",
@@ -640,11 +643,11 @@ index 677230b..8cabeca 100644
 +    readonly screen?: (build: BuildId) => Effect.Effect<boolean, RuntimeBuildUnavailable>;
 +  }
 +>()("hosted/AppRuntime") {}
-
+ 
  /** URL discovery uses organization grants; browser authorization still requires a user session. */
  export const HostedAppUi = HttpApiGroup.make("appUi").add(
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index b9e3a83..9b34125 100644
+index b9e3a835..9b34125b 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
 @@ -44,6 +44,7 @@ import {
@@ -653,7 +656,7 @@ index b9e3a83..9b34125 100644
    RequireOrganization,
 +  AppScreenRecord,
  } from "./organization.ts";
-
+ 
  /** Catalog installation is create-only: it cannot overwrite another app by name. */
 @@ -129,7 +130,7 @@ export const HostedApps = HttpApiGroup.make("apps")
    .add(
@@ -674,13 +677,13 @@ index b9e3a83..9b34125 100644
    )
    .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/contracts/browser.ts b/apps/hosted/server/src/contracts/browser.ts
-index eab67ff..ce14038 100644
+index eab67ffd..ce140381 100644
 --- a/apps/hosted/server/src/contracts/browser.ts
 +++ b/apps/hosted/server/src/contracts/browser.ts
 @@ -3,6 +3,10 @@ import { OrganizationId } from "./organization.ts";
  import type { ResourceOrigins } from "@executor-js/mcp-auth";
  import type { ProductBrand } from "@executor-js/utils/product-brand";
-
+ 
 +/** HTTPS cookies are host-only by browser enforcement; never read the old shadowable names. */
 +export const hostCookieName = (origin: string, name: string): string =>
 +  new URL(origin).protocol === "https:" && !name.startsWith("__Host-") ? `__Host-${name}` : name;
@@ -690,7 +693,7 @@ index eab67ff..ce14038 100644
    Schema.Struct({
 @@ -77,9 +81,9 @@ export const LastOrganization = Schema.Struct({
  export type LastOrganization = typeof LastOrganization.Type;
-
+ 
  /** Cookies do not distinguish ports, so local cloud and self-host keep separate memories. */
 -export const lastOrganizationCookie = (host: string) => {
 +export const lastOrganizationCookie = (host: string, secure = false) => {
@@ -698,10 +701,10 @@ index eab67ff..ce14038 100644
 -  return `executor-org${port === "" ? "" : `-${port}`}`;
 +  return `${secure ? "__Host-" : ""}executor-org${port === "" ? "" : `-${port}`}`;
  };
-
+ 
  /** Parse the saved memory for this signed-in person; anything else is ignored. */
 diff --git a/apps/hosted/server/src/implementation/app-addresses.ts b/apps/hosted/server/src/implementation/app-addresses.ts
-index 225328f..54d4bdf 100644
+index 225328f7..54d4bdf4 100644
 --- a/apps/hosted/server/src/implementation/app-addresses.ts
 +++ b/apps/hosted/server/src/implementation/app-addresses.ts
 @@ -1,21 +1,25 @@
@@ -712,7 +715,7 @@ index 225328f..54d4bdf 100644
  import { Effect, Option, Schema } from "effect";
  import { AppUiAddressInvalid, AppUiHostnameLabel, type AppUiBaseUrl } from "../contracts/app-ui.ts";
  import { OrganizationSlug } from "../contracts/organization.ts";
-
+ 
  /** Hosted app.organization addresses resolve current names before authorizing immutable identities. */
 -export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | undefined) => {
 +export const appAddresses = (
@@ -807,10 +810,10 @@ index 225328f..54d4bdf 100644
      origin,
      fromHost,
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 372254f..a81e449 100644
+index 8312bcfb..4f310ca5 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -57,7 +57,9 @@ import { HostedExecutor } from "../contracts/executor.ts";
+@@ -58,7 +58,9 @@ import { HostedExecutor } from "../contracts/executor.ts";
  import {
    CurrentOrganization,
    OrganizationForbidden,
@@ -820,7 +823,7 @@ index 372254f..a81e449 100644
    type OrganizationAccess,
  } from "../contracts/organization.ts";
  import { callerAccounts, stillLinked } from "./app-accounts.ts";
-@@ -86,6 +88,49 @@ const accountIds = (accounts: AppAccounts) => [
+@@ -87,6 +89,49 @@ const accountIds = (accounts: AppAccounts) => [
  ];
  const privateJson = (value: unknown, status = 200) =>
    HttpServerResponse.jsonUnsafe(value, { status, headers: appPrivateHeaders });
@@ -870,7 +873,7 @@ index 372254f..a81e449 100644
  const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
    privateJson(
      error,
-@@ -120,17 +165,37 @@ export const hostedAppUi = <R = never>(
+@@ -121,17 +166,37 @@ export const hostedAppUi = <R = never>(
    const target = Effect.gen(function* () {
      const { request, host } = yield* requestOrigin;
      const sessions = yield* HostedAppSessions;
@@ -915,7 +918,7 @@ index 372254f..a81e449 100644
      };
    });
    const readVersion = (app: App, requested?: VersionId) =>
-@@ -289,6 +354,31 @@ export const hostedAppUi = <R = never>(
+@@ -290,6 +355,31 @@ export const hostedAppUi = <R = never>(
          ),
        );
      });
@@ -947,7 +950,7 @@ index 372254f..a81e449 100644
    const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
      handlers.handle("location", ({ params }) =>
        Effect.gen(function* () {
-@@ -309,9 +399,19 @@ export const hostedAppUi = <R = never>(
+@@ -310,9 +400,19 @@ export const hostedAppUi = <R = never>(
            Effect.mapError(() => new AppUiUnavailable()),
          );
          if (page === undefined)
@@ -969,7 +972,7 @@ index 372254f..a81e449 100644
          const sessions = yield* HostedAppSessions;
          const organization = yield* sessions
            .organization({ id: access.organization })
-@@ -322,7 +422,9 @@ export const hostedAppUi = <R = never>(
+@@ -323,7 +423,9 @@ export const hostedAppUi = <R = never>(
          const status = yield* domainStatus(organization).pipe(
            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
          );
@@ -979,16 +982,16 @@ index 372254f..a81e449 100644
 +          : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
        }),
      ),
-   );
-@@ -598,6 +700,7 @@ export const hostedAppUi = <R = never>(
+   ).pipe(Layer.provide(requestRejections));
+@@ -606,6 +708,7 @@ export const hostedAppUi = <R = never>(
+       // The page names the caller's own accounts; the app's are not theirs to see.
        accountIds: accounts?.user,
-       accounts: yield* accountNotice,
-       origin: current.target.origin,
+       accounts: notice,
 +      parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
        version: version.id,
-       asset: (path) => assets(version, path),
+       asset: (path) => (path === "index.html" ? index : assets(version, path)),
      });
-@@ -682,7 +785,8 @@ export const hostedAppUi = <R = never>(
+@@ -690,7 +793,8 @@ export const hostedAppUi = <R = never>(
        htmlFailure,
      );
    return {
@@ -999,15 +1002,15 @@ index 372254f..a81e449 100644
      dashboard,
      calls,
 diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
-index d6be048..3391705 100644
+index d734663b..d0bf4eb3 100644
 --- a/apps/hosted/server/src/implementation/auth.ts
 +++ b/apps/hosted/server/src/implementation/auth.ts
 @@ -1,3 +1,4 @@
 +import { hostCookieName } from "../contracts/browser.ts";
  import { apiKeys, apiKeyManagement } from "./api-keys.ts";
+ import { requestAuthentication } from "./batch-authentication.ts";
  import {
-   CurrentUsage,
-@@ -118,7 +119,16 @@ export const authOptions = (
+@@ -119,7 +120,16 @@ export const authOptions = (
        customRules: { "/get-session": false, "/organization/list": false },
      },
      advanced: {
@@ -1026,7 +1029,7 @@ index d6be048..3391705 100644
        // Read a session and its user in one statement instead of one query each.
        database: { joins: true },
 diff --git a/apps/hosted/server/src/implementation/document.ts b/apps/hosted/server/src/implementation/document.ts
-index bc65325..c0f0e9c 100644
+index bc653251..c0f0e9ce 100644
 --- a/apps/hosted/server/src/implementation/document.ts
 +++ b/apps/hosted/server/src/implementation/document.ts
 @@ -1,6 +1,6 @@
@@ -1050,7 +1053,7 @@ index bc65325..c0f0e9c 100644
      return {
        session,
 diff --git a/apps/hosted/testing/accounts.ts b/apps/hosted/testing/accounts.ts
-index c0fb721..1797a53 100644
+index c0fb721b..1797a532 100644
 --- a/apps/hosted/testing/accounts.ts
 +++ b/apps/hosted/testing/accounts.ts
 @@ -1,4 +1,5 @@
@@ -1072,7 +1075,7 @@ index c0fb721..1797a53 100644
      plugins: [
        ...base.plugins,
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
-index a1bc3c7..09033a6 100644
+index 45c55158..fa163256 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
 @@ -8,7 +8,7 @@ import {
@@ -1098,21 +1101,21 @@ index a1bc3c7..09033a6 100644
    // The open-app control polls version status; it loads after hydration.
    browserOnly(
 diff --git a/apps/hosted/web/src/implementation/last-organization.ts b/apps/hosted/web/src/implementation/last-organization.ts
-index c1dff4a..66bc9a3 100644
+index c1dff4ad..66bc9a35 100644
 --- a/apps/hosted/web/src/implementation/last-organization.ts
 +++ b/apps/hosted/web/src/implementation/last-organization.ts
 @@ -9,7 +9,8 @@ import { Cookies } from "effect/http";
  import { LastOrganization as LastOrganizationSchema } from "@executor-js/hosted-server/browser/contracts";
-
+ 
  const lifetime = 365 * 24 * 60 * 60;
 -const name = () => lastOrganizationCookie(window.location.host);
 +const name = () =>
 +  lastOrganizationCookie(window.location.host, window.location.protocol === "https:");
  const attributes = () =>
    `Path=/; SameSite=Lax${window.location.protocol === "https:" ? "; Secure" : ""}`;
-
+ 
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index e29dddf..75ea7bb 100644
+index e29dddf0..75ea7bbc 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -49,7 +49,8 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
@@ -1221,7 +1224,7 @@ index e29dddf..75ea7bb 100644
  }
 diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 new file mode 100644
-index 0000000..fe3f39f
+index 00000000..fe3f39fc
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 @@ -0,0 +1,177 @@
@@ -1403,7 +1406,7 @@ index 0000000..fe3f39f
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
-index 8f88b3a..a2c0320 100644
+index 8f88b3ad..a2c03203 100644
 --- a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
 @@ -1,4 +1,3 @@
@@ -1421,7 +1424,7 @@ index 8f88b3a..a2c0320 100644
  } from "../../contracts/app-ui.ts";
 -import { useOrganizationRoute } from "../components/organization.tsx";
 +import { useAppUiLocation } from "./app-screen.tsx";
-
+ 
  /**
   * The server answers `/app-auth` with a redirect whenever it has an attempt to resolve, so this page
 @@ -43,28 +41,11 @@ export function AppSignInPage({
@@ -1433,7 +1436,7 @@ index 8f88b3a..a2c0320 100644
 -  );
 +  return app.activeVersion === null ? null : <DeployedOpenAppAction app={app} />;
  }
-
+ 
 -function DeployedOpenAppAction({
 -  app,
 -  version,
@@ -1466,7 +1469,7 @@ index 8f88b3a..a2c0320 100644
      </Button>
    );
 diff --git a/apps/hosted/web/src/implementation/pages/apps.tsx b/apps/hosted/web/src/implementation/pages/apps.tsx
-index 6011737..3446370 100644
+index a7da3a4b..725b7cf7 100644
 --- a/apps/hosted/web/src/implementation/pages/apps.tsx
 +++ b/apps/hosted/web/src/implementation/pages/apps.tsx
 @@ -1,3 +1,4 @@
@@ -1474,7 +1477,7 @@ index 6011737..3446370 100644
  import { useMemo } from "react";
  import { useAtom } from "@effect/atom-react";
  import { Option } from "effect";
-@@ -41,6 +42,7 @@ export function AppsPage() {
+@@ -42,6 +43,7 @@ export function AppsPage() {
    return (
      <SharedPage
        query={atoms.query}
@@ -1483,7 +1486,7 @@ index 6011737..3446370 100644
        pending={
          Option.isSome(data) && data.value.pendingApp ? (
 diff --git a/apps/marketing/src/content/site-visitor.ts b/apps/marketing/src/content/site-visitor.ts
-index 96f4c95..e3817fd 100644
+index 96f4c954..e3817fd3 100644
 --- a/apps/marketing/src/content/site-visitor.ts
 +++ b/apps/marketing/src/content/site-visitor.ts
 @@ -1,9 +1,9 @@
@@ -1497,12 +1500,12 @@ index 96f4c95..e3817fd 100644
 -export const siteVisitorCookie = "executor_visitor";
 +export const siteVisitorCookie = (origin: string) =>
 +  `${new URL(origin).protocol === "https:" ? "__Host-" : ""}executor_visitor`;
-
+ 
  /** How long a visit stays attributable to a later sign-up. */
  export const siteVisitorDays = 90;
 @@ -11,11 +11,12 @@ export const siteVisitorDays = 90;
  const anonymousId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-
+ 
  /** Parse only a well-formed anonymous ID; anything else is ignored. */
 -export const readSiteVisitor = (cookies: string) => {
 +export const readSiteVisitor = (cookies: string, origin: string) => {
@@ -1517,7 +1520,7 @@ index 96f4c95..e3817fd 100644
    return value !== undefined && anonymousId.test(value) ? value : undefined;
  };
 diff --git a/apps/marketing/src/layouts/Layout.astro b/apps/marketing/src/layouts/Layout.astro
-index b3113f8..2b2560e 100644
+index b3113f85..2b2560e6 100644
 --- a/apps/marketing/src/layouts/Layout.astro
 +++ b/apps/marketing/src/layouts/Layout.astro
 @@ -103,9 +103,8 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
@@ -1533,10 +1536,10 @@ index b3113f8..2b2560e 100644
            });
            return posthog;
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index 52d5ffc..edadb54 100644
+index 069f9ff9..f008ca98 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -76,8 +76,20 @@ const check = Effect.gen(function* () {
+@@ -77,8 +77,20 @@ const check = Effect.gen(function* () {
            // This adapter observes the real OS store, never an application implementation.
            if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
              return;
@@ -1560,7 +1563,7 @@ index 52d5ffc..edadb54 100644
            // This external upstream fixture generates its contract with Effect, not product code.
            if (
 diff --git a/e2e/sdk/scenario.ts b/e2e/sdk/scenario.ts
-index 55ca22b..be62006 100644
+index 55ca22b5..be62006a 100644
 --- a/e2e/sdk/scenario.ts
 +++ b/e2e/sdk/scenario.ts
 @@ -59,6 +59,7 @@ export const startScenario = (
@@ -1572,7 +1575,7 @@ index 55ca22b..be62006 100644
      });
    });
 diff --git a/e2e/support/api.ts b/e2e/support/api.ts
-index 114b29d..7f91ed1 100644
+index a910c090..34c8beed 100644
 --- a/e2e/support/api.ts
 +++ b/e2e/support/api.ts
 @@ -1,3 +1,4 @@
@@ -1580,7 +1583,7 @@ index 114b29d..7f91ed1 100644
  /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
  import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
  import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
-@@ -67,7 +68,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
+@@ -74,7 +75,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
      SessionClients,
      Effect.gen(function* () {
        const target = yield* Target,
@@ -1594,7 +1597,7 @@ index 114b29d..7f91ed1 100644
        const origin = targetHosts(target).browser;
 diff --git a/e2e/support/app-origin-tls.ts b/e2e/support/app-origin-tls.ts
 new file mode 100644
-index 0000000..9547eb4
+index 00000000..9547eb4a
 --- /dev/null
 +++ b/e2e/support/app-origin-tls.ts
 @@ -0,0 +1,109 @@
@@ -1708,7 +1711,7 @@ index 0000000..9547eb4
 +    );
 +  });
 diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
-index aac6a79..1d35d10 100644
+index aac6a79e..1d35d10b 100644
 --- a/e2e/support/browser.ts
 +++ b/e2e/support/browser.ts
 @@ -115,6 +115,7 @@ export class Browser extends Context.Service<
@@ -1720,10 +1723,10 @@ index aac6a79..1d35d10 100644
            ...visitorUserAgent(browser),
            recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index f8abe13..b0fa511 100644
+index bb41f97f..6d5048e3 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -242,6 +242,9 @@ export const startCloudEnvironment = (input: {
+@@ -256,6 +256,9 @@ export const startCloudEnvironment = (input: {
        BETTER_AUTH_URL: input.origin,
        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
@@ -1734,7 +1737,7 @@ index f8abe13..b0fa511 100644
        POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
        SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 18a14c9..f49cac4 100644
+index d124e008..9270e229 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -1,5 +1,6 @@
@@ -1752,7 +1755,7 @@ index 18a14c9..f49cac4 100644
      const port = new URL(target.metadata.origin).port;
      let origin = target.metadata.origin;
      const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
-@@ -172,6 +174,9 @@ export const startManagedServer = (
+@@ -174,6 +176,9 @@ export const startManagedServer = (
        EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
        EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
        ...environment,
@@ -1762,7 +1765,7 @@ index 18a14c9..f49cac4 100644
      };
      // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
      // flushes its telemetry before it stops the collector it started. A signal to its whole
-@@ -317,7 +322,20 @@ export const startManagedServer = (
+@@ -319,7 +324,20 @@ export const startManagedServer = (
                if (clock !== null) confirmedOffset = Number(clock[1]);
                if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                  origin = line.slice("Executor: ".length);
@@ -1783,7 +1786,7 @@ index 18a14c9..f49cac4 100644
                  env.EXECUTOR_PORT = env.PORT;
                  env.BETTER_AUTH_URL = origin;
                  if (target.metadata.target === "self-host")
-@@ -544,7 +562,11 @@ export const startManagedServer = (
+@@ -546,7 +564,11 @@ export const startManagedServer = (
      if (!("port" in server.address))
        return yield* new ServerFailed({ message: "Control listener must use TCP" });
      yield* start;
@@ -1794,10 +1797,10 @@ index 18a14c9..f49cac4 100644
 +      ...(tls === undefined ? {} : { tlsCertificate: tls.certificate }),
 +    };
    });
-
+ 
  const startIsolatedSelfHost = (
 diff --git a/e2e/support/platform.ts b/e2e/support/platform.ts
-index d9e72b7..226c68b 100644
+index d9e72b7d..226c68b9 100644
 --- a/e2e/support/platform.ts
 +++ b/e2e/support/platform.ts
 @@ -14,6 +14,7 @@ export class Target extends Context.Service<
@@ -1809,11 +1812,11 @@ index d9e72b7..226c68b 100644
      readonly rows: number;
      readonly observeUI: boolean;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 3693fc6..41b2ae9 100644
+index 505e0db7..99b1ba34 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4860,6 +4860,85 @@ export const scenarios = plan({
-       local: na("The API document and catalog installation are hosted product surfaces."),
+@@ -5611,6 +5611,85 @@ export const scenarios = plan({
+       local: na("Local does not serve hosted app origins."),
      },
    },
 +  appUiCookieIsolation: {
@@ -1900,7 +1903,7 @@ index 3693fc6..41b2ae9 100644
      managementApps: ["owner"],
 diff --git a/e2e/tests/app-ui-cookie-isolation.spec.ts b/e2e/tests/app-ui-cookie-isolation.spec.ts
 new file mode 100644
-index 0000000..06293cb
+index 00000000..06293cb3
 --- /dev/null
 +++ b/e2e/tests/app-ui-cookie-isolation.spec.ts
 @@ -0,0 +1,185 @@
@@ -2090,10 +2093,10 @@ index 0000000..06293cb
 +  );
 +});
 diff --git a/e2e/tests/cloud-onboarding.spec.ts b/e2e/tests/cloud-onboarding.spec.ts
-index 1f60a28..2d79959 100644
+index 4e7800e6..77fe2a9e 100644
 --- a/e2e/tests/cloud-onboarding.spec.ts
 +++ b/e2e/tests/cloud-onboarding.spec.ts
-@@ -118,12 +118,38 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
+@@ -129,12 +129,38 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
            browser = yield* Browser;
          yield* onboarding.passkey;
          const email = yield* onboarding.freshEmail;
@@ -2133,7 +2136,7 @@ index 1f60a28..2d79959 100644
          // The Worker reads this browser's enrollment cookie, so the sign-in page it sends already
          // offers the passkey, rather than a placeholder the browser replaces.
          const html = yield* browser.use("Request the sign-in page's document", (page) =>
-@@ -160,6 +186,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
+@@ -171,6 +197,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
          yield* browser.use("Choose Not now", (page) =>
            page.getByRole("button", { name: "Not now", exact: true }).click(),
          );
@@ -2150,7 +2153,7 @@ index 1f60a28..2d79959 100644
          yield* onboarding.emailSignIn(email);
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
-index 0000000..9571efc
+index 00000000..9571efc7
 --- /dev/null
 +++ b/e2e/tests/embedded-app-ui.spec.ts
 @@ -0,0 +1,736 @@
@@ -2891,32 +2894,34 @@ index 0000000..9571efc
 +  );
 +});
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
-index ef2ad38..86de6db 100644
+index 0b547fd8..1d5485d7 100644
 --- a/packages/apps/src/implementation/ui-serving.ts
 +++ b/packages/apps/src/implementation/ui-serving.ts
-@@ -29,6 +29,7 @@ export const appDocument = <E, R>(options: {
+@@ -65,6 +65,7 @@ export const appDocument = <E, R>(options: {
+   readonly version: string;
    /** The account IDs the page runs with, by requirement. */
    readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
-   readonly origin: string;
 +  readonly parentOrigin?: string | undefined;
    readonly accounts?: UiAccountNotice | undefined;
    readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
  }) =>
-@@ -78,7 +79,11 @@ export const appDocument = <E, R>(options: {
+@@ -94,9 +95,13 @@ export const appDocument = <E, R>(options: {
        telemetry === undefined
          ? ""
          : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
--    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
 +    const ready =
 +      options.parentOrigin === undefined
 +        ? ""
 +        : `<script>addEventListener("load",()=>parent.postMessage({type:"executor:app-ready"},${JSON.stringify(options.parentOrigin).replaceAll("<", "\\u003c")}))</script>`;
-+    const boot = `${ready}${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
+     // The watcher is inline so a page costs no extra request. An inline module runs after
+     // parsing, as the deferred file it replaces did.
+-    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
++    const boot = `${ready}${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
      return HttpServerResponse.text(
        versionDocument(new TextDecoder().decode(document.body), options.version).replace(
          "<!--executor-ui-->",
 diff --git a/packages/dashboard-start/src/implementation/in-process.ts b/packages/dashboard-start/src/implementation/in-process.ts
-index b16d38a..d42d331 100644
+index b16d38aa..d42d331f 100644
 --- a/packages/dashboard-start/src/implementation/in-process.ts
 +++ b/packages/dashboard-start/src/implementation/in-process.ts
 @@ -3,7 +3,7 @@
@@ -2951,7 +2956,7 @@ index b16d38a..d42d331 100644
      } satisfies DocumentApi,
      seal: () => {
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index b801a57..ff52c9e 100644
+index a326c283..c2c57ef8 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
 @@ -97,6 +97,7 @@ export interface MutationProps<Input, A, E> {
@@ -2963,25 +2968,25 @@ index b801a57..ff52c9e 100644
    "schedules",
    "skills",
 diff --git a/packages/ui/src/contracts/display.ts b/packages/ui/src/contracts/display.ts
-index 5b1087e..af872fa 100644
+index 5b1087ed..af872fa5 100644
 --- a/packages/ui/src/contracts/display.ts
 +++ b/packages/ui/src/contracts/display.ts
 @@ -10,7 +10,7 @@ export const DisplayFormat = Schema.Struct({ locale: Schema.String, timeZone: Sc
  export type DisplayFormat = typeof DisplayFormat.Type;
-
+ 
  /** Saved by the browser so later documents render its local time on the server. */
 -export const timeZoneCookie = "executor-tz";
 +export const timeZoneCookie = (secure = false) => `${secure ? "__Host-" : ""}executor-tz`;
-
+ 
  const supported = (format: DisplayFormat): boolean => {
    try {
 diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
-index 8fce008..c210943 100644
+index cc65d8f2..d651cfac 100644
 --- a/packages/ui/src/implementation/dashboard/app-detail.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
 @@ -25,6 +25,7 @@ import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
-
+ 
  const sections = [
 +  { view: "app", label: "App" },
    { view: "overview", label: "Overview" },
@@ -3007,7 +3012,7 @@ index 8fce008..c210943 100644
 @@ -79,19 +83,52 @@ const contentClasses = {
    versions: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
  } as const;
-
+ 
 +/**
 + * Whether the App tab exists. `pending` holds its place while a direct link waits for the app and
 + * its access, so the tab neither pops in nor shows a screen nobody has authorized yet.
@@ -3186,7 +3191,7 @@ index 8fce008..c210943 100644
    );
  }
 diff --git a/packages/ui/src/implementation/dashboard/app-loading.tsx b/packages/ui/src/implementation/dashboard/app-loading.tsx
-index e075817..dfd378d 100644
+index e075817b..dfd378d7 100644
 --- a/packages/ui/src/implementation/dashboard/app-loading.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-loading.tsx
 @@ -1,6 +1,6 @@
@@ -3262,7 +3267,7 @@ index e075817..dfd378d 100644
      </AppDetailLayout>
    );
 diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
-index 026079a..6ff45ba 100644
+index 026079ac..6ff45bae 100644
 --- a/packages/ui/src/implementation/dashboard/apps.tsx
 +++ b/packages/ui/src/implementation/dashboard/apps.tsx
 @@ -1,4 +1,5 @@
@@ -3313,7 +3318,7 @@ index 026079a..6ff45ba 100644
                        <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                          {needsSignIn ? "Needs sign-in" : "Account unavailable"}
 diff --git a/packages/ui/src/implementation/hooks/display-format.ts b/packages/ui/src/implementation/hooks/display-format.ts
-index 185b526..a063346 100644
+index 185b526c..a0633465 100644
 --- a/packages/ui/src/implementation/hooks/display-format.ts
 +++ b/packages/ui/src/implementation/hooks/display-format.ts
 @@ -38,7 +38,7 @@ export function DisplayFormatSync() {
@@ -3326,7 +3331,7 @@ index 185b526..a063346 100644
    return null;
  }
 diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
-index e996647..48f6422 100644
+index eb6f8b4d..2b663048 100644
 --- a/apps/hosted/server/src/contracts/organization.ts
 +++ b/apps/hosted/server/src/contracts/organization.ts
 @@ -14,7 +14,7 @@ import {
@@ -3338,7 +3343,7 @@ index e996647..48f6422 100644
    AppId,
    OwnerId,
    HttpUrl,
-@@ -52,6 +52,12 @@ export const organizationHandle = (name: string, maxLength = organizationSlugMax
+@@ -53,6 +53,12 @@ export const organizationHandle = (name: string, maxLength = organizationSlugMax
  /** Explicit API target. Resolution rejects collisions between the ID and slug namespaces. */
  export const OrganizationReference = Schema.Union([OrganizationId, OrganizationSlug]);
  export type OrganizationReference = typeof OrganizationReference.Type;
@@ -3351,7 +3356,7 @@ index e996647..48f6422 100644
  /** An icon is an HTTPS image, a private uploaded-image path, or null. */
  export const OrganizationLogo = Schema.NullOr(
    Schema.String.check(
-@@ -183,7 +189,7 @@ export class OrganizationIcons extends Context.Service<
+@@ -182,7 +188,7 @@ export class OrganizationIcons extends Context.Service<
  export const Inventory = Schema.Struct({
    /** The accounts the caller linked to each listed app and may use. */
    links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
@@ -3361,7 +3366,7 @@ index e996647..48f6422 100644
    accounts: Schema.Array(
      Schema.Struct({ ...Account.fields, health: Schema.optionalKey(AccountHealth) }),
 diff --git a/apps/hosted/server/src/contracts/resource-access.ts b/apps/hosted/server/src/contracts/resource-access.ts
-index f90ca28..995c83f 100644
+index f90ca288..995c83f7 100644
 --- a/apps/hosted/server/src/contracts/resource-access.ts
 +++ b/apps/hosted/server/src/contracts/resource-access.ts
 @@ -3,7 +3,6 @@ import { RequiredAction } from "./authorization.ts";
@@ -3378,7 +3383,7 @@ index f90ca28..995c83f 100644
    RequireOrganization,
 +  AppScreenRecord,
  } from "./organization.ts";
-
+ 
  /** Concurrent settings updates compare an opaque revision before changing any grant. */
 @@ -131,7 +131,7 @@ export const ResourceDirectory = Schema.Struct({
    pendingApp: Schema.Boolean,
@@ -3390,18 +3395,18 @@ index f90ca28..995c83f 100644
        /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
        linkedAccounts: Schema.Array(AccountId),
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index e9ad51b..e80f848 100644
+index 7fced3bd..984320e3 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -21,6 +21,7 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
- import { OrganizationTombstones } from "../contracts/organization-removal.ts";
+@@ -23,6 +23,7 @@ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
  import { requireOrganizationAdmin } from "./access.ts";
  import { callerLinkedAccounts } from "./app-accounts.ts";
+ import { CurrentPrincipal, CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
 +import { appUiIndicators } from "./app-ui.ts";
- import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
  import { APIError } from "better-auth/api";
  import { ErrorReporter, Effect, Layer, Schema } from "effect";
-@@ -227,7 +228,8 @@ export const inventory = (owner: OwnerId) =>
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -234,7 +235,8 @@ export const inventory = (owner: OwnerId) =>
      const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
      // Membership is read once for both the app and the account policies.
      const actor = yield* currentResourceAuthority;
@@ -3412,7 +3417,7 @@ index e9ad51b..e80f848 100644
        ? yield* executor.accounts
            .list({ owner })
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 0faaaff..c436ccd 100644
+index 0faaaff8..c436ccd7 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -28,6 +28,7 @@ import {
@@ -3420,7 +3425,7 @@ index 0faaaff..c436ccd 100644
    requireAccountAccess,
  } from "./resource-policy.ts";
 +import { appUiIndicators } from "./app-ui.ts";
-
+ 
  /** Shared resource listing for the normal app/account lists and an explicit management view. */
  export const resourceDirectory = (view: "available" | "managed" = "available") =>
 @@ -43,12 +44,18 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
@@ -3444,7 +3449,7 @@ index 0faaaff..c436ccd 100644
      const links = yield* callerLinkedAccounts(usableApps);
      const appEntries = listedApps.map(({ app, access }) => ({
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
-index 2f6477c..20dc40d 100644
+index 2f6477c7..20dc40d0 100644
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
 @@ -2,6 +2,7 @@ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/so
@@ -3465,7 +3470,7 @@ index 2f6477c..20dc40d 100644
  /** Retained source is administrative data; versions from other owners stay private. */
  export const appVersions = (owner: OwnerId, app: AppId) =>
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
-index 05269d7..167bdb0 100644
+index 05269d79..167bdb0f 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
 @@ -14,7 +14,7 @@ import { RuntimeContext } from "alchemy";
@@ -3490,10 +3495,10 @@ index 05269d7..167bdb0 100644
    );
    return { origin, blobs, sdk, sql, withDatabase, services };
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index f11ed1d..040f8f9 100644
+index 8e011957..93df2214 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -43,8 +43,13 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+@@ -45,8 +45,13 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
  import { deliverEvents } from "@executor-js/sdk/scheduling";
  import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
  import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
@@ -3509,7 +3514,7 @@ index f11ed1d..040f8f9 100644
  import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { SqlClient } from "effect/sql";
-@@ -208,7 +213,16 @@ export const selfHostExecutorServices = <E, R>(
+@@ -216,7 +221,16 @@ export const selfHostExecutorServices = <E, R>(
          ),
          Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
          Layer.succeed(OrganizationDefaults, initialize),
@@ -3528,10 +3533,10 @@ index f11ed1d..040f8f9 100644
          noOrganizationRemovals,
        );
 diff --git a/apps/hosted/web/src/implementation/components/page-pending.tsx b/apps/hosted/web/src/implementation/components/page-pending.tsx
-index e57cae7..28e1ee7 100644
+index 4c1481ab..4f72f4cd 100644
 --- a/apps/hosted/web/src/implementation/components/page-pending.tsx
 +++ b/apps/hosted/web/src/implementation/components/page-pending.tsx
-@@ -120,11 +120,13 @@ export function PagePending({
+@@ -122,11 +122,13 @@ export function PagePending({
      const selected = parseAppSearch(search);
      return (
        <AppDetailPending
@@ -3547,7 +3552,7 @@ index e57cae7..28e1ee7 100644
          selectedTool={action === "setup" ? undefined : selected.tool}
          back={
 diff --git a/e2e/tests/app-domain-status.spec.ts b/e2e/tests/app-domain-status.spec.ts
-index d1f3649..6751fa3 100644
+index d1f3649d..6751fa33 100644
 --- a/e2e/tests/app-domain-status.spec.ts
 +++ b/e2e/tests/app-domain-status.spec.ts
 @@ -55,8 +55,9 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
@@ -3563,7 +3568,7 @@ index d1f3649..6751fa3 100644
            page.getByRole("status").filter({ hasText: "Preparing app domain…" }).waitFor(),
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
 new file mode 100644
-index 0000000..241c4e2
+index 00000000..241c4e21
 --- /dev/null
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
 @@ -0,0 +1,273 @@
@@ -3841,7 +3846,7 @@ index 0000000..241c4e2
 +
 +});
 diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
-index 6ae3aac..ce7bcb2 100644
+index 6ae3aac3..ce7bcb2b 100644
 --- a/packages/apps/src/implementation/ui-client.ts
 +++ b/packages/apps/src/implementation/ui-client.ts
 @@ -92,12 +92,41 @@ export const createAppClient = () => {

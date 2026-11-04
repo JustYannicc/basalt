@@ -1,9 +1,11 @@
 {
   "identity": "executor-durable-workflow-input",
   "file": "0063-durable-workflow-input.patch",
-  "content_sha256": "049f35345cbcef9c8943ba9da60fd25d153e333e77e74f13a4c1c6b004acb9dc",
+  "content_sha256": "6e6c6e0cbcb9b8a9879beeebf7973da8a3bc8005261fe26e1613d7ce1d07f93d",
   "kind": "upstream",
   "upstream_pull_request": 2471,
   "database_sensitive": true,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "049f35345cbcef9c8943ba9da60fd25d153e333e77e74f13a4c1c6b004acb9dc",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

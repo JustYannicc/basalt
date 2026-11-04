@@ -1,9 +1,11 @@
 {
   "identity": "executor-safe-storage-migration-errors",
   "file": "0043-safe-storage-migration-errors.patch",
-  "content_sha256": "05c136ab93e4f843e2d85d7d82562524957ca89786662406a5c0c362c0ede8a6",
+  "content_sha256": "631bdac4fa7c331f5537acbbf24541f5a96161623920de599c9d333182898bc3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "05c136ab93e4f843e2d85d7d82562524957ca89786662406a5c0c362c0ede8a6",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

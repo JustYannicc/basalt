@@ -1,9 +1,11 @@
 {
   "identity": "basalt-account-key-mirrors",
   "file": "0066-account-key-mirrors.patch",
-  "content_sha256": "8576066ae0f8752c9e39b07d65e65fa68ef3caac058d1d88388b51547896a416",
+  "content_sha256": "911bfce3c772d3329df41ad4c5097c263adf40af5f39d63c90ac738d468994e1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "8576066ae0f8752c9e39b07d65e65fa68ef3caac058d1d88388b51547896a416",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

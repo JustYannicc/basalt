@@ -1,0 +1,2731 @@
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+index 1ed16b9..193e27b 100644
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+@@ -19,7 +19,7 @@ select pool.value ->> 'app' as app, pool.value ->> 'account' as replacement,
+       and d.requirements::jsonb #>> '{accounts,pool,cardinality}' = 'one') as declared
+ from organization o cross join lateral
+   jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+-where o.id = $1 and pool.key = $4`;
++where o.id = $1 and coalesce(pool.value ->> 'owner', pool.key) = $4`;
+ 
+ export const replacementLinkQuery = `
+ select app, requirement, subject from hosted_app_account_links
+@@ -48,7 +48,7 @@ export const dependencyQueries = {
+   defaults: `select o.id, p.key as person from organization o cross join lateral
+     jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
+     where p.value #>> '{}' = $1 order by o.id, p.key limit 101`,
+-  pools: `select o.id, p.key as person, p.value ->> 'app' as app from organization o
++  pools: `select o.id, coalesce(p.value ->> 'owner', p.key) as person, p.value ->> 'app' as app from organization o
+     cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
+     where p.value ->> 'account' = $1 order by o.id, p.key limit 101`,
+   acquisitions: `select account as id from executor_account_acquisitions where account = $1 limit 101`,
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+index 953decb..041775b 100644
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -46,7 +46,7 @@ const queries = {
+   defaults: `select o.id as organization, p.key as person, p.value #>> '{}' as account
+     from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
+     order by o.id, p.key limit 1001`,
+-  pools: `select o.id as organization, p.key as person, p.value ->> 'app' as app,
++  pools: `select o.id as organization, coalesce(p.value ->> 'owner', p.key) as person, p.value ->> 'app' as app,
+     p.value ->> 'version' as version, p.value ->> 'account' as account
+     from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
+     order by o.id, p.key limit 1001`,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index 2c95e7f..30e249a 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -17,7 +17,7 @@ export const inventoryQueries = {
+     p.organization_id, p.creator_id, p.personal_user_id, p.kind, p.audience, p.revision
+     from executor_accounts a left join hosted_account_access p on p.account_id = a.id and p.organization_id = $1
+     where a.owner = 'organization:' || $1 order by a.id limit 2001`,
+-  pools: `select o.id as organization, entry.key as owner, entry.value ->> 'app' as app,
++  pools: `select o.id as organization, coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'app' as app,
+     entry.value ->> 'version' as version, entry.value ->> 'authorization' as authorization,
+     entry.value ->> 'membership' as membership
+     from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+@@ -27,13 +27,14 @@ export const inventoryQueries = {
+     join executor_accounts account on account.id = l.account
+     where a.owner = 'organization:' || $1 and account.owner = a.owner
+     order by l.app, l.requirement, l.account, l.subject nulls first limit 2001`,
+-  "retired-tokens": `select a.id, a.owner, a.provider, a.method,
++  "retired-tokens": `select distinct a.id, a.owner, a.provider, a.method,
+     p.organization_id, p.creator_id, p.kind, p.revision
+     from executor_accounts a
+     join hosted_account_access p on p.account_id = a.id and p.organization_id = $1 and p.kind = 'personal'
+     join organization team on team.id = $1
+-    join executor_apps app on app.owner = a.owner
+-      and app.id = coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) -> p.personal_user_id ->> 'app'
++    cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++    join executor_apps app on app.owner = a.owner and app.id = pool.value ->> 'app'
++      and coalesce(pool.value ->> 'owner', pool.key) = p.personal_user_id
+     where a.owner = 'organization:' || $1 and a.method = 'token'
+       and exists (select 1 from executor_deployments d where d.code = app.code
+         and d.requirements::jsonb -> 'accounts' -> 'pool' ->> 'provider' = a.provider)
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 562c186..3be0bb3 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -4,6 +4,7 @@ import { HostedWorkflowInputs } from "./workflow-inputs.ts";
+ import { HostedAppAccounts } from "./app-accounts.ts";
+ import { HostedResourceAccess } from "./resource-access.ts";
+ import { HostedPoolUsage } from "./pool-usage.ts";
++import { HostedPools } from "./pools.ts";
+ import { HostedOAuthClients } from "./oauth-clients.ts";
+ import { HostedSchedules } from "./schedules.ts";
+ import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
+@@ -183,6 +184,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedGroups,
+     HostedResourceAccess,
+     HostedPoolUsage,
++    HostedPools,
+     HostedModels,
+     HostedOAuthClients,
+     HostedAppData,
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+index 26bb97b..ccefa23 100644
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -1,4 +1,5 @@
+ import { AppServiceIdentity } from "./service-install.ts";
++import { PoolCreationId, PoolCreationConflict, PoolCreationUnavailable } from "./pool-creation.ts";
+ import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "@executor-js/sdk/core";
+ import {
+   VersionDisplay,
+@@ -55,6 +56,7 @@ export const InstallApp = Schema.Struct({
+   ...CatalogImport.fields,
+   name: Schema.NonEmptyString,
+   newInstance: Schema.optionalKey(Schema.Boolean),
++  requestId: Schema.optionalKey(PoolCreationId),
+ });
+ /** Flat app fields preserve existing API clients; every result states whether it created anything. */
+ export const AppInstallResult = Schema.Struct({
+@@ -126,7 +128,13 @@ export const HostedApps = HttpApiGroup.make("apps")
+       params,
+       payload: InstallApp,
+       success: AppInstallResult,
+-      error: [...deployErrors, CatalogImportFailed, CatalogUnavailable],
++      error: [
++        ...deployErrors,
++        CatalogImportFailed,
++        CatalogUnavailable,
++        PoolCreationUnavailable,
++        PoolCreationConflict,
++      ],
+     })
+       .annotate(RequiredAction, "manage")
+       .annotate(
+diff --git a/apps/hosted/server/src/contracts/pool-creation.ts b/apps/hosted/server/src/contracts/pool-creation.ts
+new file mode 100644
+index 0000000..8624684
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-creation.ts
+@@ -0,0 +1,26 @@
++import { AppName } from "@executor-js/sdk/core";
++import { ApiError } from "@executor-js/utils/api-error";
++import { Schema } from "effect";
++
++export const PoolCreationId = Schema.String.check(
++  Schema.isPattern(
++    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/u,
++  ),
++);
++export const CreatePool = Schema.Struct({
++  name: AppName,
++  requestId: PoolCreationId,
++  newInstance: Schema.optionalKey(Schema.Boolean),
++});
++
++export const PoolCreationUnavailable = ApiError.define({
++  tag: "PoolCreationUnavailable",
++  status: 503,
++  message: "Pool creation is unavailable right now. Retry this request with the same name.",
++});
++export const PoolCreationConflict = ApiError.define({
++  tag: "PoolCreationConflict",
++  status: 409,
++  message:
++    "This creation request was already used. Keep the original name when retrying, or start a new request.",
++});
+diff --git a/apps/hosted/server/src/contracts/pools.ts b/apps/hosted/server/src/contracts/pools.ts
+new file mode 100644
+index 0000000..975fec1
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pools.ts
+@@ -0,0 +1,29 @@
++import { AppNotFound, AppNameTaken, AppSlugTaken, StorageError } from "@executor-js/sdk/core";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { AppInstallResult } from "./apps.ts";
++import { CreatePool, PoolCreationUnavailable, PoolCreationConflict } from "./pool-creation.ts";
++import { RequiredAction } from "./authorization.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++
++export const HostedPools = HttpApiGroup.make("pools")
++  .add(
++    HttpApiEndpoint.post("create", "/api/organizations/:organization/pools", {
++      params: { organization: OrganizationReference },
++      payload: CreatePool,
++      success: AppInstallResult,
++      error: [
++        StorageError,
++        AppNotFound,
++        OrganizationForbidden,
++        PoolCreationUnavailable,
++        PoolCreationConflict,
++        AppNameTaken,
++        AppSlugTaken,
++      ],
++    }).annotate(RequiredAction, "manage"),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index 421266d..2f25bf9 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -10,6 +10,7 @@ import { hostedAppAccess } from "../app-management.ts";
+ import { hostedResourceAccessHandlers } from "./resource-access.ts";
+ import { hostedModelHandlers } from "./model-bindings.ts";
+ import { hostedPoolUsageHandlers } from "./pool-usage.ts";
++import { hostedPoolHandlers } from "./pools.ts";
+ import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
+ import { hostedScheduleHandlers } from "./schedules.ts";
+ /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
+@@ -84,6 +85,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedGroupHandlers,
+   hostedResourceAccessHandlers,
+   hostedPoolUsageHandlers,
++  hostedPoolHandlers,
+   hostedModelHandlers,
+   hostedOAuthClientHandlers,
+   hostedWebhookSetupHandlers,
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+index 5e76f89..dcd223e 100644
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -1,4 +1,6 @@
+ import { catalogService, installService, mcpService } from "./service-installs.ts";
++import { createPool } from "./pools.ts";
++import { poolCatalogPackage } from "./pool-catalog.ts";
+ import { projectAppServices } from "./service-install-records.ts";
+ import { unknownEntryRecovery } from "@executor-js/catalog/contracts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+@@ -107,6 +109,12 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+     const catalog = yield* HostedCatalog;
+     const entry = (yield* catalog.list).find((entry) => entry.id === input.entry);
+     if (entry === undefined) return yield* missingEntry(input.entry);
++    if (input.entry === poolCatalogPackage)
++      return yield* createPool({
++        name: input.name,
++        requestId: input.requestId ?? (yield* Effect.sync(() => crypto.randomUUID())),
++        newInstance: input.newInstance ?? false,
++      });
+     return yield* installService(
+       owner,
+       catalogService(entry),
+diff --git a/apps/hosted/server/src/implementation/catalog.ts b/apps/hosted/server/src/implementation/catalog.ts
+index eb0907c..c784bac 100644
+--- a/apps/hosted/server/src/implementation/catalog.ts
++++ b/apps/hosted/server/src/implementation/catalog.ts
+@@ -1,12 +1,14 @@
+ import type { HostedApiDocument } from "../contracts/api.ts";
+ /** Supply shared catalog reads and source preparation to hosted handlers. */
+-import { createCatalog } from "@executor-js/catalog";
++import { CatalogUnavailable, catalogServices, createCatalog } from "@executor-js/catalog";
+ import { Effect, Layer, Option } from "effect";
+ import type { HostEgress } from "@executor-js/utils/url-policy";
+ import { HostedCatalog } from "../contracts/catalog.ts";
+ import { executorCatalogEntry, executorCopyOrigin } from "./executor-catalog-entry.ts";
+ import type { ClientMetadataSetting } from "./oauth-client-metadata.ts";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
++import { PoolAppSource } from "../contracts/pool-defaults.ts";
++import { poolCatalogEntry, poolCatalogPackage } from "./pool-catalog.ts";
+ 
+ /**
+  * Read the official app feed at `feedUrl` on request, after this installation's built-in Executor
+@@ -30,20 +32,35 @@ export const catalogLive = (
+         clientMetadataUrl: Option.getOrUndefined(Option.map(clientMetadata, ({ url }) => url)),
+         feedUrl,
+       });
+-      const executor = executorCatalogEntry(
+-        apiOrigin,
+-        yield* productBrandConfig.pipe(Effect.orDie),
+-      );
++      const brand = yield* productBrandConfig.pipe(Effect.orDie);
++      const executor = executorCatalogEntry(apiOrigin, brand);
++      const poolSource = yield* Effect.serviceOption(PoolAppSource);
++      const pool = Option.isSome(poolSource) ? poolCatalogEntry(brand) : undefined;
+       return HostedCatalog.of({
+         list: official.list.pipe(
+-          Effect.map((entries) => [
+-            executor,
+-            ...entries.filter((entry) => entry.id !== executor.id),
+-          ]),
++          Effect.flatMap((entries) =>
++            catalogServices([
++              executor,
++              ...(pool ? [pool] : []),
++              ...entries.filter((entry) => entry.id !== executor.id),
++            ]),
++          ),
+         ),
+         custom: official.custom,
+-        prepare: (input) =>
+-          input.entry === executor.id
++        prepare: (input) => {
++          if (input.entry === poolCatalogPackage && Option.isSome(poolSource))
++            return poolSource.value.files.pipe(
++              Effect.mapError(() => new CatalogUnavailable()),
++              Effect.map((files) => ({
++                files,
++                origin: {
++                  reference: "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
++                  name: poolCatalogPackage,
++                  commit: null,
++                },
++              })),
++            );
++          return input.entry === executor.id
+             ? Effect.all([Effect.promise(() => import("./executor-app.ts")), document]).pipe(
+                 Effect.flatMap(([{ executorAppSource }, document]) =>
+                   executorAppSource(apiOrigin, document),
+@@ -56,7 +73,8 @@ export const catalogLive = (
+                   },
+                 }),
+               )
+-            : official.prepare(input),
++            : official.prepare(input);
++        },
+       });
+     }),
+   );
+diff --git a/apps/hosted/server/src/implementation/model-bindings.ts b/apps/hosted/server/src/implementation/model-bindings.ts
+index 2ea5a18..67669c9 100644
+--- a/apps/hosted/server/src/implementation/model-bindings.ts
++++ b/apps/hosted/server/src/implementation/model-bindings.ts
+@@ -29,7 +29,8 @@ const declarations = (app: AppId, actor: ResourceAuthority) =>
+ export const modelPoolOwner = (pool: AppId, organization: string) =>
+   Effect.gen(function* () {
+     const sql = yield* policyDatabase;
+-    const rows = yield* sql`select entry.key as owner from organization o
++    const rows =
++      yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner from organization o
+     cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+     join executor_apps a on a.id = entry.value ->> 'app' and a.owner = 'organization:' || o.id
+     where o.id = ${organization} and a.id = ${pool}`;
+diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
+index 91a5658..12e664a 100644
+--- a/apps/hosted/server/src/implementation/pool-access-hook.ts
++++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
+@@ -3,7 +3,13 @@ import { AppId, StorageError, type HostAccessLifecycle } from "@executor-js/sdk/
+ import { Clock, Effect, Option, Redacted, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+-import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
++import {
++  accessPath,
++  accessPrefix,
++  accessTtl,
++  type AccessChange,
++  type PoolAudience,
++} from "./pool-access-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
+ import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
+ import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
+@@ -67,10 +73,11 @@ export const poolAccessLifecycle = (
+     Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
+       // JSON expands only this organization's recorded pools; deleted apps stay deleted.
+-      const rows = yield* sql`select app.id as pool, entry.key as owner, o.id as organization,
++      const rows =
++        yield* sql`select app.id as pool, coalesce(entry.value ->> 'owner', entry.key) as owner, o.id as organization,
+         app.name, entry.value ->> 'authorization' as authorization,
+         array(select distinct users.id from (
+-          select entry.key as id union select m."userId" from member m
++          select coalesce(entry.value ->> 'owner', entry.key) as id union select m."userId" from member m
+           where m."organizationId" = o.id
+           and ((access.audience = 'private' and access.creator_id = m."userId")
+             or access.audience = 'everyone' or (access.audience = 'groups' and exists (
+@@ -112,7 +119,7 @@ export const poolAccessLifecycle = (
+           users: policy?.users ?? [],
+           managers: policy?.managers ?? [],
+           authorization,
+-        };
++        } satisfies PoolAudience;
+       });
+     }).pipe(Effect.catch(() => new StorageError()));
+ 
+@@ -168,8 +175,12 @@ export const poolAccessLifecycle = (
+           const rows = yield* sql<{
+             pool: string;
+           }>`select app.id as pool from organization o
+-            join executor_apps app on app.id = o.metadata::jsonb -> 'basaltPools' -> ${user} ->> 'app'
+-              and app.owner = 'organization:' || o.id`.pipe(Effect.catch(() => new StorageError()));
++            cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++            join executor_apps app on app.id = entry.value ->> 'app'
++              and app.owner = 'organization:' || o.id
++            where coalesce(entry.value ->> 'owner', entry.key) = ${user}`.pipe(
++            Effect.catch(() => new StorageError()),
++          );
+           for (const row of rows) yield* send({ action: "pool-deleted", pool: row.pool });
+         }
+         yield* send({ action: "person-deleted", user });
+diff --git a/apps/hosted/server/src/implementation/pool-access-provenance.ts b/apps/hosted/server/src/implementation/pool-access-provenance.ts
+index 9d5196d..9b42a25 100644
+--- a/apps/hosted/server/src/implementation/pool-access-provenance.ts
++++ b/apps/hosted/server/src/implementation/pool-access-provenance.ts
+@@ -23,9 +23,9 @@ export const poolAccessRecords = ({ sql, organization, accounts }: HostManagedAc
+       join hosted_account_access p on p.account_id = a.id
+         and p.organization_id = ${organization} and p.kind = 'personal'
+       join "organization" team on team.id = ${organization}
+-      join executor_apps app on app.owner = a.owner
+-        and app.id = coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)
+-          -> p.personal_user_id ->> 'app'
++      cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++      join executor_apps app on app.owner = a.owner and app.id = pool.value ->> 'app'
++        and coalesce(pool.value ->> 'owner', pool.key) = p.personal_user_id
+       where a.owner = ${organizationOwner(organization)} and a.method = 'token'
+         and ${sql.in("a.id", tokens)}
+         and exists (select 1 from executor_deployments d where d.code = app.code
+diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+index 8627dea..16513c2 100644
+--- a/apps/hosted/server/src/implementation/pool-account-recovery.ts
++++ b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+@@ -4,7 +4,7 @@ import type { HostManagedRecoveryInput } from "../contracts/host-managed-account
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
+ import { usableAppLinks } from "./resource-policy.ts";
+-import { PoolRecords } from "./pool-records.ts";
++import { PoolRecords, poolRecordOwner } from "./pool-records.ts";
+ 
+ /** Called under the app/link and organization access locks, so concurrent views share one job. */
+ export const poolAccountRecovery =
+@@ -30,7 +30,8 @@ export const poolAccountRecovery =
+       const state = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]).pipe(Effect.option);
+       if (Option.isNone(state)) return undefined;
+       const owners = Object.entries(state.value.pools).filter(([, pool]) => pool.app === app.id);
+-      const owner = owners[0]?.[0];
++      const first = owners[0];
++      const owner = first === undefined ? undefined : poolRecordOwner(first[0], first[1]);
+       if (owners.length !== 1 || owner === undefined) return undefined;
+       const members =
+         yield* sql`select m.id from member m join "user" person on person.id = m."userId"
+diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+index 4496047..f16764c 100644
+--- a/apps/hosted/server/src/implementation/pool-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+@@ -23,9 +23,10 @@ export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: s
+         cursor: keyVersion,
+         jobs: sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
+           select ${poolRotationJobPrefix} || ${keyVersion} || ':' || gen_random_uuid()::text,
+-            'member', team.id, pool.key, now() + interval '15 minutes' from organization team
++            'member', team.id, coalesce(pool.value ->> 'owner', pool.key), now() + interval '15 minutes' from organization team
+           cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+-          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}`,
++          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}
++          group by team.id, coalesce(pool.value ->> 'owner', pool.key)`,
+       },
+       {
+         name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`,
+diff --git a/apps/hosted/server/src/implementation/pool-catalog.ts b/apps/hosted/server/src/implementation/pool-catalog.ts
+new file mode 100644
+index 0000000..f4abc37
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-catalog.ts
+@@ -0,0 +1,22 @@
++import { CatalogEntry } from "@executor-js/catalog/contracts";
++import type { ProductBrand } from "@executor-js/utils/product-brand";
++
++export const poolCatalogPackage = "basalt-pool";
++export const poolCatalogService = {
++  id: "@signalbox/pool",
++  mcp: [],
++  packages: [poolCatalogPackage],
++};
++
++export const poolCatalogEntry = (brand: ProductBrand) =>
++  CatalogEntry.make({
++    id: poolCatalogPackage,
++    package: poolCatalogPackage,
++    name: "Pool",
++    description:
++      "Create a model pool and choose the accounts it uses. Share accounts across pools without signing in again.",
++    category: "AI",
++    auth: [],
++    icons: [{ src: brand.logo }],
++    service: poolCatalogService,
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index d403400..477787b 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -1,4 +1,4 @@
+-/** One private pool app per verified organization owner. Compile before locking setup metadata. */
++/** Reconcile each recorded pool without holding SQL locks during compilation. */
+ import { pinnedOnly } from "@executor-js/app-management/data-steps";
+ import {
+   StorageError,
+@@ -20,7 +20,7 @@ export { PoolAppSource } from "../contracts/pool-defaults.ts";
+ export { poolAppVersion, poolAppAssetPath } from "./pool-app-source.ts";
+ import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
+ import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
+-import { PoolRecords } from "./pool-records.ts";
++import { PoolRecords, ownedPoolRecords } from "./pool-records.ts";
+ 
+ const basaltPools = "basaltPools";
+ 
+@@ -70,12 +70,13 @@ export const poolName = (name: string, email: string, suffix = 1) => {
+   return `${person.slice(0, 100)}'s pool${suffix === 1 ? "" : ` ${suffix}`}`;
+ };
+ 
+-export const poolDefaults = (
++const reconcilePool = (
+   executor: Executor,
+   key: Option.Option<Redacted.Redacted<string>>,
+   organization: OrganizationId,
+   user: string,
+   rotationOnly = false,
++  recordedKey?: string,
+ ) => {
+   let intent = false;
+   return Effect.gen(function* () {
+@@ -91,7 +92,7 @@ export const poolDefaults = (
+       from organization where id = ${organization}`;
+     if (rows.length !== 1) return;
+     const { pools } = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
+-    const saved = Object.hasOwn(pools, user) ? pools[user] : undefined;
++    const saved = recordedKey === undefined ? undefined : pools[recordedKey];
+     const tokenKeyVersion = yield* poolTokenKeyVersion(key.value);
+     const members = yield* sql`select "user".name, "user".email from member
+       join "user" on "user".id = member."userId"
+@@ -127,15 +128,18 @@ export const poolDefaults = (
+           for share of member, "user"`;
+         return eligible.length === 1 ? state : undefined;
+       });
+-    const record = (pool: (typeof PoolRecords.Type.pools)[string]) =>
+-      // Other writers own fields such as the authorization handoff. Keep their stored bytes.
+-      sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++    const record = (pool: (typeof PoolRecords.Type.pools)[string]) => {
++      const recordKey = recordedKey ?? pool.app;
++      const value = saved === undefined ? { ...pool, owner: user, primary: true } : pool;
++      // Policy handoff fields belong to their own migration and must keep their stored bytes.
++      return sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
+         array[${basaltPools}], coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) ||
+-        jsonb_build_object(${user}::text,
+-          (coalesce(metadata::jsonb -> ${basaltPools} -> ${user}, '{}'::jsonb)
++        jsonb_build_object(${recordKey}::text,
++          (coalesce(metadata::jsonb -> ${basaltPools} -> ${recordKey}, '{}'::jsonb)
+             - array['app', 'version', 'bundle', 'account', 'tokenKeyVersion']::text[])
+-          || ${JSON.stringify(pool)}::jsonb))::text
++          || ${JSON.stringify(value)}::jsonb))::text
+         where id = ${organization}`;
++    };
+     if (saved !== undefined) {
+       // One line per pool per job says what this reconcile decided, with ids and counts only.
+       let decision:
+@@ -235,7 +239,7 @@ export const poolDefaults = (
+         Effect.gen(function* () {
+           const current = yield* lockedState(!rotating);
+           if (current === undefined) return false;
+-          const recorded = Object.hasOwn(current.pools, user) ? current.pools[user] : undefined;
++          const recorded = recordedKey === undefined ? undefined : current.pools[recordedKey];
+           // Another installer may have advanced the record while this compile was in flight.
+           if (
+             recorded?.app !== saved.app ||
+@@ -298,7 +302,7 @@ export const poolDefaults = (
+         const current = yield* lockedState();
+         if (
+           current === undefined ||
+-          Object.hasOwn(current.pools, user) ||
++          ownedPoolRecords(current.pools, user).some(([, record]) => record.primary !== false) ||
+           Object.values(current.pools).some((pool) => pool.app === app.id) ||
+           app.activeVersion === null
+         )
+@@ -349,7 +353,9 @@ export const poolDefaults = (
+           and access.creator_id = ${user} and access.audience = 'private'
+           and not exists (
+             select 1 from jsonb_each(coalesce(team.metadata::jsonb -> ${basaltPools}, '{}'::jsonb)) saved
+-            where saved.key <> ${user} and saved.value ->> 'app' = ${existing.id}
++            where (coalesce(saved.value ->> 'owner', saved.key) <> ${user}
++              or saved.value -> 'primary' = 'false'::jsonb)
++              and saved.value ->> 'app' = ${existing.id}
+           )`;
+       if (ours.length === 1) {
+         candidate = existing;
+@@ -365,7 +371,7 @@ export const poolDefaults = (
+         const current = yield* lockedState();
+         if (
+           current === undefined ||
+-          Object.hasOwn(current.pools, user) ||
++          ownedPoolRecords(current.pools, user).some(([, record]) => record.primary !== false) ||
+           Object.values(current.pools).some((pool) => pool.app === app.id)
+         ) {
+           // Compilation has already committed this candidate. Never delete it or mutate the
+@@ -404,6 +410,33 @@ export const poolDefaults = (
+   );
+ };
+ 
++/** Every pool has an independent app and token, even when its creator owns several. */
++export const poolDefaults = (
++  executor: Executor,
++  key: Option.Option<Redacted.Redacted<string>>,
++  organization: OrganizationId,
++  user: string,
++  rotationOnly = false,
++) =>
++  Effect.gen(function* () {
++    if (Option.isNone(key))
++      return yield* reconcilePool(executor, key, organization, user, rotationOnly);
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) as pools
++    from organization where id = ${organization}`;
++    if (rows.length !== 1) return;
++    const { pools } = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
++    const records = ownedPoolRecords(pools, user);
++    if (records.length === 0)
++      return yield* reconcilePool(executor, key, organization, user, rotationOnly);
++    for (const [recordKey] of records) {
++      yield* reconcilePool(executor, key, organization, user, rotationOnly, recordKey);
++    }
++    // Explicit additional pools cannot suppress the person's default during onboarding.
++    if (!rotationOnly && records.every(([, record]) => record.primary === false))
++      yield* reconcilePool(executor, key, organization, user);
++  }).pipe(Effect.mapError(() => new StorageError()));
++
+ /** Ordinary setup commits first; rotation jobs have authority only to renew existing pool tokens. */
+ export const withPoolDefaults = (
+   executor: Executor,
+diff --git a/apps/hosted/server/src/implementation/pool-records.ts b/apps/hosted/server/src/implementation/pool-records.ts
+index c43953a..daedb66 100644
+--- a/apps/hosted/server/src/implementation/pool-records.ts
++++ b/apps/hosted/server/src/implementation/pool-records.ts
+@@ -1,15 +1,24 @@
+ import { AccountId, AppId, VersionId } from "@executor-js/sdk/core";
+ import { Schema } from "effect";
+ 
++export const PoolRecord = Schema.Struct({
++  app: AppId,
++  version: VersionId,
++  bundle: Schema.optionalKey(Schema.String),
++  account: Schema.optionalKey(AccountId),
++  tokenKeyVersion: Schema.optionalKey(Schema.String),
++  owner: Schema.optionalKey(Schema.String),
++  primary: Schema.optionalKey(Schema.Boolean),
++  requestId: Schema.optionalKey(Schema.String),
++  requestName: Schema.optionalKey(Schema.String),
++});
++
+ export const PoolRecords = Schema.Struct({
+-  pools: Schema.Record(
+-    Schema.String,
+-    Schema.Struct({
+-      app: AppId,
+-      version: VersionId,
+-      bundle: Schema.optionalKey(Schema.String),
+-      account: Schema.optionalKey(AccountId),
+-      tokenKeyVersion: Schema.optionalKey(Schema.String),
+-    }),
+-  ),
++  pools: Schema.Record(Schema.String, PoolRecord),
+ });
++
++// Legacy owner-keyed records keep their IDs; new records name their owner explicitly.
++export const poolRecordOwner = (key: string, record: typeof PoolRecord.Type) => record.owner ?? key;
++
++export const ownedPoolRecords = (records: typeof PoolRecords.Type.pools, user: string) =>
++  Object.entries(records).filter(([key, record]) => poolRecordOwner(key, record) === user);
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index bff1d74..c75cc9d 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -81,7 +81,7 @@ const withPool = <A, E, R>(
+         const actor = yield* lockCurrentActor;
+         yield* requireAppAccessAs(actor, app, "manage");
+         const rows =
+-          yield* sql`select entry.key as owner, entry.value ->> 'authorization' as authorization
++          yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
+         from organization o
+         cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+         join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+diff --git a/apps/hosted/server/src/implementation/pools.ts b/apps/hosted/server/src/implementation/pools.ts
+new file mode 100644
+index 0000000..ef65db3
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pools.ts
+@@ -0,0 +1,173 @@
++import { AppNameTaken, AppSlugTaken, StorageError, type App } from "@executor-js/sdk/core";
++import { Config, Effect, Option, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { HttpApiBuilder } from "effect/http-api";
++import { HostedApi } from "../contracts/api.ts";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
++import { PoolAppSource } from "../contracts/pool-defaults.ts";
++import {
++  CreatePool,
++  PoolCreationConflict,
++  PoolCreationUnavailable,
++} from "../contracts/pool-creation.ts";
++import { ScheduleWakeup } from "../contracts/schedules.ts";
++import { lockAppLinks } from "./app-accounts.ts";
++import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
++import { ownedPoolRecords, PoolRecords } from "./pool-records.ts";
++import { currentResourceAuthority, policyDatabase } from "./resource-policy.ts";
++import { poolAppSetup } from "./resource-lifecycle.ts";
++import { poolCatalogPackage, poolCatalogService } from "./pool-catalog.ts";
++import { installService } from "./service-installs.ts";
++
++/** Compilation precedes publication; the app, token, link and record commit together. */
++const createPoolApp = (input: typeof CreatePool.Type, replayed: () => void) =>
++  Effect.gen(function* () {
++    const actor = yield* currentResourceAuthority;
++    if (actor.role !== "owner") return yield* new OrganizationForbidden();
++    const { owner, organization } = yield* CurrentOrganization;
++    const user = yield* CurrentUserId;
++    if (user === undefined) return yield* new OrganizationForbidden();
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const sql = yield* policyDatabase;
++    const eligible = yield* sql`select m.id from member m join "user" u on u.id = m."userId"
++      where m."organizationId" = ${organization} and m."userId" = ${user}
++        and m.role = 'owner' and u."emailVerified" = true`;
++    if (eligible.length !== 1) return yield* new OrganizationForbidden();
++    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(
++      Config.option,
++      Effect.mapError(() => new PoolCreationUnavailable()),
++    );
++    const source = yield* Effect.serviceOption(PoolAppSource);
++    if (Option.isNone(key) || Option.isNone(source)) return yield* new PoolCreationUnavailable();
++    const seed = source.value;
++    const signingKey = key.value;
++    const tokenKeyVersion = yield* poolTokenKeyVersion(signingKey);
++    const records = (lock = false) =>
++      Effect.gen(function* () {
++        const rows =
++          yield* sql`select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) as pools
++      from organization where id = ${organization} ${lock ? sql`for no key update` : sql``}`;
++        if (rows.length !== 1) return yield* new StorageError();
++        return yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
++      });
++    const replay = Effect.gen(function* () {
++      const { pools } = yield* records();
++      const matches = ownedPoolRecords(pools, user).filter(
++        ([, record]) => record.requestId === input.requestId,
++      );
++      if (matches.length === 0) return undefined;
++      const saved = matches[0]?.[1];
++      if (matches.length !== 1 || saved?.requestName !== input.name)
++        return yield* new PoolCreationConflict();
++      return yield* executor.apps.get({ owner, app: saved.app }).pipe(
++        Effect.tap(() => Effect.sync(replayed)),
++        Effect.catchTag("AppNotFound", () => new PoolCreationConflict()),
++      );
++    });
++    const previous = yield* replay;
++    if (previous !== undefined) return previous;
++    const publish = (app: App) =>
++      Effect.gen(function* () {
++        const { pools } = yield* records(true);
++        if (
++          Object.hasOwn(pools, app.id) ||
++          app.activeVersion === null ||
++          ownedPoolRecords(pools, user).some(([, record]) => record.requestId === input.requestId)
++        )
++          return yield* new StorageError();
++        yield* lockAppLinks(sql, app.id);
++        const repaired = yield* repairPoolAccount(
++          executor,
++          sql,
++          signingKey,
++          organization,
++          user,
++          app,
++        );
++        const record = {
++          app: app.id,
++          version: app.activeVersion,
++          bundle: seed.version,
++          account: repaired.account,
++          tokenKeyVersion,
++          owner: user,
++          primary: input.newInstance !== true,
++          requestId: input.requestId,
++          requestName: input.name,
++          authorization: "executor-app-v1",
++          membership: "executor-links-v1",
++        };
++        yield* sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++      '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)
++        || jsonb_build_object(${app.id}::text, ${JSON.stringify(record)}::jsonb))::text
++      where id = ${organization}`;
++      }).pipe(Effect.mapError(() => new StorageError()));
++    const files = yield* seed.files;
++    const app = yield* executor.apps
++      .copy({
++        owner,
++        name: input.name,
++        from: {
++          files,
++          activation: "deploy",
++          origin: {
++            reference: "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
++            name: poolCatalogPackage,
++            commit: null,
++          },
++        },
++      })
++      .pipe(
++        poolAppSetup(user, publish),
++        Effect.catch((error) =>
++          Effect.gen(function* () {
++            const saved = yield* replay;
++            if (saved !== undefined) return saved;
++            return yield* Effect.fail(
++              Schema.is(AppNameTaken)(error) || Schema.is(AppSlugTaken)(error)
++                ? error
++                : new StorageError(),
++            );
++          }),
++        ),
++        Effect.provideService(SqlClient.SqlClient, sql),
++      );
++    const wake = yield* Effect.serviceOption(ScheduleWakeup);
++    if (Option.isSome(wake)) yield* wake.value;
++    return app;
++  }).pipe(
++    Effect.tap((app) =>
++      Effect.gen(function* () {
++        const lifecycle = yield* AccessLifecycle;
++        const organization = (yield* CurrentOrganization).organization;
++        yield* (lifecycle.appAccessChanged?.({ organization, apps: [app.id] }) ?? Effect.void).pipe(
++          Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
++          Effect.mapError(() => new PoolCreationUnavailable()),
++        );
++      }),
++    ),
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
++
++export const createPool = (input: typeof CreatePool.Type) =>
++  Effect.gen(function* () {
++    const { owner } = yield* CurrentOrganization;
++    let replayed = false;
++    // Service reuse surrounds all pool work, so opening a retained pool cannot repair or reconfigure it.
++    const app = yield* installService(
++      owner,
++      poolCatalogService,
++      input.newInstance ?? false,
++      createPoolApp(input, () => {
++        replayed = true;
++      }),
++    );
++    return replayed ? { ...app, reused: true } : app;
++  });
++
++export const hostedPoolHandlers = HttpApiBuilder.group(HostedApi, "pools", (handlers) =>
++  handlers.handle("create", ({ payload }) => createPool(payload)),
++);
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index bb59522..1c0aef7 100644
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -146,8 +146,10 @@ const managers = (
+       and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
+       and ((member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
+         or (${rotationOnly} = true and ${user ?? null}::text is not null and exists (
+-          select 1 from organization pool_team where pool_team.id = member."organizationId"
+-          and coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) ? member."userId"
++          select 1 from organization pool_team
++          cross join lateral jsonb_each(coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++          where pool_team.id = member."organizationId"
++          and coalesce(pool.value ->> 'owner', pool.key) = member."userId"
+         )))`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))));
+   });
+ 
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 369f6c0..b7701f8 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -59,6 +59,8 @@ const errorMessage = Match.type<HostedError>().pipe(
+     AppAccessDenied: () => "You do not have permission to change this app.",
+     AppSlugTaken: () => "Another app name produces this address. Choose a different name.",
+     AppNameTaken: () => "An app already uses this name. Choose another name.",
++    PoolCreationUnavailable: ({ message }) => message,
++    PoolCreationConflict: ({ message }) => message,
+     AppVersionChanged: () =>
+       "This app changed while you were editing. Reload its source and try again.",
+     AppDataNotFound: () => "This data operation is no longer available. Reload the app.",
+diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
+index ad8a6b0..8aa97a2 100644
+--- a/apps/hosted/web/src/implementation/pages/add-app.tsx
++++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
+@@ -1,6 +1,6 @@
+ import { useAtomMount } from "@effect/atom-react";
+ import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
+-import { Link } from "@tanstack/react-router";
++import { Link, useNavigate } from "@tanstack/react-router";
+ import { Button } from "@executor-js/ui/components/button";
+ import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
+ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -12,6 +12,7 @@ export function AddAppPage() {
+   const atoms = useDashboardAtoms();
+   useAtomMount(atoms.catalog);
+   const { slug: organizationSlug } = useOrganizationRoute();
++  const navigate = useNavigate();
+   return (
+     <Catalog
+       query={atoms.catalog}
+@@ -19,13 +20,20 @@ export function AddAppPage() {
+       mutation={atoms.install}
+       InstallFailure={HostedFailure}
+       inventory={atoms.inventory}
+-      open={(app) => (
++      onInstalled={(app) =>
++        void navigate({
++          to: "/org/$organizationSlug/apps/$appId",
++          search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
++          params: { organizationSlug, appId: app.id },
++        })
++      }
++      open={(app, children) => (
+         <Link
+           to="/org/$organizationSlug/apps/$appId"
+           search={{ view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" }}
+           params={{ organizationSlug, appId: app.id }}
+         >
+-          Open
++          {children}
+         </Link>
+       )}
+       back={
+diff --git a/apps/local/web/src/implementation/pages/catalog.tsx b/apps/local/web/src/implementation/pages/catalog.tsx
+index b0ddcfd..09dde33 100644
+--- a/apps/local/web/src/implementation/pages/catalog.tsx
++++ b/apps/local/web/src/implementation/pages/catalog.tsx
+@@ -1,6 +1,6 @@
+ import { Failure } from "../components/common.tsx";
+ import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
+-import { Link } from "@tanstack/react-router";
++import { Link, useNavigate } from "@tanstack/react-router";
+ import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
+ import { Button } from "@executor-js/ui/components/button";
+ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -8,6 +8,7 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ 
+ /** Discovery and installation use the existing local app and account setup routes; Open leads there. */
+ export function CatalogPage() {
++  const navigate = useNavigate();
+   return (
+     <Catalog
+       query={dashboardAtoms.catalog}
+@@ -15,12 +16,18 @@ export function CatalogPage() {
+       mutation={dashboardAtoms.install}
+       InstallFailure={Failure}
+       inventory={dashboardAtoms.inventory}
+-      open={(app) => (
++      onInstalled={(app) =>
++        void navigate({
++          to: Object.keys(app.requirements.accounts).length ? "/apps/$appId/setup" : "/apps/$appId",
++          params: { appId: app.id },
++        })
++      }
++      open={(app, children) => (
+         <Link
+           to={Object.keys(app.requirements.accounts).length ? "/apps/$appId/setup" : "/apps/$appId"}
+           params={{ appId: app.id }}
+         >
+-          Open
++          {children}
+         </Link>
+       )}
+       back={
+diff --git a/e2e/support/catalog-instances-ui.ts b/e2e/support/catalog-instances-ui.ts
+new file mode 100644
+index 0000000..f7359ae
+--- /dev/null
++++ b/e2e/support/catalog-instances-ui.ts
+@@ -0,0 +1,108 @@
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "./browser.ts";
++
++export const catalogRow = (page: Page, name: string) =>
++  page.locator(".catalog-row").filter({
++    has: page.locator("strong").filter({ hasText: new RegExp(`^${name}$`) }),
++  });
++export const Instance = Schema.Struct({ id: Schema.String, name: Schema.String });
++export const InstallResult = Schema.Struct({
++  id: Schema.String,
++  name: Schema.String,
++  reused: Schema.Boolean,
++});
++export const AccountLinks = Schema.Array(
++  Schema.Struct({ requirement: Schema.String, account: Schema.Struct({ id: Schema.String }) }),
++);
++const inventoryRoute = /\/api\/organizations\/[^/]+\/inventory(?:\?|$)/;
++const Record = Schema.Record(Schema.String, Schema.Unknown);
++
++/** Browser transport operations; the scenario owns state, assertions and fixture writes. */
++export const catalogInstancesUI = Effect.gen(function* () {
++  const browser = yield* Browser;
++  const another = (label: string) =>
++    Effect.gen(function* () {
++      yield* browser.use(`Open ${label} actions`, (page) =>
++        catalogRow(page, label)
++          .getByRole("button", { name: `More actions for ${label}` })
++          .click(),
++      );
++      yield* browser.use(`Add another ${label}`, (page) =>
++        page.getByRole("menuitem", { name: "Add another", exact: true }).click(),
++      );
++      yield* browser.use(`Show ${label} naming`, (page) =>
++        page.getByRole("dialog", { name: `Add another ${label}`, exact: true }).waitFor(),
++      );
++    });
++  const name = (value: string) =>
++    browser.use(`Name ${value}`, (page) =>
++      page.getByRole("dialog").getByRole("textbox", { name: "Name", exact: true }).fill(value),
++    );
++  const submit = (
++    button: string,
++    options: { readonly dialog?: boolean; readonly twice?: boolean } = {},
++  ) =>
++    browser.use(`Submit ${button}`, (page) => {
++      const target = (options.dialog ? page.getByRole("dialog") : page).getByRole("button", {
++        name: button,
++        exact: true,
++      });
++      return Promise.all([
++        page.waitForResponse(
++          (response) =>
++            response.request().method() === "POST" &&
++            new URL(response.url()).pathname.endsWith("/apps/install"),
++        ),
++        options.twice ? target.dblclick() : target.click(),
++      ]).then(([response]) =>
++        response.json().then((body: unknown) => ({
++          status: response.status(),
++          payload: response.request().postDataJSON() as unknown,
++          body,
++        })),
++      );
++    });
++  const setup = (id: string) =>
++    browser.use("Open the returned app's setup", (page) =>
++      page.waitForURL(`**/apps/${id}?view=accounts`),
++    );
++  const staleInventory = (catalog: string, ids: readonly string[]) =>
++    Effect.gen(function* () {
++      yield* browser.use("Hide stale mail instances at the HTTP boundary", (page) =>
++        page.route(inventoryRoute, (route) =>
++          route.fetch().then((response) =>
++            response.json().then((json: unknown) => {
++              const record = Schema.decodeUnknownSync(Record)(json);
++              const apps = Schema.decodeUnknownSync(Schema.Array(Record))(record.apps);
++              return route.fulfill({
++                response,
++                json: {
++                  ...record,
++                  apps: apps.filter((app) => typeof app.id !== "string" || !ids.includes(app.id)),
++                },
++              });
++            }),
++          ),
++        ),
++      );
++      yield* browser.use("Revisit with stale inventory", (page) => page.goto(catalog));
++      yield* browser.use("Reload with stale inventory", (page) => page.reload());
++      // Hydration supplies the first inventory; returning to the tab requests the routed read.
++      yield* browser.use("Refresh the visible inventory", (page) =>
++        page.evaluate(() => {
++          window.dispatchEvent(new Event("visibilitychange"));
++        }),
++      );
++    });
++  return {
++    another,
++    name,
++    submit,
++    setup,
++    staleInventory,
++    clearStaleInventory: browser.use("Remove stale inventory response", (page) =>
++      page.unroute(inventoryRoute),
++    ),
++  };
++});
+diff --git a/e2e/support/pool-creation-backend.ts b/e2e/support/pool-creation-backend.ts
+new file mode 100644
+index 0000000..c14b8f7
+--- /dev/null
++++ b/e2e/support/pool-creation-backend.ts
+@@ -0,0 +1,75 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Audience = Schema.Struct({
++  pool: Schema.String,
++  owner: Schema.String,
++  organization: Schema.String,
++  users: Schema.Array(Schema.String),
++  managers: Schema.Array(Schema.String),
++  authorization: Schema.Literal("executor-app-v1"),
++});
++
++/** Only the remote pool receiver is synthetic; apps, accounts, policy and links are real. */
++export const poolCreationBackend = Effect.gen(function* () {
++  const pools = yield* Ref.make<readonly (typeof Audience.Type)[]>([]);
++  let available = true;
++  const receive = Effect.gen(function* () {
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const body = yield* request.json.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const [prefix, encoded, signature, extra] = body.envelope.split(".");
++    if (
++      prefix !== "sba1" ||
++      encoded === undefined ||
++      signature === undefined ||
++      extra !== undefined
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++      .update(`${prefix}.${encoded}`)
++      .digest();
++    const actual = Buffer.from(signature, "base64url");
++    if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++      return HttpServerResponse.empty({ status: 401 });
++    if (!available) return HttpServerResponse.empty({ status: 503 });
++    const raw = JSON.parse(Buffer.from(encoded, "base64url").toString());
++    const value = yield* Schema.decodeUnknownEffect(
++      Schema.Struct({
++        action: Schema.String,
++        pools: Schema.optionalKey(Schema.Array(Audience)),
++      }),
++    )(raw);
++    if (value.pools !== undefined)
++      yield* Ref.update(pools, (current) => [...current, ...value.pools!]);
++    return HttpServerResponse.empty({ status: 200 });
++  });
++  const services = yield* Layer.build(
++    HttpRouter.serve(
++      Layer.mergeAll(
++        HttpRouter.add("POST", "/pool/v1/access", receive),
++        // Link invalidation is acknowledged; no synthetic model inference is claimed.
++        HttpRouter.add(
++          "POST",
++          "/pool/v1/membership",
++          Effect.succeed(HttpServerResponse.empty({ status: 200 })),
++        ),
++      ),
++      { disableLogger: true, disableListenLog: true },
++    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Pool receiver requires TCP");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    pools: Ref.get(pools),
++    available: (value: boolean) =>
++      Effect.sync(() => {
++        available = value;
++      }),
++  };
++});
+diff --git a/e2e/support/pool-creation-product.ts b/e2e/support/pool-creation-product.ts
+new file mode 100644
+index 0000000..a7d0f54
+--- /dev/null
++++ b/e2e/support/pool-creation-product.ts
+@@ -0,0 +1,72 @@
++import { Effect, FileSystem, Path } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { Target } from "./platform.ts";
++import { serverControl } from "./server-control.ts";
++
++/** The full host with the same verified pool source and access adapter supplied by Cloud. */
++export const poolCreationProduct = (origin: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    const entry = path.join(target.directory, "pool-creation-product.ts");
++    const assetDirectory = path.resolve("apps/hosted/cloud/.generated/pool-app");
++    yield* fs.writeFileString(
++      entry,
++      `
++import * as Runtime from "@effect/platform-bun/BunRuntime";
++import { main } from "@executor-js/hosted-self-host/server";
++import { PoolAppSource, poolAppVersion, poolAppAssetPath } from "@executor-js/hosted-server/pool-defaults";
++import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
++import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
++import { SourceFiles } from "@executor-js/sdk/core";
++import { Effect, Option, Redacted, Schema } from "effect";
++import { readFile } from "node:fs/promises";
++import { basename, join } from "node:path";
++import { createHash } from "node:crypto";
++Runtime.runMain(Effect.gen(function* () {
++  const serialized = yield* Effect.tryPromise(() => readFile(join(${JSON.stringify(assetDirectory)}, basename(poolAppAssetPath)), "utf8"));
++  if (createHash("sha256").update(serialized).digest("hex") !== poolAppVersion)
++    return yield* Effect.die("Pool source differs from its production digest");
++  const files = yield* Schema.decodeUnknownEffect(SourceFiles)(JSON.parse(serialized));
++  return yield* main.pipe(
++    Effect.provideService(PoolAppSource, { version: poolAppVersion, files: Effect.succeed(files) }),
++    Effect.provideService(AccessLifecycle, poolAccessLifecycle(Option.some(Redacted.make("ab".repeat(32))), ${JSON.stringify(origin)})),
++  );
++}));
++`,
++    );
++    const links = path.join(target.directory, "node_modules", "@executor-js");
++    yield* fs.makeDirectory(links, { recursive: true });
++    const product = path.join(links, "hosted-self-host");
++    if (!(yield* fs.exists(product)))
++      yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
++    const configuration = path.join(target.directory, "pool-creation-product.json");
++    yield* fs.writeFileString(
++      configuration,
++      JSON.stringify({
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
++    );
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const checked = yield* processes.exitCode(
++      ChildProcess.make(
++        path.resolve("node_modules/.bin/tsc-rs"),
++        ["--noEmit", "-p", configuration],
++        { stdout: "inherit", stderr: "inherit" },
++      ),
++    );
++    if (checked !== 0)
++      return yield* Effect.die("Pool creation product failed its public API typecheck");
++    yield* serverControl("stop");
++    yield* serverControl("environment", 200, {
++      EXECUTOR_E2E_PRODUCT_ENTRY: entry,
++      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      BASALT_POOL_ORIGIN: origin,
++    });
++    yield* serverControl("start");
++  });
+diff --git a/e2e/support/pool-creation-ui.ts b/e2e/support/pool-creation-ui.ts
+new file mode 100644
+index 0000000..7d1e98b
+--- /dev/null
++++ b/e2e/support/pool-creation-ui.ts
+@@ -0,0 +1,37 @@
++import { Effect } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "./browser.ts";
++
++export const settleCatalogAnimations = (page: Page) =>
++  page.evaluate(() =>
++    // A theme switch cancels running transitions, which rejects their `finished`.
++    Promise.allSettled(document.getAnimations().map((animation) => animation.finished)).then(
++      () => {},
++    ),
++  );
++
++/** Captures the current catalog state in light and dark, at desktop and phone widths. */
++export const captureCatalog = (name: string, ready: (page: Page) => Promise<unknown>) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    for (const width of [1280, 390])
++      for (const colorScheme of ["light", "dark"] as const) {
++        yield* browser.use(`Show ${name} at ${width}px in ${colorScheme} mode`, (page) =>
++          page
++            .setViewportSize({ width, height: 900 })
++            .then(() => page.emulateMedia({ colorScheme }))
++            .then(() => ready(page))
++            .then(() => settleCatalogAnimations(page)),
++        );
++        const fits = yield* browser.use(`Keep ${name} inside ${width}px`, (page) =>
++          page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
++        );
++        if (!fits) return yield* Effect.die(`${name} overflows at ${width}px`);
++        yield* browser.checkpoint(`${name} ${width}px ${colorScheme}`);
++      }
++    yield* browser.use(`Return from ${name} to the desktop light view`, (page) =>
++      page
++        .setViewportSize({ width: 1280, height: 900 })
++        .then(() => page.emulateMedia({ colorScheme: "light" })),
++    );
++  });
+diff --git a/e2e/support/production-ops-inventory-rows.ts b/e2e/support/production-ops-inventory-rows.ts
+index bf86db6..89ba6e6 100644
+--- a/e2e/support/production-ops-inventory-rows.ts
++++ b/e2e/support/production-ops-inventory-rows.ts
+@@ -84,8 +84,13 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+       params: [row.deployment, row.account],
+     });
+     yield* database.run({
+-      sql: `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('basaltPools', jsonb_build_object($2::text, jsonb_build_object('app', $3::text))))::text where id = $1`,
+-      params: [row.organization, row.user, row.app],
++      sql: `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('basaltPools', jsonb_build_object($2::text, jsonb_build_object('app', $3::text) || $4::jsonb)))::text where id = $1`,
++      params: [
++        row.organization,
++        row === own ? row.app : row.user,
++        row.app,
++        JSON.stringify(row === own ? { owner: row.user } : {}),
++      ],
+     });
+     yield* database.run({
+       sql: `insert into hosted_contributed_departure_jobs (id, organization_id, user_id, status) values ($1, $2, $3, 'succeeded')`,
+diff --git a/e2e/support/retired-pool-token-fixture.ts b/e2e/support/retired-pool-token-fixture.ts
+index 7ad5acc..3ae1e98 100644
+--- a/e2e/support/retired-pool-token-fixture.ts
++++ b/e2e/support/retired-pool-token-fixture.ts
+@@ -133,7 +133,7 @@ export const retiredTokenFixture = Effect.gen(function* () {
+   yield* rows(
+     `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+     [
+-      JSON.stringify({ [session.user.id]: { app: app.id, account: id("current") } }),
++      JSON.stringify({ [app.id]: { app: app.id, owner: session.user.id, account: id("current") } }),
+       actors.organization.id,
+     ],
+   );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 202a23f..dc91eb1 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8472,6 +8472,30 @@ export const scenarios = plan({
+       local: na("Uses hosted organization audiences and roles."),
+     },
+   },
++  poolCreation: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-creation.spec.ts",
++    title: "Pool creation preserves retained pools and creates independent instances",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "Uses the full hosted product with runner-owned retained metadata and a signed loopback pool peer.",
++      ),
++      local: na("Pool provisioning belongs to the hosted product."),
++    },
++  },
++  catalogInstances: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "catalog-instances.spec.ts",
++    title: "catalog instances keep every service family reachable and create another explicitly",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned catalog and retained instance fixtures for the UI journey."),
++      local: na("This scenario exercises hosted service claims and organization inventory."),
++    },
++  },
+   appModelRequests: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/app-model-requests.spec.ts b/e2e/tests/app-model-requests.spec.ts
+index cf0fcc5..1691571 100644
+--- a/e2e/tests/app-model-requests.spec.ts
++++ b/e2e/tests/app-model-requests.spec.ts
+@@ -40,8 +40,9 @@ layer(RuntimeLive, { excludeTestServices: true })("App model requests", (it) =>
+             sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+             params: [
+               JSON.stringify({
+-                [f.ids.admin]: {
++                [f.pool]: {
+                   app: f.pool,
++                  owner: f.ids.admin,
+                   version: "retained-version",
+                   authorization: "executor-app-v1",
+                 },
+diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
+new file mode 100644
+index 0000000..3af0834
+--- /dev/null
++++ b/e2e/tests/catalog-instances.spec.ts
+@@ -0,0 +1,279 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import {
++  AccountLinks,
++  Instance,
++  InstallResult,
++  catalogInstancesUI,
++  catalogRow as row,
++} from "../support/catalog-instances-ui.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolCreationBackend } from "../support/pool-creation-backend.ts";
++import { poolCreationProduct } from "../support/pool-creation-product.ts";
++import { captureCatalog, settleCatalogAnimations } from "../support/pool-creation-ui.ts";
++import { officialApps } from "../support/public-catalogs.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
++  it.effect(scenarios.catalogInstances.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const browser = yield* Browser;
++        const actors = yield* Actors;
++        const ui = yield* catalogInstancesUI;
++        const backend = yield* poolCreationBackend;
++        yield* poolCreationProduct(backend.origin);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: 'update "user" set "emailVerified" = true where id = $1',
++            params: [viewer.userId],
++          },
++        ]);
++        yield* serverControl("start");
++        const install = (entry: string, name: string, newInstance = false) =>
++          api
++            .request(actors.owner, "POST", `${prefix}/apps/install`, {
++              entry,
++              name,
++              newInstance,
++              requestId: crypto.randomUUID(),
++            })
++            .pipe(Effect.flatMap((response) => body(Instance, response)));
++        const pool = yield* install("basalt-pool", "Retained pool", true);
++        // A legacy pool has no service claim or origin. Its owner-keyed metadata is authoritative.
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(metadata::jsonb - 'basaltServiceInstalls',
++            '{basaltPools}', jsonb_build_object($2::text, (metadata::jsonb -> 'basaltPools' -> $3) - 'owner'))::text
++            where id = $1`,
++            params: [actors.organization.id, viewer.userId, pool.id],
++          },
++          { sql: "update executor_apps set copied_from = null where id = $1", params: [pool.id] },
++        ]);
++        yield* serverControl("start");
++        const work = yield* install(officialApps.tracker.id, "Tracker work");
++        const personal = yield* install(officialApps.tracker.id, "Tracker personal", true);
++        const catalog = `/org/${actors.organization.slug}/apps/add`;
++        const visit = browser.use("Open the service catalog", (page) => page.goto(catalog));
++        const links = (id: string) =>
++          api
++            .request(actors.owner, "GET", `${prefix}/apps/${id}/accounts/user`)
++            .pipe(Effect.flatMap((response) => body(AccountLinks, response)));
++        yield* browser.login(actors.owner);
++        yield* visit;
++        // Old UI captures finish before the new-feature assertion used for the negative control.
++        yield* captureCatalog("Service catalog", (page) =>
++          row(page, officialApps.mail.name)
++            .getByRole("button", { name: `Add ${officialApps.mail.name}` })
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use("One entry covers native and MCP tracker", (page) =>
++            row(page, officialApps.tracker.name).count(),
++          ),
++        ).toBe(1);
++        expect(
++          yield* browser.use("Every installed service offers Add another", (page) =>
++            row(page, "Pool").getByRole("button", { name: "More actions for Pool" }).count(),
++          ),
++        ).toBe(1);
++        expect(
++          yield* browser.use("Retained pool opens its exact ID", (page) =>
++            row(page, "Pool").getByRole("link", { name: "Open", exact: true }).getAttribute("href"),
++          ),
++        ).toBe(`/org/${actors.organization.slug}/apps/${pool.id}?view=accounts`);
++        yield* browser.use("Choose among tracker instances", (page) =>
++          row(page, officialApps.tracker.name)
++            .getByRole("button", { name: /choose one of 2/ })
++            .click(),
++        );
++        for (const app of [work, personal]) {
++          yield* browser.use(`Find ${app.name}`, (page) =>
++            page.getByRole("menuitem", { name: new RegExp(app.name) }).waitFor(),
++          );
++          expect(
++            yield* browser.use(`Open exact ${app.name}`, (page) =>
++              page.getByRole("menuitem", { name: new RegExp(app.name) }).getAttribute("href"),
++            ),
++          ).toContain(`/apps/${app.id}?view=accounts`);
++        }
++        yield* browser.use("Finish the desktop chooser transition", settleCatalogAnimations);
++        yield* browser.checkpoint("Desktop chooser keeps both named tracker instances reachable");
++        yield* browser.use("Escape closes the chooser", (page) => page.keyboard.press("Escape"));
++        expect(
++          yield* browser.use("Focus returns to Open", (page) =>
++            row(page, officialApps.tracker.name)
++              .getByRole("button", { name: /choose one of 2/ })
++              .evaluate((button) => button === document.activeElement),
++          ),
++        ).toBe(true);
++        yield* browser.use("Show phone layout", (page) =>
++          page.setViewportSize({ width: 390, height: 900 }),
++        );
++        yield* browser.use("Open phone chooser", (page) =>
++          row(page, officialApps.tracker.name)
++            .getByRole("button", { name: /choose one of 2/ })
++            .click(),
++        );
++        for (const app of [work, personal])
++          yield* browser.use(`Phone opens ${app.name}`, (page) =>
++            page
++              .getByRole("dialog", { name: `Open ${officialApps.tracker.name}`, exact: true })
++              .getByRole("link", { name: new RegExp(app.name) })
++              .waitFor(),
++          );
++        yield* browser.use("Finish the phone sheet transition", settleCatalogAnimations);
++        yield* browser.checkpoint("Phone chooser shows both named instances in a sheet");
++        yield* browser.use("Cancel phone chooser", (page) =>
++          page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click(),
++        );
++        yield* browser.use("Return to desktop", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        yield* ui.another("Pool");
++        yield* ui.name("Denied pool");
++        yield* browser.use("Refuse creation before any write", (page) =>
++          page.route(
++            "**/api/organizations/*/apps/install",
++            (route) =>
++              route.fulfill({
++                status: 403,
++                contentType: "application/json",
++                body: JSON.stringify({ _tag: "OrganizationForbidden" }),
++              }),
++            { times: 1 },
++          ),
++        );
++        const denied = yield* ui.submit("Add", { dialog: true });
++        expect(denied.status).toBe(403);
++        yield* browser.use("A definite refusal finishes the request", (page) =>
++          page.getByText("Organization access denied", { exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("A definite refusal keeps the name editable", (page) =>
++            page.getByRole("textbox", { name: "Name", exact: true }).getAttribute("readonly"),
++          ),
++        ).toBeNull();
++        expect(
++          yield* browser.use("A definite refusal does not claim uncertain creation", (page) =>
++            page.getByText(/Couldn't confirm whether/).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("A definite refusal keeps the name editable");
++        yield* ui.name("Research pool");
++        yield* captureCatalog("Name a separate pool", (page) =>
++          page.getByRole("dialog", { name: "Add another Pool", exact: true }).waitFor(),
++        );
++        yield* backend.available(false);
++        const failed = yield* ui.submit("Add", { dialog: true });
++        expect(failed.status).toBe(503);
++        yield* browser.use("Uncertain creation offers retry", (page) =>
++          page.getByRole("button", { name: "Try again", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Uncertain name stays fixed", (page) =>
++            page.getByRole("textbox", { name: "Name", exact: true }).getAttribute("readonly"),
++          ),
++        ).not.toBeNull();
++        yield* browser.checkpoint("Unconfirmed creation keeps its name and retry request");
++        yield* browser.use("Close unfinished intent", (page) =>
++          page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click(),
++        );
++        yield* ui.another("Pool");
++        expect(
++          yield* browser.use("Reopened intent keeps its name", (page) =>
++            page.getByRole("textbox", { name: "Name", exact: true }).inputValue(),
++          ),
++        ).toBe("Research pool");
++        yield* backend.available(true);
++        const retried = yield* ui.submit("Try again", { twice: true });
++        expect(retried.payload).toEqual(failed.payload);
++        expect(retried.status).toBe(200);
++        const research = yield* Schema.decodeUnknownEffect(InstallResult)(retried.body);
++        expect(research.reused).toBe(true);
++        expect(research.id).not.toBe(pool.id);
++        yield* ui.setup(research.id);
++        yield* visit;
++        yield* browser.use("Choose among both pools", (page) =>
++          row(page, "Pool")
++            .getByRole("button", { name: /choose one of 2/ })
++            .click(),
++        );
++        for (const app of [pool, research])
++          yield* browser.use(`Keep ${app.name} reachable`, (page) =>
++            page.getByRole("menuitem", { name: new RegExp(app.name) }).waitFor(),
++          );
++        yield* browser.use("Close pools chooser", (page) => page.keyboard.press("Escape"));
++        const addedMail = yield* ui.submit(`Add ${officialApps.mail.name}`);
++        expect(addedMail.status).toBe(200);
++        const mail = yield* Schema.decodeUnknownEffect(InstallResult)(addedMail.body);
++        expect(mail.reused).toBe(false);
++        yield* ui.setup(mail.id);
++        const account = yield* body(
++          Schema.Struct({ id: Schema.String }),
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/${mail.id}/accounts/user/mail`, {
++            creation: crypto.randomUUID(),
++            method: "apiKey",
++            fields: { token: "synthetic-mail-token" },
++          }),
++        );
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PUT",
++            `${prefix}/apps/${mail.id}/accounts/user/mail/${account.id}`,
++          )).status,
++        ).toBe(200);
++        const originalLinks = yield* links(mail.id);
++        expect(originalLinks).toHaveLength(1);
++        yield* visit;
++        yield* ui.another(officialApps.mail.name);
++        yield* ui.name("Mail for research");
++        const anotherMail = yield* ui.submit("Add", { dialog: true });
++        expect(anotherMail.status).toBe(200);
++        const secondMail = yield* Schema.decodeUnknownEffect(InstallResult)(anotherMail.body);
++        yield* ui.setup(secondMail.id);
++        expect(secondMail.id).not.toBe(mail.id);
++        expect(yield* links(secondMail.id)).toEqual([]);
++        expect(yield* links(mail.id)).toEqual(originalLinks);
++        yield* browser.checkpoint("Another mail instance opens fresh setup without copying links");
++        yield* ui.staleInventory(catalog, [mail.id, secondMail.id]);
++        yield* browser.use("Stale inventory offers Add", (page) =>
++          row(page, officialApps.mail.name)
++            .getByRole("button", { name: `Add ${officialApps.mail.name}` })
++            .waitFor(),
++        );
++        // The stale read has reached the UI. Remove the route before app navigation cancels reads.
++        yield* ui.clearStaleInventory;
++        const reused = yield* ui.submit(`Add ${officialApps.mail.name}`);
++        expect(reused.status).toBe(200);
++        expect(yield* Schema.decodeUnknownEffect(InstallResult)(reused.body)).toEqual({
++          id: mail.id,
++          name: mail.name,
++          reused: true,
++        });
++        yield* ui.setup(mail.id);
++        expect(yield* links(mail.id)).toEqual(originalLinks);
++        const inventory = yield* body(
++          Schema.Struct({ apps: Schema.Array(Instance) }),
++          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
++        expect(inventory.apps.filter((app) => app.name === research.name)).toHaveLength(1);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
+index c4917ed..e717cce 100644
+--- a/e2e/tests/catalog-official-apps.spec.ts
++++ b/e2e/tests/catalog-official-apps.spec.ts
+@@ -68,11 +68,11 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
+           Catalog,
+           yield* api.request(actors.owner, "GET", "/api/catalog"),
+         );
+-        // The built-in Executor app comes first, then the feed's apps in its order.
++        // The merged tracker keeps the first alias's position and the canonical entry's identity.
+         expect(entries.map((entry) => entry.name)).toEqual([
+           "Executor",
+-          officialApps.mail.name,
+           officialApps.tracker.name,
++          officialApps.mail.name,
+           officialApps.mismatched.name,
+         ]);
+         const mail = entries.find((entry) => entry.id === officialApps.mail.id);
+@@ -320,20 +320,9 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+         yield* browser.use("Add the renamed app", (page) =>
+           page.getByRole("dialog").getByRole("button", { name: "Add app", exact: true }).click(),
+         );
+-        // The page stays put with its search; the row now offers Open.
+-        yield* browser.use("The mail row offers Open", (page) =>
+-          row(page, officialApps.mail.name).getByRole("link", { name: "Open" }).waitFor(),
+-        );
+-        const stayed = yield* browser.use("The page and its search stay", (page) =>
+-          page
+-            .getByPlaceholder("Search apps…")
+-            .inputValue()
+-            .then((search) => ({ pathname: new URL(page.url()).pathname, search })),
++        yield* browser.use("The new app opens its account setup", (page) =>
++          page.waitForURL("**/apps/*?view=accounts"),
+         );
+-        expect(stayed).toEqual({
+-          pathname: `/org/${actors.organization.slug}/apps/add`,
+-          search: "synthetic",
+-        });
+         const added = (yield* body(
+           Inventory,
+           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
+@@ -342,10 +331,17 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+         yield* Effect.addFinalizer(() =>
+           api.request(actors.owner, "DELETE", `${prefix}/apps/${added.id}`).pipe(Effect.orDie),
+         );
+-        yield* browser.checkpoint("The added app offers Open on the same page");
++        expect(
++          yield* browser.use("Setup belongs to the created app", (page) =>
++            Promise.resolve(new URL(page.url()).pathname),
++          ),
++        ).toBe(`/org/${actors.organization.slug}/apps/${added.id}`);
++        yield* browser.checkpoint("The added app opens its own account setup");
+ 
+         // A fresh visit still knows both apps are installed.
+-        yield* browser.use("Reload Add app", (page) => page.reload());
++        yield* browser.use("Revisit Add app", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/add`),
++        );
+         yield* browser.use("Search the catalog again", (page) =>
+           page.getByPlaceholder("Search apps…").fill("synthetic"),
+         );
+diff --git a/e2e/tests/pool-creation.spec.ts b/e2e/tests/pool-creation.spec.ts
+new file mode 100644
+index 0000000..49e8c1c
+--- /dev/null
++++ b/e2e/tests/pool-creation.spec.ts
+@@ -0,0 +1,256 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolCreationBackend } from "../support/pool-creation-backend.ts";
++import { poolCreationProduct } from "../support/pool-creation-product.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  name: Schema.String,
++  activeVersion: Schema.String,
++  copiedFrom: Schema.NullOr(Schema.Struct({ name: Schema.String })),
++  service: Schema.optionalKey(Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean })),
++  reused: Schema.optionalKey(Schema.Boolean),
++});
++const Links = Schema.Array(
++  Schema.Struct({
++    requirement: Schema.String,
++    account: Schema.Struct({ id: Schema.String }),
++    hostManaged: Schema.optionalKey(Schema.Boolean),
++  }),
++);
++const Catalog = Schema.Array(
++  Schema.Struct({
++    id: Schema.String,
++    name: Schema.String,
++    service: Schema.Struct({
++      id: Schema.String,
++      mcp: Schema.Array(Schema.String),
++      packages: Schema.optionalKey(Schema.Array(Schema.String)),
++    }),
++  }),
++);
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool creation", (it) => {
++  it.effect(scenarios.poolCreation.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const evidence = yield* Evidence;
++        const backend = yield* poolCreationBackend;
++        yield* poolCreationProduct(backend.origin);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const create = (name: string, requestId = randomUUID()) =>
++          api.request(actors.owner, "POST", `${prefix}/pools`, {
++            name,
++            requestId,
++            newInstance: true,
++          });
++        const readLinks = (id: string) =>
++          api
++            .request(actors.owner, "GET", `${prefix}/apps/${id}/accounts/app`)
++            .pipe(Effect.flatMap((response) => body(Links, response)));
++        const catalog = yield* body(
++          Catalog,
++          yield* api.request(actors.owner, "GET", `${prefix}/catalog?search=pool`),
++        );
++        expect(catalog).toContainEqual({
++          id: "basalt-pool",
++          name: "Pool",
++          service: { id: "@signalbox/pool", mcp: [], packages: ["basalt-pool"] },
++        });
++        expect((yield* create("Unverified owner")).status).toBe(403);
++        // A retained verified identity has the eligibility of an existing Google sign-in.
++        yield* serverControl("stop");
++        const identity = yield* legacyStorage([
++          {
++            sql: `update "user" set "emailVerified" = true where id = $1 returning id`,
++            params: [viewer.userId],
++          },
++        ]);
++        expect(identity[0]).toEqual([{ id: viewer.userId }]);
++        yield* serverControl("start");
++        const originalResponse = yield* create("Existing pool");
++        expect(originalResponse.status, JSON.stringify(originalResponse.body)).toBe(200);
++        const original = yield* body(App, originalResponse);
++        expect(original.copiedFrom?.name).toBe("basalt-pool");
++        expect(original.service).toEqual({ id: "@signalbox/pool", newInstance: true });
++        expect(original.reused).toBe(false);
++        const originalLinks = yield* readLinks(original.id);
++        expect(originalLinks).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({ requirement: "pool", hostManaged: true }),
++          ]),
++        );
++        // Retained installations use a user key. Preserve that complete record, including policy fields.
++        yield* serverControl("stop");
++        const retained = yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}',
++      jsonb_build_object($2::text, (metadata::jsonb -> 'basaltPools' -> $3) - 'owner'))::text
++      where id = $1 returning metadata::jsonb -> 'basaltPools' -> $2 as record`,
++            params: [actors.organization.id, viewer.userId, original.id],
++          },
++          {
++            sql: `update organization set metadata = (metadata::jsonb - 'basaltServiceInstalls')::text
++              where id = $1`,
++            params: [actors.organization.id],
++          },
++          {
++            sql: `update executor_apps set copied_from = null where id = $1`,
++            params: [original.id],
++          },
++        ]);
++        yield* serverControl("start");
++        // Neither a catalog origin nor a service claim remains: only the retained pool ID identifies it.
++        const legacy = yield* body(
++          App,
++          yield* api.request(actors.owner, "GET", `${prefix}/apps/${original.id}`),
++        );
++        expect(legacy.copiedFrom).toBeNull();
++        expect(legacy.service).toEqual({ id: "@signalbox/pool", newInstance: true });
++        const reused = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "basalt-pool",
++            name: "Another name does not create a pool",
++          }),
++        );
++        expect(reused.id).toBe(original.id);
++        expect(reused.name).toBe(original.name);
++        expect(reused.activeVersion).toBe(original.activeVersion);
++        expect(reused.reused).toBe(true);
++        expect(reused.service).toEqual(legacy.service);
++        expect(yield* readLinks(original.id)).toEqual(originalLinks);
++        const privateReuse = yield* api.request(actors.member, "POST", `${prefix}/apps/install`, {
++          entry: "basalt-pool",
++          name: "Private pool",
++        });
++        expect(privateReuse.status).toBe(403);
++        expect(JSON.stringify(privateReuse.body)).not.toContain(original.id);
++        expect(JSON.stringify(privateReuse.body)).not.toContain(original.name);
++        const requestId = randomUUID();
++        const [first, retry] = yield* Effect.all(
++          [create("Research pool", requestId), create("Research pool", requestId)],
++          { concurrency: 2 },
++        );
++        expect(first.status, JSON.stringify(first.body)).toBe(200);
++        expect(retry.status, JSON.stringify(retry.body)).toBe(200);
++        const second = yield* body(App, first);
++        expect((yield* body(App, retry)).id).toBe(second.id);
++        expect(second.id).not.toBe(original.id);
++        expect((yield* create("Changed request", requestId)).status).toBe(409);
++        const thirdResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "basalt-pool",
++          name: "Team pool",
++          requestId: randomUUID(),
++          newInstance: true,
++        });
++        expect(thirdResponse.status, JSON.stringify(thirdResponse.body)).toBe(200);
++        const third = yield* body(App, thirdResponse);
++        expect(new Set([original.id, second.id, third.id]).size).toBe(3);
++        const stillDefault = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "basalt-pool",
++            name: "Still not a deliberate instance",
++          }),
++        );
++        expect(stillDefault.id).toBe(original.id);
++        expect(stillDefault.reused).toBe(true);
++        const secondLinks = yield* readLinks(second.id);
++        const thirdLinks = yield* readLinks(third.id);
++        expect(
++          new Set(
++            [originalLinks, secondLinks, thirdLinks].flatMap((links) =>
++              links.map((link) => link.account.id),
++            ),
++          ).size,
++        ).toBe(3);
++        expect(yield* readLinks(original.id)).toEqual(originalLinks);
++        expect(
++          (yield* api.request(actors.member, "POST", `${prefix}/pools`, {
++            name: "Denied",
++            requestId: randomUUID(),
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.member, "GET", `${prefix}/apps/${second.id}/accounts/app`))
++            .status,
++        ).toBe(403);
++        expect((yield* create("Research pool")).status).toBe(409);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
++            name: "Invalid",
++            requestId: "bad",
++          })).status,
++        ).toBe(400);
++        // Publication survived restart, and an uncertain response retries only receiver synchronization.
++        yield* backend.available(false);
++        const recoveryId = randomUUID();
++        expect((yield* create("Receiver recovery", recoveryId)).status).toBe(503);
++        yield* backend.available(true);
++        yield* serverControl("restart");
++        const recoveredResponse = yield* create("Receiver recovery", recoveryId);
++        expect(recoveredResponse.status, JSON.stringify(recoveredResponse.body)).toBe(200);
++        const recovered = yield* body(App, recoveredResponse);
++        const inventory = yield* body(
++          Schema.Array(App),
++          yield* api.request(actors.owner, "GET", `${prefix}/apps`),
++        );
++        expect(
++          inventory.filter((app) =>
++            [original.id, second.id, third.id, recovered.id].includes(app.id),
++          ),
++        ).toHaveLength(4);
++        expect(inventory.filter((app) => app.name === "Receiver recovery")).toHaveLength(1);
++        yield* serverControl("stop");
++        const records = yield* legacyStorage([
++          {
++            sql: "select metadata::jsonb -> 'basaltPools' as pools from organization where id=$1",
++            params: [actors.organization.id],
++          },
++        ]);
++        expect(records[0]?.[0]?.pools).toMatchObject({
++          [viewer.userId]: retained[0]?.[0]?.record,
++          [second.id]: { app: second.id, owner: viewer.userId },
++        });
++        yield* serverControl("start");
++        const audiences = yield* backend.pools;
++        expect(audiences).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({
++              pool: second.id,
++              owner: viewer.userId,
++              users: [viewer.userId],
++            }),
++          ]),
++        );
++        yield* evidence.json("pool-creation.json", {
++          apps: inventory,
++          originalLinks,
++          legacy,
++          reused,
++          secondLinks,
++          thirdLinks,
++          records,
++          audiences,
++        });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index 136d2bc..966bd0e 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -225,6 +225,10 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+               excluded.receipt,
+             ])
+               expect(JSON.stringify(rows)).not.toContain(forbidden);
++            if (selection === "pools")
++              expect(rows.find((row) => row.app === wanted.app)).toMatchObject({
++                owner: wanted.user,
++              });
+             if (selection === "retired-tokens")
+               expect(rows.map((row) => row.id)).toEqual([wanted.account]);
+           }
+diff --git a/packages/catalog/src/index.ts b/packages/catalog/src/index.ts
+index 4652bea..f0574d8 100644
+--- a/packages/catalog/src/index.ts
++++ b/packages/catalog/src/index.ts
+@@ -1,5 +1,6 @@
+ /** Shared authoring capability. Preparing files never installs an app or connects an account. */
+ export * from "./contracts/index.ts";
+ export { createCatalog } from "./implementation/catalog.ts";
++export { catalogServices } from "./implementation/services.ts";
+ export { detectMcpAccess } from "./implementation/detection.ts";
+ export { deployedCopy } from "./implementation/install.ts";
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index d2e9f51..a2c5898 100644
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -110,6 +110,8 @@ export interface AppVersionsProps<E> {
+ export interface InstallApp extends CatalogImport {
+   readonly name: string;
+   readonly newInstance?: boolean;
++  /** Pool setup retains its own request identity when receiver synchronization must retry. */
++  readonly requestId?: string;
+ }
+ /** A typed command and its operation-specific failure renderer. */
+ export interface MutationProps<Input, A, E> {
+diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+new file mode 100644
+index 0000000..75b170a
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+@@ -0,0 +1,201 @@
++import { useRef, useState, type ComponentType } from "react";
++import { Cause, Exit, Option, Predicate } from "effect";
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import type { AppSummary, FailureProps, InstallApp } from "../../contracts/dashboard.ts";
++import { Button } from "../components/button.tsx";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogTitle,
++} from "../components/dialog.tsx";
++import { Input } from "../components/input.tsx";
++
++// Transport, decoding and storage failures can hide a committed install; declared refusals settle it.
++const unconfirmedFailures = [
++  "StorageError",
++  "PoolCreationUnavailable",
++  "HttpClientError",
++  "SchemaError",
++] as const;
++
++/** A version 4 UUID. `crypto.randomUUID` exists only in secure contexts; a self-host can be HTTP. */
++const newRequestId = () => {
++  const bytes = crypto.getRandomValues(new Uint8Array(16));
++  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
++  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
++  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
++  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
++};
++
++/**
++ * One deliberate new instance. `unconfirmed` means the last attempt may have created it: the name
++ * and request ID stay fixed until a retry gets an answer, so a retry can't add a second one.
++ */
++interface Draft<IE> {
++  readonly name: string;
++  readonly requestId: string;
++  readonly attempted: boolean;
++  readonly unconfirmed: boolean;
++  readonly failure?: Cause.Cause<IE>;
++}
++
++/**
++ * Add another: a separate, named instance installed through the service's own catalog entry with
++ * `newInstance`. Nothing is copied from the existing instances. Each entry keeps its draft while the
++ * page is open, so closing and reopening the dialog resumes the same request.
++ */
++export function AddAnotherDialog<IE>({
++  target,
++  install,
++  onInstalled,
++  onClose,
++  InstallFailure,
++}: {
++  readonly target:
++    | {
++        readonly entry: CatalogEntry;
++        readonly label: string;
++        /** Focus goes back here when the dialog closes; the menu that opened it is gone. */
++        readonly returnFocus: HTMLElement | null;
++      }
++    | undefined;
++  /** Runs the install, or resolves `undefined` when one for this entry is already running. */
++  readonly install: (
++    entry: CatalogEntry,
++    input: InstallApp,
++  ) => Promise<Exit.Exit<AppSummary, IE> | undefined>;
++  readonly onInstalled: (app: AppSummary) => void;
++  readonly onClose: () => void;
++  readonly InstallFailure: ComponentType<FailureProps<IE>>;
++}) {
++  const [drafts, setDrafts] = useState<ReadonlyMap<string, Draft<IE>>>(new Map());
++  const [sending, setSending] = useState(false);
++  // State updates land after the event; a second click in the same frame must not send twice.
++  const inFlight = useRef(false);
++  // The dialog keeps its content while it animates closed, after `target` is cleared.
++  const last = useRef(target);
++  if (target !== undefined) last.current = target;
++  const shown = target ?? last.current;
++  const entry = shown?.entry;
++  const draft: Draft<IE> | undefined =
++    entry &&
++    (drafts.get(entry.id) ?? {
++      name: "",
++      requestId: newRequestId(),
++      attempted: false,
++      unconfirmed: false,
++    });
++  const save = (id: string, next: Draft<IE> | undefined) =>
++    setDrafts((current) => {
++      const copy = new Map(current);
++      if (next === undefined) copy.delete(id);
++      else copy.set(id, next);
++      return copy;
++    });
++  const submit = async () => {
++    if (entry === undefined || draft === undefined || inFlight.current) return;
++    const name = draft.name.trim();
++    if (!name) return;
++    inFlight.current = true;
++    setSending(true);
++    const request = {
++      name,
++      requestId: draft.requestId,
++      attempted: true,
++      unconfirmed: draft.unconfirmed,
++    };
++    save(entry.id, request);
++    try {
++      const exit = await install(entry, {
++        entry: entry.id,
++        name,
++        newInstance: true,
++        requestId: request.requestId,
++      });
++      if (exit === undefined) return;
++      if (Exit.isSuccess(exit)) {
++        save(entry.id, undefined);
++        onClose();
++        onInstalled(exit.value);
++        return;
++      }
++      const error = Cause.findErrorOption(exit.cause);
++      const unconfirmed =
++        Option.isNone(error) ||
++        unconfirmedFailures.some((tag) => Predicate.isTagged(tag)(error.value));
++      save(entry.id, { ...request, unconfirmed, failure: exit.cause });
++    } finally {
++      inFlight.current = false;
++      setSending(false);
++    }
++  };
++  return (
++    <Dialog
++      open={target !== undefined}
++      onOpenChange={(open) => {
++        if (!open && !sending) onClose();
++      }}
++    >
++      <DialogContent
++        onCloseAutoFocus={(event) => {
++          const focus = shown?.returnFocus;
++          if (!focus?.isConnected) return;
++          event.preventDefault();
++          focus.focus({ preventScroll: true });
++        }}
++      >
++        <DialogTitle>{shown ? `Add another ${shown.label}` : null}</DialogTitle>
++        <DialogDescription>
++          {shown
++            ? `A separate ${shown.label} with its own name, set up the way ${shown.label} always is. It starts empty: no accounts, links or history are copied.`
++            : null}
++        </DialogDescription>
++        <form
++          className="space-y-4"
++          onSubmit={(event) => {
++            event.preventDefault();
++            void submit();
++          }}
++        >
++          <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
++            Name
++            <Input
++              required
++              maxLength={120}
++              value={draft?.name ?? ""}
++              readOnly={draft?.unconfirmed}
++              disabled={sending}
++              onChange={(event) => {
++                if (entry === undefined || draft === undefined || draft.unconfirmed) return;
++                const name = event.target.value;
++                // A used request ID belongs to its name; a corrected name is a new request.
++                save(
++                  entry.id,
++                  draft.attempted
++                    ? { name, requestId: newRequestId(), attempted: false, unconfirmed: false }
++                    : { ...draft, name },
++                );
++              }}
++            />
++          </label>
++          {draft?.unconfirmed && (
++            <p className="text-[13px] text-muted-foreground">
++              {`Couldn't confirm whether ${draft.name} was added. Try again keeps the same name and request.`}
++            </p>
++          )}
++          {draft?.failure && <InstallFailure cause={draft.failure} layout="compact" />}
++          <DialogFooter>
++            <Button type="button" variant="outline" disabled={sending} onClick={onClose}>
++              Cancel
++            </Button>
++            <Button type="submit" loading={sending} disabled={!draft?.name.trim()}>
++              {draft?.unconfirmed ? "Try again" : "Add"}
++            </Button>
++          </DialogFooter>
++        </form>
++      </DialogContent>
++    </Dialog>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/catalog-instances.ts b/packages/ui/src/implementation/dashboard/catalog-instances.ts
+new file mode 100644
+index 0000000..81f1596
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/catalog-instances.ts
+@@ -0,0 +1,44 @@
++/** Which installed apps each catalog row stands for. The server owns service identity. */
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import type { AppSummary } from "../../contracts/dashboard.ts";
++
++/**
++ * The installed instances of each catalog entry's service, keyed by entry ID, oldest first. An
++ * app's recorded service decides its entry, even when it names a service no entry lists. Only an
++ * app without one falls back to the exact package it was copied from: an entry's own package
++ * first, then a package another entry declares for its service. Names, hosts and endpoints never
++ * place an app; the server records the service of every app it can attribute.
++ */
++export function serviceInstances(
++  entries: readonly CatalogEntry[],
++  apps: readonly AppSummary[] | undefined,
++): ReadonlyMap<string, readonly AppSummary[]> {
++  const byService = new Map<string, string>();
++  const byPackage = new Map<string, string>();
++  for (const entry of entries) {
++    const service = entry.service?.id ?? entry.package;
++    if (!byService.has(service)) byService.set(service, entry.id);
++    if (!byPackage.has(entry.package)) byPackage.set(entry.package, entry.id);
++  }
++  // A declared package never takes the place of the entry that is that package.
++  for (const entry of entries)
++    for (const name of entry.service?.packages ?? [])
++      if (!byPackage.has(name)) byPackage.set(name, entry.id);
++  const instances = new Map<string, AppSummary[]>();
++  for (const app of apps ?? []) {
++    const entry =
++      app.service === undefined
++        ? app.copiedFrom && byPackage.get(app.copiedFrom.name)
++        : byService.get(app.service.id);
++    if (!entry) continue;
++    const list = instances.get(entry);
++    if (list === undefined) instances.set(entry, [app]);
++    else list.push(app);
++  }
++  for (const list of instances.values())
++    list.sort(
++      (a, b) =>
++        Number(a.createdAt) - Number(b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
++    );
++  return instances;
++}
+diff --git a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
+new file mode 100644
+index 0000000..8c41e4b
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
+@@ -0,0 +1,242 @@
++import { useRef, useState, type ReactElement, type ReactNode } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { Add01Icon, ArrowDown01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
++import type { AppSummary } from "../../contracts/dashboard.ts";
++import { Button } from "../components/button.tsx";
++import {
++  Dialog,
++  DialogClose,
++  DialogContent,
++  DialogTitle,
++  DialogTrigger,
++} from "../components/dialog.tsx";
++import {
++  DropdownMenu,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuLabel,
++  DropdownMenuTrigger,
++} from "../components/dropdown-menu.tsx";
++import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
++import { useMediaQuery } from "../hooks/media-query.ts";
++
++/** Renders a link to an app's own page around the given content. */
++export type OpenApp = (app: AppSummary, children: ReactNode) => ReactNode;
++
++/**
++ * A catalog row's actions. A service not yet added offers Add. One instance opens directly; with
++ * several, Open asks which one and never picks for the user. Every added service offers Add
++ * another, which installs a separate, empty instance through the same service.
++ */
++export function CatalogRowActions({
++  label,
++  instances,
++  adding,
++  open,
++  onAdd,
++  onAddAnother,
++}: {
++  /** The service's display name. */
++  readonly label: string;
++  readonly instances: readonly AppSummary[];
++  readonly adding: boolean;
++  readonly open: OpenApp;
++  readonly onAdd: () => void;
++  /** Starts another instance; focus returns to the given element when that ends. */
++  readonly onAddAnother: (returnFocus: HTMLElement | null) => void;
++}) {
++  const format = useDisplayFormat();
++  const more = useRef<HTMLButtonElement>(null);
++  const [only] = instances;
++  if (only === undefined)
++    return (
++      <div className={actionsClass}>
++        <Button
++          type="button"
++          variant="outline"
++          size="sm"
++          aria-label={`Add ${label}`}
++          disabled={adding}
++          onClick={onAdd}
++        >
++          {adding ? "Adding…" : "Add"}
++        </Button>
++      </div>
++    );
++  return (
++    <div className={actionsClass}>
++      {instances.length === 1 ? (
++        <Button variant="outline" size="sm" asChild title={`Open ${only.name}`}>
++          {open(only, "Open")}
++        </Button>
++      ) : (
++        <RowMenu
++          title={`Open ${label}`}
++          trigger={
++            <Button
++              type="button"
++              variant="outline"
++              size="sm"
++              aria-label={`Open ${label}: choose one of ${instances.length}`}
++            >
++              Open
++              <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden />
++            </Button>
++          }
++          items={instances.map((app) => ({
++            key: app.id,
++            label: app.name,
++            detail: `Added ${formatMoment(app.createdAt, format, { day: "numeric", month: "short", year: "numeric" })}`,
++            link: (content: ReactNode) => open(app, content),
++          }))}
++        />
++      )}
++      <RowMenu
++        title={label}
++        trigger={
++          <Button
++            ref={more}
++            type="button"
++            variant="outline"
++            size="icon-sm"
++            aria-label={`More actions for ${label}`}
++            disabled={adding}
++          >
++            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
++          </Button>
++        }
++        items={[
++          {
++            key: "another",
++            label: "Add another",
++            icon: <HugeiconsIcon icon={Add01Icon} strokeWidth={2} aria-hidden />,
++            onSelect: () => onAddAnother(more.current),
++          },
++        ]}
++      />
++    </div>
++  );
++}
++
++/** The actions sit in the row's last column on phones, beside the name and description. */
++const actionsClass =
++  "catalog-row-actions flex shrink-0 items-center gap-2 max-[740px]:col-[3] max-[740px]:row-[1_/_3]";
++
++/** The phone layout the dashboard shell switches at. */
++const phoneViewport = "(max-width: 740px)";
++
++type RowMenuItem =
++  | {
++      readonly key: string;
++      readonly label: string;
++      readonly detail: string;
++      readonly link: (content: ReactNode) => ReactNode;
++    }
++  | {
++      readonly key: string;
++      readonly label: string;
++      readonly icon: ReactNode;
++      readonly onSelect: () => void;
++    };
++
++/**
++ * A row's menu: anchored to its trigger on wide screens, a bottom sheet with full-height targets on
++ * phones. Escape and an outside press close both, and focus returns to the trigger.
++ */
++function RowMenu({
++  title,
++  trigger,
++  items,
++}: {
++  /** Names the menu for assistive technology; the sheet also shows it. */
++  readonly title: string;
++  readonly trigger: ReactElement;
++  readonly items: readonly RowMenuItem[];
++}) {
++  const phone = useMediaQuery(phoneViewport);
++  const [open, setOpen] = useState(false);
++  const content = (item: RowMenuItem) =>
++    "link" in item ? (
++      <>
++        <span className="min-w-0 flex-1 truncate">{item.label}</span>
++        <span className="shrink-0 text-xs text-muted-foreground">{item.detail}</span>
++      </>
++    ) : (
++      <>
++        {item.icon}
++        {item.label}
++      </>
++    );
++  if (phone)
++    return (
++      <Dialog open={open} onOpenChange={setOpen}>
++        <DialogTrigger asChild>{trigger}</DialogTrigger>
++        <DialogContent
++          showCloseButton={false}
++          aria-describedby={undefined}
++          overlayClassName="bg-black/20"
++          className="top-auto bottom-0 left-0 translate-x-0 translate-y-0 w-full max-w-none sm:max-w-none gap-0 rounded-b-none rounded-t-[14px] border-b-0 p-[8px_8px_max(12px,_env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100"
++          onClickCapture={(event) => {
++            // Following a link closes the sheet; the route change happens as usual.
++            if (event.target instanceof Element && event.target.closest("a")) setOpen(false);
++          }}
++        >
++          <div className="mx-auto mb-2 h-1 w-9 rounded-full bg-border" aria-hidden />
++          <DialogTitle className="px-2.5 pt-1 pb-2 text-[13px] font-medium text-muted-foreground">
++            {title}
++          </DialogTitle>
++          <ul className="flex flex-col">
++            {items.map((item) => (
++              <li key={item.key}>
++                {"link" in item ? (
++                  <Button variant="ghost" asChild className="w-full justify-between gap-3">
++                    {item.link(content(item))}
++                  </Button>
++                ) : (
++                  <Button
++                    type="button"
++                    variant="ghost"
++                    className="w-full justify-start"
++                    onClick={() => {
++                      setOpen(false);
++                      item.onSelect();
++                    }}
++                  >
++                    {content(item)}
++                  </Button>
++                )}
++              </li>
++            ))}
++          </ul>
++          <DialogClose asChild>
++            <Button type="button" variant="outline" className="mt-2 w-full">
++              Cancel
++            </Button>
++          </DialogClose>
++        </DialogContent>
++      </Dialog>
++    );
++  return (
++    <DropdownMenu open={open} onOpenChange={setOpen}>
++      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
++      <DropdownMenuContent align="end" className="min-w-56 max-w-80" aria-label={title}>
++        {"link" in (items[0] ?? {}) && (
++          <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
++            {title}
++          </DropdownMenuLabel>
++        )}
++        {items.map((item) =>
++          "link" in item ? (
++            <DropdownMenuItem key={item.key} asChild>
++              {item.link(content(item))}
++            </DropdownMenuItem>
++          ) : (
++            <DropdownMenuItem key={item.key} onSelect={item.onSelect}>
++              {content(item)}
++            </DropdownMenuItem>
++          ),
++        )}
++      </DropdownMenuContent>
++    </DropdownMenu>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 0699a14..972f42b 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -1,6 +1,6 @@
+ import { AsyncResult, AtomRegistry } from "effect/reactivity";
+ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-react";
+-import { useContext, useState, type ReactNode } from "react";
++import { useContext, useRef, useState, type ReactNode } from "react";
+ import { Cause, Effect, Exit, Option, Predicate } from "effect";
+ import type { App } from "@executor-js/sdk";
+ import type { CatalogEntry, CatalogConnectionNotice } from "@executor-js/catalog/contracts";
+@@ -25,6 +25,11 @@ import { Input } from "../components/input.tsx";
+ import { useIncrementalList } from "./incremental-list.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import { AddAnotherDialog } from "./catalog-add-another.tsx";
++import { serviceInstances } from "./catalog-instances.ts";
++import { CatalogRowActions, type OpenApp } from "./catalog-row-actions.tsx";
++
++export type { OpenApp } from "./catalog-row-actions.tsx";
+ 
+ /**
+  * The installed copy of each catalog package, by package name. Installs record the catalog package
+@@ -61,12 +66,12 @@ export function useCatalogInstall<IE>(
+ }
+ 
+ /**
+- * Official apps available to add, in the feed's order. Published registry apps are not listed here.
+- * Catalog apps are vetted, so each row installs its own source under the catalog name. Only a name
+- * conflict asks for another one. The page stays put after an add; a row whose app is installed, now
+- * or in an earlier visit, offers Open instead of Add. Installs record the catalog package name as
+- * their copy origin, so the most recent copy of that package is the one Open leads to. The user
+- * then connects an account through the app's own providers.
++ * Official apps available to add, in the feed's order, one row per service. Published registry apps
++ * are not listed here. A service not yet added offers Add, which installs it under the catalog name
++ * and opens its own setup; only a name conflict asks for another name. The server may answer with
++ * the team's existing instance of the service instead, and that is the app that opens. One added
++ * instance opens directly; several open a chooser that lists them all. Every added service also
++ * offers Add another, a separate named instance through the same install.
+  */
+ export function CatalogPage<E, IE>({
+   query,
+@@ -77,6 +82,7 @@ export function CatalogPage<E, IE>({
+   action,
+   inventory,
+   open,
++  onInstalled,
+ }: QueryProps<readonly CatalogEntry[], E> & {
+   /** The install command for one catalog entry; each row has its own. */
+   readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
+@@ -85,41 +91,33 @@ export function CatalogPage<E, IE>({
+   readonly action?: ReactNode;
+   /** The apps already installed; a failed read just leaves every row on Add. */
+   readonly inventory: Query<Inventory, unknown>;
+-  /** A link to the installed app, rendered inside the row's Open button. */
+-  readonly open: (app: App) => ReactNode;
++  /** A link to an installed app's own page around the given content. */
++  readonly open: OpenApp;
++  /** Goes to the app an install returned, created or reused, where its setup continues. */
++  readonly onInstalled: (app: AppSummary) => void;
+ }) {
+   const brand = useProductBrand();
+   const entryName = (entry: { readonly name: string; readonly package: string }) =>
+     appDisplayName({ name: entry.name, copiedFrom: { name: entry.package } }, brand);
+   const result = useAtomValue(query);
+-  const installedByPackage = installedCatalogApps(
++  const templates = AsyncResult.value(result);
++  const all = Option.isSome(templates) ? templates.value : [];
++  const instances = serviceInstances(
++    all,
+     Option.getOrUndefined(AsyncResult.value(useAtomValue(inventory)))?.apps,
+   );
+-  const install = useCatalogInstall(mutation);
++  const runInstall = useCatalogInstall(mutation);
++  // State updates land after the event; a second click in the same frame must not install twice.
++  const running = useRef(new Set<string>());
+   const [adding, setAdding] = useState<ReadonlySet<string>>(new Set());
+-  const [failure, setFailure] = useState<Cause.Cause<IE>>();
+-  const [conflict, setConflict] = useState<{
+-    readonly entry: CatalogEntry;
+-    readonly name: string;
+-  }>();
+-  /** Installs under `name`; a taken name reopens the prompt, any other failure is shown above the list. */
+-  const add = async (entry: CatalogEntry, name: string) => {
+-    if (adding.has(entry.id) || !name.trim()) return;
++  const install = async (entry: CatalogEntry, input: InstallApp) => {
++    if (running.current.has(entry.id)) return undefined;
++    running.current.add(entry.id);
+     setAdding((current) => new Set(current).add(entry.id));
+-    setFailure(undefined);
+     try {
+-      const exit = await install(entry, { entry: entry.id, name: name.trim() });
+-      if (Exit.isSuccess(exit)) {
+-        setConflict(undefined);
+-        return;
+-      }
+-      const taken = Option.filter(
+-        Cause.findErrorOption(exit.cause),
+-        Predicate.isTagged("AppNameTaken"),
+-      );
+-      setFailure(exit.cause);
+-      setConflict(Option.isSome(taken) ? { entry, name: name.trim() } : undefined);
++      return await runInstall(entry, input);
+     } finally {
++      running.current.delete(entry.id);
+       setAdding((current) => {
+         const next = new Set(current);
+         next.delete(entry.id);
+@@ -127,13 +125,43 @@ export function CatalogPage<E, IE>({
+       });
+     }
+   };
++  const [failure, setFailure] = useState<Cause.Cause<IE>>();
++  const [conflict, setConflict] = useState<{
++    readonly entry: CatalogEntry;
++    readonly name: string;
++  }>();
++  const [another, setAnother] = useState<{
++    readonly entry: CatalogEntry;
++    readonly label: string;
++    readonly returnFocus: HTMLElement | null;
++  }>();
++  /**
++   * Installs under `name` without asking for a new instance; a taken name reopens the prompt, any
++   * other failure is shown above the list. Success opens whichever app the server returned.
++   */
++  const add = async (entry: CatalogEntry, name: string) => {
++    if (!name.trim()) return;
++    setFailure(undefined);
++    const exit = await install(entry, { entry: entry.id, name: name.trim() });
++    if (exit === undefined) return;
++    if (Exit.isSuccess(exit)) {
++      setConflict(undefined);
++      onInstalled(exit.value);
++      return;
++    }
++    const taken = Option.filter(
++      Cause.findErrorOption(exit.cause),
++      Predicate.isTagged("AppNameTaken"),
++    );
++    setFailure(exit.cause);
++    setConflict(Option.isSome(taken) ? { entry, name: name.trim() } : undefined);
++  };
+   const renaming = conflict !== undefined && adding.has(conflict.entry.id);
+   const retry = useAtomRefresh(query);
+   const [search, setSearch] = useState("");
+-  const templates = AsyncResult.value(result);
+   const term = search.trim().toLowerCase();
+   // Name matches come first; the rest keep the feed's order.
+-  const entries = (Option.isSome(templates) ? templates.value : [])
++  const entries = all
+     .filter((entry) =>
+       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
+         .toLowerCase()
+@@ -186,42 +214,46 @@ export function CatalogPage<E, IE>({
+       ) : (
+         <>
+           <div className="catalog-list border-t border-t-border">
+-            {entries.slice(0, visible.count).map((entry) => (
+-              <div
+-                className="catalog-row w-full flex items-center gap-4 min-h-18.5 py-[15px] px-[12px] border-b border-b-border max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:py-[15px] max-[740px]:px-0 max-[740px]:[&_>_[data-slot='button']]:col-[3] max-[740px]:[&_>_[data-slot='button']]:row-[1_/_3]"
+-                key={entry.id}
+-              >
+-                <ProviderIcon name={entry.name} icons={entry.icons} />
+-                <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
+-                  <strong>{entryName(entry)}</strong>
+-                  <span className="line-clamp-1">{entry.description}</span>
+-                  <CatalogNotices notices={entry.connectionNotices} />
++            {entries.slice(0, visible.count).map((entry) => {
++              const added = instances.get(entry.id) ?? [];
++              return (
++                <div
++                  className="catalog-row w-full flex items-center gap-4 min-h-18.5 py-[15px] px-[12px] border-b border-b-border max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:py-[15px] max-[740px]:px-0"
++                  key={entry.id}
++                >
++                  <ProviderIcon name={entry.name} icons={entry.icons} />
++                  <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
++                    <div className="flex flex-wrap items-baseline gap-x-2">
++                      <strong>{entryName(entry)}</strong>
++                      {added.length > 1 && <span>{added.length} added</span>}
++                    </div>
++                    <span className="line-clamp-1">{entry.description}</span>
++                    <CatalogNotices notices={entry.connectionNotices} />
++                  </div>
++                  <CatalogRowActions
++                    label={entryName(entry)}
++                    instances={added}
++                    adding={adding.has(entry.id)}
++                    open={open}
++                    onAdd={() => void add(entry, entry.name)}
++                    onAddAnother={(returnFocus) =>
++                      setAnother({ entry, label: entryName(entry), returnFocus })
++                    }
++                  />
+                 </div>
+-                {(() => {
+-                  const installed = installedByPackage.get(entry.package);
+-                  return installed ? (
+-                    <Button variant="outline" size="sm" asChild>
+-                      {open(installed)}
+-                    </Button>
+-                  ) : (
+-                    <Button
+-                      type="button"
+-                      variant="outline"
+-                      size="sm"
+-                      aria-label={`Add ${entryName(entry)}`}
+-                      disabled={adding.has(entry.id)}
+-                      onClick={() => void add(entry, entry.name)}
+-                    >
+-                      {adding.has(entry.id) ? "Adding…" : "Add"}
+-                    </Button>
+-                  );
+-                })()}
+-              </div>
+-            ))}
++              );
++            })}
+           </div>
+           {visible.sentinel}
+         </>
+       )}
++      <AddAnotherDialog
++        target={another}
++        install={install}
++        onInstalled={onInstalled}
++        onClose={() => setAnother(undefined)}
++        InstallFailure={InstallFailure}
++      />
+       <Dialog
+         open={conflict !== undefined}
+         onOpenChange={(open) => {

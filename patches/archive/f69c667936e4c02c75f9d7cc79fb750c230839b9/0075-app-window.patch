@@ -1,0 +1,466 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
+index ddea19f..ff24978 100644
+--- a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
++++ b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
+@@ -47,6 +47,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
+ import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
+ import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
++import { Route as OrgOrganizationSlugAppsAppIdWindowRouteImport } from './routes/org.$organizationSlug_.apps.$appId.window'
+ import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
+ 
+ const IndexRoute = IndexRouteImport.update({
+@@ -260,6 +261,12 @@ const OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute =
+     path: '/webhooks/$appId/$subscriptionId',
+     getParentRoute: () => OrgOrganizationSlugRoute,
+   } as any)
++const OrgOrganizationSlugAppsAppIdWindowRoute =
++  OrgOrganizationSlugAppsAppIdWindowRouteImport.update({
++    id: '/org/$organizationSlug_/apps/$appId/window',
++    path: '/org/$organizationSlug/apps/$appId/window',
++    getParentRoute: () => rootRouteImport,
++  } as any)
+ const OrgOrganizationSlugApprovalsWorkflowAppInputRoute =
+   OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport.update({
+     id: '/approvals/workflow/$app/$input',
+@@ -305,6 +312,7 @@ export interface FileRoutesByFullPath {
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -343,6 +351,7 @@ export interface FileRoutesByTo {
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -385,6 +394,7 @@ export interface FileRoutesById {
+   '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug_/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -428,6 +438,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add/'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   fileRoutesByTo: FileRoutesByTo
+@@ -466,6 +477,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   id:
+@@ -507,6 +519,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId_/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug_/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add/'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   fileRoutesById: FileRoutesById
+@@ -526,6 +539,7 @@ export interface RootRouteChildren {
+   OrgOrganizationSlugRoute: typeof OrgOrganizationSlugRouteWithChildren
+   McpApproveRequestIdRoute: typeof McpApproveRequestIdRoute
+   OrgOrganizationSlugSetupRoute: typeof OrgOrganizationSlugSetupRouteWithChildren
++  OrgOrganizationSlugAppsAppIdWindowRoute: typeof OrgOrganizationSlugAppsAppIdWindowRoute
+ }
+ 
+ declare module '@tanstack/react-router' {
+@@ -796,6 +810,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport
+       parentRoute: typeof OrgOrganizationSlugRoute
+     }
++    '/org/$organizationSlug_/apps/$appId/window': {
++      id: '/org/$organizationSlug_/apps/$appId/window'
++      path: '/org/$organizationSlug/apps/$appId/window'
++      fullPath: '/org/$organizationSlug/apps/$appId/window'
++      preLoaderRoute: typeof OrgOrganizationSlugAppsAppIdWindowRouteImport
++      parentRoute: typeof rootRouteImport
++    }
+     '/org/$organizationSlug/approvals/workflow/$app/$input': {
+       id: '/org/$organizationSlug/approvals/workflow/$app/$input'
+       path: '/approvals/workflow/$app/$input'
+@@ -909,6 +930,8 @@ const rootRouteChildren: RootRouteChildren = {
+   OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,
+   McpApproveRequestIdRoute: McpApproveRequestIdRoute,
+   OrgOrganizationSlugSetupRoute: OrgOrganizationSlugSetupRouteWithChildren,
++  OrgOrganizationSlugAppsAppIdWindowRoute:
++    OrgOrganizationSlugAppsAppIdWindowRoute,
+ }
+ export const routeTree = rootRouteImport
+   ._addFileChildren(rootRouteChildren)
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
+new file mode 100644
+index 0000000..0da3d62
+--- /dev/null
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
+@@ -0,0 +1,31 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
++import { OrganizationBoundary, OrganizationContent } from "@executor-js/hosted-web/organization";
++import { AppSkeleton } from "@executor-js/hosted-web/pages/app-screen";
++import { AppWindowPage } from "@executor-js/hosted-web/pages/app-window";
++import { parseAppParams } from "@executor-js/hosted-web/route-params";
++
++/** An embedded app full-window, outside the dashboard shell, where "Open in new tab" goes. */
++export const Route = createFileRoute("/org/$organizationSlug_/apps/$appId/window")({
++  // No parent route carries the organization here, so its slug passes through with the app ID.
++  params: {
++    parse: ({ organizationSlug, appId }: { organizationSlug: string; appId: string }) => ({
++      organizationSlug,
++      ...parseAppParams({ appId }),
++    }),
++  },
++  component: AppWindow,
++});
++
++function AppWindow() {
++  const { organizationSlug, appId } = Route.useParams();
++  return (
++    <OrganizationBoundary slug={organizationSlug}>
++      <ErrorTrackingProvider>
++        <OrganizationContent pending={<AppSkeleton />}>
++          <AppWindowPage appId={appId} />
++        </OrganizationContent>
++      </ErrorTrackingProvider>
++    </OrganizationBoundary>
++  );
++}
+diff --git a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
+index ad9a86d..491fe11 100644
+--- a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
++++ b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
+@@ -42,6 +42,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
+ import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
+ import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
++import { Route as OrgOrganizationSlugAppsAppIdWindowRouteImport } from './routes/org.$organizationSlug_.apps.$appId.window'
+ import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
+ 
+ const IndexRoute = IndexRouteImport.update({
+@@ -228,6 +229,12 @@ const OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute =
+     path: '/webhooks/$appId/$subscriptionId',
+     getParentRoute: () => OrgOrganizationSlugRoute,
+   } as any)
++const OrgOrganizationSlugAppsAppIdWindowRoute =
++  OrgOrganizationSlugAppsAppIdWindowRouteImport.update({
++    id: '/org/$organizationSlug_/apps/$appId/window',
++    path: '/org/$organizationSlug/apps/$appId/window',
++    getParentRoute: () => rootRouteImport,
++  } as any)
+ const OrgOrganizationSlugApprovalsWorkflowAppInputRoute =
+   OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport.update({
+     id: '/approvals/workflow/$app/$input',
+@@ -268,6 +275,7 @@ export interface FileRoutesByFullPath {
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -302,6 +310,7 @@ export interface FileRoutesByTo {
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -339,6 +348,7 @@ export interface FileRoutesById {
+   '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
+   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
++  '/org/$organizationSlug_/apps/$appId/window': typeof OrgOrganizationSlugAppsAppIdWindowRoute
+   '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
+   '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
+ }
+@@ -377,6 +387,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add/'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   fileRoutesByTo: FileRoutesByTo
+@@ -411,6 +422,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   id:
+@@ -447,6 +459,7 @@ export interface FileRouteTypes {
+     | '/org/$organizationSlug/apps/$appId_/setup'
+     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
++    | '/org/$organizationSlug_/apps/$appId/window'
+     | '/org/$organizationSlug/apps/add/'
+     | '/org/$organizationSlug/approvals/workflow/$app/$input'
+   fileRoutesById: FileRoutesById
+@@ -463,6 +476,7 @@ export interface RootRouteChildren {
+   OrgOrganizationSlugRoute: typeof OrgOrganizationSlugRouteWithChildren
+   McpApproveRequestIdRoute: typeof McpApproveRequestIdRoute
+   OrgOrganizationSlugSetupRoute: typeof OrgOrganizationSlugSetupRouteWithChildren
++  OrgOrganizationSlugAppsAppIdWindowRoute: typeof OrgOrganizationSlugAppsAppIdWindowRoute
+ }
+ 
+ declare module '@tanstack/react-router' {
+@@ -698,6 +712,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport
+       parentRoute: typeof OrgOrganizationSlugRoute
+     }
++    '/org/$organizationSlug_/apps/$appId/window': {
++      id: '/org/$organizationSlug_/apps/$appId/window'
++      path: '/org/$organizationSlug/apps/$appId/window'
++      fullPath: '/org/$organizationSlug/apps/$appId/window'
++      preLoaderRoute: typeof OrgOrganizationSlugAppsAppIdWindowRouteImport
++      parentRoute: typeof rootRouteImport
++    }
+     '/org/$organizationSlug/approvals/workflow/$app/$input': {
+       id: '/org/$organizationSlug/approvals/workflow/$app/$input'
+       path: '/approvals/workflow/$app/$input'
+@@ -804,6 +825,8 @@ const rootRouteChildren: RootRouteChildren = {
+   OrgOrganizationSlugRoute: OrgOrganizationSlugRouteWithChildren,
+   McpApproveRequestIdRoute: McpApproveRequestIdRoute,
+   OrgOrganizationSlugSetupRoute: OrgOrganizationSlugSetupRouteWithChildren,
++  OrgOrganizationSlugAppsAppIdWindowRoute:
++    OrgOrganizationSlugAppsAppIdWindowRoute,
+ }
+ export const routeTree = rootRouteImport
+   ._addFileChildren(rootRouteChildren)
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
+new file mode 100644
+index 0000000..0da3d62
+--- /dev/null
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug_.apps.$appId.window.tsx
+@@ -0,0 +1,31 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
++import { OrganizationBoundary, OrganizationContent } from "@executor-js/hosted-web/organization";
++import { AppSkeleton } from "@executor-js/hosted-web/pages/app-screen";
++import { AppWindowPage } from "@executor-js/hosted-web/pages/app-window";
++import { parseAppParams } from "@executor-js/hosted-web/route-params";
++
++/** An embedded app full-window, outside the dashboard shell, where "Open in new tab" goes. */
++export const Route = createFileRoute("/org/$organizationSlug_/apps/$appId/window")({
++  // No parent route carries the organization here, so its slug passes through with the app ID.
++  params: {
++    parse: ({ organizationSlug, appId }: { organizationSlug: string; appId: string }) => ({
++      organizationSlug,
++      ...parseAppParams({ appId }),
++    }),
++  },
++  component: AppWindow,
++});
++
++function AppWindow() {
++  const { organizationSlug, appId } = Route.useParams();
++  return (
++    <OrganizationBoundary slug={organizationSlug}>
++      <ErrorTrackingProvider>
++        <OrganizationContent pending={<AppSkeleton />}>
++          <AppWindowPage appId={appId} />
++        </OrganizationContent>
++      </ErrorTrackingProvider>
++    </OrganizationBoundary>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+index fe3f39f..e427beb 100644
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -87,7 +87,7 @@ function ScreenStatus({
+   );
+ }
+ 
+-function AppSkeleton() {
++export function AppSkeleton() {
+   return (
+     <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
+       <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
+diff --git a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
+index a2c0320..329600c 100644
+--- a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
+@@ -1,6 +1,7 @@
+ import type { App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
+ import { AsyncResult } from "effect/reactivity";
++import { Link } from "@tanstack/react-router";
+ import { useEffect } from "react";
+ import {
+   appSignInFailureMessage,
+@@ -8,6 +9,7 @@ import {
+   type AppSignInFailure,
+   type AppSignInId,
+ } from "../../contracts/app-ui.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
+ import { useAppUiLocation } from "./app-screen.tsx";
+ 
+ /**
+@@ -45,6 +47,7 @@ export function OpenAppAction({ app }: { readonly app: App }) {
+ }
+ 
+ function DeployedOpenAppAction({ app }: { readonly app: App }) {
++  const { slug } = useOrganizationRoute();
+   const { result, refresh } = useAppUiLocation(app);
+   if (AsyncResult.isFailure(result))
+     return (
+@@ -76,10 +79,24 @@ function DeployedOpenAppAction({ app }: { readonly app: App }) {
+       </div>
+     );
+   if (result.value.status !== "ready") return null;
++  // An embedded app opens full-window on the dashboard's address, so its own origin never shows.
++  if (result.value.embedded)
++    return (
++      <Button variant="outline" asChild>
++        <Link
++          to="/org/$organizationSlug/apps/$appId/window"
++          params={{ organizationSlug: slug, appId: app.id }}
++          target="_blank"
++          rel="noopener noreferrer"
++        >
++          Open in new tab
++        </Link>
++      </Button>
++    );
+   return (
+     <Button variant="outline" asChild>
+       <a href={result.value.url} target="_blank" rel="noopener noreferrer">
+-        {result.value.embedded ? "Open in new tab" : "Open app"}
++        Open app
+       </a>
+     </Button>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/hosted/web/src/implementation/pages/app-window.tsx
+new file mode 100644
+index 0000000..06a5836
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/app-window.tsx
+@@ -0,0 +1,47 @@
++import type { AppId } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { appScreenTab } from "@executor-js/ui/dashboard/app-detail";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { Link } from "@tanstack/react-router";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { liveAppAtom } from "../../contracts/apps.ts";
++import { appAccessAtom } from "../../contracts/resource-access.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { AppScreen, AppSkeleton } from "./app-screen.tsx";
++
++/**
++ * An embedded app alone in its own tab, on the dashboard's address. "Open in new tab" lands here,
++ * so a person never sees the app's opaque origin.
++ */
++export function AppWindowPage({ appId }: { readonly appId: AppId }) {
++  const { organization, slug } = useOrganizationRoute();
++  const query = useQuery(liveAppAtom({ organization, app: appId }));
++  const authority = useQuery(appAccessAtom({ organization, app: appId }));
++  const app = Option.getOrUndefined(query.data);
++  const screen = appScreenTab(app, Option.getOrUndefined(authority.data), {
++    app: AsyncResult.isFailure(query.result),
++    access: AsyncResult.isFailure(authority.result),
++  });
++  return (
++    <main className="flex h-dvh flex-col bg-background">
++      {screen === "present" && app !== undefined ? (
++        <AppScreen app={app} active />
++      ) : screen === "pending" ? (
++        <AppSkeleton />
++      ) : (
++        <div className="m-auto flex flex-col items-center gap-3 text-sm text-muted-foreground">
++          <p>This app has no screen you can open.</p>
++          <Button variant="outline" size="sm" asChild>
++            <Link
++              to="/org/$organizationSlug/apps/$appId"
++              params={{ organizationSlug: slug, appId }}
++            >
++              Go to the app
++            </Link>
++          </Button>
++        </div>
++      )}
++    </main>
++  );
++}
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+index 9571efc..1ffb0a8 100644
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -237,7 +237,8 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
+             );
+             expect(allow).toBe("clipboard-write");
+             expect(referrer).toBe("no-referrer");
+-            expect(href).toBe(first.url);
++            // The new tab opens the dashboard's own page for the app, never the app's origin.
++            expect(href).toBe(`${detail}/window`);
+           }),
+         );
+         yield* browser.checkpoint("embedded-app-tab");
+@@ -357,22 +358,33 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) =>
+           }),
+         );
+         yield* browser.checkpoint("embedded-app-activated");
+-        yield* browser.use("Open in new tab still opens the canonical app URL", (page) => {
+-          const pagePromise = page.context().waitForEvent("page");
+-          const url = new URL(first.url).href;
+-          return Promise.all([
+-            pagePromise,
+-            page.getByRole("link", { name: "Open in new tab" }).click(),
+-          ]).then(([opened]) =>
+-            opened
+-              .waitForURL(url)
+-              .then(() => opened.waitForLoadState())
+-              .then(() => {
+-                expect(new URL(opened.url()).href).toBe(url);
+-                return opened.close();
+-              }),
+-          );
+-        });
++        yield* browser.use(
++          "Open in new tab shows only the app, on the dashboard's address",
++          (page) => {
++            const pagePromise = page.context().waitForEvent("page");
++            const url = `${target.metadata.origin}${detail}/window`;
++            return Promise.all([
++              pagePromise,
++              page.getByRole("link", { name: "Open in new tab" }).click(),
++            ]).then(([opened]) =>
++              opened
++                .waitForURL(url)
++                .then(() => opened.locator(`iframe[title="${first.app.name} app"]`).waitFor())
++                .then(() =>
++                  Promise.all([
++                    opened.locator("iframe").getAttribute("src"),
++                    opened.getByRole("navigation", { name: "App navigation" }).isVisible(),
++                  ]),
++                )
++                .then(([src, chrome]) => {
++                  expect(new URL(opened.url()).origin).toBe(target.metadata.origin);
++                  expect(src?.startsWith(new URL(first.url).origin)).toBe(true);
++                  expect(chrome).toBe(false);
++                  return opened.close();
++                }),
++            );
++          },
++        );
+         yield* browser.use("App origins cannot read the dashboard DOM or cookies", (page) => {
+           const frame = page.frames().find((frame) => frame.url().startsWith(first.url));
+           expect(frame).toBeDefined();

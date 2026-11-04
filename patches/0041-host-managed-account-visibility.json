@@ -1,9 +1,11 @@
 {
   "identity": "basalt-host-managed-account-visibility",
   "file": "0041-host-managed-account-visibility.patch",
-  "content_sha256": "19c1674dabf66de96ba522bf1dcce6caea5af9938b520d0f7681d3abab46caec",
+  "content_sha256": "795d10b73b1f02eef48dcf449c34a9696fa80cfb1b2d795e3a5f10a90f8ead55",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "19c1674dabf66de96ba522bf1dcce6caea5af9938b520d0f7681d3abab46caec",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

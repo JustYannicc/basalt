@@ -1,0 +1,9 @@
+{
+  "identity": "executor-upstream-generated-assets",
+  "file": "0209-upstream-generated-assets.patch",
+  "content_sha256": "d6983cd996174f59bac56f7819d724e9e56ea4ecc110ecea41bb9ac34873d613",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

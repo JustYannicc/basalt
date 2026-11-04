@@ -163,7 +163,7 @@ index 8f4ed8f8..8c33bfc1 100644
 +    yield* executor[InteractiveHost].cancel({ owner, connection, accounts });
    });
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 9608f088..cd2ac93b 100644
+index fe5fece1..ccaadbe0 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -15,6 +15,8 @@ export type HostedError =
@@ -176,10 +176,11 @@ index 9608f088..cd2ac93b 100644
        ({
          changed:
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index 4621e017..be1a89cd 100644
+index 262fcc60..f5dec534 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
-@@ -1,4 +1,11 @@
+@@ -1,5 +1,12 @@
+ import { RequestRejection } from "@executor-js/sdk/core";
 -import { AccountProvisioned } from "@executor-js/sdk/core";
 +import {
 +  AccountAcquisitionUnavailable,
@@ -192,7 +193,7 @@ index 4621e017..be1a89cd 100644
  import {
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
-@@ -170,7 +177,18 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
+@@ -171,7 +178,18 @@ const accountConnectApi = HttpApi.make("account-connect").add(
        HttpApiEndpoint.post("cancel", "/account-connect/api/cancel", {
          payload: ConnectionGrant,
          success: AccountConnection,
@@ -213,7 +214,7 @@ index 4621e017..be1a89cd 100644
      )
      .add(
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index dad25672..5fdd4522 100644
+index 028dda55..893caf93 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -221,7 +222,7 @@ index dad25672..5fdd4522 100644
  import { AccountObservationView } from "@executor-js/sdk/core";
  import { AccountProvisioned } from "@executor-js/sdk/core";
  import {
-@@ -570,7 +571,10 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -571,7 +572,10 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("liveAccount", "/dashboard/api/live/accounts/:account", {
          params: { account: AccountId },
          success: HttpApiSchema.StreamSse({
@@ -233,7 +234,7 @@ index dad25672..5fdd4522 100644
            error: liveErrors,
          }),
        }),
-@@ -802,7 +806,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -803,7 +807,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("accountObservations", "/dashboard/api/accounts/:account/observations", {
          params: { account: AccountId },
          success: AccountObservationView,
@@ -242,7 +243,7 @@ index dad25672..5fdd4522 100644
        }),
      )
      .add(
-@@ -812,7 +816,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -813,7 +817,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          {
            params: { account: AccountId },
            success: AccountObservationView,
@@ -251,7 +252,7 @@ index dad25672..5fdd4522 100644
          },
        ),
      )
-@@ -820,7 +824,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -821,7 +825,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("account", "/dashboard/api/accounts/:account", {
          params: { account: AccountId },
          success: DashboardAccountDetail,
@@ -260,7 +261,7 @@ index dad25672..5fdd4522 100644
        }),
      )
      .add(
-@@ -839,7 +843,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -840,7 +844,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.post("checkAccount", "/dashboard/api/accounts/:account/health", {
          params: { account: AccountId },
          success: AccountHealth,
@@ -270,7 +271,7 @@ index dad25672..5fdd4522 100644
      )
      .add(
 diff --git a/apps/local/server/src/index.ts b/apps/local/server/src/index.ts
-index 264eb9ee..e201698c 100644
+index f96c30b0..c7545090 100644
 --- a/apps/local/server/src/index.ts
 +++ b/apps/local/server/src/index.ts
 @@ -1,4 +1,5 @@
@@ -278,9 +279,9 @@ index 264eb9ee..e201698c 100644
  export { ServerConfig, config } from "./contracts/config.ts";
  export { localApi } from "./implementation/server.ts";
 +export { launch } from "./implementation/launcher.ts";
- export { DesktopBootstrap, ServerReady, LocalAuthApi } from "./contracts/auth.ts";
+ export { LocalAuthApi } from "./contracts/auth.ts";
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
-index f0236071..de2a153b 100644
+index 7504e310..30d2f96f 100644
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
 @@ -40,6 +40,16 @@ const unavailable = () =>
@@ -973,7 +974,7 @@ index 0ce8306a..ea225782 100644
        const gate = yield* Deferred.make<void>(),
          started = yield* Deferred.make<void>();
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 60a65a96..5156be20 100644
+index d03d4c4c..c727ba00 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -51,6 +51,8 @@ const maxClockOffset = 40 * 86_400_000;
@@ -991,9 +992,9 @@ index 60a65a96..5156be20 100644
      const env = {
 +      EXECUTOR_E2E_PRODUCT_ENTRY: environment.EXECUTOR_E2E_PRODUCT_ENTRY,
        PATH: runtimePath,
-       NODE_ENV: "test",
-       HOST: "127.0.0.1",
-@@ -252,10 +255,16 @@ export const startManagedServer = (
+       // Every Windows process has it: the local server runs Windows's own programs from there.
+       ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
+@@ -254,10 +257,16 @@ export const startManagedServer = (
              : path.join(coverageDirectory, String(generation++));
          // The product's workerd logs its function events here; see workerd-coverage.ts.
          if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
@@ -1012,7 +1013,7 @@ index 60a65a96..5156be20 100644
              : {
                  command: "bun",
                  args:
-@@ -274,7 +283,7 @@ export const startManagedServer = (
+@@ -276,7 +285,7 @@ export const startManagedServer = (
                      : [
                          // Bun accepts Node's --import preload, so self-host can advance wall time too.
                          ...preloads.flatMap((url) => ["--import", url.href]),
@@ -1047,10 +1048,10 @@ index 998bc51a..ebdf9429 100644
    { sql: "DROP TABLE executor_app_views" },
    { sql: "DROP TABLE executor_account_reports" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c6c48d57..319f4eac 100644
+index cd11b261..27495b17 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7870,6 +7870,126 @@ export const scenarios = plan({
+@@ -8903,6 +8903,126 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
@@ -5501,7 +5502,7 @@ index 00000000..0839e4bf
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 68c57964..c5b4b0c5 100644
+index efae74fe..6f725ebc 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -176,6 +176,7 @@ export const DeclaredAccountSlot = Schema.Struct({
@@ -5897,7 +5898,7 @@ index 51ca17fb..07982c9f 100644
 +  StoredDriverObservationData,
 +]);
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 788c7897..944112ea 100644
+index f15fbddc..7b291ba5 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,4 @@
@@ -5945,7 +5946,7 @@ index 788c7897..944112ea 100644
  });
  export type AccountHealth = typeof AccountHealth.Type;
  
-@@ -315,7 +337,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -381,7 +403,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        params: accountParams,
        query: { ...ownerQuery, apps: Schema.fromJsonString(AccountObservationInput.fields.apps) },
        success: AccountObservationView,
@@ -5954,7 +5955,7 @@ index 788c7897..944112ea 100644
      }),
    )
    .add(
-@@ -324,7 +346,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -390,7 +412,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        query: ownerQuery,
        payload: Schema.Struct({ apps: AccountObservationInput.fields.apps }),
        success: AccountObservationView,
@@ -5963,7 +5964,7 @@ index 788c7897..944112ea 100644
      }),
    )
    .add(
-@@ -387,7 +409,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -453,7 +475,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
          apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
        },
        success: AccountHealth,
@@ -5972,7 +5973,7 @@ index 788c7897..944112ea 100644
      }).annotate(
        OpenApi.Description,
        "Read the named apps' latest checks of an account and the identity the checks reported. Does not run a check.",
-@@ -410,7 +432,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -476,7 +498,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        query: ownerQuery,
        payload: Schema.Struct({ apps: AccountInputs.check.fields.apps }),
        success: AccountHealth,
@@ -5982,7 +5983,7 @@ index 788c7897..944112ea 100644
        OpenApi.Description,
        "Run the provider checks of the named apps for this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 19053a3a..b2aea60c 100644
+index 0f91085d..709d2967 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -58,6 +58,7 @@ export const AccountRequirement = Schema.Struct({
@@ -5994,7 +5995,7 @@ index 19053a3a..b2aea60c 100644
  
  export type AccountRequirement = typeof AccountRequirement.Type;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 09ab7b8f..e078a0ab 100644
+index b0af0700..980ab8f9 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,4 +1,8 @@
@@ -6006,7 +6007,7 @@ index 09ab7b8f..e078a0ab 100644
  import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
  import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
  /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-@@ -314,6 +318,7 @@ export interface ExecutorInputs {
+@@ -330,6 +334,7 @@ export interface ExecutorInputs {
    readonly git: RepositoryBackend;
    readonly blobs: BlobStorage;
    readonly runtime: AppRuntime;
@@ -6014,7 +6015,7 @@ index 09ab7b8f..e078a0ab 100644
    readonly oauth?: OAuthOptions;
    /** Defaults to reading the hosted Executor registry. */
    readonly registry?: RegistryOptions;
-@@ -488,6 +493,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -506,6 +511,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [StorageHost]: StorageHost;
    readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
    readonly [PersonalDataReportingHost]: PersonalDataReportingHost;
@@ -6022,7 +6023,7 @@ index 09ab7b8f..e078a0ab 100644
    readonly [PrefetchHost]: PrefetchHost;
    readonly [AppViewsHost]: AppViewsHost;
    readonly [AppSourceHost]: AppSourceHost;
-@@ -517,6 +523,7 @@ export type PromiseExecutor = Promisify<
+@@ -535,6 +541,7 @@ export type PromiseExecutor = Promisify<
      | typeof WebhookSourceHost
      | typeof RepositoryHost
      | typeof InteractiveHost
@@ -6031,7 +6032,7 @@ index 09ab7b8f..e078a0ab 100644
      | typeof PersonalDataReportingHost
      | typeof PrefetchHost
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 561ef1bd..72bac8f0 100644
+index 3b6a93ef..f0ebce73 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -1,5 +1,6 @@
@@ -6075,10 +6076,10 @@ index c76ff77e..ecee8a5d 100644
    | import("./interactive-errors.ts").InteractiveRetirementBusy
    | import("./interactive-errors.ts").InteractiveRetirementFailed;
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 8e89671d..bfe9a7c6 100644
+index 44656d67..032f3942 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -31,6 +31,10 @@ export {
+@@ -32,6 +32,10 @@ export {
  export { executorDatabase } from "./implementation/storage-migrations.ts";
  export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
  export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
@@ -7509,7 +7510,7 @@ index 00000000..82f97e64
 +    }),
 +  );
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 49cf5481..5e858017 100644
+index 2151cf7d..263a0e63 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,5 @@
@@ -7518,7 +7519,7 @@ index 49cf5481..5e858017 100644
  import { privateAccountCheck } from "./account-status-output.ts";
  /**
   * Account checks run by the apps that use an account, as the product names them. Each app's active
-@@ -148,7 +150,14 @@ export const makeAccountHealth = (
+@@ -151,7 +153,14 @@ export const makeAccountHealth = (
    recordObservation?: ReturnType<
      typeof import("./account-observations.ts").makeAccountObservations
    >["fromHealth"],
@@ -7533,19 +7534,19 @@ index 49cf5481..5e858017 100644
    /** One account's health from the apps that use it and its recorded checks. */
    const project = (
      account: HealthAccount,
-@@ -217,17 +226,18 @@ export const makeAccountHealth = (
+@@ -228,17 +237,18 @@ export const makeAccountHealth = (
        const report = yield* query(() =>
-         db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
+         db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
        );
 -      return yield* project(
 +      const health = yield* project(
-         account,
+         stored,
          apps,
          rows,
-         yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+         yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
          report === null ? undefined : { status: report.status },
        );
-+      return withDriverHealth(health, yield* driver.report(account));
++      return withDriverHealth(health, yield* driver.report(stored));
      });
  
    /**
@@ -7554,7 +7555,7 @@ index 49cf5481..5e858017 100644
     * limits the accounts read to that owner, as for a hosted organization. `links` names the apps
     * each account is linked to.
     */
-@@ -235,7 +245,7 @@ export const makeAccountHealth = (
+@@ -246,7 +256,7 @@ export const makeAccountHealth = (
      Effect.gen(function* () {
        const accounts = yield* query(() =>
          db.findMany("accounts", {
@@ -7563,15 +7564,15 @@ index 49cf5481..5e858017 100644
            where: (b) => (input.owner === undefined ? true : b("owner", "=", input.owner)),
            orderBy: ["id", "asc"],
          }),
-@@ -255,6 +265,7 @@ export const makeAccountHealth = (
-       const reports = new Map(reportRows.map((row) => [row.id, row.status]));
-       const linked = [...new Set(input.links.map((link) => link.app))];
-       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
+@@ -266,6 +276,7 @@ export const makeAccountHealth = (
+         query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+         linked.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids: linked }),
+       );
 +      const driverHealth = yield* driver.list(accounts);
        return yield* Effect.forEach(accounts, (account) =>
          project(
            account,
-@@ -264,7 +275,7 @@ export const makeAccountHealth = (
+@@ -275,7 +286,7 @@ export const makeAccountHealth = (
            rows.filter((row) => row.account === account.id),
            acquired.get(account.id),
            reports.has(account.id) ? { status: reports.get(account.id)! } : undefined,
@@ -7580,10 +7581,10 @@ index 49cf5481..5e858017 100644
        );
      }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
  
-@@ -483,6 +494,7 @@ export const makeAccountHealth = (
-       Effect.gen(function* () {
-         const account = yield* storedAccount(db, input.account, input.owner);
-         const apps = input.apps.length === 0 ? [] : yield* listApps({ ids: input.apps });
+@@ -499,6 +510,7 @@ export const makeAccountHealth = (
+             ? Effect.succeed<readonly App[]>([])
+             : listApps({ ids: input.apps }),
+         );
 +        yield* driver.check(account);
          yield* Effect.forEach(apps, (app) => checkApp(app, account), {
            concurrency: 4,
@@ -7970,10 +7971,10 @@ index 03bbf8eb..03120e9e 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 29139ff9..2eaee7d9 100644
+index f276cb9c..d11f228f 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -278,6 +278,16 @@ export const makeAccounts = (
+@@ -346,6 +346,16 @@ export const makeAccounts = (
                  where: (b) => b("account", "=", input.account),
                }),
              );
@@ -8024,10 +8025,10 @@ index a6feadec..ae694d5e 100644
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index a3bd0f6d..debd0928 100644
+index ac6cd26f..02083ac8 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -475,6 +475,7 @@ export const makeApps = (
+@@ -478,6 +478,7 @@ export const makeApps = (
              cardinality: value.cardinality,
              health: value.health,
              interactiveHealth: value.interactiveHealth,
@@ -8035,7 +8036,7 @@ index a3bd0f6d..debd0928 100644
            })),
          ),
        );
-@@ -490,17 +491,28 @@ export const makeApps = (
+@@ -493,17 +494,28 @@ export const makeApps = (
          ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
          ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
          accounts: Object.fromEntries(
@@ -8123,7 +8124,7 @@ index 00000000..c8364807
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5e2bbbb3..6d694ba4 100644
+index 79075999..e394830c 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,7 +1,8 @@
@@ -8153,9 +8154,9 @@ index 5e2bbbb3..6d694ba4 100644
 +import { pendingInteractive } from "./interactive-state.ts";
 +import { readConnection } from "./connection-state.ts";
  import { makeAccountConnections } from "./account-connections.ts";
- import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
- import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -77,6 +90,30 @@ export const createExecutor = (
+ import {
+   credentialsReadable,
+@@ -83,6 +96,30 @@ export const createExecutor = (
      const credentials =
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
@@ -8186,7 +8187,7 @@ index 5e2bbbb3..6d694ba4 100644
      const sources = gitSourceStorage(options.git);
      const origin = options.origin ?? hostedExecutorOrigin;
      const catalog = makeRegistry(
-@@ -203,6 +240,7 @@ export const createExecutor = (
+@@ -210,6 +247,7 @@ export const createExecutor = (
        runtime,
        oauth.resolveSelected,
        options.hooks,
@@ -8194,7 +8195,7 @@ index 5e2bbbb3..6d694ba4 100644
      );
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
-@@ -225,6 +263,7 @@ export const createExecutor = (
+@@ -232,6 +270,7 @@ export const createExecutor = (
        crypto,
        apps.list,
        makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
@@ -8202,15 +8203,15 @@ index 5e2bbbb3..6d694ba4 100644
      );
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
-@@ -235,6 +274,7 @@ export const createExecutor = (
-       apps.list,
+@@ -243,6 +282,7 @@ export const createExecutor = (
+       options.hostApi,
        options.hooks,
        fromHealth,
 +      acquisitionHost,
      );
      const schedules = makeSchedules(
        options.database,
-@@ -308,6 +348,7 @@ export const createExecutor = (
+@@ -326,6 +366,7 @@ export const createExecutor = (
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
        [InteractiveHost]: { ...interactive, ...retirement },
@@ -8218,7 +8219,7 @@ index 5e2bbbb3..6d694ba4 100644
        scheduler: schedules.dispatcher,
        events,
        schedules: schedules.operations,
-@@ -319,6 +360,14 @@ export const createExecutor = (
+@@ -337,6 +378,14 @@ export const createExecutor = (
                Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
              );
              if (saved === undefined) return yield* accountOperations.remove(input);
@@ -8233,7 +8234,7 @@ index 5e2bbbb3..6d694ba4 100644
              if (
                (yield* interactive.binding({ owner: saved.owner, account: saved.id })) === undefined
              )
-@@ -340,6 +389,19 @@ export const createExecutor = (
+@@ -358,6 +407,19 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -8253,7 +8254,7 @@ index 5e2bbbb3..6d694ba4 100644
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
-@@ -392,11 +454,31 @@ export const createExecutor = (
+@@ -410,11 +472,31 @@ export const createExecutor = (
          ...ownerOperations,
          remove: (input) =>
            Effect.gen(function* () {
@@ -8286,10 +8287,10 @@ index 5e2bbbb3..6d694ba4 100644
              yield* cleanup;
              return result;
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index ccf8bd9b..86a41300 100644
+index 40cd636c..6933a1c0 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,10 @@ import type { ExecutorDatabase } from "./storage.ts";
+@@ -8,7 +8,10 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
@@ -8300,7 +8301,7 @@ index ccf8bd9b..86a41300 100644
 +});
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
 index e95b5ffa..7e35638e 100644
 --- a/packages/sdk/src/implementation/handlers.ts
@@ -8701,7 +8702,7 @@ index bda4fd73..02ec4994 100644
              return account;
            }),
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 2dbd036b..d0d84459 100644
+index fcdec077..cb6a07e0 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,5 @@
@@ -8710,8 +8711,8 @@ index 2dbd036b..d0d84459 100644
  import { accountObservations } from "./account-observation-schema.ts";
  /** Current baseline and the upgrades required by existing version 4 databases. */
  import { fumadb } from "fumadb-effect";
-@@ -484,6 +486,8 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
-   });
+@@ -500,6 +502,8 @@ const version4015Schema = schema({
+ });
  
  /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
 +const version4020Tables = { ...version4019Tables, accountAcquisitions };
@@ -8719,7 +8720,7 @@ index 2dbd036b..d0d84459 100644
  export const storageSchemas = [
    version4("4.0.0"),
    version4("4.0.1", () =>
-@@ -720,6 +724,30 @@ export const storageSchemas = [
+@@ -725,6 +729,30 @@ export const storageSchemas = [
          ]),
        ),
    }),
@@ -8751,10 +8752,10 @@ index 2dbd036b..d0d84459 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 2f75f2cb..ac9fbbfb 100644
+index 6541190a..c7b12d79 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -25,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -8763,16 +8764,7 @@ index 2f75f2cb..ac9fbbfb 100644
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -47,7 +47,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.19")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.21")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -77,7 +77,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -80,7 +80,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {

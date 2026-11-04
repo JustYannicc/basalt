@@ -1,10 +1,12 @@
 {
   "identity": "executor-account-status",
   "file": "0030-account-status.patch",
-  "content_sha256": "702d6327025fa9b67bcb538a5eb3f7a45a6c35a5861eb52450001d5517d4959c",
+  "content_sha256": "d3d009e929934be77a2c41f8864c9e5c4156cfb81bf1ce51390444ccdac75a9a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "upstream_issue": 2418,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "702d6327025fa9b67bcb538a5eb3f7a45a6c35a5861eb52450001d5517d4959c",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

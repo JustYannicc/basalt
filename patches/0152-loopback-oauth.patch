@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 28e67e8..a43d790 100644
+index e0d13407..92ea0468 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -5,7 +5,7 @@ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
@@ -21,7 +21,7 @@ index 28e67e8..a43d790 100644
  import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
  import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
  import {
-@@ -558,6 +559,7 @@ function AppConnectionFields({
+@@ -565,6 +566,7 @@ function AppConnectionFields({
    const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
    const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
    const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
@@ -29,7 +29,7 @@ index 28e67e8..a43d790 100644
    const fields = (selection: IdentityConsentSelection) => (
      <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
        provider={form.provider}
-@@ -576,11 +578,10 @@ function AppConnectionFields({
+@@ -584,11 +586,10 @@ function AppConnectionFields({
            : authorize({ ...selection, ...input })
        }
        interactive={interactive}
@@ -42,8 +42,8 @@ index 28e67e8..a43d790 100644
            {
              organization,
              organizationSlug,
-@@ -591,13 +592,20 @@ function AppConnectionFields({
-             manualClient: value.manualClient,
+@@ -600,13 +601,20 @@ function AppConnectionFields({
+             ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
              ...(returnTo === undefined ? {} : { returnTo }),
            },
 -          value.authorizationUrl,
@@ -66,7 +66,7 @@ index 28e67e8..a43d790 100644
      <IdentityConsent
        query={resourceInventoryAtom(organization)}
        Failure={HostedFailure}
-@@ -616,7 +624,7 @@ function AppConnectionFields({
+@@ -625,7 +633,7 @@ function AppConnectionFields({
            onSaved();
            return;
          }
@@ -75,7 +75,7 @@ index 28e67e8..a43d790 100644
            {
              organization,
              organizationSlug,
-@@ -626,11 +634,11 @@ function AppConnectionFields({
+@@ -635,11 +643,11 @@ function AppConnectionFields({
              manualClient: false,
              ...(returnTo === undefined ? {} : { returnTo }),
            },
@@ -90,10 +90,10 @@ index 28e67e8..a43d790 100644
    );
  }
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index e3a9356..a32648d 100644
+index 04049965..6bb1cd48 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -34,9 +34,9 @@ import {
+@@ -39,9 +39,9 @@ import {
    connectionOAuthSetupAtom,
    startOAuthAtom,
    submitConnectionAtom,
@@ -104,7 +104,7 @@ index e3a9356..a32648d 100644
  import {
    cancelInteractiveConnectionAtom,
    interactiveConnectionStatusAtom,
-@@ -52,12 +52,6 @@ import { RegisterServiceClient } from "./oauth-clients.tsx";
+@@ -64,12 +64,6 @@ export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral
   */
  export const OAuthReturnContext = createContext<OAuthReturn | undefined>(undefined);
  
@@ -117,7 +117,7 @@ index e3a9356..a32648d 100644
  /** Resume the existing request in a connection dialog without creating a new attempt. */
  export function ConnectionFields({
    connection,
-@@ -92,7 +86,8 @@ export function ConnectionFields({
+@@ -106,7 +100,8 @@ export function ConnectionFields({
      // Runs in the form's step order, after any poll still answering.
      leave: () => (started.current ? cancel() : Promise.resolve()),
    };
@@ -127,7 +127,7 @@ index e3a9356..a32648d 100644
      return (
        <>
          <p className="text-sm">
-@@ -112,37 +107,43 @@ export function ConnectionFields({
+@@ -126,39 +121,45 @@ export function ConnectionFields({
        </>
      );
    return (
@@ -139,6 +139,7 @@ index e3a9356..a32648d 100644
 -      redirectUri={connection.redirectUri}
 -      initialMethod={initialMethod}
 -      manualClient={manualClient}
+-      editClient={editClient}
 -      setupQuery={(method) =>
 -        connectionOAuthSetupAtom({ organization, connection: connection.id, method })
 -      }
@@ -157,6 +158,7 @@ index e3a9356..a32648d 100644
 -            redirectUri: value.redirectUri,
 -            ...(connection.reconnectAccount ? { reconnect: true } : {}),
 -            manualClient: value.manualClient,
+-            ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
 -          },
 -          value.authorizationUrl,
 -        )
@@ -174,6 +176,7 @@ index e3a9356..a32648d 100644
 +          redirectUri={connection.redirectUri}
 +          initialMethod={initialMethod}
 +          manualClient={manualClient}
++          editClient={editClient}
 +          setupQuery={(method) =>
 +            connectionOAuthSetupAtom({ organization, connection: connection.id, method })
 +          }
@@ -192,6 +195,7 @@ index e3a9356..a32648d 100644
 +                redirectUri: value.redirectUri,
 +                ...(connection.reconnectAccount ? { reconnect: true } : {}),
 +                manualClient: value.manualClient,
++                ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
 +              },
 +              value,
 +            )
@@ -202,18 +206,20 @@ index e3a9356..a32648d 100644
    );
  }
  
-@@ -200,7 +201,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -223,9 +224,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
      Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
    >;
    readonly onSaved: (account: Account) => void;
--  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => void;
 +  /** "navigating" keeps the action busy while the browser leaves; "done" keeps this page. */
-+  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => "navigating" | "done";
+   readonly onAuthorized: (
+     value: A & { readonly manualClient: boolean; readonly registeredClient?: OAuthClientId },
+-  ) => void;
++  ) => "navigating" | "done";
    readonly onPendingChange?: (pending: boolean) => void;
  }) {
    const { organization } = useOrganizationRoute();
-@@ -353,10 +355,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
-               }
+@@ -424,10 +426,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+               })}
                onAuthorized={(value) => {
                  refresh();
 -                if (value.status !== "completed") {
@@ -226,7 +232,7 @@ index e3a9356..a32648d 100644
                }}
 diff --git a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
 new file mode 100644
-index 0000000..7b25a2f
+index 00000000..7b25a2f5
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
 @@ -0,0 +1,209 @@
@@ -440,7 +446,7 @@ index 0000000..7b25a2f
 +  );
 +}
 diff --git a/packages/apps/src/contracts/protocols/23.ts b/packages/apps/src/contracts/protocols/23.ts
-index 712626f..4f072f5 100644
+index 712626fe..4f072f53 100644
 --- a/packages/apps/src/contracts/protocols/23.ts
 +++ b/packages/apps/src/contracts/protocols/23.ts
 @@ -33,7 +33,8 @@ import {
@@ -454,7 +460,7 @@ index 712626f..4f072f5 100644
  import { RouterIcon } from "../router.ts";
  import { AppIcons } from "../icons.ts";
 diff --git a/packages/apps/src/contracts/protocols/24.ts b/packages/apps/src/contracts/protocols/24.ts
-index c64efaa..fbd9ee9 100644
+index c64efaa9..fbd9ee95 100644
 --- a/packages/apps/src/contracts/protocols/24.ts
 +++ b/packages/apps/src/contracts/protocols/24.ts
 @@ -33,7 +33,8 @@ import {
@@ -468,7 +474,7 @@ index c64efaa..fbd9ee9 100644
  import { RouterIcon } from "../router.ts";
  import { AppIcons } from "../icons.ts";
 diff --git a/packages/apps/src/contracts/protocols/25.ts b/packages/apps/src/contracts/protocols/25.ts
-index e41abad..6e59a32 100644
+index e41abade..6e59a324 100644
 --- a/packages/apps/src/contracts/protocols/25.ts
 +++ b/packages/apps/src/contracts/protocols/25.ts
 @@ -33,7 +33,8 @@ import {
@@ -483,7 +489,7 @@ index e41abad..6e59a32 100644
  import { AppIcons } from "../icons.ts";
 diff --git a/packages/apps/src/contracts/protocols/oauth-26.ts b/packages/apps/src/contracts/protocols/oauth-26.ts
 new file mode 100644
-index 0000000..3af3d2c
+index 00000000..3af3d2c9
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/oauth-26.ts
 @@ -0,0 +1,185 @@
@@ -673,7 +679,7 @@ index 0000000..3af3d2c
 +]);
 +export type OAuth2Config = typeof OAuth2Config.Type;
 diff --git a/packages/apps/src/contracts/protocols/oauth-before-identities.ts b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
-index 0f5f58d..939ebca 100644
+index 0f5f58d5..939ebca6 100644
 --- a/packages/apps/src/contracts/protocols/oauth-before-identities.ts
 +++ b/packages/apps/src/contracts/protocols/oauth-before-identities.ts
 @@ -1,5 +1,5 @@
@@ -684,7 +690,7 @@ index 0f5f58d..939ebca 100644
  const { identity: _discoveryIdentity, ...discovery } = Current.members[0].fields;
  const { identity: _declaredIdentity, ...declared } = Current.members[1].fields;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index 3b5400d..64779cc 100644
+index de8e415e..fced86eb 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -125,6 +125,27 @@ const tokenRequestOptions = {
@@ -716,12 +722,12 @@ index 3b5400d..64779cc 100644
    /**
     * Read the grant from this nested member when the top-level response has no access token or no
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 16f11f9..74d8633 100644
+index e347c9c9..e8b8ba72 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -764,10 +764,26 @@ export const makeOAuth = (
+@@ -829,10 +829,26 @@ export const makeOAuth = (
        if (declared === undefined || declared.type !== "oauth2")
-         return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+         return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
        const method = oauthMethodAtSite(declared, definition.site, input.site);
 +      const callback =
 +        method.grant === "client_credentials"
@@ -749,9 +755,10 @@ index 16f11f9..74d8633 100644
          method.grant !== "client_credentials" &&
          (redirect === undefined ||
 diff --git a/packages/apps/src/contracts/protocols/26.ts b/packages/apps/src/contracts/protocols/26.ts
+index 74258fd9..fdfe247e 100644
 --- a/packages/apps/src/contracts/protocols/26.ts
 +++ b/packages/apps/src/contracts/protocols/26.ts
-@@ -34,7 +34,8 @@
+@@ -34,7 +34,8 @@ import {
  } from "../elicitation.ts";
  import { DeclaredEvents, EmittedEvents } from "../events.ts";
  import { FailureDetail, UpstreamError } from "../failure.ts";

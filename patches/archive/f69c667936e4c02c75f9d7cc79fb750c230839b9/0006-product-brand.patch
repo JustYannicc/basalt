@@ -1,0 +1,3340 @@
+diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
+index d452f3f49..82df0ba6e 100644
+--- a/apps/docs/content/run/self-host.mdx
++++ b/apps/docs/content/run/self-host.mdx
+@@ -30,4 +30,6 @@ These settings override the defaults:
+ | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
+ | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
++| `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
++| `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
+ | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
+ | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
+@@ -91,4 +93,14 @@ The bundled Motel collector records traces by default. You can export to your ow
+ [Tracing](/run/tracing).
+ 
++### Your own name and logo
++
++`EXECUTOR_PRODUCT_NAME` replaces Executor in page titles, sign-in, setup guides, MCP consent,
++OAuth resource and client metadata, and the MCP server name clients list. Setup commands name
++the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
++`EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64
++pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and
++the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name
++Executor and shows your logo.
++
+ ## Run it
+ 
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index 88163dc0e..077cd51a6 100644
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -29,4 +29,5 @@ import {
+ 
+ import { workerBuild } from "./infrastructure/worker-build.ts";
++import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
+@@ -54,4 +55,5 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         ...(yield* telemetryBindings),
+         ...(yield* sentryBindings).env,
++        ...(yield* productBrandBindings),
+       },
+       compatibility: {
+diff --git a/apps/hosted/cloud/src/contracts/billing.ts b/apps/hosted/cloud/src/contracts/billing.ts
+index b434885e5..7c7b25134 100644
+--- a/apps/hosted/cloud/src/contracts/billing.ts
++++ b/apps/hosted/cloud/src/contracts/billing.ts
+@@ -46,5 +46,5 @@ export const BillingUnavailable = ApiError.define({
+   tag: "BillingUnavailable",
+   status: 503,
+-  message: "Executor could not reach its billing service. Try again.",
++  message: "The billing service could not be reached. Try again.",
+ });
+ export type BillingUnavailable = typeof BillingUnavailable.Type;
+diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
+index af11069c9..90e0d7c65 100644
+--- a/apps/hosted/cloud/src/contracts/onboarding.ts
++++ b/apps/hosted/cloud/src/contracts/onboarding.ts
+@@ -132,5 +132,5 @@ export const OnboardingUnavailable = ApiError.define({
+   tag: "OnboardingUnavailable",
+   status: 503,
+-  message: "Executor could not complete onboarding. Try again.",
++  message: "Onboarding could not be completed. Try again.",
+ });
+ export type OnboardingUnavailable = typeof OnboardingUnavailable.Type;
+diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
+index 6f83e0b9e..d5b450cbc 100644
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -25,4 +25,5 @@ import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
+ import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
+ import { cloudMemberLimit } from "./member-limit.ts";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /** The better-auth endpoint that creates accounts from a verified email code. */
+@@ -99,4 +100,5 @@ export const cloudAuthSettings = Effect.gen(function* () {
+     resourceOrigins,
+     issuer: hosts.issuer,
++    brand: yield* CurrentProductBrand,
+     callbackOrigin,
+     oauthRedirectUri,
+@@ -276,5 +278,5 @@ export const cloudAuthOptions = (
+           send({
+             to: user.email,
+-            subject: "Verify your Executor email",
++            subject: `Verify your ${settings.brand.name} email`,
+             text: Redacted.make(
+               `Verify your email address by opening this link:\n\n${url}\n\nIf you did not request this, ignore this email.`,
+@@ -357,4 +359,5 @@ export const cloudAuthOptions = (
+                 organizationName: organization.name,
+                 origin: settings.url,
++                brand: settings.brand,
+               }),
+             ),
+@@ -378,5 +381,11 @@ export const cloudAuthOptions = (
+             (await ctx.context.internalAdapter.findUserByEmail(data.email)) === null;
+           await Effect.runPromise(
+-            send(emailCodeMessage({ ...data, type: signUp ? "sign-up" : data.type })),
++            send(
++              emailCodeMessage({
++                ...data,
++                type: signUp ? "sign-up" : data.type,
++                brand: settings.brand,
++              }),
++            ),
+           );
+         },
+@@ -386,5 +395,5 @@ export const cloudAuthOptions = (
+       passkey({
+         rpID: settings.hosts.passkey.rpId,
+-        rpName: "Executor",
++        rpName: settings.brand.name,
+         origin: settings.hosts.passkey.origin,
+       }),
+diff --git a/apps/hosted/cloud/src/implementation/email-messages.ts b/apps/hosted/cloud/src/implementation/email-messages.ts
+index 99509c93f..c6b0c4668 100644
+--- a/apps/hosted/cloud/src/implementation/email-messages.ts
++++ b/apps/hosted/cloud/src/implementation/email-messages.ts
+@@ -1,33 +1,37 @@
+ import { Redacted } from "effect";
+ import type { AuthEmail, UnsubscribeLinks } from "../contracts/email.ts";
++import {
++  defaultProductBrand,
++  productLogoUrl,
++  type ProductBrand,
++} from "@executor-js/utils/product-brand";
+ 
+ /** Shared with Better Auth so the message always states the code's actual lifetime. */
+ export const emailCodeExpiresIn = 300;
+ 
+-const purposes = {
++const purposes = (product: string) => ({
+   "sign-in": {
+     heading: "Your sign-in code",
+-    instruction: "Copy and paste this code into Executor to sign in.",
++    instruction: `Copy and paste this code into ${product} to sign in.`,
+   },
+   /** A sign-in code for an email with no account yet; verifying it creates the account. */
+   "sign-up": {
+     heading: "Your sign-up code",
+-    instruction: "Copy and paste this code into Executor to create your account.",
++    instruction: `Copy and paste this code into ${product} to create your account.`,
+   },
+   /** Sent to the current address; an email change needs this code before the new address gets one. */
+   "email-verification": {
+     heading: "Approve your email change",
+-    instruction:
+-      "Someone asked to change the email address of your Executor account. Copy and paste this code into Executor to approve the change.",
++    instruction: `Someone asked to change the email address of your ${product} account. Copy and paste this code into ${product} to approve the change.`,
+   },
+   "forget-password": {
+     heading: "Your password reset code",
+-    instruction: "Copy and paste this code into Executor to reset your password.",
++    instruction: `Copy and paste this code into ${product} to reset your password.`,
+   },
+   "change-email": {
+     heading: "Confirm your new email address",
+-    instruction: "Copy and paste this code into Executor to confirm your new email address.",
++    instruction: `Copy and paste this code into ${product} to confirm your new email address.`,
+   },
+-};
++});
+ 
+ const escapeHtml = (value: string) =>
+@@ -45,4 +49,5 @@ export const invitationEmailMessage = ({
+   organizationName,
+   origin,
++  brand,
+ }: {
+   readonly email: string;
+@@ -50,5 +55,13 @@ export const invitationEmailMessage = ({
+   readonly organizationName: string;
+   readonly origin: string;
++  readonly brand: ProductBrand;
+ }): AuthEmail => {
++  const product = escapeHtml(brand.name);
++  // Executor's own logo comes from its site, so every stage's mail shows the same image.
++  const logo = escapeHtml(
++    brand.logo === defaultProductBrand.logo
++      ? "https://executor.sh/favicon-192.png"
++      : productLogoUrl(brand, origin),
++  );
+   const invitationUrl = `${origin}/invite?invitation=${encodeURIComponent(id)}`;
+   const name = escapeHtml(organizationName);
+@@ -58,13 +71,13 @@ export const invitationEmailMessage = ({
+   return {
+     to: email,
+-    subject: "You’re invited to Executor",
++    subject: `You’re invited to ${brand.name}`,
+     text: Redacted.make(
+-      `You’re invited to join ${organizationName} on Executor.\n\n${invitationUrl}\n\n${instruction} ${unsolicited}`,
++      `You’re invited to join ${organizationName} on ${brand.name}.\n\n${invitationUrl}\n\n${instruction} ${unsolicited}`,
+     ),
+     html: Redacted.make(`<!doctype html>
+ <html lang="en">
+-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>You’re invited to Executor</title></head>
++<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>You’re invited to ${product}</title></head>
+ <body style="margin:0;padding:0;background:#f6f6f6;color:#171717;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%;">
+-  <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">You’re invited to join ${name} on Executor.</div>
++  <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">You’re invited to join ${name} on ${product}.</div>
+   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr><td align="center" style="padding:40px 16px;">
+     <!--[if mso]><table role="presentation" width="520" align="center"><tr><td><![endif]-->
+@@ -72,6 +85,6 @@ export const invitationEmailMessage = ({
+       <tr><td style="padding:0 0 24px;">
+         <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
+-          <td width="32" valign="middle"><img src="https://executor.sh/favicon-192.png" alt="" width="32" height="32" style="display:block;width:32px;height:32px;border:0;border-radius:6px;"></td>
+-          <td valign="middle" style="padding-left:10px;font-size:20px;line-height:28px;font-weight:700;letter-spacing:-0.5px;">Executor</td>
++          <td width="32" valign="middle"><img src="${logo}" alt="" width="32" height="32" style="display:block;width:32px;height:32px;border:0;border-radius:6px;"></td>
++          <td valign="middle" style="padding-left:10px;font-size:20px;line-height:28px;font-weight:700;letter-spacing:-0.5px;">${product}</td>
+         </tr></table>
+       </td></tr>
+@@ -79,5 +92,5 @@ export const invitationEmailMessage = ({
+         <p style="margin:0 0 16px;color:#666666;font-size:11px;line-height:16px;font-weight:700;letter-spacing:1.5px;">TEAM INVITATION</p>
+         <h1 style="margin:0 0 16px;font-size:28px;line-height:36px;letter-spacing:-0.7px;font-weight:700;">You’re invited.</h1>
+-        <p style="margin:0 0 28px;color:#444444;font-size:16px;line-height:26px;overflow-wrap:anywhere;word-break:break-word;">Join <strong style="color:#171717;">${name}</strong> on Executor.</p>
++        <p style="margin:0 0 28px;color:#444444;font-size:16px;line-height:26px;overflow-wrap:anywhere;word-break:break-word;">Join <strong style="color:#171717;">${name}</strong> on ${product}.</p>
+         <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td align="center" bgcolor="#0a0a0a" style="border-radius:6px;background:#0a0a0a;mso-padding-alt:14px 24px;">
+           <a href="${link}" style="display:inline-block;border:solid #0a0a0a;border-width:14px 24px;border-radius:6px;color:#ffffff;font-size:15px;line-height:20px;font-weight:700;text-align:center;text-decoration:none;mso-padding-alt:0;">Join team</a>
+@@ -152,10 +165,12 @@ export const emailCodeMessage = ({
+   otp,
+   type,
++  brand,
+ }: {
+   email: string;
+   otp: string;
+-  type: keyof typeof purposes;
++  type: keyof ReturnType<typeof purposes>;
++  brand: ProductBrand;
+ }): AuthEmail => {
+-  const { heading, instruction } = purposes[type];
++  const { heading, instruction } = purposes(brand.name)[type];
+   const expiry = `This code expires in ${emailCodeExpiresIn / 60} minutes. Never share this code with anyone.`;
+   const unsolicited = "If you didn't request this, you can safely ignore this email.";
+@@ -164,8 +179,8 @@ export const emailCodeMessage = ({
+     subject:
+       type === "sign-in" || type === "sign-up"
+-        ? `Your Executor ${type} code`
+-        : `Executor: ${heading}`,
++        ? `Your ${brand.name} ${type} code`
++        : `${brand.name}: ${heading}`,
+     text: Redacted.make(
+-      `Executor\n\n${heading}\n\n${instruction}\n\n${otp}\n\n${expiry}\n\n${unsolicited}`,
++      `${brand.name}\n\n${heading}\n\n${instruction}\n\n${otp}\n\n${expiry}\n\n${unsolicited}`,
+     ),
+     html: Redacted.make(`<!doctype html>
+@@ -175,7 +190,7 @@ export const emailCodeMessage = ({
+   <table role="presentation" style="width:100%;border-collapse:collapse;"><tr><td style="padding:40px 16px;">
+     <table role="presentation" align="center" style="width:100%;max-width:480px;border-collapse:collapse;background:#ffffff;"><tr><td style="padding:32px;">
+-      <p style="margin:0 0 32px;font-size:18px;font-weight:700;">Executor</p>
++      <p style="margin:0 0 32px;font-size:18px;font-weight:700;">${escapeHtml(brand.name)}</p>
+       <h1 style="margin:0 0 16px;font-size:24px;line-height:1.3;">${heading}</h1>
+-      <p style="margin:0 0 24px;font-size:16px;line-height:1.6;">${instruction}</p>
++      <p style="margin:0 0 24px;font-size:16px;line-height:1.6;">${escapeHtml(instruction)}</p>
+       <p style="margin:0 0 24px;padding:20px 12px;background:#f3f3f3;text-align:center;font-family:Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:6px;">${escapeHtml(otp)}</p>
+       <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">${expiry}</p>
+diff --git a/apps/hosted/cloud/src/implementation/entry.ts b/apps/hosted/cloud/src/implementation/entry.ts
+index 9fcc55f03..6872a4c53 100644
+--- a/apps/hosted/cloud/src/implementation/entry.ts
++++ b/apps/hosted/cloud/src/implementation/entry.ts
+@@ -1,4 +1,6 @@
+ import { browserReturnTo, type BrowserSession } from "@executor-js/hosted-server/browser/contracts";
+ import type { AuthenticationUnavailable } from "@executor-js/hosted-server";
++import { unavailablePage } from "@executor-js/dashboard-start/document";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ import { Effect, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+@@ -113,9 +115,11 @@ export const cloudEntryDocument = <E, R, E2, R2>(
+     Effect.tapCause(reportCloudFailure),
+     Effect.catch(() =>
+-      Effect.succeed(
+-        HttpServerResponse.html(
+-          '<!doctype html><title>Unable to open Executor</title><main><h1>Unable to open Executor</h1><p>Please try again.</p><a href="">Try again</a></main>',
+-        ).pipe(HttpServerResponse.setStatus(503), HttpServerResponse.setHeaders(privateHeaders)),
+-      ),
++      Effect.gen(function* () {
++        const brand = yield* CurrentProductBrand;
++        return HttpServerResponse.html(unavailablePage(brand.name)).pipe(
++          HttpServerResponse.setStatus(503),
++          HttpServerResponse.setHeaders(privateHeaders),
++        );
++      }),
+     ),
+   );
+diff --git a/apps/hosted/cloud/src/infrastructure/email.ts b/apps/hosted/cloud/src/infrastructure/email.ts
+index 0a696ebe0..3cf0ccda6 100644
+--- a/apps/hosted/cloud/src/infrastructure/email.ts
++++ b/apps/hosted/cloud/src/infrastructure/email.ts
+@@ -13,4 +13,5 @@ import {
+   type SendWelcomeEmail,
+ } from "../contracts/email.ts";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ const emailDomain = Config.String("AUTH_EMAIL_DOMAIN").pipe(
+@@ -50,4 +51,5 @@ export const authEmailInfrastructure = Effect.gen(function* () {
+  */
+ export const cloudEmail = Effect.gen(function* () {
++  const brand = yield* CurrentProductBrand;
+   const from = `no-reply@${yield* emailDomain}`;
+   const founder = "rhys@executor.sh";
+@@ -118,5 +120,5 @@ export const cloudEmail = Effect.gen(function* () {
+     Effect.suspend(() =>
+       client.send({
+-        from: { name: "Executor", email: from },
++        from: { name: brand.name, email: from },
+         to: email.to,
+         subject: email.subject,
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index abec6b3c0..61f8265f7 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -3,5 +3,5 @@ import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy"
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
+-import { firstPartyOAuthClients, hostedOAuthClientName } from "@executor-js/hosted-server";
++import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import {
+@@ -33,4 +33,5 @@ import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
+ import { cloudClientMetadata } from "./client-metadata.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -131,5 +132,6 @@ export const cloudExecutor = Effect.fn(function* (
+         oauth: {
+           httpClient: egress.client,
+-          clientName: hostedOAuthClientName,
++          // Read from settings: App UI, MCP and workflow runs build this outside the API request.
++          clientName: (yield* productBrandConfig.pipe(Effect.orDie)).name,
+           urlPolicy: egress.policy,
+           // The document lists a callback on its own origin, which its sign-ins send.
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+index a148de0a0..77f4de4cc 100644
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+@@ -36,4 +36,5 @@ import { isolateDeclarations } from "./isolate-memory.ts";
+ import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+ import { mcpSessionStore } from "./mcp-session-store.ts";
++import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -59,4 +60,5 @@ export const makeMcpSession = Effect.fn(function* ({
+   const analytics = yield* cloudAnalytics;
+   const objectDatabase = yield* cloudObjectDatabase;
++  const brand = yield* productBrandConfig.pipe(Effect.orDie);
+   return Effect.gen(function* () {
+     const state = yield* Cloudflare.DurableObjectState;
+@@ -78,4 +80,5 @@ export const makeMcpSession = Effect.fn(function* ({
+     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
+     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
++      Effect.provideService(CurrentProductBrand, brand),
+       Effect.provide(HttpServer.layerServices),
+     );
+diff --git a/apps/hosted/cloud/src/infrastructure/product-brand.ts b/apps/hosted/cloud/src/infrastructure/product-brand.ts
+new file mode 100644
+index 000000000..8d8819eaa
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/product-brand.ts
+@@ -0,0 +1,14 @@
++/** The operator's brand reaches each Worker that presents it as plain Worker settings. */
++import { Config, Effect, Option } from "effect";
++
++const settings = ["EXECUTOR_PRODUCT_NAME", "EXECUTOR_PRODUCT_LOGO_URL"] as const;
++
++/** Only the settings the deploy sets are bound; an unset one keeps Executor's own. */
++export const productBrandBindings = Effect.gen(function* () {
++  const bindings: Partial<Record<(typeof settings)[number], string>> = {};
++  for (const name of settings) {
++    const value = yield* Config.NonEmptyString(name).pipe(Config.option);
++    if (Option.isSome(value)) bindings[name] = value.value;
++  }
++  return bindings;
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/welcome-email.ts b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
+index 6808b1a70..a3ed0b9d8 100644
+--- a/apps/hosted/cloud/src/infrastructure/welcome-email.ts
++++ b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
+@@ -8,4 +8,5 @@ import { cloudHosts } from "./stage.ts";
+ import { cloudSecrets } from "./secrets.ts";
+ import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
++import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /** The cron invocation owns its database connection and closes it after the batch. */
+@@ -23,16 +24,20 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
+       ),
+     );
++    // The welcome is a personal note from Executor's founder, so another brand sends none.
++    const welcomes = isDefaultProductBrand(yield* CurrentProductBrand);
+     const deliverUser = (user?: string) =>
+-      Effect.scoped(
+-        deliverWelcomeEmails(
+-          send,
+-          (id, email) =>
+-            secrets.authSecret.pipe(
+-              Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
+-            ),
+-          { site: hosts.site, resourceOrigin },
+-          user,
+-        ).pipe(Effect.provide(database)),
+-      );
++      welcomes
++        ? Effect.scoped(
++            deliverWelcomeEmails(
++              send,
++              (id, email) =>
++                secrets.authSecret.pipe(
++                  Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
++                ),
++              { site: hosts.site, resourceOrigin },
++              user,
++            ).pipe(Effect.provide(database)),
++          )
++        : Effect.void;
+     return {
+       deliver: deliverUser().pipe(
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 8bb6bfbd5..a80359d80 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -137,4 +137,6 @@ import { Dashboard } from "./infrastructure/dashboard-worker.ts";
+ import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
+ import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
++import { productBrandBindings } from "./infrastructure/product-brand.ts";
++import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+ export { Api } from "./infrastructure/api-worker.ts";
+ 
+@@ -180,4 +182,5 @@ export default Api.make(
+         // Every deployed stage lists production's official app feed.
+         ...(origin === undefined ? {} : yield* appCatalogBinding),
++        ...(yield* productBrandBindings),
+       },
+       build: workerBuild("api"),
+@@ -217,4 +220,5 @@ export default Api.make(
+   }),
+   Effect.gen(function* () {
++    const brand = yield* CurrentProductBrand;
+     const lifetime = yield* previewLifetime;
+     const analytics = yield* cloudAnalytics;
+@@ -704,7 +708,10 @@ export default Api.make(
+         withHostPipeline,
+         lifetime.http,
++        Effect.provideService(CurrentProductBrand, brand),
+       ),
+     };
+   }).pipe(
++    // Read once per isolate: setup such as sign-in and email senders presents it too.
++    Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
+     Effect.provide(
+       Layer.mergeAll(
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index bce60d075..521b00781 100644
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -23,4 +23,5 @@ import {
+ } from "./infrastructure/telemetry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
++import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** The executor and MCP identity are built once per isolate and shared by its objects. */
+@@ -63,4 +64,5 @@ export default McpServer.make(
+         ...(yield* telemetryBindings),
+         ...(yield* sentryBindings).env,
++        ...(yield* productBrandBindings),
+       },
+     };
+diff --git a/apps/hosted/cloud/web/src/implementation/components/support.tsx b/apps/hosted/cloud/web/src/implementation/components/support.tsx
+index b4aaabd26..f95e30943 100644
+--- a/apps/hosted/cloud/web/src/implementation/components/support.tsx
++++ b/apps/hosted/cloud/web/src/implementation/components/support.tsx
+@@ -1,9 +1,13 @@
+ import type { ReactElement } from "react";
+ import { SupportDialog } from "@executor-js/ui/dashboard/support-dialog";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { isDefaultProductBrand } from "@executor-js/ui/contracts/product-brand";
+ import { captureSupportLinkClicked, captureSupportOpened } from "../analytics.tsx";
+ 
+ /** Cloud's support entry, recording its use in product analytics. `trigger` opens it in place of
+- * the sidebar entry. */
++ * the sidebar entry. Its channels reach Executor's team, so a deployment under another brand
++ * shows none. */
+ export function CloudSupport({ trigger }: { readonly trigger?: ReactElement | undefined } = {}) {
++  if (!isDefaultProductBrand(useProductBrand())) return null;
+   return (
+     <SupportDialog
+diff --git a/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx b/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
+index 3b28b1783..893bda190 100644
+--- a/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
++++ b/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
+@@ -7,5 +7,5 @@ import { Input } from "@executor-js/ui/components/input";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import { Cause, Exit } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+@@ -15,5 +15,5 @@ import { ssoSignInAtom } from "../../contracts/sso.ts";
+ /** Discover the verified company connection from an email, then let its IdP authenticate. */
+ export function SsoSignInForm({ redirect, error: callbackError }: LoginProps) {
+-  useDocumentTitle(productTitle("Sign in with SSO"));
++  useDocumentTitle("Sign in with SSO");
+   const [email, setEmail] = useState("");
+   const [error, setError] = useState<string>();
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
+index 7437fd147..f6c55f570 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
+@@ -12,5 +12,5 @@ import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.ts
+ import { useLocation } from "@tanstack/react-router";
+ import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
+-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
++import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
+ import { DashboardDocument } from "@executor-js/dashboard-start/shell";
+ import styles from "@executor-js/hosted-web/styles?url";
+@@ -23,5 +23,4 @@ export const Route = createRootRoute({
+   head: () => ({
+     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
+-    meta: [{ title: "Executor" }],
+   }),
+   shellComponent: DashboardDocument,
+@@ -49,5 +48,5 @@ function Root() {
+   if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
+     return (
+-      <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
++      <DocumentTitleProvider fallbackTitle={"Email preferences"}>
+         <Outlet />
+       </DocumentTitleProvider>
+@@ -55,9 +54,9 @@ function Root() {
+   return (
+     <DocumentTitleProvider
+-      fallbackTitle={productTitle(
++      fallbackTitle={
+         pathname === "/create"
+           ? "Create your team"
+-          : hostedPageTitle(pathname, { billing: "Billing" }),
+-      )}
++          : hostedPageTitle(pathname, { billing: "Billing" })
++      }
+     >
+       <AnalyticsIdentity />
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx b/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
+index f2546e553..cd97f7225 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
+@@ -1,4 +1,6 @@
+ import { createFileRoute, useLocation } from "@tanstack/react-router";
+ import { Button } from "@executor-js/ui/components/button";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { isDefaultProductBrand } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** Public confirmation: opening a link never saves a preference or requires a session. */
+@@ -14,4 +16,5 @@ export const Route = createFileRoute("/email/unsubscribe")({
+ 
+ function UnsubscribePage() {
++  const brand = useProductBrand();
+   const { result } = Route.useSearch();
+   const { hash } = useLocation();
+@@ -23,5 +26,5 @@ function UnsubscribePage() {
+     <main className="flex min-h-dvh items-center justify-center p-6">
+       <section className="w-full max-w-md space-y-5">
+-        <p className="text-sm font-medium text-muted-foreground">Executor</p>
++        <p className="text-sm font-medium text-muted-foreground">{brand.name}</p>
+         <h1 className="text-2xl font-semibold tracking-tight">
+           {complete
+@@ -33,7 +36,9 @@ function UnsubscribePage() {
+         <p className="text-sm leading-6 text-muted-foreground">
+           {complete
+-            ? "You won’t receive optional emails from Executor. You can still request sign-in codes and receive essential account emails."
++            ? `You won’t receive optional emails from ${brand.name}. You can still request sign-in codes and receive essential account emails.`
+             : invalid
+-              ? "Use the link in your latest Executor email, or reply to rhys@executor.sh for help."
++              ? isDefaultProductBrand(brand)
++                ? "Use the link in your latest Executor email, or reply to rhys@executor.sh for help."
++                : `Use the link in your latest ${brand.name} email.`
+               : "We’ll stop sending optional emails to this account. You can still request sign-in codes and receive essential account emails."}
+         </p>
+diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
+index 4b856263c..80d4b4905 100644
+--- a/apps/hosted/self-host/compose.yaml
++++ b/apps/hosted/self-host/compose.yaml
+@@ -29,4 +29,7 @@ services:
+       EXECUTOR_APP_WORKER_IDLE_SECONDS:
+       EXECUTOR_OAUTH_CALLBACK_URL:
++      # Your own product name and square logo URL in place of Executor's.
++      EXECUTOR_PRODUCT_NAME:
++      EXECUTOR_PRODUCT_LOGO_URL:
+       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
+       # document there, which authorization servers must be able to fetch over public HTTPS.
+diff --git a/apps/hosted/self-host/src/implementation/auth-options.ts b/apps/hosted/self-host/src/implementation/auth-options.ts
+index df239509f..c5ef237ab 100644
+--- a/apps/hosted/self-host/src/implementation/auth-options.ts
++++ b/apps/hosted/self-host/src/implementation/auth-options.ts
+@@ -5,4 +5,5 @@ import { organization } from "better-auth/plugins/organization";
+ import { Config, Effect, Option, Redacted, Schema } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ const httpsUrl = (message: string) =>
+@@ -35,4 +36,5 @@ export const selfHostAuthSettings = Effect.gen(function* () {
+     resourceOrigins: singleResourceOrigin(settings.url),
+     issuer: `${settings.url}/api/auth`,
++    brand: yield* productBrandConfig,
+   };
+   const discovery = yield* Config.String("SSO_DISCOVERY_URL").pipe(Config.option);
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index 64a5cd95f..f11ed1d02 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -34,5 +34,4 @@ import {
+   clientMetadataSetting,
+   firstPartyOAuthClients,
+-  hostedOAuthClientName,
+   withDeploySetupWake,
+   withExecutorAnalytics,
+@@ -50,4 +49,5 @@ import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } fro
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Native resources supplied at the self-host composition boundary. */
+@@ -113,5 +113,5 @@ export const selfHostExecutorServices = <E, R>(
+         oauth: {
+           httpClient: egress.client,
+-          clientName: hostedOAuthClientName,
++          clientName: (yield* productBrandConfig).name,
+           urlPolicy: egress.policy,
+           ...(Option.isSome(clientMetadata)
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index 00b796706..eee4f953a 100644
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -53,4 +53,5 @@ import { selfHostAnalytics } from "./product-analytics.ts";
+ import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
+ import type { selfHostExecutorServices } from "./executor-services.ts";
++import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+ /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
+ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -64,4 +65,5 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+   Effect.gen(function* () {
+     const { skills, egress, executorServices, dashboard } = options;
++    const brand = yield* productBrandConfig;
+     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
+     const analytics = yield* selfHostAnalytics;
+@@ -229,5 +231,5 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+           if (addresses.ownsHost(request.headers.host)) return notFound;
+           return yield* observed(product);
+-        }).pipe(recordRequestRejections),
++        }).pipe(recordRequestRejections, Effect.provideService(CurrentProductBrand, brand)),
+       ),
+     );
+diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
+index c56ad02ce..8053e5630 100644
+--- a/apps/hosted/self-host/src/mcp.ts
++++ b/apps/hosted/self-host/src/mcp.ts
+@@ -16,4 +16,5 @@ import { PgliteClient } from "@effect/sql-pglite";
+ import { Config, Effect, RcMap, Schema } from "effect";
+ import { HttpServerResponse } from "effect/http";
++import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
+@@ -26,11 +27,15 @@ export const selfHostMcp = Effect.gen(function* () {
+     ),
+   });
++  const brand = yield* productBrandConfig;
+   const sessions = yield* RcMap.make({
+     // Each session keeps what its callers' last tool calls read (CallStateCache).
+     lookup: (_key: string) =>
+-      Effect.map(makeHostedMcp(undefined, limits), (handler) => ({
+-        ...handler,
+-        calls: new Map<string, CallState>(),
+-      })),
++      Effect.map(
++        makeHostedMcp(undefined, limits).pipe(Effect.provideService(CurrentProductBrand, brand)),
++        (handler) => ({
++          ...handler,
++          calls: new Map<string, CallState>(),
++        }),
++      ),
+     idleTimeToLive: "30 minutes",
+     capacity: 256,
+diff --git a/apps/hosted/self-host/web/src/implementation/pages/login.tsx b/apps/hosted/self-host/web/src/implementation/pages/login.tsx
+index 24a8f1eaf..c079fcb88 100644
+--- a/apps/hosted/self-host/web/src/implementation/pages/login.tsx
++++ b/apps/hosted/self-host/web/src/implementation/pages/login.tsx
+@@ -19,10 +19,13 @@ import {
+ } from "../../contracts/auth.ts";
+ import { ssoRefusalExplanation } from "../../contracts/sso.ts";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import { SelfHostLoginPending } from "../components/login-pending.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** Password login and first-run setup; only an operator-configured SSO button is shown. */
+ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps) {
+-  useDocumentTitle(productTitle("Sign in"));
++  const brand = useProductBrand();
++  useDocumentTitle("Sign in");
+   const page = usePageUrl();
+   const config = useAtomValue(configurationAtom);
+@@ -90,9 +93,13 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
+       <section className="auth-form w-full max-w-85 flex flex-col gap-6 [&_form]:flex [&_form]:flex-col [&_form]:gap-4 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.75 [&_label]:text-[13px] [&_label]:font-medium [&_input]:h-10.5 [&_form_>_button]:min-h-10.5 [&_.wordmark]:p-0 [&_.wordmark]:h-8 [&_.wordmark]:min-h-8 [&_.wordmark]:w-auto [&_.wordmark]:justify-start">
+         <div className="wordmark flex items-center gap-2 h-12 py-0 px-[8px] font-mono text-[15px] font-medium [&_img]:w-5.25 [&_img]:h-5.25 max-[740px]:p-0 max-[740px]:w-11 max-[740px]:h-11 max-[740px]:justify-center max-[740px]:shrink-0 max-[740px]:[&_>_span]:hidden">
+-          <img src="/favicon.png" alt="" />
+-          executor
++          <img src={brand.logo} alt="" />
++          {productWordmark(brand)}
+         </div>
+         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
+-          {setup ? "Set up Executor" : registration ? "Join Executor" : "Sign in to Executor"}
++          {setup
++            ? `Set up ${brand.name}`
++            : registration
++              ? `Join ${brand.name}`
++              : `Sign in to ${brand.name}`}
+         </h1>
+         {setup && <p>Create your administrator account and organization.</p>}
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
+index f3ffd6e02..2692d5ff4 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
+@@ -9,5 +9,5 @@ import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization
+ import { useLocation } from "@tanstack/react-router";
+ import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
+-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
++import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
+ import { DashboardDocument } from "@executor-js/dashboard-start/shell";
+ import styles from "@executor-js/hosted-web/styles?url";
+@@ -20,5 +20,4 @@ export const Route = createRootRoute({
+   head: () => ({
+     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
+-    meta: [{ title: "Executor" }],
+   }),
+   shellComponent: DashboardDocument,
+@@ -38,5 +37,5 @@ function Root() {
+   const { pathname } = useLocation();
+   return (
+-    <DocumentTitleProvider fallbackTitle={productTitle(hostedPageTitle(pathname))}>
++    <DocumentTitleProvider fallbackTitle={hostedPageTitle(pathname)}>
+       <AuthBoundary>
+         <OrganizationResumeBoundary>
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 08a8b5efb..ee4f4233a 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -151,5 +151,5 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
+               authorizationUrl: "/api/auth/oauth2/authorize",
+               tokenUrl: "/api/auth/oauth2/token",
+-              scopes: { executor: "Use Executor in the selected organization" },
++              scopes: { executor: "Act in the selected organization" },
+             },
+           },
+diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
+index d9f0d7d09..677230b83 100644
+--- a/apps/hosted/server/src/contracts/app-ui.ts
++++ b/apps/hosted/server/src/contracts/app-ui.ts
+@@ -72,5 +72,5 @@ export const AppUiUnavailable = ApiError.define({
+   tag: "AppUiUnavailable",
+   status: 503,
+-  message: "Executor could not read the app's page build or domain right now. Try again.",
++  message: "The app's page build or domain could not be read right now. Try again.",
+ });
+ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
+@@ -86,5 +86,5 @@ export const AppUiLocation = Schema.Union([
+     reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
+       description:
+-        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this Executor has no app domain configured, so no app UI has an address.",
++        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this deployment has no app domain configured, so no app UI has an address.",
+     }),
+   }),
+diff --git a/apps/hosted/server/src/contracts/auth.ts b/apps/hosted/server/src/contracts/auth.ts
+index 96c5003fb..4d059016d 100644
+--- a/apps/hosted/server/src/contracts/auth.ts
++++ b/apps/hosted/server/src/contracts/auth.ts
+@@ -22,9 +22,9 @@ export const Unauthorized = UserFacingError.define({
+   status: 401,
+   title: "Sign-in required",
+-  description: "Executor needs a valid sign-in session to complete this action.",
++  description: "A valid sign-in session is needed to complete this action.",
+   recovery: {
+-    action: "Sign in to Executor, then try the action again.",
++    action: "Sign in again, then try the action again.",
+     instructions:
+-      "Restore the user’s Executor session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
++      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
+   },
+ });
+@@ -36,8 +36,8 @@ export const Forbidden = UserFacingError.define({
+   status: 403,
+   title: "Request not allowed",
+-  description: "This request did not meet Executor’s access checks.",
++  description: "This request did not meet the access checks.",
+   recovery: {
+     action:
+-      "Open Executor directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
++      "Open this site directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
+     instructions:
+       "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
+@@ -58,10 +58,10 @@ export const AuthenticationUnavailable = UserFacingError.define({
+   status: 503,
+   title: "Session check unavailable",
+-  description: "Executor could not verify your sign-in session.",
++  description: "Your sign-in session could not be verified.",
+   recovery: {
+     action:
+       "Try again. If this continues, copy the fix prompt into your agent to investigate the session check.",
+     instructions:
+-      "Check the availability of Executor’s session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
++      "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
+   },
+   retryable: true,
+diff --git a/apps/hosted/server/src/contracts/browser.ts b/apps/hosted/server/src/contracts/browser.ts
+index e7c1c720b..eab67ffd7 100644
+--- a/apps/hosted/server/src/contracts/browser.ts
++++ b/apps/hosted/server/src/contracts/browser.ts
+@@ -2,4 +2,5 @@ import { Option, Schema } from "effect";
+ import { OrganizationId } from "./organization.ts";
+ import type { ResourceOrigins } from "@executor-js/mcp-auth";
++import type { ProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /** Display identity only; session tokens and organization preferences never cross this boundary. */
+@@ -62,4 +63,6 @@ export interface HostedDocumentContext {
+    */
+   readonly resourceOrigins: ResourceOrigins;
++  /** The name and logo the pages present. */
++  readonly brand: ProductBrand;
+ }
+ 
+diff --git a/apps/hosted/server/src/contracts/groups.ts b/apps/hosted/server/src/contracts/groups.ts
+index bf0f9bb10..8848e43c0 100644
+--- a/apps/hosted/server/src/contracts/groups.ts
++++ b/apps/hosted/server/src/contracts/groups.ts
+@@ -77,5 +77,5 @@ export const GroupsUnavailable = ApiError.define({
+   tag: "GroupsUnavailable",
+   status: 503,
+-  message: "Executor could not read or save groups. Try again.",
++  message: "Groups could not be read or saved. Try again.",
+ });
+ export type GroupsUnavailable = typeof GroupsUnavailable.Type;
+diff --git a/apps/hosted/server/src/contracts/oauth-client-metadata.ts b/apps/hosted/server/src/contracts/oauth-client-metadata.ts
+index 7c9007e7e..fbcc61fea 100644
+--- a/apps/hosted/server/src/contracts/oauth-client-metadata.ts
++++ b/apps/hosted/server/src/contracts/oauth-client-metadata.ts
+@@ -9,7 +9,4 @@ import { Schema } from "effect";
+ export const clientMetadataDocumentPath = "/oauth/client-metadata.json";
+ 
+-/** The name hosted installs give their OAuth client, in registrations and in the document. */
+-export const hostedOAuthClientName = "Executor";
+-
+ /** The document a hosted install serves. Values follow the RFC 7591 client metadata registry. */
+ export interface ClientMetadataDocument {
+diff --git a/apps/hosted/server/src/contracts/organization-removal.ts b/apps/hosted/server/src/contracts/organization-removal.ts
+index e09cd87ad..5cb5db4f7 100644
+--- a/apps/hosted/server/src/contracts/organization-removal.ts
++++ b/apps/hosted/server/src/contracts/organization-removal.ts
+@@ -24,5 +24,5 @@ export const OrganizationRemovalUnavailable = ApiError.define({
+   tag: "OrganizationRemovalUnavailable",
+   status: 503,
+-  message: "Executor could not start or read the organization's removal. Try again.",
++  message: "The organization's removal could not be started or read. Try again.",
+ });
+ export type OrganizationRemovalUnavailable = typeof OrganizationRemovalUnavailable.Type;
+diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
+index b304a6078..e996647c7 100644
+--- a/apps/hosted/server/src/contracts/organization.ts
++++ b/apps/hosted/server/src/contracts/organization.ts
+@@ -147,5 +147,5 @@ export const OrganizationIconUnavailable = ApiError.define({
+   tag: "OrganizationIconUnavailable",
+   status: 503,
+-  message: "Executor's image storage could not complete this request. Try again.",
++  message: "Image storage could not complete this request. Try again.",
+ });
+ export type OrganizationIconUnavailable = typeof OrganizationIconUnavailable.Type;
+diff --git a/apps/hosted/server/src/implementation/api-oauth.ts b/apps/hosted/server/src/implementation/api-oauth.ts
+index ff276b61a..a7d498de4 100644
+--- a/apps/hosted/server/src/implementation/api-oauth.ts
++++ b/apps/hosted/server/src/implementation/api-oauth.ts
+@@ -4,4 +4,5 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { requestResourceOrigin } from "@executor-js/mcp-auth";
+ import { ApiAuthentication } from "../contracts/auth.ts";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /** RFC 9728 metadata for the organization management API. */
+@@ -15,5 +16,5 @@ export const apiProtectedResource = Effect.gen(function* () {
+     scopes_supported: ["executor", "offline_access"],
+     bearer_methods_supported: ["header"],
+-    resource_name: "Executor API",
++    resource_name: `${(yield* CurrentProductBrand).name} API`,
+   });
+ });
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+index 200e174ac..d6be0489b 100644
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -25,4 +25,5 @@ import {
+   Unauthorized,
+ } from "../contracts/auth.ts";
++import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -79,4 +80,6 @@ export const authOptions = (
+     /** The authorization server's issuer; `${url}/api/auth` where one origin serves everything. */
+     readonly issuer: string;
++    /** The name sign-in presents, such as in authenticator apps; Executor when unset. */
++    readonly brand?: ProductBrand;
+   },
+   ipAddressHeaders: string[],
+@@ -84,5 +87,5 @@ export const authOptions = (
+ ) =>
+   ({
+-    appName: "Executor",
++    appName: (settings.brand ?? defaultProductBrand).name,
+     baseURL: settings.url,
+     basePath: "/api/auth",
+diff --git a/apps/hosted/server/src/implementation/document.ts b/apps/hosted/server/src/implementation/document.ts
+index 02d249f9c..bc6532516 100644
+--- a/apps/hosted/server/src/implementation/document.ts
++++ b/apps/hosted/server/src/implementation/document.ts
+@@ -11,4 +11,5 @@ import {
+ import { Cookies, HttpServerRequest } from "effect/http";
+ import type { ResourceOrigins } from "@executor-js/mcp-auth";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -38,4 +39,5 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
+       lastOrganization: readLastOrganization(saved, session),
+       resourceOrigins,
++      brand: yield* CurrentProductBrand,
+     } satisfies HostedDocumentContext;
+   }).pipe(Effect.withSpan("dashboard.session"));
+diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+index fc42e4bb8..758bceb7d 100644
+--- a/apps/hosted/server/src/implementation/mcp-http.ts
++++ b/apps/hosted/server/src/implementation/mcp-http.ts
+@@ -54,4 +54,5 @@ import { resourceAuthorityForLinks } from "./resource-policy.ts";
+ import { BearerHashes } from "./bearer-access.ts";
+ import { hostedMcpBackend } from "./mcp.ts";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ 
+ // A native MCP server retains its tool handlers. Authority is supplied only while
+@@ -141,21 +142,24 @@ export const makeHostedMcp = (
+   sessions?: McpOptions["sessions"],
+ ) =>
+-  makeMcp({
+-    backend: requestBackend,
+-    ...(beforeExecute === undefined ? {} : { beforeExecute }),
+-    ...(sessions === undefined ? {} : { sessions }),
+-    caller: requestCaller,
+-    instructions: executorIntro,
+-    limits,
+-    annotateSkillRead,
+-    browser: {
+-      url: (address) =>
+-        Effect.flatMap(RequestApprovalUrl, (url) =>
+-          url === undefined
+-            ? Effect.die("Browser approval URL requires an authenticated MCP request")
+-            : Effect.succeed(url(address)),
+-        ),
+-    },
+-  }).pipe(Effect.orDie);
++  Effect.flatMap(CurrentProductBrand, (brand) =>
++    makeMcp({
++      name: brand.name,
++      backend: requestBackend,
++      ...(beforeExecute === undefined ? {} : { beforeExecute }),
++      ...(sessions === undefined ? {} : { sessions }),
++      caller: requestCaller,
++      instructions: executorIntro,
++      limits,
++      annotateSkillRead,
++      browser: {
++        url: (address) =>
++          Effect.flatMap(RequestApprovalUrl, (url) =>
++            url === undefined
++              ? Effect.die("Browser approval URL requires an authenticated MCP request")
++              : Effect.succeed(url(address)),
++          ),
++      },
++    }),
++  ).pipe(Effect.orDie);
+ 
+ /** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */
+@@ -488,5 +492,5 @@ export const mcpProtectedResource = Effect.gen(function* () {
+     scopes_supported: ["mcp", "offline_access"],
+     bearer_methods_supported: ["header"],
+-    resource_name: "Executor",
++    resource_name: (yield* CurrentProductBrand).name,
+   });
+ });
+diff --git a/apps/hosted/server/src/implementation/oauth-client-metadata.ts b/apps/hosted/server/src/implementation/oauth-client-metadata.ts
+index 9ac636ad2..bb66db260 100644
+--- a/apps/hosted/server/src/implementation/oauth-client-metadata.ts
++++ b/apps/hosted/server/src/implementation/oauth-client-metadata.ts
+@@ -7,7 +7,7 @@ import {
+   ClientMetadataUrlInvalid,
+   clientMetadataDocumentPath,
+-  hostedOAuthClientName,
+ } from "../contracts/oauth-client-metadata.ts";
+ import { accountOAuthRedirectUri } from "./auth.ts";
++import { CurrentProductBrand, productLogoUrl } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -100,14 +100,16 @@ const applicationType = (callback: string) => {
+  */
+ export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSetting>) =>
+-  Effect.sync(() => {
++  Effect.gen(function* () {
+     if (Option.isNone(setting) || !setting.value.served)
+       return HttpServerResponse.empty({ status: 404 });
++    // Services show the product's name and logo when asking a person to connect an account.
++    const brand = yield* CurrentProductBrand;
+     const url = new URL(setting.value.url);
+     const callback = setting.value.redirectUri;
+     const document: ClientMetadataDocument = {
+       client_id: url.href,
+-      client_name: hostedOAuthClientName,
++      client_name: brand.name,
+       client_uri: url.origin,
+-      logo_uri: new URL("/favicon.png", url.origin).href,
++      logo_uri: productLogoUrl(brand, url.origin),
+       redirect_uris: [callback],
+       grant_types: ["authorization_code", "refresh_token"],
+diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
+index 5146a2895..a1bc3c791 100644
+--- a/apps/hosted/web/src/contracts/app-ui.ts
++++ b/apps/hosted/web/src/contracts/app-ui.ts
+@@ -102,9 +102,9 @@ const message = Match.type<AppUiError>().pipe(
+     AppNotDeployed: () => "Deploy this app before opening its page.",
+     VersionNotFound: () => "This app’s version is no longer available. Reload the app.",
+-    StorageError: () => "Executor could not read this app. Try again.",
++    StorageError: () => "This app could not be read. Try again.",
+     AppUiUnavailable: () =>
+       "The app page is unavailable. Check its version and the server’s app URL settings.",
+     Unauthorized: () => "Your session ended. Sign in again.",
+-    Forbidden: () => "Open Executor from its configured address.",
++    Forbidden: () => "Open this page from the site’s configured address.",
+     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
+     HttpClientError: () =>
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index cfcb0018b..62c58d4c8 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -126,5 +126,5 @@ const errorMessage = Match.type<HostedError>().pipe(
+     ToolBlocked: (error) => `${error.description} ${error.recovery.action}`,
+     ToolApprovalRequired: () =>
+-      "The tool needs approval, which this request cannot give, so Executor will not run the call from here. Run it from the app’s Tools tab to review it.",
++      "The tool needs approval, which this request cannot give, so the call will not run from here. Run it from the app’s Tools tab to review it.",
+     ToolRunApprovalRefused: (error) => `${error.description} ${error.recovery.action}`,
+     ToolPolicyFailed: () =>
+diff --git a/apps/hosted/web/src/contracts/mcp.ts b/apps/hosted/web/src/contracts/mcp.ts
+index af8c6640a..73f8b9d68 100644
+--- a/apps/hosted/web/src/contracts/mcp.ts
++++ b/apps/hosted/web/src/contracts/mcp.ts
+@@ -39,5 +39,5 @@ const request = <A>(
+     Effect.tryPromise({
+       try: () => run(options),
+-      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
++      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
+     }),
+   ).pipe(
+@@ -105,5 +105,5 @@ const deviceCall = <A>(
+     Effect.tryPromise({
+       try: () => run(options),
+-      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
++      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
+     }),
+   ).pipe(
+diff --git a/apps/hosted/web/src/implementation/components/account-pending.tsx b/apps/hosted/web/src/implementation/components/account-pending.tsx
+index 152c937bd..a0c53593d 100644
+--- a/apps/hosted/web/src/implementation/components/account-pending.tsx
++++ b/apps/hosted/web/src/implementation/components/account-pending.tsx
+@@ -12,4 +12,5 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+ import { organizationSettingClass } from "./organization-settings-pending.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** The page headings and copy are the same on every visit. */
+@@ -73,4 +74,5 @@ export function AccountSettingPending({
+ /** Lazy route loading keeps the profile page identity and its static controls. */
+ export function ProfilePending() {
++  const brand = useProductBrand();
+   return (
+     <PageFrame>
+@@ -86,5 +88,5 @@ export function ProfilePending() {
+         <AccountSettingPending
+           title="Organizations"
+-          description="Where you are a member. Everything else in Executor lives inside one of these."
++          description={`Where you are a member. Everything else in ${brand.name} lives inside one of these.`}
+         >
+           <Skeleton className="h-9 w-full" aria-label="Loading organizations" />
+diff --git a/apps/hosted/web/src/implementation/components/auth.tsx b/apps/hosted/web/src/implementation/components/auth.tsx
+index e2ce5d517..530304c7b 100644
+--- a/apps/hosted/web/src/implementation/components/auth.tsx
++++ b/apps/hosted/web/src/implementation/components/auth.tsx
+@@ -21,7 +21,9 @@ import {
+   DropdownMenuTrigger,
+ } from "@executor-js/ui/components/dropdown-menu";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** Gate page rendering on a live session. The server independently protects API access. */
+ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
++  const brand = useProductBrand();
+   const session = useAtomValue(sessionAtom);
+   const refresh = useAtomRefresh(sessionAtom);
+@@ -63,5 +65,5 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
+       <McpConsentLoading />
+     ) : (
+-      <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />
++      <div className="min-h-dvh" aria-busy="true" aria-label={`Opening ${brand.name}`} />
+     );
+   }
+diff --git a/apps/hosted/web/src/implementation/components/connection-status.tsx b/apps/hosted/web/src/implementation/components/connection-status.tsx
+index 74c42e099..dff59b1bf 100644
+--- a/apps/hosted/web/src/implementation/components/connection-status.tsx
++++ b/apps/hosted/web/src/implementation/components/connection-status.tsx
+@@ -3,4 +3,6 @@ import { Spinner } from "@executor-js/ui/components/spinner";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { AlertCircleIcon, InformationCircleIcon } from "@hugeicons/core-free-icons";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** Center connection progress or failure content; callers own recovery actions and navigation. */
+@@ -14,4 +16,5 @@ export function ConnectionStatusPage({
+   readonly children?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const titleId = useId();
+   const title = {
+@@ -24,6 +27,6 @@ export function ConnectionStatusPage({
+       <div className="w-full max-w-110">
+         <div className="mb-6 flex items-center justify-center gap-2 text-[19px] font-semibold tracking-[-0.04em]">
+-          <img src="/favicon.png" alt="" className="size-6" />
+-          executor
++          <img src={brand.logo} alt="" className="size-6" />
++          {productWordmark(brand)}
+         </div>
+         <section
+diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
+index 15b7f0854..efa60d989 100644
+--- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
++++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
+@@ -21,4 +21,5 @@ import { useOrganizationRoute } from "./organization.tsx";
+ import { appError } from "../../contracts/apps.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ const catalogIcons = catalogIconsAtom(catalogAtom);
+@@ -54,4 +55,5 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
+ /** Hosted failures keep auth and transport details out of display components. */
+ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
++  const brand = useProductBrand();
+   const error = Cause.findErrorOption(cause);
+   if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
+@@ -69,5 +71,5 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+       <ErrorNotice
+         error={error.value}
+-        context="While completing this action in Executor."
++        context={`While completing this action in ${brand.name}.`}
+         retry={retry}
+         retrying={retrying}
+@@ -79,5 +81,5 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+       <ErrorNotice
+         error={new ConnectionFailed()}
+-        context="While completing this action in Executor."
++        context={`While completing this action in ${brand.name}.`}
+         retry={retry}
+         retrying={retrying}
+diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+index 1b98d761d..fe2899648 100644
+--- a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
++++ b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+@@ -19,4 +19,6 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { SessionMenu } from "./auth.tsx";
+ import { useDocumentationUrl } from "../documentation.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ 
+ const items = [
+@@ -168,9 +170,10 @@ export function DashboardFrame({
+   readonly children: ReactNode;
+ }) {
++  const productBrand = useProductBrand();
+   const docsUrl = useDocumentationUrl();
+   const brand = {
+     className:
+       "wordmark flex items-center gap-2 h-12 min-w-0 font-mono text-[15px] font-medium max-[740px]:h-11 max-[740px]:shrink-0",
+-    children: <span>executor</span>,
++    children: <span>{productWordmark(productBrand)}</span>,
+   };
+   return (
+diff --git a/apps/hosted/web/src/implementation/components/entry.tsx b/apps/hosted/web/src/implementation/components/entry.tsx
+index 61a86ceb8..e62a2bf8a 100644
+--- a/apps/hosted/web/src/implementation/components/entry.tsx
++++ b/apps/hosted/web/src/implementation/components/entry.tsx
+@@ -11,4 +11,6 @@ import {
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { SessionMenu } from "./auth.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** A shared entry frame before an organization URL is known. */
+@@ -25,4 +27,5 @@ export function HostedEntry({
+   readonly wide?: boolean;
+ }) {
++  const brand = useProductBrand();
+   const heading = useId();
+   const width = wide ? "max-w-[760px]" : "max-w-[560px]";
+@@ -34,6 +37,6 @@ export function HostedEntry({
+       >
+         <div className="mb-8 flex items-center gap-2 font-mono text-[15px]">
+-          <img src="/favicon.png" alt="" className="size-5" />
+-          <span>executor</span>
++          <img src={brand.logo} alt="" className="size-5" />
++          <span>{productWordmark(brand)}</span>
+         </div>
+         <h1 id={heading} className="text-2xl font-medium tracking-[-0.04em]">
+@@ -54,5 +57,5 @@ export function HostedEntry({
+ /** Neutral entry content does not assume an organization count or a setup outcome. */
+ export function HostedEntryLoading({
+-  title = "Opening Executor",
++  title,
+   description = "Loading your organizations…",
+   label = "Loading organizations",
+@@ -62,6 +65,7 @@ export function HostedEntryLoading({
+   readonly label?: string;
+ }) {
++  const brand = useProductBrand();
+   return (
+-    <HostedEntry title={title} description={description}>
++    <HostedEntry title={title ?? `Opening ${brand.name}`} description={description}>
+       <div role="status" aria-label={label} className="space-y-3">
+         <Skeleton className="h-12 w-full rounded-md" />
+diff --git a/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx b/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
+index 681dd9da8..d84a72ee1 100644
+--- a/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
++++ b/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
+@@ -14,4 +14,5 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+ import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** Keep form geometry identical before and after the organization values arrive. */
+@@ -21,4 +22,5 @@ export const organizationSettingClass =
+ /** Render known settings copy and controls, with placeholders only for server values. */
+ export function OrganizationSettingsPending({ children }: { readonly children?: ReactNode }) {
++  const brand = useProductBrand();
+   const page = usePageUrl();
+   return (
+@@ -37,5 +39,5 @@ export function OrganizationSettingsPending({ children }: { readonly children?:
+               <h2>Organization name</h2>
+             </CardTitle>
+-            <CardDescription>Shown across Executor.</CardDescription>
++            <CardDescription>Shown across {brand.name}.</CardDescription>
+           </CardHeader>
+           <CardContent>
+diff --git a/apps/hosted/web/src/implementation/components/setup-page.tsx b/apps/hosted/web/src/implementation/components/setup-page.tsx
+index e8e68e463..e18055680 100644
+--- a/apps/hosted/web/src/implementation/components/setup-page.tsx
++++ b/apps/hosted/web/src/implementation/components/setup-page.tsx
+@@ -5,7 +5,9 @@ import { Button } from "@executor-js/ui/components/button";
+ import { cn } from "@executor-js/ui/lib/utils";
+ import { SessionMenu } from "./auth.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ 
+ /**
+- * Onboarding pages are one 600px column under the Executor mark, with their actions right below
++ * Onboarding pages are one 600px column under the product mark, with their actions right below
+  * the step. Identity controls stay outside the instructions: wide screens pin them to the bottom
+  * corner; narrower ones place them above the column. The column starts at a fixed top, so a step
+@@ -14,4 +16,5 @@ import { SessionMenu } from "./auth.tsx";
+  */
+ export function SetupPage({ className, children }: ComponentProps<"main">) {
++  const brand = useProductBrand();
+   return (
+     <main
+@@ -26,6 +29,6 @@ export function SetupPage({ className, children }: ComponentProps<"main">) {
+       <div className="flex min-h-0 w-full max-w-[600px] flex-1 flex-col">
+         <div className="mb-8 flex items-center gap-2 font-mono text-[15px] max-sm:mb-6">
+-          <img src="/favicon.png" alt="" width={20} height={20} className="size-5" />
+-          <span>executor</span>
++          <img src={brand.logo} alt="" width={20} height={20} className="size-5" />
++          <span>{productWordmark(brand)}</span>
+         </div>
+         {children}
+diff --git a/apps/hosted/web/src/implementation/document.ts b/apps/hosted/web/src/implementation/document.ts
+index 13d2a2dd3..ca67952bd 100644
+--- a/apps/hosted/web/src/implementation/document.ts
++++ b/apps/hosted/web/src/implementation/document.ts
+@@ -9,4 +9,5 @@ import { Option, Schema } from "effect";
+ import { OrganizationSummary } from "../contracts/organization.ts";
+ import { resourceOriginsAtom } from "../contracts/mcp.ts";
++import { productBrandAtom } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** Everything a hosted document receives from its host. */
+@@ -19,4 +20,5 @@ export const hostedServerValues = (document: HostedDocument) => [
+   Atom.initialValue(lastOrganizationAtom, document.lastOrganization),
+   Atom.initialValue(resourceOriginsAtom, document.resourceOrigins),
++  Atom.initialValue(productBrandAtom, document.brand),
+ ];
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+index c520dad6f..813e56f49 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+@@ -39,4 +39,5 @@ import {
+   type AccountDialogKind,
+ } from "./account-actions.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /**
+@@ -113,4 +114,5 @@ const searchRank = (item: SetupApp, term: string) => {
+  */
+ export function AccountsSetupPage() {
++  const brand = useProductBrand();
+   const { organization } = useOrganizationRoute();
+   // When the assistant connected first, its handoff rides in the URL to the first prompt.
+@@ -144,5 +146,5 @@ export function AccountsSetupPage() {
+           <SetupTitle id="accounts-setup-title">Connect your accounts</SetupTitle>
+           <SetupLede>
+-            Your assistant uses these through Executor. Connect the tools you work in now
++            Your assistant uses these through {brand.name}. Connect the tools you work in now
+             <span className="max-sm:hidden"> — you can add more any time</span>.
+           </SetupLede>
+@@ -226,4 +228,5 @@ function LoadingList() {
+  */
+ function NotListed({ query }: { readonly query: string }) {
++  const brand = useProductBrand();
+   return (
+     <div
+@@ -237,5 +240,5 @@ function NotListed({ query }: { readonly query: string }) {
+       <p className="mt-0.5">
+         Once your assistant is connected, ask it to add{" "}
+-        {query === "" ? "any app or API" : `“${query}”`} through Executor.
++        {query === "" ? "any app or API" : `“${query}”`} through {brand.name}.
+       </p>
+     </div>
+diff --git a/apps/hosted/web/src/implementation/pages/agent-setup.tsx b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+index d8e813097..eea1d1e2f 100644
+--- a/apps/hosted/web/src/implementation/pages/agent-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+@@ -55,4 +55,5 @@ import { SetupLink, useSetupSequence, useSetupViewed } from "../components/setup
+ import { useDocumentationUrl } from "../documentation.ts";
+ import { useMcpOrigin } from "../resource-origin.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** Moves focus to a screen's heading when it replaces the previous one, without scrolling to it. */
+@@ -153,4 +154,5 @@ interface ScreenBaseline {
+  */
+ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & ScreenBaseline) {
++  const brand = useProductBrand();
+   const navigate = useNavigate();
+   const [agent, setAgent] = useState<ConnectedAgent>();
+@@ -163,5 +165,5 @@ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & S
+       </SetupTitle>
+       <SetupLede>
+-        Executor works inside the AI assistant you already use. Pick yours to see how to add it.
++        {brand.name} works inside the AI assistant you already use. Pick yours to see how to add it.
+       </SetupLede>
+       <div className="mt-6">
+@@ -209,4 +211,5 @@ function GuideStep({
+   readonly assistant: AssistantId;
+ } & ScreenBaseline) {
++  const brand = useProductBrand();
+   useSetupViewed("setup_guide", assistant);
+   const guide = useAssistantGuide(endpoint, assistant);
+@@ -216,5 +219,5 @@ function GuideStep({
+     <>
+       <SetupTitle id="agent-setup-title" ref={focusHeading}>
+-        Add Executor to {name}
++        Add {brand.name} to {name}
+       </SetupTitle>
+       <SetupLede>
+@@ -526,4 +529,5 @@ function StatusView({
+   readonly reserved?: boolean;
+ }) {
++  const brand = useProductBrand();
+   const spinner = reserved ? (
+     <span className="size-4" />
+@@ -583,5 +587,5 @@ function StatusView({
+             </span>
+           }
+-          title="Executor is connected"
++          title={`${brand.name} is connected`}
+           detail={state.agent.name === null ? undefined : `Approved for ${state.agent.name}`}
+           singleLineDetail
+@@ -658,4 +662,5 @@ function PromptStep({
+   readonly agent: GrantId;
+ }) {
++  const brand = useProductBrand();
+   const { organization, slug } = useOrganizationRoute();
+   const sequence = useSetupSequence();
+@@ -684,5 +689,5 @@ function PromptStep({
+               <div aria-busy="true" aria-label="Loading your prompt">
+                 <PromptText>
+-                  {promptOpening(endpoint)}
++                  {promptOpening(endpoint, brand.name)}
+                   {"\n\n"}
+                   <span className="flex h-6 items-center">
+@@ -697,5 +702,5 @@ function PromptStep({
+             ),
+           onSome: (accounts) => {
+-            const prompt = firstPrompt(endpoint, docsUrl, accounts);
++            const prompt = firstPrompt(endpoint, brand.name, docsUrl, accounts);
+             return (
+               <>
+@@ -776,13 +781,14 @@ const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+ 
+ /** The prompt's first paragraph, which names only the MCP URL. */
+-const promptOpening = (endpoint: string) =>
+-  `Use Executor, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
++const promptOpening = (endpoint: string, product: string) =>
++  `Use ${product}, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
+ 
+ const firstPrompt = (
+   endpoint: string,
++  product: string,
+   docsUrl: string,
+   connected: ReturnType<typeof connectedAccounts>,
+ ) =>
+-  `${promptOpening(endpoint)}\n\n${
++  `${promptOpening(endpoint, product)}\n\n${
+     connected === undefined
+       ? `Read the docs to understand the product at ${docsUrl}, then help me get my first app set up.`
+diff --git a/apps/hosted/web/src/implementation/pages/device.tsx b/apps/hosted/web/src/implementation/pages/device.tsx
+index 947f69580..899eb9c86 100644
+--- a/apps/hosted/web/src/implementation/pages/device.tsx
++++ b/apps/hosted/web/src/implementation/pages/device.tsx
+@@ -35,4 +35,5 @@ import {
+ import { organizationsAtom } from "../../contracts/organization.ts";
+ import { useResourceOrigins } from "../resource-origin.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** `verification_uri_complete` carries the code; the plain `verification_uri` asks for it. */
+@@ -133,4 +134,5 @@ function DeviceLookup({ code }: { readonly code: string }) {
+ 
+ function DeviceReview({ code, view }: { readonly code: string; readonly view: DeviceRequestView }) {
++  const brand = useProductBrand();
+   const resourceOrigins = useResourceOrigins();
+   const target = grantTarget(resourceOrigins, [view.resource]);
+@@ -199,5 +201,5 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+         <p>
+           <strong>{client.value.client_name ?? "An application"}</strong> on another device wants to
+-          connect to Executor.
++          connect to {brand.name}.
+         </p>
+       }
+diff --git a/apps/hosted/web/src/implementation/pages/groups.tsx b/apps/hosted/web/src/implementation/pages/groups.tsx
+index bba415bab..cfa785351 100644
+--- a/apps/hosted/web/src/implementation/pages/groups.tsx
++++ b/apps/hosted/web/src/implementation/pages/groups.tsx
+@@ -25,5 +25,5 @@ import {
+   DialogDescription,
+ } from "@executor-js/ui/components/dialog";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+@@ -41,5 +41,5 @@ export function GroupsPage({ id }: { readonly id?: string }) {
+   const refresh = useAtomRefresh(groupsAtom(organization));
+   const data = AsyncResult.value(result);
+-  useDocumentTitle(productTitle(groupsTitle));
++  useDocumentTitle(groupsTitle);
+   return (
+     <GroupsFrame>
+diff --git a/apps/hosted/web/src/implementation/pages/invite.tsx b/apps/hosted/web/src/implementation/pages/invite.tsx
+index dfdcee6fe..74270b948 100644
+--- a/apps/hosted/web/src/implementation/pages/invite.tsx
++++ b/apps/hosted/web/src/implementation/pages/invite.tsx
+@@ -7,4 +7,5 @@ import { organizationError, OrganizationDestination } from "../components/organi
+ import { Button } from "@executor-js/ui/components/button";
+ import { LoginFrame } from "./login-frame.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** Invitation IDs are untrusted; Better Auth verifies recipient email and expiry. */
+@@ -14,4 +15,5 @@ export const inviteSearch = (search: Record<string, unknown>) => ({
+ /** Accept after authentication, including users who have no organization yet. */
+ export function InvitePage({ invitation }: { readonly invitation: string }) {
++  const brand = useProductBrand();
+   const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
+   const state = useAtomValue(acceptInvitationAtom);
+@@ -34,5 +36,5 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
+         <p className="text-sm leading-6 text-balance text-muted-foreground">
+           {invitation
+-            ? "You've been invited to an organization on Executor. Accept with the email this invitation was sent to."
++            ? `You've been invited to an organization on ${brand.name}. Accept with the email this invitation was sent to.`
+             : "This invitation link is incomplete. Ask for a new link."}
+         </p>
+diff --git a/apps/hosted/web/src/implementation/pages/login-frame.tsx b/apps/hosted/web/src/implementation/pages/login-frame.tsx
+index 67b6edab8..20c84f0c6 100644
+--- a/apps/hosted/web/src/implementation/pages/login-frame.tsx
++++ b/apps/hosted/web/src/implementation/pages/login-frame.tsx
+@@ -1,3 +1,4 @@
+ import type { ReactNode } from "react";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** Shared themed card for sign-in, SSO, credential enrollment, and invitations. */
+@@ -11,9 +12,10 @@ export function LoginFrame({
+   readonly footer?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <main className="auth-page flex min-h-dvh flex-col items-center justify-center bg-background px-4 py-12 text-foreground">
+       <div className="w-full max-w-110">
+-        <a href="/" aria-label="Executor home" className="mx-auto mb-5 block size-10">
+-          <img src="/favicon.png" alt="" className="size-10" />
++        <a href="/" aria-label={`${brand.name} home`} className="mx-auto mb-5 block size-10">
++          <img src={brand.logo} alt="" className="size-10" />
+         </a>
+         <h1 className="mb-6 text-center text-2xl font-semibold leading-8 tracking-tight">
+diff --git a/apps/hosted/web/src/implementation/pages/login.tsx b/apps/hosted/web/src/implementation/pages/login.tsx
+index 6860082df..dc63c890b 100644
+--- a/apps/hosted/web/src/implementation/pages/login.tsx
++++ b/apps/hosted/web/src/implementation/pages/login.tsx
+@@ -10,11 +10,12 @@ import { AuthFailed, sessionAtom, signInAtom } from "../../contracts/auth.ts";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Spinner } from "@executor-js/ui/components/spinner";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+-const callbackError = (error: unknown): string | null => {
++const callbackError = (error: unknown, product: string): string | null => {
+   if (typeof error !== "string" || error === "") return null;
+   if (error === "access_denied") return "Sign-in was canceled. You can try again.";
+   if (error === "account_not_linked")
+-    return "An Executor account already uses this email. Sign in with the method you used before.";
++    return `${/^[aeiou]/i.test(product) ? "An" : "A"} ${product} account already uses this email. Sign in with the method you used before.`;
+   if (error === "unable_to_link_account")
+     return "This email is not linked to this sign-in method. Contact an administrator.";
+@@ -100,6 +101,6 @@ export function LoginPage({
+   readonly footer?: ReactNode;
+ }) {
+-  useDocumentTitle(productTitle(title));
+-  const callbackFailure = callbackError(callbackCode);
++  useDocumentTitle(title);
++  const callbackFailure = callbackError(callbackCode, useProductBrand().name);
+   const session = useAtomValue(sessionAtom);
+   const refreshSession = useAtomRefresh(sessionAtom);
+diff --git a/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx b/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
+index 4a58c18fd..e0f77a996 100644
+--- a/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
++++ b/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
+@@ -24,4 +24,5 @@ import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contra
+ import { organizationsAtom } from "../../contracts/organization.ts";
+ import { useResourceOrigins } from "../resource-origin.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /**
+@@ -30,4 +31,5 @@ import { useResourceOrigins } from "../resource-origin.ts";
+  */
+ export function McpAuthorizePage() {
++  const brand = useProductBrand();
+   const page = usePageUrl();
+   const resourceOrigins = useResourceOrigins();
+@@ -88,6 +90,6 @@ export function McpAuthorizePage() {
+       description={
+         <p>
+-          <strong>{client.value.client_name ?? "An application"}</strong> wants to connect to
+-          Executor.
++          <strong>{client.value.client_name ?? "An application"}</strong> wants to connect to{" "}
++          {brand.name}.
+         </p>
+       }
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+index 1c4dd3bb2..04dde1644 100644
+--- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+@@ -24,4 +24,5 @@ import {
+ import { accountToNameAtom } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /** The SDK decides recovery for every completion reason; `setup` means the connection itself ended. */
+@@ -45,4 +46,5 @@ type CallbackState =
+  */
+ export function OAuthCallbackPage() {
++  const brand = useProductBrand();
+   const navigate = useNavigate();
+   const registry = useContext(RegistryContext);
+@@ -103,5 +105,5 @@ export function OAuthCallbackPage() {
+           onSome: (value) =>
+             recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
+-              ? `While connecting an account in Executor.\n\n${value.fixPrompt}`
++              ? `While connecting an account in ${brand.name}.\n\n${value.fixPrompt}`
+               : undefined,
+           onNone: () => undefined,
+@@ -126,6 +128,5 @@ export function OAuthCallbackPage() {
+           return setState({
+             status: "failed",
+-            message:
+-              "Another Executor user started this sign-in. Sign in as that user and open the link again.",
++            message: `Another ${brand.name} user started this sign-in. Sign in as that user and open the link again.`,
+             recovery: "setup",
+           });
+@@ -168,5 +169,5 @@ export function OAuthCallbackPage() {
+           }));
+     })();
+-  }, [registry, navigate]);
++  }, [registry, navigate, brand.name]);
+   return (
+     <ConnectionStatusPage
+@@ -202,8 +203,9 @@ function OAuthRecoveryActions({
+   readonly fixPrompt?: string | undefined;
+ }) {
++  const brand = useProductBrand();
+   if (Option.isNone(pending))
+     return (
+       <Button asChild>
+-        <Link to="/">Open Executor</Link>
++        <Link to="/">Open {brand.name}</Link>
+       </Button>
+     );
+diff --git a/apps/hosted/web/src/implementation/pages/organization.tsx b/apps/hosted/web/src/implementation/pages/organization.tsx
+index aba30d862..65ed28810 100644
+--- a/apps/hosted/web/src/implementation/pages/organization.tsx
++++ b/apps/hosted/web/src/implementation/pages/organization.tsx
+@@ -35,6 +35,7 @@ import {
+ } from "../components/organization.tsx";
+ import { OrganizationMembers, type MemberLimit } from "../components/organization-members.tsx";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ export type { MemberLimit };
+@@ -83,5 +84,5 @@ function OrganizationSettings({
+   const pending =
+     organization.checking || renaming.waiting || changingSlug.waiting || changingLogo.waiting;
+-  useDocumentTitle(productTitle(`${organization.name} settings`));
++  useDocumentTitle(`${organization.name} settings`);
+   return (
+     <PageFrame>
+@@ -207,4 +208,5 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
+ 
+ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
++  const brand = useProductBrand();
+   const organization = useOrganization();
+   const disabledReason =
+@@ -240,5 +242,5 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
+             <h2>Organization name</h2>
+           </CardTitle>
+-          <CardDescription>Shown across Executor.</CardDescription>
++          <CardDescription>Shown across {brand.name}.</CardDescription>
+         </CardHeader>
+         <CardContent>
+diff --git a/apps/hosted/web/src/implementation/pages/profile.tsx b/apps/hosted/web/src/implementation/pages/profile.tsx
+index 9097c7340..fd041f60b 100644
+--- a/apps/hosted/web/src/implementation/pages/profile.tsx
++++ b/apps/hosted/web/src/implementation/pages/profile.tsx
+@@ -16,5 +16,5 @@ import {
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import { AccountFailed, renameUserAtom } from "../../contracts/account.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+@@ -28,4 +28,5 @@ import {
+ } from "../components/account-pending.tsx";
+ import { OrganizationAvatar } from "../components/organization.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ const errorMessage = (cause: Cause.Cause<AccountFailed>) => {
+@@ -46,5 +47,5 @@ const suggestedName = (email: string) => email.split("@")[0] ?? "";
+  */
+ export function ProfilePage({ email }: { readonly email?: (current: string) => ReactNode }) {
+-  useDocumentTitle(productTitle(profileTitle));
++  useDocumentTitle(profileTitle);
+   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
+   return (
+@@ -170,4 +171,5 @@ function DisplayName({ current, email }: { readonly current: string; readonly em
+ /** Every organization this person belongs to; each one owns its own apps, accounts and groups. */
+ function Memberships() {
++  const brand = useProductBrand();
+   const organizations = useAtomValue(organizationsAtom);
+   const retry = useAtomRefresh(organizationsAtom);
+@@ -179,5 +181,5 @@ function Memberships() {
+         </CardTitle>
+         <CardDescription>
+-          Where you are a member. Everything else in Executor lives inside one of these.
++          Where you are a member. Everything else in {brand.name} lives inside one of these.
+         </CardDescription>
+       </CardHeader>
+diff --git a/apps/hosted/web/src/implementation/pages/security.tsx b/apps/hosted/web/src/implementation/pages/security.tsx
+index abc744c48..74310463d 100644
+--- a/apps/hosted/web/src/implementation/pages/security.tsx
++++ b/apps/hosted/web/src/implementation/pages/security.tsx
+@@ -14,5 +14,5 @@ import {
+ import { LocalTime, shortMoment } from "@executor-js/ui/components/local-time";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import {
+   AccountFailed,
+@@ -72,5 +72,5 @@ export const describeClient = (userAgent: string | null | undefined): string =>
+  */
+ export function SecurityPage({ children }: { readonly children?: ReactNode }) {
+-  useDocumentTitle(productTitle(securityTitle));
++  useDocumentTitle(securityTitle);
+   return (
+     <PageFrame>
+diff --git a/apps/hosted/web/src/implementation/pages/tokens.tsx b/apps/hosted/web/src/implementation/pages/tokens.tsx
+index efc5ac395..d3d9419bb 100644
+--- a/apps/hosted/web/src/implementation/pages/tokens.tsx
++++ b/apps/hosted/web/src/implementation/pages/tokens.tsx
+@@ -26,5 +26,5 @@ import {
+   DialogFooter,
+ } from "@executor-js/ui/components/dialog";
+-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import {
+   Select,
+@@ -74,5 +74,5 @@ export function TokensPage({
+           logo: null,
+         });
+-  useDocumentTitle(productTitle(tokensTitle));
++  useDocumentTitle(tokensTitle);
+   const [offset, setOffset] = useState(0);
+   const query = apiKeysAtom(offset);
+diff --git a/apps/local/web/src/implementation/routes/__root.tsx b/apps/local/web/src/implementation/routes/__root.tsx
+index 1b5ee08b8..9a4715604 100644
+--- a/apps/local/web/src/implementation/routes/__root.tsx
++++ b/apps/local/web/src/implementation/routes/__root.tsx
+@@ -10,5 +10,5 @@ import { localPageTitle } from "../../contracts/navigation.ts";
+ import { NotFoundPage } from "../components/not-found.tsx";
+ import { useLocation } from "@tanstack/react-router";
+-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
++import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
+ import { DashboardDocument } from "@executor-js/dashboard-start/shell";
+ import styles from "../styles/globals.css?url";
+@@ -21,5 +21,4 @@ export const Route = createRootRouteWithContext<{
+   head: () => ({
+     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
+-    meta: [{ title: "Executor · Local" }],
+   }),
+   shellComponent: DashboardDocument,
+@@ -31,5 +30,5 @@ function Root() {
+   const { pathname } = useLocation();
+   return (
+-    <DocumentTitleProvider fallbackTitle={productTitle(localPageTitle(pathname))}>
++    <DocumentTitleProvider fallbackTitle={localPageTitle(pathname)}>
+       <BrowserEntry />
+       <Outlet />
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index caed05bc6..89d68399e 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -75,4 +75,10 @@ const cloudOnboarding = {
+ /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
+ export const appWorkerBudgetLimit = 2;
++/** The brand the product brand scenario's server starts with; `server` is its MCP server name. */
++export const productBrand = {
++  name: "Acme Tools",
++  logo: "/acme-tools.png",
++  server: "acme-tools",
++} as const;
+ /**
+  * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
+@@ -5704,4 +5710,21 @@ export const scenarios = plan({
+     },
+   },
++  productBrand: {
++    fixtures: "actors",
++    file: "product-brand.spec.ts",
++    title:
++      "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
++    serverEnvironment: {
++      EXECUTOR_PRODUCT_NAME: productBrand.name,
++      EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
++    },
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "Managed local Cloud serves every scenario from one Worker, so it cannot start under another brand. Self-host runs the same shared pages, metadata and MCP server.",
++      ),
++      local: na("Local always presents Executor; it has no brand settings."),
++    },
++  },
+   sharedAuthorization: {
+     fixtures: "actors",
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+new file mode 100644
+index 000000000..3e5f77054
+--- /dev/null
++++ b/e2e/tests/product-brand.spec.ts
+@@ -0,0 +1,160 @@
++/** A deployment started with its own product name and logo presents them instead of Executor's. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { Target } from "../support/platform.ts";
++import { productBrand, scenarios } from "../test-plan.ts";
++
++const ResourceMetadata = Schema.Struct({ resource_name: Schema.String });
++const executorName = /executor/i;
++const callback = "http://127.0.0.1:9/callback";
++
++layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
++  it.effect(scenarios.productBrand.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          mcp = yield* McpClient,
++          target = yield* Target;
++        const origin = target.metadata.origin;
++        const anonymous = yield* api.session();
++        const brandLogos = (scope: string) =>
++          browser.use(`Count ${scope} images showing the configured logo`, (page) =>
++            page.locator(`${scope} img[src="${productBrand.logo}"]`).count(),
++          );
++
++        // The server-rendered document already carries the brand, before any script runs.
++        const document = yield* browser.use("Open sign-in signed out", (page) =>
++          page.goto(`${origin}/login`).then((response) => response?.text() ?? ""),
++        );
++        expect(document).toContain(`<title>${productBrand.name}</title>`);
++        expect(document).toContain(`<link rel="icon" href="${productBrand.logo}"/>`);
++        yield* browser.use("Sign-in names the configured product", (page) =>
++          page
++            .getByRole("heading", { name: `Sign in to ${productBrand.name}`, exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(yield* browser.use("Read the sign-in title", (page) => page.title())).toBe(
++          `Sign in · ${productBrand.name}`,
++        );
++        expect(yield* brandLogos("body")).toBeGreaterThan(0);
++        expect(
++          yield* browser.use("Count images showing Executor's logo", (page) =>
++            page.locator('img[src="/favicon.png"]').count(),
++          ),
++        ).toBe(0);
++        expect(
++          yield* browser.use("Read the sign-in page text", (page) =>
++            page.locator("body").innerText(),
++          ),
++        ).not.toMatch(executorName);
++
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open assistant setup", (page) =>
++          page.goto(`${origin}/org/${actors.organization.slug}/connect`),
++        );
++        yield* browser.use("The Claude guide names the configured product", (page) =>
++          page
++            .getByRole("heading", { name: `Add ${productBrand.name} to Claude`, exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(yield* browser.use("Read the setup title", (page) => page.title())).toMatch(
++          new RegExp(` · ${productBrand.name}$`),
++        );
++        const claude = yield* browser.use("Read the Claude guide", (page) =>
++          page.locator("main").innerText(),
++        );
++        expect(claude).toContain(`Name it ${productBrand.name}`);
++        expect(claude).not.toMatch(executorName);
++        yield* browser.use("Choose Claude Code", (page) =>
++          page.getByRole("button", { name: "Claude Code", exact: true }).click(),
++        );
++        yield* browser.use("The Claude Code guide names the configured product", (page) =>
++          page
++            .getByRole("heading", { name: `Add ${productBrand.name} to Claude Code`, exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        const claudeCode = yield* browser.use("Read the Claude Code guide", (page) =>
++          page.locator("main").innerText(),
++        );
++        expect(claudeCode).toContain(`claude mcp add --transport http ${productBrand.server} `);
++        expect(claudeCode).not.toMatch(executorName);
++
++        // Authorization servers and MCP clients show these names when a person connects.
++        for (const [path, name] of [
++          ["/.well-known/oauth-protected-resource/mcp", productBrand.name],
++          ["/.well-known/oauth-protected-resource/api", `${productBrand.name} API`],
++        ] as const) {
++          const metadata = yield* api.request(anonymous, "GET", path);
++          expect(metadata.status).toBe(200);
++          expect((yield* body(ResourceMetadata, metadata)).resource_name).toBe(name);
++        }
++
++        const registered = yield* api.request(anonymous, "POST", "/api/auth/oauth2/register", {
++          client_name: "Brand check client",
++          redirect_uris: [callback],
++          token_endpoint_auth_method: "none",
++          grant_types: ["authorization_code"],
++          response_types: ["code"],
++        });
++        expect(registered.status).toBe(201);
++        const { client_id } = yield* body(
++          Schema.Struct({ client_id: Schema.NonEmptyString }),
++          registered,
++        );
++        const authorization = new URL(`${origin}/api/auth/oauth2/authorize`);
++        authorization.search = new URLSearchParams({
++          response_type: "code",
++          client_id,
++          redirect_uri: callback,
++          code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
++          code_challenge_method: "S256",
++          scope: "mcp",
++          resource: `${origin}/mcp`,
++          state: "brand-check",
++        }).toString();
++        // The consent is only read, never approved, so the client gets no grant.
++        yield* browser.use("Open the client's MCP consent", (page) =>
++          page.goto(authorization.href),
++        );
++        yield* browser.use("MCP consent names the configured product", (page) =>
++          page
++            .getByRole("heading", { name: `Connect to ${productBrand.name}`, exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(yield* brandLogos("main")).toBeGreaterThan(0);
++        const consent = yield* browser.use("Read the consent page", (page) =>
++          page.locator("main").innerText(),
++        );
++        expect(consent).toContain(productBrand.name.toLowerCase());
++        expect(consent).not.toMatch(executorName);
++
++        const key = yield* body(
++          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
++          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
++            name: "Brand check",
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
++            .pipe(Effect.orDie),
++        );
++        const client = yield* mcp.connect(key.key, "brand", {
++          organization: actors.organization.id,
++        });
++        const server = yield* client.use("The MCP server reports the configured name", (client) =>
++          Promise.resolve(client.getServerVersion()),
++        );
++        expect(server?.name).toBe(productBrand.name);
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++});
+diff --git a/packages/dashboard-start/src/implementation/build-change-notice.tsx b/packages/dashboard-start/src/implementation/build-change-notice.tsx
+index 3f66ec7ed..b56709594 100644
+--- a/packages/dashboard-start/src/implementation/build-change-notice.tsx
++++ b/packages/dashboard-start/src/implementation/build-change-notice.tsx
+@@ -2,4 +2,5 @@ import { useSyncExternalStore } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+ /**
+@@ -9,4 +10,5 @@ import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
+ export function BuildChangeNotice() {
+   const outdated = useSyncExternalStore(subscribePageOutdated, pageOutdated, () => false);
++  const brand = useProductBrand();
+   if (!outdated) return null;
+   return (
+@@ -15,5 +17,5 @@ export function BuildChangeNotice() {
+       className="fixed inset-x-0 bottom-4 z-50 mx-auto flex w-fit max-w-[calc(100%-2rem)] items-center gap-3 rounded-lg border bg-card px-4 py-2 text-sm text-card-foreground shadow-lg"
+     >
+-      <span>Executor was updated. Reload to use the new version.</span>
++      <span>{brand.name} was updated. Reload to use the new version.</span>
+       <Button size="sm" onClick={() => window.location.reload()}>
+         Reload
+diff --git a/packages/dashboard-start/src/implementation/build-change.ts b/packages/dashboard-start/src/implementation/build-change.ts
+index 84e06019a..b1bd7ea9e 100644
+--- a/packages/dashboard-start/src/implementation/build-change.ts
++++ b/packages/dashboard-start/src/implementation/build-change.ts
+@@ -18,5 +18,5 @@ const outdatedEvent = "executor:page-outdated";
+ 
+ /** How a request failure on an outdated page reads: the failure is likely the update itself. */
+-export const outdatedPageMessage = "Executor was updated. Reload this page to use the new version.";
++export const outdatedPageMessage = "A new version is available. Reload this page to use it.";
+ 
+ /** Whether a response from this page's server named a build other than the page's own. */
+diff --git a/packages/dashboard-start/src/implementation/document.ts b/packages/dashboard-start/src/implementation/document.ts
+index fc48a6eb7..9f32e1521 100644
+--- a/packages/dashboard-start/src/implementation/document.ts
++++ b/packages/dashboard-start/src/implementation/document.ts
+@@ -3,4 +3,5 @@ import { Effect, Option, Schema } from "effect";
+ import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import type { DocumentApi } from "../contracts/document.ts";
++import { CurrentProductBrand } from "@executor-js/utils/product-brand";
+ import { inProcessApi } from "./in-process.ts";
+ 
+@@ -30,7 +31,24 @@ const documentHeaders = {
+ } as const;
+ 
+-const unavailable = HttpServerResponse.html(
+-  '<!doctype html><title>Unable to open Executor</title><main><h1>Unable to open Executor</h1><p>Please try again.</p><a href="">Try again</a></main>',
+-).pipe(HttpServerResponse.setStatus(503), HttpServerResponse.setHeaders(documentHeaders));
++const escapeHtml = (value: string) =>
++  value
++    .replaceAll("&", "&amp;")
++    .replaceAll("<", "&lt;")
++    .replaceAll(">", "&gt;")
++    .replaceAll('"', "&quot;");
++
++/** The plain page shown when a document cannot render, which hosts' entry pages share. */
++export const unavailablePage = (productName: string) => {
++  const name = escapeHtml(productName);
++  return `<!doctype html><title>Unable to open ${name}</title><main><h1>Unable to open ${name}</h1><p>Please try again.</p><a href="">Try again</a></main>`;
++};
++
++const unavailable = Effect.gen(function* () {
++  const brand = yield* CurrentProductBrand;
++  return HttpServerResponse.html(unavailablePage(brand.name)).pipe(
++    HttpServerResponse.setStatus(503),
++    HttpServerResponse.setHeaders(documentHeaders),
++  );
++});
+ 
+ /**
+@@ -77,5 +95,5 @@ export const dashboardDocument = <Context, E, R, E2, R2>(options: {
+   }).pipe(
+     Effect.withSpan("dashboard.document"),
+-    Effect.catchTag("DashboardUnavailable", () => Effect.succeed(unavailable)),
++    Effect.catchTag("DashboardUnavailable", () => unavailable),
+   );
+ 
+@@ -95,6 +113,7 @@ export const withSameSiteReload = <E, R>(
+     )
+       return yield* document;
++    const brand = yield* CurrentProductBrand;
+     return HttpServerResponse.html(
+-      '<!doctype html><meta http-equiv="refresh" content="0"><title>Executor</title>',
++      `<!doctype html><meta http-equiv="refresh" content="0"><title>${escapeHtml(brand.name)}</title>`,
+     ).pipe(HttpServerResponse.setHeaders(documentHeaders));
+   });
+diff --git a/packages/dashboard-start/src/implementation/shell.tsx b/packages/dashboard-start/src/implementation/shell.tsx
+index 17c41de30..8ab941e4e 100644
+--- a/packages/dashboard-start/src/implementation/shell.tsx
++++ b/packages/dashboard-start/src/implementation/shell.tsx
+@@ -4,4 +4,5 @@ import { HeadContent, Scripts } from "@tanstack/react-router";
+ import type { ReactNode } from "react";
+ import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import type {} from "../contracts/build.ts";
+ import { documentBuild } from "./document-build.ts";
+@@ -43,4 +44,5 @@ const holdEarlySubmissions = `(() => {
+ /** Public build metadata read by browser telemetry; it carries no identity or configuration secrets. */
+ export function DashboardDocument({ children }: { readonly children: ReactNode }) {
++  const brand = useProductBrand();
+   return (
+     // `data-dashboard` lets automation tell dashboard documents from authored app pages.
+@@ -55,5 +57,7 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
+           content={import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME}
+         />
+-        <link rel="icon" href="/favicon.png" />
++        {/* Pages replace the title with their own label once they hydrate. */}
++        <title>{brand.name}</title>
++        <link rel="icon" href={brand.logo} />
+         <script dangerouslySetInnerHTML={{ __html: holdEarlySubmissions }} />
+         <HeadContent />
+diff --git a/packages/mcp/src/contracts/tools.ts b/packages/mcp/src/contracts/tools.ts
+index 1d89a29be..6da335777 100644
+--- a/packages/mcp/src/contracts/tools.ts
++++ b/packages/mcp/src/contracts/tools.ts
+@@ -53,4 +53,6 @@ export const BrowserMcpToolkit = Toolkit.make(
+ /** Hosts supply authorized operations and documentation I/O. */
+ export interface McpOptions {
++  /** The server name clients show for this connection; Executor when unset. */
++  readonly name?: string;
+   readonly backend: McpBackend<Error>;
+   /** Admit each new program once. Resumes never call this hook. */
+diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implementation/server.ts
+index fdc494a1c..b658345cd 100644
+--- a/packages/mcp/src/implementation/server.ts
++++ b/packages/mcp/src/implementation/server.ts
+@@ -314,5 +314,5 @@ export const makeMcp = (options: McpOptions) =>
+           Layer.provide(
+             McpServer.layerHttp({
+-              name: "Executor",
++              name: options.name ?? "Executor",
+               version: "0.1.0",
+               instructions: options.instructions,
+diff --git a/packages/ui/src/contracts/product-brand.ts b/packages/ui/src/contracts/product-brand.ts
+new file mode 100644
+index 000000000..1b2f12331
+--- /dev/null
++++ b/packages/ui/src/contracts/product-brand.ts
+@@ -0,0 +1,20 @@
++import {
++  defaultProductBrand,
++  isDefaultProductBrand,
++  ProductBrand,
++} from "@executor-js/utils/product-brand";
++import { Atom } from "effect/reactivity";
++
++export { isDefaultProductBrand };
++
++/**
++ * The deployment's name and logo, sent with each server-rendered document. A host that sets no
++ * brand presents itself as Executor.
++ */
++export const productBrandAtom = Atom.make<ProductBrand>(defaultProductBrand).pipe(
++  Atom.serializable({ key: "product-brand", schema: ProductBrand }),
++  Atom.keepAlive,
++);
++
++/** The name as the dashboard's lowercase wordmark shows it beside the logo. */
++export const productWordmark = (brand: ProductBrand) => brand.name.toLowerCase();
+diff --git a/packages/ui/src/contracts/registry-error.ts b/packages/ui/src/contracts/registry-error.ts
+index 6b89b958e..6cc70ed3c 100644
+--- a/packages/ui/src/contracts/registry-error.ts
++++ b/packages/ui/src/contracts/registry-error.ts
+@@ -17,4 +17,4 @@ export const registryErrorMessage = (error: RegistryError) =>
+     "invalid-response": "The app registry returned an invalid response. Try again later.",
+     limit: "The published app exceeds the supported source size.",
+-    unsupported: "This Executor reads a remote registry and cannot publish.",
++    unsupported: "This deployment reads a remote registry and cannot publish.",
+   })[error.reason];
+diff --git a/packages/ui/src/implementation/components/credential-fields.tsx b/packages/ui/src/implementation/components/credential-fields.tsx
+index 44088479b..4ee9da3a7 100644
+--- a/packages/ui/src/implementation/components/credential-fields.tsx
++++ b/packages/ui/src/implementation/components/credential-fields.tsx
+@@ -11,4 +11,5 @@ import {
+   SelectValue,
+ } from "@executor-js/ui/components/select";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** A field's title, or its name in words: `apiKey` reads "Api Key". */
+@@ -27,4 +28,5 @@ function FieldAccess({
+   readonly hosts?: readonly string[] | undefined;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <TooltipProvider delayDuration={150}>
+@@ -47,5 +49,5 @@ function FieldAccess({
+         <TooltipContent className="max-w-64">
+           {hidden
+-            ? `The app and your agent only see a placeholder. Executor swaps in the real value on requests to ${hosts?.join(", ")}.`
++            ? `The app and your agent only see a placeholder. ${brand.name} swaps in the real value on requests to ${hosts?.join(", ")}.`
+             : "The app reads this value and can send it anywhere."}
+         </TooltipContent>
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 0b4e4ec04..dbb58d637 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -22,4 +22,5 @@ import {
+ import { ProviderIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** Account management lives on its list row; products supply the menu items they support. */
+@@ -195,4 +196,5 @@ export function DisconnectAccountForm<E>({
+   readonly disabledReason?: string | undefined;
+ }) {
++  const brand = useProductBrand();
+   const { provider, apps } = data;
+   const [pending, setPending] = useState(false);
+@@ -203,6 +205,6 @@ export function DisconnectAccountForm<E>({
+       <p className="text-sm text-muted-foreground">
+         {data.revocation === "automatic"
+-          ? `This deletes the saved credentials from Executor and asks ${provider.definition.name} to revoke its access.`
+-          : `This deletes the saved credentials from Executor but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
++          ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
++          : `This deletes the saved credentials from ${brand.name} but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
+         {apps.length === 0 && "No apps use this account."}
+       </p>
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index 8db729dc7..5345ce2cb 100644
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -27,4 +27,5 @@ import {
+   SelectValue,
+ } from "../components/select.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
+@@ -241,4 +242,5 @@ function CredentialAccess({
+   readonly readable: boolean;
+ }) {
++  const brand = useProductBrand();
+   if (!hidden && !readable) return null;
+   return (
+@@ -257,5 +259,5 @@ function CredentialAccess({
+               Hidden from app.
+             </span>{" "}
+-            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
++            The app and your agent only get a placeholder. {brand.name} swaps in the real value{" "}
+             {hosts.length === 0 ? (
+               "on no request."
+@@ -311,4 +313,5 @@ function SignInAccess({
+   readonly hosts?: readonly string[] | undefined;
+ }) {
++  const brand = useProductBrand();
+   return hosts === undefined ? (
+     <p
+@@ -334,5 +337,7 @@ function SignInAccess({
+       <span>
+         {hosts.length === 0 ? (
+-          <>Executor never sends your {provider} sign-in on the app's requests.</>
++          <>
++            {brand.name} never sends your {provider} sign-in on the app's requests.
++          </>
+         ) : (
+           <>
+diff --git a/packages/ui/src/implementation/dashboard/agent-setup.tsx b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+index 475133d96..dbc719eb6 100644
+--- a/packages/ui/src/implementation/dashboard/agent-setup.tsx
++++ b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+@@ -2,10 +2,10 @@ import { CopyButton } from "./code.tsx";
+ 
+ /**
+- * Services Executor cannot add without guessing are set up by the user's agent, which can read the
++ * Services the product cannot add without guessing are set up by the user's agent, which can read the
+  * service's documentation and ask the user how they sign in.
+  */
+-export const agentSetupPrompt = (endpoint?: string) =>
++export const agentSetupPrompt = (product: string, endpoint?: string) =>
+   [
+-    "Help me add a service to Executor as an app. Ask me which service I want to connect.",
++    `Help me add a service to ${product} as an app. Ask me which service I want to connect.`,
+     "",
+     "Start with the Executor app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
+@@ -14,5 +14,5 @@ export const agentSetupPrompt = (endpoint?: string) =>
+       : [
+           "",
+-          `If you are not connected to Executor yet, connect to its MCP server at ${endpoint} first.`,
++          `If you are not connected to ${product} yet, connect to its MCP server at ${endpoint} first.`,
+         ]),
+   ].join("\n");
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 4f0855448..c051320f0 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -45,4 +45,5 @@ import {
+ } from "../components/dialog.tsx";
+ import { cn } from "../lib/utils.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ const accountName = (account: AccountSummary) => account.label || "Unnamed account";
+@@ -185,4 +186,5 @@ function DeleteUnusedAccount<E, A>({
+   readonly onClose: () => void;
+ }) {
++  const brand = useProductBrand();
+   const run = useAtomSet(remove, { mode: "promiseExit" });
+   const result = useAtomValue(remove);
+@@ -211,6 +213,6 @@ function DeleteUnusedAccount<E, A>({
+           Delete it if you no longer need it.{" "}
+           {data.revocation === "automatic"
+-            ? `This removes the saved credentials from Executor and asks ${provider} to revoke its access.`
+-            : `This removes the saved credentials from Executor but does not revoke access at ${provider}. To end access, revoke it there too.`}
++            ? `This removes the saved credentials from ${brand.name} and asks ${provider} to revoke its access.`
++            : `This removes the saved credentials from ${brand.name} but does not revoke access at ${provider}. To end access, revoke it there too.`}
+         </p>
+         {AsyncResult.isFailure(result) && <Failure cause={result.cause} />}
+diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
+index 7a9804d19..0713050dc 100644
+--- a/packages/ui/src/implementation/dashboard/app-detail.tsx
++++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
+@@ -20,5 +20,5 @@ import type { AppView } from "../../contracts/dashboard.ts";
+ import { AppIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
+-import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
++import { useDocumentTitle } from "../hooks/document-title.ts";
+ import { cn } from "../lib/utils.ts";
+ 
+@@ -96,5 +96,5 @@ export function AppDetailLayout({
+   readonly children: ReactNode;
+ }) {
+-  useDocumentTitle(productTitle(app?.name ?? "App"));
++  useDocumentTitle(app?.name ?? "App");
+   return (
+     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
+diff --git a/packages/ui/src/implementation/dashboard/app-overview.tsx b/packages/ui/src/implementation/dashboard/app-overview.tsx
+index 3e4bf54d7..e3d6c1586 100644
+--- a/packages/ui/src/implementation/dashboard/app-overview.tsx
++++ b/packages/ui/src/implementation/dashboard/app-overview.tsx
+@@ -306,4 +306,5 @@ export function AppOverviewSource({
+   readonly source: typeof AppAuthoringMetadata.Type;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <div className="space-y-3 pt-4 text-sm leading-6 text-muted-foreground">
+@@ -312,5 +313,5 @@ export function AppOverviewSource({
+         {source.canEdit
+           ? "Ask your agent to help make changes."
+-          : "This app is maintained by Executor."}
++          : `This app is maintained by ${brand.name}.`}
+       </p>
+     </div>
+@@ -318,2 +319,3 @@ export function AppOverviewSource({
+ }
+ import { EmptyState } from "./empty-state.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+diff --git a/packages/ui/src/implementation/dashboard/app-skills.tsx b/packages/ui/src/implementation/dashboard/app-skills.tsx
+index d268a44b3..dc2fda8a6 100644
+--- a/packages/ui/src/implementation/dashboard/app-skills.tsx
++++ b/packages/ui/src/implementation/dashboard/app-skills.tsx
+@@ -31,4 +31,5 @@ import {
+ 
+ import { SkillWorkspace } from "./skill-workspace.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ type Skill = AppSkillBundle["skills"][number];
+@@ -175,4 +176,5 @@ function SkillCatalog<E>({
+   readonly onCommitted: (result: Committed) => void;
+ }) {
++  const brand = useProductBrand();
+   const [selected, setSelected] = useState<string>();
+   // An open draft asks before another skill or file replaces it.
+@@ -188,5 +190,5 @@ function SkillCatalog<E>({
+           canEdit ? (
+             <CopyButton
+-              code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
++              code={`Add skills to my ${brand.name} app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
+               label="Copy prompt"
+               text="Copy prompt"
+diff --git a/packages/ui/src/implementation/dashboard/browser-approval.tsx b/packages/ui/src/implementation/dashboard/browser-approval.tsx
+index 7faba5507..1f362bbc8 100644
+--- a/packages/ui/src/implementation/dashboard/browser-approval.tsx
++++ b/packages/ui/src/implementation/dashboard/browser-approval.tsx
+@@ -1,4 +1,6 @@
+ import { LocalTime, timeOfDay } from "../components/local-time.tsx";
+ /** A shared review page for tool consent and standard MCP form input. */
++import { productWordmark } from "../../contracts/product-brand.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import {
+@@ -38,8 +40,8 @@ const defaults = (request: PendingInteraction) =>
+     ),
+   );
+-/** Executor accepted the answer, so the form must not offer it again. */
+-const unreadableReply =
+-  "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
+-const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
++/** The product accepted the answer, so the form must not offer it again. */
++const unreadableReply = (product: string) =>
++  `${product} received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.`;
++const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>, product: string) => {
+   const error = Cause.squash(cause);
+   return error instanceof ToolRunApprovalRefused
+@@ -51,6 +53,6 @@ const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+           Match.when("invalid-answer", () => "Check the form fields and try again."),
+           Match.when("unavailable", () => "This request is no longer available."),
+-          Match.when("network", () => "Cannot reach Executor. Try again."),
+-          Match.when("reply-unreadable", () => unreadableReply),
++          Match.when("network", () => `Cannot reach ${product}. Try again.`),
++          Match.when("reply-unreadable", () => unreadableReply(product)),
+           Match.exhaustive,
+         )
+@@ -69,9 +71,10 @@ type Outcome = "answered" | "unavailable" | "reply-unreadable";
+ /** Authentication is provided by the product; the server independently checks every read and answer. */
+ export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
++  const brand = useProductBrand();
+   return (
+     <main className="mx-auto flex min-h-svh w-full max-w-2xl flex-col px-5 py-12 sm:py-20">
+       <div className="mb-8 flex items-center gap-2 text-lg font-semibold">
+-        <img src="/favicon.png" alt="" className="size-7" />
+-        executor
++        <img src={brand.logo} alt="" className="size-7" />
++        {productWordmark(brand)}
+       </div>
+       <BrowserApprovalCard atoms={atoms} />
+@@ -87,4 +90,5 @@ export function BrowserApprovalCard({
+   readonly completion?: ReactNode;
+ }) {
++  const { name: product } = useProductBrand();
+   const view = useAtomValue(atoms.view);
+   const refused = AsyncResult.isFailure(view) ? refusal(view.cause) : undefined;
+@@ -110,5 +114,5 @@ export function BrowserApprovalCard({
+           </h1>
+           <p role="alert" className="my-4 text-sm text-muted-foreground">
+-            {failureMessage(view.cause)}
++            {failureMessage(view.cause, product)}
+           </p>
+           <Button variant="outline" onClick={refresh}>
+@@ -139,4 +143,5 @@ function ApprovalResult({
+   readonly completion?: ReactNode;
+ }) {
++  const { name: product } = useProductBrand();
+   return (
+     <>
+@@ -153,5 +158,5 @@ function ApprovalResult({
+           : status === "unavailable"
+             ? "This request has expired, was handled, or is no longer running."
+-            : unreadableReply}
++            : unreadableReply(product)}
+       </p>
+     </>
+@@ -169,4 +174,5 @@ function ApprovalForm({
+   readonly atoms: ReviewAtoms;
+ }) {
++  const { name: product } = useProductBrand();
+   const [values, setValues] = useState(() => defaults(request));
+   const [persist, setPersist] = useState("");
+@@ -218,5 +224,5 @@ function ApprovalForm({
+     if (Exit.isSuccess(result)) setSaved(result.value.status);
+     else if (replyUnreadable(result.cause)) setSaved("reply-unreadable");
+-    else setError(failureMessage(result.cause));
++    else setError(failureMessage(result.cause, product));
+   };
+   if (saved !== undefined) return <ApprovalResult status={saved} completion={completion} />;
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+index 31eeb46c3..6595d22d3 100644
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -19,4 +19,5 @@ import { Input } from "@executor-js/ui/components/input";
+ import { cn } from "@executor-js/ui/lib/utils";
+ import { Skeleton } from "../components/skeleton.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ const noIcons = Atom.make(noCatalogIcons);
+ 
+@@ -70,4 +71,5 @@ export function ProviderIcon({
+ }) {
+   const catalogIcons = useCatalogIcons();
++  const { logo } = useProductBrand();
+   const [failed, setFailed] = useState<readonly string[]>([]);
+   const normalized = name.toLowerCase().trim();
+@@ -75,5 +77,6 @@ export function ProviderIcon({
+   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
+   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
+-  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
++  // The built-in app keeps the name Executor and shows the deployment's logo.
++  const source = normalized === "executor" ? logo : faviconUrl(domain, size);
+   const sources = declared ?? catalogIconSources(catalog);
+   const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+index 39cca43e8..1b1404ca3 100644
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -4,4 +4,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
+ import { AssistantId } from "../../contracts/dashboard.ts";
+ import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
++import {
++  defaultProductBrand,
++  isDefaultProductBrand,
++  productServerName,
++  type ProductBrand,
++} from "@executor-js/utils/product-brand";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ import { Code, CopyButton } from "./code.tsx";
+ import { Button } from "../components/button.tsx";
+@@ -26,7 +33,7 @@ import museScreenshot from "./assistant-screenshots/muse.webp";
+ import cursorScreenshot from "./assistant-screenshots/cursor.webp";
+ 
+-/** The agent installs Executor itself; the prompt carries everything it needs to start. */
+-export const mcpSetupPrompt = (endpoint: string, docs: string, next: string) =>
+-  `Help me connect to Executor over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
++/** The agent installs the product itself; the prompt carries everything it needs to start. */
++export const mcpSetupPrompt = (endpoint: string, docs: string, next: string, product: string) =>
++  `Help me connect to ${product} over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
+ 
+ const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
+@@ -42,18 +49,20 @@ interface AssistantGuide {
+   readonly name: string;
+   readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
+-  /** How Executor gets into this assistant, shown under its name. */
++  /** How the product gets into this assistant, shown under its name. */
+   readonly method: string;
+   readonly link?: { readonly href: string; readonly label: string };
+   readonly steps: readonly ReactNode[];
+-  readonly screenshot?: {
+-    readonly src: string;
+-    readonly alt: string;
+-    readonly caption: string;
+-    /** The capture's pixel size, so its space is reserved before it loads. */
+-    readonly width: number;
+-    readonly height: number;
+-    /** A short, wide capture sits under the steps instead of beside them. */
+-    readonly wide?: boolean;
+-  };
++  readonly screenshot?:
++    | {
++        readonly src: string;
++        readonly alt: string;
++        readonly caption: string;
++        /** The capture's pixel size, so its space is reserved before it loads. */
++        readonly width: number;
++        readonly height: number;
++        /** A short, wide capture sits under the steps instead of beside them. */
++        readonly wide?: boolean;
++      }
++    | undefined;
+   readonly note?: ReactNode;
+ }
+@@ -141,8 +150,8 @@ function MessageBlock({ message }: { readonly message: string }) {
+ }
+ 
+-const signIn = (assistant: string) => (
++const signIn = (assistant: string, product: string) => (
+   <>
+-    Sign in to Executor, choose your team and approve access. Then ask {assistant} to list
+-    Executor&rsquo;s tools.
++    Sign in to {product}, choose your team and approve access. Then ask {assistant} to list{" "}
++    {product}&rsquo;s tools.
+   </>
+ );
+@@ -185,4 +194,27 @@ const cursorGuide = (endpoint: string): AssistantGuide => ({
+ });
+ 
++/** Executor's plugin is not this product's, so another brand adds the server in Cursor's settings. */
++const cursorMcpGuide = (endpoint: string, product: string, server: string): AssistantGuide => ({
++  name: "Cursor",
++  logo: CursorLogo,
++  method: "MCP settings",
++  steps: [
++    <>
++      Open <Path items={["Cursor Settings", "Tools & MCP"]} /> and click <Ui>New MCP Server</Ui>.
++    </>,
++    <>
++      Add this server to the <Command>mcp.json</Command> that opens, then save it.
++      <CommandBlock
++        code={JSON.stringify({ mcpServers: { [server]: { url: endpoint } } }, null, 2)}
++        path="mcp.json"
++        label="Copy MCP configuration"
++      />
++    </>,
++    <>
++      Click <Ui>Connect</Ui> next to <Ui>{server}</Ui>. {signIn("Cursor", product)}
++    </>,
++  ],
++});
++
+ /** The public plugin connects to Executor Cloud; custom endpoints keep their own setup. */
+ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
+@@ -246,5 +278,18 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
+ });
+ 
+-const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> => ({
++/** The screenshots show Executor's name, so they apply only while the deployment presents it. */
++const shot = (executor: boolean, screenshot: NonNullable<AssistantGuide["screenshot"]>) =>
++  executor ? screenshot : undefined;
++
++/** Executor's plugins and screenshots apply only while the deployment presents Executor. */
++const assistantGuides = (endpoint: string, brand: ProductBrand) =>
++  guides(endpoint, brand.name, productServerName(brand), isDefaultProductBrand(brand));
++
++const guides = (
++  endpoint: string,
++  product: string,
++  server: string,
++  executor: boolean,
++): Record<AssistantId, AssistantGuide> => ({
+   claude: {
+     name: "Claude",
+@@ -258,5 +303,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       </>,
+       <>
+-        Name it <Ui>Executor</Ui>, paste your MCP URL and click <Ui>Continue</Ui>.
++        Name it <Ui>{product}</Ui>, paste your MCP URL and click <Ui>Continue</Ui>.
+         <EndpointField endpoint={endpoint} />
+       </>,
+@@ -265,7 +310,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <Ui>Add</Ui>.
+       </>,
+-      signIn("Claude"),
++      signIn("Claude", product),
+     ],
+-    screenshot: {
++    screenshot: shot(executor, {
+       src: claudeScreenshot,
+       width: 538,
+@@ -273,10 +318,10 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       alt: "Claude's Add custom connector dialog with Executor entered",
+       caption: "Claude’s Add custom connector dialog",
+-    },
++    }),
+     note: (
+       <>
+-        On Team or Enterprise, an Owner first adds Executor under{" "}
++        On Team or Enterprise, an Owner first adds {product} under{" "}
+         <Path items={["Organization settings", "Connectors"]} /> (Add › Custom › Web). Members then
+-        click <Ui>Connect</Ui> next to Executor.
++        click <Ui>Connect</Ui> next to {product}.
+       </>
+     ),
+@@ -295,5 +340,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+             </>,
+             <>
+-              Name it <Ui>Executor</Ui>, paste your MCP URL and choose <Ui>OAuth</Ui>.
++              Name it <Ui>{product}</Ui>, paste your MCP URL and choose <Ui>OAuth</Ui>.
+               <EndpointField endpoint={endpoint} />
+             </>,
+@@ -301,7 +346,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+               Review the warning, click <Ui>Create as a plugin</Ui>, then <Ui>Connect</Ui>.
+             </>,
+-            signIn("ChatGPT"),
++            signIn("ChatGPT", product),
+           ],
+-          screenshot: {
++          screenshot: shot(executor, {
+             src: chatgptScreenshot,
+             width: 600,
+@@ -309,13 +354,13 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+             alt: "ChatGPT's Add custom MCP server dialog with Executor, the MCP URL and OAuth",
+             caption: "ChatGPT’s Add custom MCP server dialog",
+-          },
++          }),
+           note: (
+             <>
+-              Your ChatGPT dot uses the plugins you add here, so connect Executor once in ChatGPT.
++              Your ChatGPT dot uses the plugins you add here, so connect {product} once in ChatGPT.
+               In a work workspace, an admin may need to allow custom MCP servers.
+             </>
+           ),
+         },
+-  cursor: cursorGuide(endpoint),
++  cursor: executor ? cursorGuide(endpoint) : cursorMcpGuide(endpoint, product, server),
+   "claude-code": {
+     name: "Claude Code",
+@@ -324,7 +369,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     steps: [
+       <>
+-        Add Executor from your terminal.
++        Add {product} from your terminal.
+         <CommandBlock
+-          code={`claude mcp add --transport http executor ${shellQuote(endpoint)}`}
++          code={`claude mcp add --transport http ${server} ${shellQuote(endpoint)}`}
+           path="install.sh"
+           label="Copy assistant setup"
+@@ -332,8 +377,8 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       </>,
+       <>
+-        In Claude Code, run <Command>/mcp</Command>, choose <Ui>executor</Ui> and select{" "}
++        In Claude Code, run <Command>/mcp</Command>, choose <Ui>{server}</Ui> and select{" "}
+         <Ui>Authenticate</Ui>.
+       </>,
+-      signIn("Claude Code"),
++      signIn("Claude Code", product),
+     ],
+   },
+@@ -347,7 +392,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+           steps: [
+             <>
+-              Add Executor from your terminal.
++              Add {product} from your terminal.
+               <CommandBlock
+-                code={`codex mcp add executor --url ${shellQuote(endpoint)}`}
++                code={`codex mcp add ${server} --url ${shellQuote(endpoint)}`}
+                 path="install.sh"
+                 label="Copy assistant setup"
+@@ -357,10 +402,10 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+               Open the sign-in page.
+               <CommandBlock
+-                code="codex mcp login executor"
++                code={`codex mcp login ${server}`}
+                 path="install.sh"
+                 label="Copy sign-in command"
+               />
+             </>,
+-            signIn("Codex"),
++            signIn("Codex", product),
+           ],
+         },
+@@ -376,5 +421,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       </>,
+       <>
+-        Name it <Ui>Executor</Ui>. Set Transport type to <Ui>HTTP</Ui> and Authentication to{" "}
++        Name it <Ui>{product}</Ui>. Set Transport type to <Ui>HTTP</Ui> and Authentication to{" "}
+         <Ui>OAuth</Ui>.
+       </>,
+@@ -384,8 +429,8 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       </>,
+       <>
+-        Click <Ui>Connect</Ui> next to Executor. {signIn("Devin")}
++        Click <Ui>Connect</Ui> next to {product}. {signIn("Devin", product)}
+       </>,
+     ],
+-    screenshot: {
++    screenshot: shot(executor, {
+       src: devinScreenshot,
+       width: 799,
+@@ -393,5 +438,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       alt: "Devin's New MCP form with Executor, HTTP transport and OAuth authentication",
+       caption: "Devin’s New MCP form",
+-    },
++    }),
+     note: "In an organization, Personal access lets each member sign in with their own account.",
+   },
+@@ -404,9 +449,9 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         Send Grok Bot this message.
+         <MessageBlock
+-          message={`Add Executor as a remote MCP server named executor at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. After I approve, list Executor's tools to confirm the connection.`}
++          message={`Add ${product} as a remote MCP server named ${server} at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. After I approve, list ${product}'s tools to confirm the connection.`}
+         />
+       </>,
+       <>
+-        Open the sign-in link Grok Bot shows. Sign in to Executor, choose your team and approve
++        Open the sign-in link Grok Bot shows. Sign in to {product}, choose your team and approve
+         access.
+       </>,
+@@ -424,11 +469,11 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       </>,
+       <>
+-        Name it <Ui>Executor</Ui>, paste your MCP URL into <Ui>Server URL</Ui> and click{" "}
++        Name it <Ui>{product}</Ui>, paste your MCP URL into <Ui>Server URL</Ui> and click{" "}
+         <Ui>Add Connector</Ui>.
+         <EndpointField endpoint={endpoint} />
+       </>,
+-      <>Follow the connector&rsquo;s sign-in link. {signIn("Grok")}</>,
++      <>Follow the connector&rsquo;s sign-in link. {signIn("Grok", product)}</>,
+     ],
+-    screenshot: {
++    screenshot: shot(executor, {
+       src: grokScreenshot,
+       width: 520,
+@@ -436,5 +481,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       alt: "Grok's Custom Connector form with Executor and the MCP URL",
+       caption: "Grok’s Custom Connector form",
+-    },
++    }),
+   },
+   muse: {
+@@ -447,13 +492,13 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         Send Muse this message.
+         <MessageBlock
+-          message={`Add Executor as a remote MCP server named executor at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. If you cannot add it, tell me where to add a custom MCP server in your settings. After I approve, list Executor's tools to confirm the connection.`}
++          message={`Add ${product} as a remote MCP server named ${server} at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. If you cannot add it, tell me where to add a custom MCP server in your settings. After I approve, list ${product}'s tools to confirm the connection.`}
+         />
+       </>,
+       <>
+-        Open the sign-in link or button Muse shows. Sign in to Executor, choose your team and
++        Open the sign-in link or button Muse shows. Sign in to {product}, choose your team and
+         approve access.
+       </>,
+     ],
+-    screenshot: {
++    screenshot: shot(executor, {
+       src: museScreenshot,
+       width: 780,
+@@ -462,5 +507,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       caption: "Where the message goes in Muse",
+       wide: true,
+-    },
++    }),
+   },
+   other: {
+@@ -471,5 +516,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
+         In your assistant&rsquo;s settings, add a custom connector or remote MCP server named{" "}
+-        <Ui>Executor</Ui>.
++        <Ui>{product}</Ui>.
+       </>,
+       <>
+@@ -477,5 +522,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <EndpointField endpoint={endpoint} />
+       </>,
+-      <>Start its Connect or sign-in action. {signIn("your assistant")}</>,
++      <>Start its Connect or sign-in action. {signIn("your assistant", product)}</>,
+     ],
+     note: "Your assistant needs to support remote MCP servers with OAuth sign-in.",
+@@ -485,5 +530,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+ /** The name an assistant goes by in its guide and the setup around it. */
+ export const assistantName = (assistant: AssistantId): string =>
+-  assistantGuides("")[assistant].name;
++  assistantGuides("", defaultProductBrand)[assistant].name;
+ 
+ /** Assistant logos as a grid of choices; `selected` marks the current one when the choice persists. */
+@@ -495,5 +540,5 @@ export function AssistantChoices({
+   readonly onSelect: (assistant: AssistantId) => void;
+ }) {
+-  const guides = assistantGuides("");
++  const guides = assistantGuides("", useProductBrand());
+   return (
+     <div
+@@ -526,5 +571,5 @@ export function AssistantChoices({
+ /** One assistant's guide, with the product's exact MCP URL in every copyable example. */
+ export const useAssistantGuide = (endpoint: string, assistant: AssistantId): AssistantGuide =>
+-  assistantGuides(endpoint)[assistant];
++  assistantGuides(endpoint, useProductBrand())[assistant];
+ 
+ export type { AssistantGuide };
+@@ -600,4 +645,5 @@ export function AssistantSetupGuide({
+ }) {
+   const guide = useAssistantGuide(endpoint, assistant);
++  const brand = useProductBrand();
+   const Logo = guide.logo;
+   return (
+@@ -611,5 +657,7 @@ export function AssistantSetupGuide({
+         </span>
+         <div className="min-w-0 flex-1 basis-40">
+-          <h3 className="text-sm font-medium">Add Executor to {guide.name}</h3>
++          <h3 className="text-sm font-medium">
++            Add {brand.name} to {guide.name}
++          </h3>
+           <p className="text-xs text-muted-foreground">{guide.method}</p>
+         </div>
+@@ -736,6 +784,7 @@ export function McpInstallInstructions({
+   readonly children?: ReactNode;
+ }) {
+-  const prompt = mcpSetupPrompt(endpoint, docs, next);
+-  const command = `npx add-mcp ${shellQuote(endpoint)} --name executor -g`;
++  const brand = useProductBrand();
++  const prompt = mcpSetupPrompt(endpoint, docs, next, brand.name);
++  const command = `npx add-mcp ${shellQuote(endpoint)} --name ${productServerName(brand)} -g`;
+   return (
+     <div className="mcp-install-content min-w-0">
+@@ -775,5 +824,5 @@ export function McpInstallInstructions({
+         <TabsContent value="prompt" className="mt-4">
+           <p className="text-[13px] leading-5 text-muted-foreground">
+-            Send this to your agent. It adds the Executor MCP server, then asks you to sign in.
++            Send this to your agent. It adds the {brand.name} MCP server, then asks you to sign in.
+           </p>
+           <p className="mt-3 rounded-lg border border-foreground/15 bg-foreground/[0.06] p-4 text-sm leading-6 break-words whitespace-pre-line select-text">
+@@ -804,5 +853,5 @@ export function McpInstallInstructions({
+         <TabsContent value="command" className="mt-4">
+           <p className="text-[13px] leading-5 text-muted-foreground">
+-            Run in your terminal, then choose the agents to add Executor to.
++            Run in your terminal, then choose the agents to add {brand.name} to.
+           </p>
+           <div className="mcp-install-code relative mt-3 min-w-0 overflow-hidden rounded-lg border [&_pre]:py-4! [&_pre]:pr-14! [&_pre]:pl-4! [&_pre]:leading-6!">
+diff --git a/packages/ui/src/implementation/dashboard/connected-agents.tsx b/packages/ui/src/implementation/dashboard/connected-agents.tsx
+index b23b78c1b..2aac1afdd 100644
+--- a/packages/ui/src/implementation/dashboard/connected-agents.tsx
++++ b/packages/ui/src/implementation/dashboard/connected-agents.tsx
+@@ -18,8 +18,9 @@ import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.t
+ import { Skeleton } from "../components/skeleton.tsx";
+ import { QueryView } from "./context.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ const agentName = (agent: ConnectedAgent) => agent.name?.trim() || "Unnamed MCP client";
+ 
+-const accessLabel = (access: ConnectedAgentAccess) => {
++const accessLabel = (access: ConnectedAgentAccess, product: string) => {
+   switch (access.kind) {
+     case "all":
+@@ -30,5 +31,5 @@ const accessLabel = (access: ConnectedAgentAccess) => {
+       return `Scoped connection: ${access.name}`;
+     case "api":
+-      return "Executor API";
++      return `${product} API`;
+   }
+ };
+@@ -49,4 +50,5 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
++  const brand = useProductBrand();
+   const [revoking, setRevoking] = useState<ConnectedAgent>();
+   const submit = useAtomSet(revoke, { mode: "promiseExit" });
+@@ -86,5 +88,5 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+             <DialogTitle>Revoke {revoking === undefined ? "" : agentName(revoking)}?</DialogTitle>
+             <DialogDescription>
+-              This agent loses access immediately. To use Executor again, it must sign in and be
++              This agent loses access immediately. To use {brand.name} again, it must sign in and be
+               approved again.
+             </DialogDescription>
+@@ -124,4 +126,5 @@ function AgentRow({
+   readonly onRevoke: (agent: ConnectedAgent) => void;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <li className="flex items-center gap-4 px-1 py-3">
+@@ -129,5 +132,5 @@ function AgentRow({
+         <p className="truncate text-[13px] font-medium">{agentName(agent)}</p>
+         <p className="mt-0.5 truncate text-xs text-muted-foreground">
+-          {accessLabel(agent.access)}
++          {accessLabel(agent.access, brand.name)}
+           {agent.lastActiveAt !== null && (
+             <>
+diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
+index 4c67cbf9b..8dfa428ae 100644
+--- a/packages/ui/src/implementation/dashboard/custom-app.tsx
++++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
+@@ -11,4 +11,5 @@ import { AgentSetupPrompt, agentSetupPrompt } from "./agent-setup.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Input } from "../components/input.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /**
+@@ -26,4 +27,5 @@ export function CustomAppForm<E>({
+   readonly endpoint?: string;
+ }) {
++  const brand = useProductBrand();
+   const result = useAtomValue(mutation);
+   const add = useAtomSet(mutation, { mode: "promiseExit" });
+@@ -88,5 +90,5 @@ export function CustomAppForm<E>({
+           </label>
+           <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
+-            Executor checks whether this server needs no sign-in or supports OAuth.
++            {brand.name} checks whether this server needs no sign-in or supports OAuth.
+           </span>
+         </fieldset>
+@@ -107,5 +109,5 @@ export function CustomAppForm<E>({
+         title="Any other service"
+         description="For OpenAPI, GraphQL, API keys, local tools, or anything else, send this prompt to your agent. It reads the service’s documentation and asks how you sign in."
+-        prompt={agentSetupPrompt(endpoint)}
++        prompt={agentSetupPrompt(brand.name, endpoint)}
+       />
+     </div>
+diff --git a/packages/ui/src/implementation/dashboard/grant-picker.tsx b/packages/ui/src/implementation/dashboard/grant-picker.tsx
+index e92249ccb..636a548fb 100644
+--- a/packages/ui/src/implementation/dashboard/grant-picker.tsx
++++ b/packages/ui/src/implementation/dashboard/grant-picker.tsx
+@@ -16,4 +16,5 @@ import {
+   SelectValue,
+ } from "../components/select.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** A consent form needs at least one usable selection, or explicit all-app access. */
+@@ -38,4 +39,5 @@ export function GrantPicker<E>({
+   emptyAction?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const approvalsId = useId();
+   return (
+@@ -177,5 +179,5 @@ export function GrantPicker<E>({
+                   </SelectTrigger>
+                   <SelectContent>
+-                    <SelectItem value="browser">Require approval in Executor</SelectItem>
++                    <SelectItem value="browser">Require approval in {brand.name}</SelectItem>
+                     <SelectItem value="client">Allow this client to approve</SelectItem>
+                   </SelectContent>
+@@ -183,5 +185,5 @@ export function GrantPicker<E>({
+                 <p>
+                   {policy.approval === "browser"
+-                    ? "Calls that need approval wait for you in the Executor browser."
++                    ? `Calls that need approval wait for you in the ${brand.name} browser.`
+                     : "This client can answer approval requests, including through native prompts."}
+                 </p>
+diff --git a/packages/ui/src/implementation/dashboard/mcp-consent.tsx b/packages/ui/src/implementation/dashboard/mcp-consent.tsx
+index 79e454c6b..1ed12e2b1 100644
+--- a/packages/ui/src/implementation/dashboard/mcp-consent.tsx
++++ b/packages/ui/src/implementation/dashboard/mcp-consent.tsx
+@@ -3,4 +3,6 @@ import { Match } from "effect";
+ import type { GrantTarget } from "@executor-js/mcp-auth/grants";
+ import { Skeleton } from "../components/skeleton.tsx";
++import { productWordmark } from "../../contracts/product-brand.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** Stable consent shell shared by local and hosted connections, including their loading state. */
+@@ -12,13 +14,14 @@ export function McpConsentLayout({
+   readonly description: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <main className="mcp-consent-page min-h-dvh py-[48px] px-[20px] max-[480px]:py-[28px] max-[480px]:px-[16px]">
+       <section className="mcp-consent-form w-full max-w-150 my-0 mx-auto flex flex-col gap-7 [&_h1]:text-[28px] [&_h1]:leading-[1.2] [&_h1]:[margin:0_0_10px] max-[480px]:gap-5.5 max-[480px]:[&_h1]:text-[24px]">
+         <div className="mcp-consent-brand flex items-center gap-2.25 text-[19px] [font-weight:550] tracking-[-0.04em] mb-2 [&_img]:w-6.25 [&_img]:h-6.25">
+-          <img src="/favicon.png" alt="" />
+-          executor
++          <img src={brand.logo} alt="" />
++          {productWordmark(brand)}
+         </div>
+         <header>
+-          <h1 className="font-semibold tracking-[-0.035em]">Connect to Executor</h1>
++          <h1 className="font-semibold tracking-[-0.035em]">Connect to {brand.name}</h1>
+           <div className="mcp-consent-intro text-muted-foreground text-[14px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550]">
+             {description}
+@@ -78,4 +81,5 @@ export function McpConsentSummary({
+   readonly destination?: string | undefined;
+ }) {
++  const brand = useProductBrand();
+   const approval =
+     target.kind === "api"
+@@ -83,5 +87,5 @@ export function McpConsentSummary({
+       : Match.value(target.mode).pipe(
+           Match.when("browser", () => ({
+-            title: "Approvals in Executor",
++            title: `Approvals in ${brand.name}`,
+             detail: "Calls that need approval wait for you to review them in your browser.",
+           })),
+@@ -101,5 +105,5 @@ export function McpConsentSummary({
+         <h2>
+           {target.kind === "api"
+-            ? "Connect to the Executor API"
++            ? `Connect to the ${brand.name} API`
+             : target.connection === undefined
+               ? "Access to your apps"
+@@ -111,5 +115,5 @@ export function McpConsentSummary({
+             : target.connection === undefined
+               ? "This connection can use all apps available to you. Your account’s permissions still apply."
+-              : "This connection can use only the apps and tools you chose for it in Executor. Changes you make there apply immediately."}
++              : `This connection can use only the apps and tools you chose for it in ${brand.name}. Changes you make there apply immediately.`}
+         </p>
+       </div>
+diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+index b0777db05..d641be9d0 100644
+--- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
++++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+@@ -25,4 +25,5 @@ import { ErrorNotice } from "./error-notice.tsx";
+ import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
+ import { useQuery } from "./context.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
+@@ -138,4 +139,5 @@ export function OAuthFields<A, E>({
+   readonly missingClient?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const choices = clientChoices(options, account !== undefined);
+   const [picked, setPicked] = useState<ClientChoice | undefined>(
+@@ -172,5 +174,5 @@ export function OAuthFields<A, E>({
+     ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
+     : setup !== "unresolved" && setup.mode === "client-required"
+-      ? `Executor can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
++      ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
+       : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
+   const [clientId, setClientId] = useState("");
+@@ -311,5 +313,6 @@ export function OAuthFields<A, E>({
+           {missing && !manual && (
+             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">
+-              No OAuth client is registered for {providerName}, and Executor doesn’t provide one.
++              No OAuth client is registered for {providerName}, and {brand.name} doesn’t provide
++              one.
+             </p>
+           )}
+diff --git a/packages/ui/src/implementation/dashboard/publish-app.tsx b/packages/ui/src/implementation/dashboard/publish-app.tsx
+index 00a9be566..fc76c153a 100644
+--- a/packages/ui/src/implementation/dashboard/publish-app.tsx
++++ b/packages/ui/src/implementation/dashboard/publish-app.tsx
+@@ -27,4 +27,5 @@ import { AppIcon } from "./common.tsx";
+ import { QueryView, useQuery } from "./context.tsx";
+ import { cn } from "../lib/utils.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
+@@ -42,6 +43,6 @@ const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | nu
+ 
+ /** A self-contained request an agent with this app's source tools can act on. */
+-const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>) =>
+-  `The Executor app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
++const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>, product: string) =>
++  `The ${product} app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
+ 
+ ${repair.task} Commit the change to the app's working source. Don't deploy or publish the app.`;
+@@ -405,4 +406,5 @@ function PublishDialog<E>({
+   readonly onRenamed: (commit: string) => void;
+ }) {
++  const brand = useProductBrand();
+   const [source] = useState(initialSource);
+   const { publication } = source;
+@@ -469,9 +471,9 @@ function PublishDialog<E>({
+             onClose={onClose}
+             onRenamed={onRenamed}
+-            prompt={agentPrompt(app, repair)}
++            prompt={agentPrompt(app, repair, brand.name)}
+           />
+         ) : (
+           <div className="flex items-center justify-between gap-2 border-t bg-muted/10 px-7 py-4 max-[740px]:px-5">
+-            {repair !== undefined && <CopyPrompt prompt={agentPrompt(app, repair)} />}
++            {repair !== undefined && <CopyPrompt prompt={agentPrompt(app, repair, brand.name)} />}
+             <Button onClick={onClose}>OK</Button>
+           </div>
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+index 80fad6b89..67d984779 100644
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -60,4 +60,5 @@ import { useIncrementalList } from "./incremental-list.tsx";
+ import { McpInstallInstructions } from "./connect.tsx";
+ import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ /** Each host supplies its existing authorized catalog read of the app's tools. */
+@@ -138,4 +139,5 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends
+   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const [view, setView] = useState<View>({ kind: "list" });
+   const [revoking, setRevoking] = useState<ConnectionView>();
+@@ -169,5 +171,5 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends
+             >
+               <div className="mb-4 flex flex-wrap items-center gap-2">
+-                <h2 className="text-sm font-medium">Executor MCP server</h2>
++                <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
+                 <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                   Every app you can use
+diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
+index 59e366853..3565f8901 100644
+--- a/packages/ui/src/implementation/dashboard/shell.tsx
++++ b/packages/ui/src/implementation/dashboard/shell.tsx
+@@ -10,18 +10,24 @@ import {
+ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
+ import { useMediaQuery } from "../hooks/media-query.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { isDefaultProductBrand } from "@executor-js/utils/product-brand";
+ 
+ /** The public issue tracker, shared by the Feedback link and the support channels. */
+ export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
+ 
+-const resources = (docsUrl: string) =>
+-  [
+-    { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
+-    { label: "Feedback", href: issuesUrl, icon: Message01Icon },
+-    {
+-      label: "Star on GitHub",
+-      href: "https://github.com/UsefulSoftwareCo/executor",
+-      icon: StarIcon,
+-    },
+-  ] as const;
++/** Executor's own feedback and source links appear only while the deployment presents Executor. */
++const resources = (docsUrl: string, executor: boolean) => [
++  { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
++  ...(executor
++    ? [
++        { label: "Feedback", href: issuesUrl, icon: Message01Icon },
++        {
++          label: "Star on GitHub",
++          href: "https://github.com/UsefulSoftwareCo/executor",
++          icon: StarIcon,
++        },
++      ]
++    : []),
++];
+ 
+ /** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
+@@ -47,7 +53,8 @@ function ResourceLinks({
+   readonly support: ReactNode;
+ }) {
++  const executor = isDefaultProductBrand(useProductBrand());
+   return (
+     <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:text-[11px] [&_button]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2 max-[740px]:[&_button]:min-h-10 max-[740px]:[&_button]:text-[13px] max-[740px]:[&_button]:gap-2">
+-      {resources(docsUrl).map(({ label, href, icon }) => (
++      {resources(docsUrl, executor).map(({ label, href, icon }) => (
+         <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
+           <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
+@@ -89,4 +96,5 @@ export function DashboardShell({
+   readonly children: ReactNode;
+ }) {
++  const { logo } = useProductBrand();
+   const [menuOpen, setMenuOpen] = useState(false);
+   const medium = useMediaQuery(mediumViewport);
+@@ -127,5 +135,5 @@ export function DashboardShell({
+           ) : (
+             <span className="flex items-center justify-center shrink-0 size-8.5">
+-              <img src="/favicon.png" alt="" className="size-6" />
++              <img src={logo} alt="" className="size-6" />
+             </span>
+           )}
+diff --git a/packages/ui/src/implementation/dashboard/tool-runner.tsx b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+index 60120c1eb..ef913c631 100644
+--- a/packages/ui/src/implementation/dashboard/tool-runner.tsx
++++ b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+@@ -28,4 +28,5 @@ import {
+   ToolInputForm,
+ } from "./tool-input-form.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ const isJson = Schema.is(Json);
+@@ -103,5 +104,5 @@ export const runningAs = <A extends AccountSummary>(
+  * saved call: never that the tool did not run.
+  */
+-const answered = (result: ToolResumeResultReceived) =>
++const answered = (result: ToolResumeResultReceived, product: string) =>
+   Match.value(result).pipe(
+     Match.discriminatorsExhaustive("status")({
+@@ -110,6 +111,6 @@ const answered = (result: ToolResumeResultReceived) =>
+           ? "Approved. The tool ran and reported an error, shown below."
+           : "Approved. The tool ran, and its result is below.",
+-      denied: () => "Declined. Executor will not resume this saved call.",
+-      cancelled: () => "Cancelled. Executor will not resume this saved call.",
++      denied: () => `Declined. ${product} will not resume this saved call.`,
++      cancelled: () => `Cancelled. ${product} will not resume this saved call.`,
+       failed: (failed) =>
+         Match.value(failed).pipe(
+@@ -117,10 +118,10 @@ const answered = (result: ToolResumeResultReceived) =>
+             { reason: "context-changed" },
+             () =>
+-              "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
++              `The app or its accounts changed since this call was saved, so ${product} did not resume it. Run it again to review the current call.`,
+           ),
+           Match.when(
+             { reason: "execution-failed", context: "unconfirmed" },
+             () =>
+-              "Executor could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.",
++              `${product} could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.`,
+           ),
+           Match.when(
+@@ -131,5 +132,5 @@ const answered = (result: ToolResumeResultReceived) =>
+           Match.when(
+             { reason: "expired" },
+-            () => "This request expired, so Executor will not resume this saved call.",
++            () => `This request expired, so ${product} will not resume this saved call.`,
+           ),
+           Match.exhaustive,
+@@ -141,4 +142,5 @@ const answered = (result: ToolResumeResultReceived) =>
+ /** The person reviews their own call; approving runs the saved call and shows its result here. */
+ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
++  const brand = useProductBrand();
+   const answer = useAtomValue(atoms.answer);
+   const result =
+@@ -150,5 +152,5 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+       <BrowserApprovalCard
+         atoms={atoms}
+-        completion={result === undefined ? undefined : answered(result)}
++        completion={result === undefined ? undefined : answered(result, brand.name)}
+       />
+       {result?.status === "completed" && (
+diff --git a/packages/ui/src/implementation/dashboard/webhook-setup.tsx b/packages/ui/src/implementation/dashboard/webhook-setup.tsx
+index 23c386fe2..13ef2b593 100644
+--- a/packages/ui/src/implementation/dashboard/webhook-setup.tsx
++++ b/packages/ui/src/implementation/dashboard/webhook-setup.tsx
+@@ -19,4 +19,5 @@ import { Input } from "../components/input.tsx";
+ import { Textarea } from "../components/textarea.tsx";
+ import { CopyButton } from "./code.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ type Action<E> = () => Promise<Exit.Exit<WebhookSubscription, E>>;
+@@ -99,4 +100,5 @@ function SetupForm<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
++  const brand = useProductBrand();
+   const [pending, setPending] = useState(false);
+   const [failure, setFailure] = useState<Cause.Cause<E>>();
+@@ -141,6 +143,6 @@ function SetupForm<E>({
+           <h1 className="text-xl font-semibold">Webhook disabled</h1>
+           <p>
+-            Executor has stopped accepting deliveries. If you added this webhook in your provider,
+-            remove it there before confirming.
++            {brand.name} has stopped accepting deliveries. If you added this webhook in your
++            provider, remove it there before confirming.
+           </p>
+           <CopyValue label="Callback URL" value={view.subscription.callbackUrl} />
+diff --git a/packages/ui/src/implementation/hooks/document-title.ts b/packages/ui/src/implementation/hooks/document-title.ts
+index 7069be298..41505d5d3 100644
+--- a/packages/ui/src/implementation/hooks/document-title.ts
++++ b/packages/ui/src/implementation/hooks/document-title.ts
+@@ -10,9 +10,13 @@ import {
+   type ReactNode,
+ } from "react";
++import { useProductBrand } from "./product-brand.ts";
+ 
+ type DocumentTitleContextValue = { readonly register: (title: string) => () => void };
+ const DocumentTitleContext = createContext<DocumentTitleContextValue | undefined>(undefined);
+ 
+-/** Own the document title once per app; pages only register their current title. */
++/**
++ * Own the document title once per app; pages only register their current page label, which the
++ * title follows with the product's name.
++ */
+ export function DocumentTitleProvider({
+   fallbackTitle,
+@@ -25,7 +29,8 @@ export function DocumentTitleProvider({
+   const nextRegistration = useRef(0);
+   const activeRegistration = useRef<number | undefined>(undefined);
++  const { name } = useProductBrand();
+   useEffect(() => {
+-    document.title = dynamicTitle ?? fallbackTitle;
+-  }, [dynamicTitle, fallbackTitle]);
++    document.title = `${dynamicTitle ?? fallbackTitle} · ${name}`;
++  }, [dynamicTitle, fallbackTitle, name]);
+   const register = useCallback((title: string) => {
+     const id = ++nextRegistration.current;
+@@ -44,10 +49,7 @@ export function DocumentTitleProvider({
+ }
+ 
+-/** Register a page title while mounted inside the product title provider. */
++/** Register a page label while mounted inside the product title provider. */
+ export function useDocumentTitle(title: string) {
+   const context = useContext(DocumentTitleContext);
+   useEffect(() => context?.register(title), [context, title]);
+ }
+-
+-/** Format a page label without exposing route IDs. */
+-export const productTitle = (page: string) => `${page} · Executor`;
+diff --git a/packages/ui/src/implementation/hooks/product-brand.ts b/packages/ui/src/implementation/hooks/product-brand.ts
+new file mode 100644
+index 000000000..bc1956cb2
+--- /dev/null
++++ b/packages/ui/src/implementation/hooks/product-brand.ts
+@@ -0,0 +1,6 @@
++import { useAtomValue } from "@effect/atom-react";
++import type { ProductBrand } from "@executor-js/utils/product-brand";
++import { productBrandAtom } from "../../contracts/product-brand.ts";
++
++/** The deployment's name and logo, as its document was rendered with. */
++export const useProductBrand = (): ProductBrand => useAtomValue(productBrandAtom);
+diff --git a/packages/utils/package.json b/packages/utils/package.json
+index e9555d936..f77f3e863 100644
+--- a/packages/utils/package.json
++++ b/packages/utils/package.json
+@@ -14,5 +14,6 @@
+     "./release-version": "./src/release-version.ts",
+     "./legacy-keys": "./src/legacy-keys.ts",
+-    "./schema-definitions": "./src/schema-definitions.ts"
++    "./schema-definitions": "./src/schema-definitions.ts",
++    "./product-brand": "./src/product-brand.ts"
+   },
+   "dependencies": {
+diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
+new file mode 100644
+index 000000000..e51cafadf
+--- /dev/null
++++ b/packages/utils/src/product-brand.ts
+@@ -0,0 +1,60 @@
++/** The name and logo people see wherever a deployment presents itself. */
++import { Config, Context, Effect, Schema } from "effect";
++
++/**
++ * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
++ * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
++ */
++export const ProductBrand = Schema.Struct({
++  name: Schema.NonEmptyString,
++  logo: Schema.NonEmptyString,
++});
++export type ProductBrand = typeof ProductBrand.Type;
++
++export const defaultProductBrand: ProductBrand = { name: "Executor", logo: "/favicon.png" };
++
++/**
++ * Whether the deployment presents itself as Executor. Only then do Executor's published plugins
++ * and the screenshots that show its name apply.
++ */
++export const isDefaultProductBrand = (brand: ProductBrand) =>
++  brand.name === defaultProductBrand.name;
++
++/** The name an MCP client lists this server under, such as `executor`. */
++export const productServerName = (brand: ProductBrand) =>
++  brand.name
++    .normalize("NFKD")
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, "-")
++    .replace(/^-+|-+$/g, "") || "executor";
++
++/** The logo as an absolute URL, for emails and metadata read away from the deployment. */
++export const productLogoUrl = (brand: ProductBrand, origin: string) =>
++  new URL(brand.logo, origin).href;
++
++/** A setting left empty or blank counts as unset. */
++const setting = (name: string, fallback: string) =>
++  Config.String(name).pipe(
++    Config.withDefault(""),
++    Config.map((value) => value.trim() || fallback),
++  );
++
++/**
++ * The operator's brand from `EXECUTOR_PRODUCT_NAME` and `EXECUTOR_PRODUCT_LOGO_URL`, each
++ * falling back to Executor's own. A logo that is neither a URL nor a path stops startup.
++ */
++export const productBrandConfig = Effect.gen(function* () {
++  const name = yield* setting("EXECUTOR_PRODUCT_NAME", defaultProductBrand.name);
++  const logo = yield* setting("EXECUTOR_PRODUCT_LOGO_URL", defaultProductBrand.logo);
++  if (URL.parse(logo, "https://origin.invalid") === null)
++    return yield* Effect.die(
++      new Error("EXECUTOR_PRODUCT_LOGO_URL must be an absolute URL or a path"),
++    );
++  return { name, logo } satisfies ProductBrand;
++});
++
++/** The brand server code presents; a host that provides none presents Executor. */
++export const CurrentProductBrand = Context.Reference<ProductBrand>(
++  "@executor-js/utils/CurrentProductBrand",
++  { defaultValue: () => defaultProductBrand },
++);

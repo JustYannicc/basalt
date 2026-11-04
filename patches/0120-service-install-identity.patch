@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+index 27caa065..26bb97bc 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
 @@ -1,3 +1,4 @@
@@ -6,7 +7,7 @@ diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/c
  import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "@executor-js/sdk/core";
  import {
    VersionDisplay,
-@@ -18,6 +19,7 @@
+@@ -18,6 +19,7 @@ import {
    AccountNotFound,
    AccountSelectionInvalid,
    App,
@@ -14,7 +15,7 @@ diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/c
    DeployedApp,
    AppNotDeployed,
    AppId,
-@@ -48,8 +50,18 @@
+@@ -48,8 +50,18 @@ import {
    AppScreenRecord,
  } from "./organization.ts";
  
@@ -35,7 +36,7 @@ diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/c
  /** Deploying source directly uses the same runtime as generated catalog apps. */
  export const DeployApp = Schema.Struct({ name: Schema.NonEmptyString, files: SourceFiles });
  const params = { organization: OrganizationReference };
-@@ -113,26 +125,29 @@
+@@ -113,26 +125,29 @@ export const HostedApps = HttpApiGroup.make("apps")
      HttpApiEndpoint.post("install", `${prefix}/install`, {
        params,
        payload: InstallApp,
@@ -56,26 +57,23 @@ diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/c
 -      payload: Schema.Struct({ source: CustomAppInput }),
 -      success: DeployedApp,
 -      error: [...deployErrors, CatalogImportFailed],
--    })
--      .annotate(RequiredAction, "manage")
--      .annotate(
--        OpenApi.Description,
--        "Add a remote MCP server by its URL as a new app, as the dashboard's Connect a service form does. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
 +      payload: Schema.Struct({
 +        source: CustomAppInput,
 +        newInstance: Schema.optionalKey(Schema.Boolean),
 +      }),
 +      success: AppInstallResult,
 +      error: [...deployErrors, CatalogImportFailed, CatalogUnavailable],
-+    })
-+      .annotate(RequiredAction, "manage")
-+      .annotate(
-+        OpenApi.Description,
+     })
+       .annotate(RequiredAction, "manage")
+       .annotate(
+         OpenApi.Description,
+-        "Add a remote MCP server by its URL as a new app, as the dashboard's Connect a service form does. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
 +        "Add a remote MCP server by its URL, as the dashboard's Connect a service form does. A trusted catalog endpoint alias reuses the team's existing service app without changing source or accounts. The result includes reused and service. Use newInstance=true and a separate name only for a deliberate second instance. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
        ),
    )
    .add(
 diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
+index 2b663048..30057142 100644
 --- a/apps/hosted/server/src/contracts/organization.ts
 +++ b/apps/hosted/server/src/contracts/organization.ts
 @@ -1,3 +1,4 @@
@@ -83,7 +81,7 @@ diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/serv
  import { UserFacingError } from "@executor-js/utils/user-facing-error";
  import { ApiError } from "@executor-js/utils/api-error";
  import { RequiredAction } from "./authorization.ts";
-@@ -56,6 +57,7 @@
+@@ -57,6 +58,7 @@ export type OrganizationReference = typeof OrganizationReference.Type;
  export const AppScreenRecord = Schema.Struct({
    ...AppFields.fields,
    hasUi: Schema.optional(Schema.Boolean),
@@ -93,6 +91,7 @@ diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/serv
  /** An icon is an HTTPS image, a private uploaded-image path, or null. */
 diff --git a/apps/hosted/server/src/contracts/service-install.ts b/apps/hosted/server/src/contracts/service-install.ts
 new file mode 100644
+index 00000000..03d6b8bb
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/service-install.ts
 @@ -0,0 +1,8 @@
@@ -105,6 +104,7 @@ new file mode 100644
 +});
 +export type AppServiceIdentity = typeof AppServiceIdentity.Type;
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+index 3d083214..5e76f890 100644
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
 @@ -1,3 +1,6 @@
@@ -114,7 +114,7 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
  import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
  import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
  /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
-@@ -23,7 +26,7 @@
+@@ -23,7 +26,7 @@ import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
  import { SqlClient } from "effect/sql";
  
  /** Install a catalog entry as a new app without replacing an existing name. */
@@ -123,7 +123,7 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
      const catalog = yield* HostedCatalog;
-@@ -68,7 +71,7 @@
+@@ -68,7 +71,7 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
   * Confirm a tenant-supplied MCP server and create an organization app without replacing a name.
   * The URL is checked by the host, so it stays on public destinations.
   */
@@ -132,7 +132,7 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
      const catalog = yield* HostedCatalog;
-@@ -88,7 +91,38 @@
+@@ -88,7 +91,38 @@ export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
      const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
      return app;
    });
@@ -172,7 +172,7 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
  export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
-@@ -100,7 +134,8 @@
+@@ -100,7 +134,8 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
      const executor = yield* Effect.flatten(HostedExecutor);
      yield* requireAppAccess(input.app, "read");
      const app = yield* executor.apps.get({ ...input, owner });
@@ -182,7 +182,7 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
    });
  /** Retained source is administrative data; versions from other owners stay private. */
  export const appVersions = (owner: OwnerId, app: AppId) =>
-@@ -188,7 +223,9 @@
+@@ -188,7 +223,9 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
        Effect.flatMap(currentOwner, (owner) => installApp(owner, payload)),
      )
      .handle("importCustom", ({ payload }) =>
@@ -194,9 +194,10 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
      .handle("deploy", ({ payload }) =>
        Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
 diff --git a/apps/hosted/server/src/implementation/catalog-service-search.ts b/apps/hosted/server/src/implementation/catalog-service-search.ts
+index 528edbf6..80573589 100644
 --- a/apps/hosted/server/src/implementation/catalog-service-search.ts
 +++ b/apps/hosted/server/src/implementation/catalog-service-search.ts
-@@ -46,7 +46,7 @@
+@@ -46,7 +46,7 @@ export const catalogServiceIdForQuery = (
    for (const entry of entries) {
      if (!serviceIdPattern.test(entry.id)) continue;
  
@@ -206,9 +207,10 @@ diff --git a/apps/hosted/server/src/implementation/catalog-service-search.ts b/a
          (value) =>
            typeof value === "string" && value.length <= catalogServiceSearchLimits.queryLength,
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+index 5efe563d..c69e2e57 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -8,6 +8,8 @@
+@@ -8,6 +8,8 @@ import {
    observeProductOperation,
    traceProductRead,
  } from "../contracts/product-analytics.ts";
@@ -217,7 +219,7 @@ diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted
  import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
  import {
    fullAuthority,
-@@ -233,7 +235,9 @@
+@@ -238,7 +240,9 @@ export const inventory = (owner: OwnerId) =>
      // Membership is read once for both the app and the account policies.
      const actor = yield* currentResourceAuthority;
      const visibleApps = yield* visibleAppsAs(actor, listedApps);
@@ -229,6 +231,7 @@ diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted
        ? yield* executor.accounts
            .list({ owner })
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 3e1bb802..cc50e5ef 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,4 @@
@@ -236,7 +239,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
  import { CurrentOrganization } from "../contracts/organization.ts";
  import { GroupDatabase } from "../contracts/groups.ts";
  import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
-@@ -487,6 +488,7 @@
+@@ -487,6 +488,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
          }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
        appCreated: (app) =>
          Effect.gen(function* () {
@@ -244,7 +247,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
            const organization = yield* organizationOf(app.owner);
            const intent = yield* AppCreation;
            if (intent.kind === "copy") {
-@@ -747,6 +749,7 @@
+@@ -747,6 +749,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
          }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
        appRemoving: (app) =>
          Effect.gen(function* () {
@@ -254,6 +257,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
            );
 diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/apps/hosted/server/src/implementation/service-install-records.ts
 new file mode 100644
+index 00000000..6f203064
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/service-install-records.ts
 @@ -0,0 +1,85 @@
@@ -344,6 +348,7 @@ new file mode 100644
 +  });
 diff --git a/apps/hosted/server/src/implementation/service-installs.ts b/apps/hosted/server/src/implementation/service-installs.ts
 new file mode 100644
+index 00000000..055b164f
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/service-installs.ts
 @@ -0,0 +1,128 @@
@@ -476,9 +481,10 @@ new file mode 100644
 +    );
 +  });
 diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
+index e8242a95..e5949d5a 100644
 --- a/e2e/support/public-catalogs.ts
 +++ b/e2e/support/public-catalogs.ts
-@@ -10,6 +10,7 @@
+@@ -10,6 +10,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
  import { Effect, Layer } from "effect";
  import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
  import { createServer } from "node:http";
@@ -486,7 +492,7 @@ diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
  import { appsVersion } from "./apps-release.ts";
  
  const icon = (fill: string) =>
-@@ -57,6 +58,7 @@
+@@ -57,6 +58,7 @@ export const officialApps = {
      id: "synthetic-tracker",
      package: "@executor.sh/synthetic-tracker",
      name: "Synthetic Tracker",
@@ -494,7 +500,7 @@ diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
      description: "Track synthetic issues.",
      auth: [
        { method: "oauth", kind: "oauth2" },
-@@ -148,6 +150,7 @@
+@@ -148,6 +150,7 @@ const catalogSources: Readonly<Record<string, unknown>> = {
  
  /** Start the catalogs for the scope on loopback and return their origin. */
  export const publicCatalogs = Effect.gen(function* () {
@@ -502,7 +508,7 @@ diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
    const services = yield* Layer.build(
      HttpRouter.serve(
        Layer.mergeAll(
-@@ -155,7 +158,28 @@
+@@ -155,7 +158,28 @@ export const publicCatalogs = Effect.gen(function* () {
            "GET",
            "/catalog/index.json",
            Effect.succeed(
@@ -534,6 +540,7 @@ diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
          HttpRouter.add(
 diff --git a/e2e/support/service-install-fixture.ts b/e2e/support/service-install-fixture.ts
 new file mode 100644
+index 00000000..9fb4557c
 --- /dev/null
 +++ b/e2e/support/service-install-fixture.ts
 @@ -0,0 +1,58 @@
@@ -596,14 +603,13 @@ new file mode 100644
 +    });
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 3f0edb40..7cb3cd3e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3325,6 +3325,20 @@
-       "self-host": scheduled,
-       cloud: na("Uses a runner-owned loopback catalog and subscription sign-in service."),
+@@ -3934,6 +3934,20 @@ export const scenarios = plan({
        local: na("Uses hosted organization account policies."),
-+    },
-+  },
+     },
+   },
 +  serviceInstallIdentity: {
 +    fixtures: "actors",
 +    legacyStorage: true,
@@ -616,13 +622,16 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +        "The shared hosted install transaction and catalog identity run through self-host.",
 +      ),
 +      local: na("Team install identity belongs to hosted products."),
-     },
-   },
++    },
++  },
    catalogOfficialApps: {
+     fixtures: "actors",
+     file: "catalog-official-apps.spec.ts",
 diff --git a/e2e/tests/app-package-metadata.spec.ts b/e2e/tests/app-package-metadata.spec.ts
+index 901cd98f..e68b07d7 100644
 --- a/e2e/tests/app-package-metadata.spec.ts
 +++ b/e2e/tests/app-package-metadata.spec.ts
-@@ -43,6 +43,7 @@
+@@ -43,6 +43,7 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
          ] as const) {
            const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
              source: { kind: "mcp", name: fixture.name, url: `${origin}/mcp` },
@@ -631,9 +640,10 @@ diff --git a/e2e/tests/app-package-metadata.spec.ts b/e2e/tests/app-package-meta
            expect(imported.status, JSON.stringify(imported.body)).toBe(200);
            const app = yield* body(App, imported);
 diff --git a/e2e/tests/mcp-auth-discovery.spec.ts b/e2e/tests/mcp-auth-discovery.spec.ts
+index 64f705cc..5cb1ad37 100644
 --- a/e2e/tests/mcp-auth-discovery.spec.ts
 +++ b/e2e/tests/mcp-auth-discovery.spec.ts
-@@ -53,6 +53,7 @@
+@@ -53,6 +53,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
          const add = (name: string, url: string) =>
            api.request(actors.owner, "POST", `${prefix}/apps/import`, {
              source: { kind: "mcp", name, url },
@@ -643,6 +653,7 @@ diff --git a/e2e/tests/mcp-auth-discovery.spec.ts b/e2e/tests/mcp-auth-discovery
            Effect.gen(function* () {
 diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
 new file mode 100644
+index 00000000..119c5ea6
 --- /dev/null
 +++ b/e2e/tests/service-install-identity.spec.ts
 @@ -0,0 +1,298 @@
@@ -945,9 +956,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index ae70d6d1..77b563b6 100644
 --- a/packages/catalog/src/contracts/catalog.ts
 +++ b/packages/catalog/src/contracts/catalog.ts
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,7 @@ import { TemplateErrorCode } from "@executor-js/app-templates/contracts";
  import { AppCopyOrigin, SourceFiles } from "@executor-js/sdk";
  import type { HostEgress } from "@executor-js/utils/url-policy";
  import type { CustomAppInput } from "./imports.ts";
@@ -955,7 +967,7 @@ diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/co
  import { McpDetection } from "./detection.ts";
  
  /** An image shown beside an app, light or dark. `src` is absolute once a catalog lists it. */
-@@ -36,6 +37,7 @@
+@@ -36,6 +37,7 @@ export type CatalogConnectionNotice = typeof CatalogConnectionNotice.Type;
   */
  export const CatalogEntry = Schema.Struct({
    id: Schema.NonEmptyString,
@@ -963,7 +975,7 @@ diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/co
    /** The app's package name, such as `@executor.sh/resend`. */
    package: Schema.NonEmptyString,
    name: Schema.NonEmptyString,
-@@ -79,7 +81,9 @@
+@@ -79,7 +81,9 @@ export const filterCatalog = (
      text === undefined || text === ""
        ? entries
        : entries.filter((entry) =>
@@ -975,6 +987,7 @@ diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/co
    return filter.limit === undefined ? matched : matched.slice(0, filter.limit);
  };
 diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
+index ca61c33e..e8619e51 100644
 --- a/packages/catalog/src/contracts/index.ts
 +++ b/packages/catalog/src/contracts/index.ts
 @@ -1,3 +1,4 @@
@@ -984,6 +997,7 @@ diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/cont
    CatalogAuth,
 diff --git a/packages/catalog/src/contracts/service.ts b/packages/catalog/src/contracts/service.ts
 new file mode 100644
+index 00000000..6f74a85a
 --- /dev/null
 +++ b/packages/catalog/src/contracts/service.ts
 @@ -0,0 +1,12 @@
@@ -1000,6 +1014,7 @@ new file mode 100644
 +});
 +export type CatalogService = typeof CatalogService.Type;
 diff --git a/packages/catalog/src/implementation/catalog.ts b/packages/catalog/src/implementation/catalog.ts
+index 61a2cae9..957aecb8 100644
 --- a/packages/catalog/src/implementation/catalog.ts
 +++ b/packages/catalog/src/implementation/catalog.ts
 @@ -1,4 +1,5 @@
@@ -1008,7 +1023,7 @@ diff --git a/packages/catalog/src/implementation/catalog.ts b/packages/catalog/s
  import { catalogStage } from "./diagnostics.ts";
  import { Effect } from "effect";
  import type { Catalog, CatalogHost, CatalogSource } from "../contracts/catalog.ts";
-@@ -15,7 +16,7 @@
+@@ -15,7 +16,7 @@ export const createCatalog = (
      ? emptySource
      : catalogSource(host.egress.client, host.feedUrl),
  ): Catalog => ({
@@ -1019,6 +1034,7 @@ diff --git a/packages/catalog/src/implementation/catalog.ts b/packages/catalog/s
      Effect.promise(() => import("./custom.ts")).pipe(
 diff --git a/packages/catalog/src/implementation/services.ts b/packages/catalog/src/implementation/services.ts
 new file mode 100644
+index 00000000..b2892423
 --- /dev/null
 +++ b/packages/catalog/src/implementation/services.ts
 @@ -0,0 +1,39 @@
@@ -1062,9 +1078,10 @@ new file mode 100644
 +    return [...services.values()];
 +  });
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index 8a6643fc..7a53af6c 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -59,9 +59,12 @@
+@@ -59,9 +59,12 @@ export interface AccountDetail {
    readonly revocation: "automatic" | "manual";
    readonly canManage: boolean;
  }
@@ -1078,7 +1095,7 @@ diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/
    /** The caller's linked accounts for each listed app. */
    readonly links: readonly AppAccountLink[];
    /** The number of distinct app-scope accounts linked for everyone, when this inventory lists it. */
-@@ -106,6 +109,7 @@
+@@ -106,6 +109,7 @@ export interface AppVersionsProps<E> {
  /** Common command input; a host adapter supplies its own API route parameters. */
  export interface InstallApp extends CatalogImport {
    readonly name: string;
@@ -1087,9 +1104,10 @@ diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/
  /** A typed command and its operation-specific failure renderer. */
  export interface MutationProps<Input, A, E> {
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 0e44830c..01e06c6c 100644
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
-@@ -2,9 +2,10 @@
+@@ -2,9 +2,10 @@ import { AsyncResult, AtomRegistry } from "effect/reactivity";
  import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-react";
  import { useContext, useState, type ReactNode } from "react";
  import { Cause, Effect, Exit, Option, Predicate } from "effect";
@@ -1101,7 +1119,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
    QueryProps,
    MutationProps,
    InstallApp,
-@@ -42,7 +43,7 @@
+@@ -43,7 +44,7 @@ export function installedCatalogApps(apps: readonly App[] | undefined): Readonly
  
  /** Runs one catalog entry's install and resolves with that entry's own result. */
  export function useCatalogInstall<IE>(
@@ -1110,7 +1128,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
  ) {
    const registry = useContext(RegistryContext);
    return async (entry: CatalogEntry, input: InstallApp) => {
-@@ -78,8 +79,8 @@
+@@ -80,8 +81,8 @@ export function CatalogPage<E, IE>({
    open,
  }: QueryProps<readonly CatalogEntry[], E> & {
    /** The install command for one catalog entry; each row has its own. */
@@ -1119,9 +1137,10 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
 +  readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
 +  readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
    readonly back: ReactNode;
+   /** The heading's action, beside the title. */
    readonly action?: ReactNode;
-   /** The apps already installed; a failed read just leaves every row on Add. */
 diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
+index d754c1a3..5886933d 100644
 --- a/packages/ui/src/implementation/dashboard/custom-app.tsx
 +++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
 @@ -1,7 +1,7 @@
@@ -1133,14 +1152,14 @@ diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/
  import { Exit, Option, Schema } from "effect";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { Add01Icon } from "@hugeicons/core-free-icons";
-@@ -21,8 +21,8 @@
+@@ -19,8 +19,8 @@ export function CustomAppForm<E>({
+   mutation,
    Failure,
    onInstalled,
-   endpoint,
 -}: MutationProps<CustomAppInput, DeployedApp, E> & {
 -  readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
 +}: MutationProps<CustomAppInput, AppSummary, E> & {
 +  readonly onInstalled: (app: AppSummary) => void | Promise<void>;
-   /** This installation's MCP URL, included so an unconnected agent can connect first. */
-   readonly endpoint?: string;
  }) {
+   const brand = useProductBrand();
+   const result = useAtomValue(mutation);

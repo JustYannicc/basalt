@@ -1,6 +1,6 @@
 diff --git a/.changeset/catalog-provider-notices.md b/.changeset/catalog-provider-notices.md
 new file mode 100644
-index 000000000..ea117b551
+index 00000000..ea117b55
 --- /dev/null
 +++ b/.changeset/catalog-provider-notices.md
 @@ -0,0 +1,11 @@
@@ -16,7 +16,7 @@ index 000000000..ea117b551
 +`github-oauth` client with only the scopes it declares and a token placement limited to
 +`api.github.com`.
 diff --git a/apps/hosted/cloud/src/infrastructure/app-catalog.ts b/apps/hosted/cloud/src/infrastructure/app-catalog.ts
-index 382caedbf..03b005aad 100644
+index 382caedb..03b005aa 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-catalog.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-catalog.ts
 @@ -2,7 +2,8 @@
@@ -52,7 +52,7 @@ index 382caedbf..03b005aad 100644
 +  };
  });
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index c7aaeddbf..d455b8b87 100644
+index def2a6cd..f505aa34 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
 @@ -2,7 +2,8 @@
@@ -65,7 +65,7 @@ index c7aaeddbf..d455b8b87 100644
   */
  import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
  import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
-@@ -103,6 +104,17 @@ const slackMcpUserScopes = [
+@@ -112,6 +113,17 @@ const slackMcpUserScopes = [
    "files:write",
  ];
  
@@ -83,17 +83,17 @@ index c7aaeddbf..d455b8b87 100644
  /**
   * The clients an operator can turn on by setting their credentials.
   *
-@@ -112,6 +124,9 @@ const slackMcpUserScopes = [
+@@ -121,6 +133,9 @@ const slackMcpUserScopes = [
   *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
   *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
   *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
 + * - `github-oauth` is an optional OAuth App for the official GitHub REST app. It requests that
 + *   app's declared scopes and sends its managed token only to `api.github.com`. It is separate
 + *   from the GitHub App client above, whose permission model remains unchanged.
-  * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
-  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
+  * - `google` is Executor for Google, v1's Google client. Like every Google
+  *   sign-in, it sends `access_type=offline` and `prompt=consent`, so each returns a refresh token. It has no revocation URL: Google
   *   revokes every grant a user gave the client at once, so removing one account would end the
-@@ -145,6 +160,19 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -154,6 +169,19 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
        ],
      },
    },
@@ -113,7 +113,7 @@ index c7aaeddbf..d455b8b87 100644
    {
      id: "google",
      label: "Executor for Google",
-@@ -232,6 +260,9 @@ const testDefinitions = (allowed: boolean) =>
+@@ -240,6 +268,9 @@ const testDefinitions = (allowed: boolean) =>
   */
  export const firstPartyOAuthClients = (options: { readonly testDefinitions: boolean }) =>
    Effect.gen(function* () {
@@ -123,7 +123,7 @@ index c7aaeddbf..d455b8b87 100644
      const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
        firstPartyOAuthClientDefinitions,
      ).pipe(Effect.orDie);
-@@ -275,7 +306,19 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+@@ -283,7 +314,19 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
          problems.push(`The ${definition.id} client's definition or client ID is invalid.`);
          continue;
        }
@@ -145,7 +145,7 @@ index c7aaeddbf..d455b8b87 100644
      if (problems.length > 0) return yield* invalid(problems);
      return clients;
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
-index c520dad6f..4c2cba4ce 100644
+index 79ad08ca..3e5d9b7e 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
 @@ -6,7 +6,7 @@ import { AsyncResult, type Atom } from "effect/reactivity";
@@ -157,7 +157,7 @@ index c520dad6f..4c2cba4ce 100644
  import { executorCatalogPackage } from "@executor-js/hosted-server/catalog";
  import { Button } from "@executor-js/ui/components/button";
  import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
-@@ -439,6 +439,9 @@ function AppList({
+@@ -455,6 +455,9 @@ function AppList({
              slot={connection.slot}
              requirement={connection.requirement}
              method={connection.method}
@@ -167,7 +167,7 @@ index c520dad6f..4c2cba4ce 100644
              redirectUri={redirectUri}
              onPendingChange={setPending}
              onSaved={() => setConnection(undefined)}
-@@ -485,9 +488,7 @@ const Check = () => (
+@@ -501,9 +504,7 @@ const Check = () => (
  );
  
  /**
@@ -178,7 +178,7 @@ index c520dad6f..4c2cba4ce 100644
   */
  function AppRow({
    item,
-@@ -507,10 +508,10 @@ function AppRow({
+@@ -523,10 +524,10 @@ function AppRow({
      <div
        role="group"
        aria-label={entry.name}
@@ -191,7 +191,7 @@ index c520dad6f..4c2cba4ce 100644
          <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
            <span className="truncate">{entry.name}</span>
            {!oauth && first === undefined && (
-@@ -536,6 +537,7 @@ function AppRow({
+@@ -552,6 +553,7 @@ function AppRow({
              )}
            </div>
          )}
@@ -199,7 +199,7 @@ index c520dad6f..4c2cba4ce 100644
        </div>
        <Button
          type="button"
-@@ -562,6 +564,24 @@ function AppRow({
+@@ -578,6 +580,24 @@ function AppRow({
    );
  }
  
@@ -225,7 +225,7 @@ index c520dad6f..4c2cba4ce 100644
  function AccountsPopover({
    name,
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index 47488a28b..bb75f6845 100644
+index be8e9c5f..e1739be3 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -1,10 +1,11 @@
@@ -380,7 +380,7 @@ index 47488a28b..bb75f6845 100644
          app={app}
          account={account}
 diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
-index 9ec81368d..c06404230 100644
+index 1ef3c929..3ce00acb 100644
 --- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 @@ -1,6 +1,9 @@
@@ -400,10 +400,10 @@ index 9ec81368d..c06404230 100644
 -import { connectionAtom } from "../../contracts/apps.ts";
 +import { appAtom, connectionAtom } from "../../contracts/apps.ts";
 +import { catalogAtom } from "../../contracts/api.ts";
+ import type { ClientRecovery } from "../../contracts/navigation.ts";
  import { useOrganizationRoute } from "../components/organization.tsx";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
- import { ConnectionFields } from "./connect-account.tsx";
-@@ -68,6 +72,35 @@ export function ConnectionDialogHeader({
+@@ -69,6 +73,35 @@ export function ConnectionDialogHeader({
    );
  }
  
@@ -439,8 +439,8 @@ index 9ec81368d..c06404230 100644
  /** A connection query parameter opens the existing request over its app page. */
  export function AccountConnectionDialog({
    connectionId,
-@@ -97,24 +130,11 @@ function ResumedConnectionDialog({
-   readonly client?: "change" | undefined;
+@@ -98,24 +131,11 @@ function ResumedConnectionDialog({
+   readonly client?: typeof ClientRecovery.Type | undefined;
    readonly onClose: () => void;
  }) {
 -  const { organization, slug: organizationSlug } = useOrganizationRoute();
@@ -465,7 +465,7 @@ index 9ec81368d..c06404230 100644
        <QueryResult
          result={query.result}
          retry={query.refresh}
-@@ -122,10 +142,73 @@ function ResumedConnectionDialog({
+@@ -123,11 +143,74 @@ function ResumedConnectionDialog({
          pending={<DetailSkeleton label="Loading account setup" />}
        >
          {(connection) => (
@@ -535,12 +535,13 @@ index 9ec81368d..c06404230 100644
            <ConnectionFields
              connection={connection}
              manualClient={client === "change"}
+             editClient={client === "change" ? undefined : client}
 -            onPendingChange={setBusy}
 +            onPendingChange={onPendingChange}
              onSaved={() => {
                void navigate({
                  to: "/org/$organizationSlug/apps/$appId",
-@@ -135,9 +218,9 @@ function ResumedConnectionDialog({
+@@ -137,9 +220,9 @@ function ResumedConnectionDialog({
                });
              }}
            />
@@ -554,7 +555,7 @@ index 9ec81368d..c06404230 100644
  }
  
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index e27348116..18a14c907 100644
+index 74b9403b..d124e008 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -50,6 +50,7 @@ const maxClockOffset = 40 * 86_400_000;
@@ -566,7 +567,7 @@ index e27348116..18a14c907 100644
    /** Self-host's OpenID Connect sign-in, which an operator configures after first start. */
    SSO_DISCOVERY_URL: Schema.optionalKey(Schema.NonEmptyString),
 diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
-index 8bc4d111f..e8242a953 100644
+index 8bc4d111..e8242a95 100644
 --- a/e2e/support/public-catalogs.ts
 +++ b/e2e/support/public-catalogs.ts
 @@ -63,6 +63,12 @@ export const officialApps = {
@@ -583,10 +584,10 @@ index 8bc4d111f..e8242a953 100644
    },
    mismatched: {
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 7d50ef03f..a67b6a1db 100644
+index d1855b61..f6c4c75c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2950,7 +2950,7 @@ export const scenarios = plan({
+@@ -3518,7 +3518,7 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "credential-placement.spec.ts",
      title:
@@ -596,7 +597,7 @@ index 7d50ef03f..a67b6a1db 100644
        "self-host": scheduled,
        cloud: na(
 diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
-index d93a6ac1b..c4917ed75 100644
+index 4dfb958d..24457fec 100644
 --- a/e2e/tests/catalog-official-apps.spec.ts
 +++ b/e2e/tests/catalog-official-apps.spec.ts
 @@ -28,6 +28,9 @@ const Catalog = Schema.Array(
@@ -706,10 +707,10 @@ index d93a6ac1b..c4917ed75 100644
 +          ),
 +        ).toEqual([true, 0]);
 +        yield* browser.use("Restore the catalog request", (page) => page.unroute("**/api/catalog"));
-         yield* browser.use("Open Add app", (page) =>
-           page.goto(`/org/${actors.organization.slug}/apps/add`),
-         );
-@@ -206,6 +288,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+         // Add app keeps its layout while the catalog loads: the placeholders take the loaded
+         // toolbar's and rows' places, so nothing moves when the catalog answers.
+         const layout = (page: Page, row: string) =>
+@@ -236,6 +318,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
          yield* browser.use("An installed app offers Open", (page) =>
            row(page, officialApps.tracker.name).getByRole("link", { name: "Open" }).waitFor(),
          );
@@ -722,11 +723,11 @@ index d93a6ac1b..c4917ed75 100644
            row(page, officialApps.mail.name)
              .getByRole("button", { name: `Add ${officialApps.mail.name}`, exact: true })
 diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
-index 009facb47..375f54334 100644
+index 24a57d8d..22388778 100644
 --- a/e2e/tests/credential-placement.spec.ts
 +++ b/e2e/tests/credential-placement.spec.ts
-@@ -1082,6 +1082,16 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
-         });
+@@ -1111,6 +1111,16 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         }
          expect(wider.setup.firstParty).toBeUndefined();
          expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
 +
@@ -743,7 +744,7 @@ index 009facb47..375f54334 100644
      ),
    );
 diff --git a/e2e/tests/self-host-onboarding.spec.ts b/e2e/tests/self-host-onboarding.spec.ts
-index 4485b564e..e0a8cbf7a 100644
+index 4485b564..e0a8cbf7 100644
 --- a/e2e/tests/self-host-onboarding.spec.ts
 +++ b/e2e/tests/self-host-onboarding.spec.ts
 @@ -142,6 +142,11 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
@@ -774,7 +775,7 @@ index 4485b564e..e0a8cbf7a 100644
          yield* browser.use("Provide a synthetic public client", (page) =>
            page.getByRole("textbox", { name: "Client ID", exact: true }).fill("synthetic-client"),
 diff --git a/packages/catalog/README.md b/packages/catalog/README.md
-index 987a21a41..bb8ffcadc 100644
+index 987a21a4..bb8ffcad 100644
 --- a/packages/catalog/README.md
 +++ b/packages/catalog/README.md
 @@ -26,6 +26,12 @@ app's id, package, title, description, auth methods, category and icons; `apps/<
@@ -791,7 +792,7 @@ index 987a21a41..bb8ffcadc 100644
  already declares its providers and auth methods. The user connects an account
  through the app's own providers after install. Preparation reads the index
 diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
-index 410a74099..994bd78f1 100644
+index 944b4986..d9567172 100644
 --- a/packages/catalog/src/contracts/catalog.ts
 +++ b/packages/catalog/src/contracts/catalog.ts
 @@ -22,6 +22,14 @@ export const CatalogAuth = Schema.Struct({
@@ -819,7 +820,7 @@ index 410a74099..994bd78f1 100644
  export type CatalogEntry = typeof CatalogEntry.Type;
  /** Optional filters for a catalog listing, as URL query parameters. Without them, all entries. */
 diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
-index 7c46375da..ca61c33e7 100644
+index 7c46375d..ca61c33e 100644
 --- a/packages/catalog/src/contracts/index.ts
 +++ b/packages/catalog/src/contracts/index.ts
 @@ -2,6 +2,7 @@
@@ -831,7 +832,7 @@ index 7c46375da..ca61c33e7 100644
    CatalogFeedSource,
    CatalogIcon,
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
-index 4f806b8cd..d5cb5933c 100644
+index bcdd77b6..0e44830c 100644
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
 @@ -3,7 +3,7 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
@@ -843,7 +844,7 @@ index 4f806b8cd..d5cb5933c 100644
  import type {
    QueryProps,
    MutationProps,
-@@ -189,6 +189,7 @@ export function CatalogPage<E, IE>({
+@@ -194,6 +194,7 @@ export function CatalogPage<E, IE>({
                  <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
                    <strong>{entryName(entry)}</strong>
                    <span className="line-clamp-1">{entry.description}</span>
@@ -851,9 +852,9 @@ index 4f806b8cd..d5cb5933c 100644
                  </div>
                  {(() => {
                    const installed = installedByPackage.get(entry.package);
-@@ -272,3 +273,22 @@ export function CatalogPage<E, IE>({
-     </div>
-   );
+@@ -287,3 +288,22 @@ export function CatalogPage<E, IE>({
+ function MissingApp({ create }: { readonly create: ReactNode }) {
+   return <>Can’t find what you’re looking for? {create}</>;
  }
 +
 +/** Show provider restrictions before an app is added from the catalog. */
@@ -875,10 +876,11 @@ index 4f806b8cd..d5cb5933c 100644
 +  );
 +}
 diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+index a6a809b3..90a9be65 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
-@@ -22,7 +22,14 @@
-     compatibility: { date: "2026-09-08", flags: ["global_fetch_strictly_public"] },
+@@ -27,7 +27,14 @@ export const AppOutbound = Effect.gen(function* () {
+     },
      // This private service has no application bindings or credentials.
      script: `export default {
 -      fetch(request) { return fetch(request); }
@@ -891,5 +893,5 @@ diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/
 +        return fetch(request);
 +      }
      };`,
+     ...(yield* platformObservability),
    });
- });

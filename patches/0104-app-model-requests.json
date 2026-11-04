@@ -1,9 +1,11 @@
 {
   "identity": "executor-app-model-requests",
   "file": "0104-app-model-requests.patch",
-  "content_sha256": "2dc2c00b5c5236aa9ff6732fbb5aeeafec53801e49fd2bd01542e98b722264e4",
+  "content_sha256": "739cb39479dab4705455a1434d4a55abefc20fe657d445d2c59b9b3a2c711d12",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": true
+  "workflow_sensitive": true,
+  "rebased_from": "2dc2c00b5c5236aa9ff6732fbb5aeeafec53801e49fd2bd01542e98b722264e4",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

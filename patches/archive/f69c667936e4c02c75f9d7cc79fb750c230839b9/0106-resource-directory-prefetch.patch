@@ -1,0 +1,240 @@
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -8,13 +8,14 @@
+   organizationSlugMaxLength,
+ } from "@executor-js/hosted-server/organization";
+ import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
+-import { Atom, AsyncResult } from "effect/reactivity";
++import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
++import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
+ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+ import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
+ // oxlint-disable-next-line no-restricted-imports -- ResumeOrganization renders it only at /, which its navigation leaves; OrganizationEntry and OrganizationDestination read atoms, not the location
+ import { Link, Navigate, useLocation, useMatches, useNavigate } from "@tanstack/react-router";
+-import { Cause, Exit, Match, Option, Schema } from "effect";
++import { Cause, Effect, Exit, Match, Option, Schema } from "effect";
+ import { lastOrganizationAtom, sessionAtom } from "../../contracts/auth.ts";
+ import { OrganizationResume } from "../../contracts/navigation.ts";
+ import { rememberOrganization, forgetOrganization } from "../last-organization.ts";
+@@ -377,6 +378,19 @@
+     Schema.decodeUnknownOption(OrganizationResume)(location.state.organizationResume),
+   );
+   const userId = Option.getOrUndefined(AsyncResult.value(session))?.user.id;
++  const prefetchReference =
++    AsyncResult.isSuccess(access) && AsyncResult.isSuccess(session) && session.value !== null
++      ? reference
++      : undefined;
++  useEffect(() => {
++    if (prefetchReference === undefined || userId === undefined) return;
++    // Hold the existing read only until it settles; retaining its polling wrapper would poll here.
++    return Effect.runCallback(
++      AtomRegistry.getResult(registry, resourceDirectoryAtom(prefetchReference), {
++        suspendOnWaiting: true,
++      }).pipe(Effect.ignore),
++    );
++  }, [registry, prefetchReference, userId]);
+   const unavailable = refused(access);
+   const rejectedResume =
+     unavailable &&
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5195,6 +5195,16 @@
+       "self-host": scheduled,
+       cloud: scheduled,
+       local: na("Local has no hosted organization membership."),
++    },
++  },
++  resourcePrefetch: {
++    fixtures: "actors",
++    file: "resource-prefetch.spec.ts",
++    title: "Organization entry prefetches resources without retaining a polling subscription",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no verified organization entry."),
+     },
+   },
+   instantConsoleRevisit: {
+diff --git a/e2e/tests/dashboard-loading.spec.ts b/e2e/tests/dashboard-loading.spec.ts
+--- a/e2e/tests/dashboard-loading.spec.ts
++++ b/e2e/tests/dashboard-loading.spec.ts
+@@ -43,14 +43,16 @@
+           { name: "Mobile", width: 390, height: 844 },
+         ]) {
+           for (const section of ["apps", "accounts"] as const) {
+-            yield* browser.use("Open a page that reads neither section", (page) =>
+-              page.goto(`/org/${actors.organization.slug}/connect`),
+-            );
+             yield* Effect.scoped(
+               Effect.gen(function* () {
+                 const probe = yield* dashboardLoadingProbe;
+                 yield* browser.use(`${viewport.name}: set the viewport`, (page) =>
+                   page.setViewportSize({ width: viewport.width, height: viewport.height }),
++                );
++                // Organization entry may prefetch the shared directory before either list opens.
++                yield* browser.use(
++                  "Open settings with the resource hold already installed",
++                  (page) => page.goto(`/org/${actors.organization.slug}/organization`),
+                 );
+                 // The document arrives with its data; the browser reads when it navigates itself.
+                 yield* openInApp(`Open ${section}`, `/org/${actors.organization.slug}/${section}`);
+@@ -58,8 +60,7 @@
+                 yield* browser.use("The destination heading is visible", (page) =>
+                   page
+                     .getByRole("heading", {
+-                      name: section === "apps" ? "Apps" : "Accounts",
+-                      exact: true,
++                      name: section === "apps" ? /^Apps(?:\s*\d+)?$/ : /^Accounts(?:\s*\d+)?$/,
+                     })
+                     .waitFor({ state: "visible" }),
+                 );
+diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
+--- a/e2e/support/in-app-navigation.ts
++++ b/e2e/support/in-app-navigation.ts
+@@ -17,7 +17,8 @@
+   });
+ 
+ /**
+- * A dashboard page that reads no app, account or resource data. Hosted pages start from their
++ * A dashboard page that does not render the destination’s app or account list. Organization entry
++ * may prefetch shared resources, so callers install request holds before opening it. Hosted pages start from their
+  * organization's Connect page; account pages name that organization in their `organization`
+  * search parameter, because only dashboard routes are served as dashboard documents (Cloud serves
+  * other paths as static assets). The local dashboard has no organizations and serves `/connect`.
+@@ -30,8 +31,8 @@
+ };
+ 
+ /**
+- * Load a dashboard page that does not read the destination's data, then navigate to the
+- * destination in the browser so its reads, holds and fixtures apply there.
++ * Load another dashboard page, then navigate to the destination in the browser. Holds and fixtures
++ * must already be installed: organization entry can prefetch the destination’s shared resources.
+  */
+ export const openThroughBrowser = (label: string, path: string) =>
+   Effect.gen(function* () {
+diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/resource-prefetch.spec.ts
+@@ -0,0 +1,118 @@
++import { expect, layer } from "@effect/vitest";
++import { Deferred, Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Request } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { holdQuery, installBrowserClock } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Organization resource prefetch", (it) => {
++  it.effect(scenarios.resourcePrefetch.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const name = `Prefetched ${randomUUID().slice(0, 8)}`;
++        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name,
++          files: [
++            {
++              path: "index.ts",
++              content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
++            },
++            appsManifest,
++          ],
++        });
++        expect(response.status).toBe(200);
++        const app = yield* body(App, response);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
++            Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))),
++            Effect.orDie,
++          ),
++        );
++        yield* browser.login(actors.owner);
++        yield* installBrowserClock;
++        let completed = yield* Deferred.make<void>();
++        const requests: string[] = [];
++        const resources = /^\/api\/organizations\/[^/]+\/resources$/;
++        const record = (request: Request) => {
++          const path = new URL(request.url()).pathname;
++          if (request.method() === "GET" && resources.test(path)) requests.push(path);
++        };
++        const finished = (request: Request) => {
++          if (resources.test(new URL(request.url()).pathname))
++            Deferred.doneUnsafe(completed, Effect.void);
++        };
++        yield* browser.use("Observe the ordinary resource read", (page) => {
++          page.on("request", record);
++          page.on("requestfinished", finished);
++          return Promise.resolve();
++        });
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Remove resource observers", (page) => {
++              page.off("request", record);
++              page.off("requestfinished", finished);
++              return Promise.resolve();
++            })
++            .pipe(Effect.orDie),
++        );
++        const held = yield* holdQuery(resources, "continue");
++        const organization = `/org/${actors.organization.slug}`;
++        yield* browser.use("Enter organization settings", (page) =>
++          page.goto(`${organization}/organization`),
++        );
++        yield* held.requested;
++        yield* browser.use("Settings stay usable while prefetch waits", (page) =>
++          page.getByRole("table", { name: "Members", exact: true }).waitFor(),
++        );
++        expect(requests).toEqual([`${prefix}/resources`]);
++        yield* held.release;
++        yield* Deferred.await(completed);
++        yield* openInApp("Open the prefetched Apps list", `${organization}/apps`);
++        yield* browser.use("The prefetched directory supplies the app card", (page) =>
++          page.getByText(name, { exact: true }).first().waitFor(),
++        );
++        expect(requests).toHaveLength(1);
++        yield* evidence.json("resource-prefetch-navigation.json", { requests });
++        // A new document has never visited Apps, so route-intent preloads cannot keep its poll alive.
++        completed = yield* Deferred.make<void>();
++        const unused = yield* holdQuery(resources, "continue");
++        yield* browser.use("Start an independent settings-only document", (page) =>
++          page.goto(`${organization}/organization`),
++        );
++        yield* unused.requested;
++        yield* unused.release;
++        yield* Deferred.await(completed);
++        expect(requests).toHaveLength(2);
++        yield* browser.use("Advance beyond two idle directory polls", (page) =>
++          page.context().clock.runFor(60_001),
++        );
++        expect(requests).toHaveLength(2);
++        yield* openInApp(
++          "Enter an organization without access",
++          `/org/prefetch-missing-${randomUUID()}/organization`,
++        );
++        yield* browser.use("A refused entry stays refused", (page) =>
++          page.getByText("Organization unavailable", { exact: true }).waitFor(),
++        );
++        yield* browser.use("A refused destination starts no directory poll", (page) =>
++          page.context().clock.runFor(60_001),
++        );
++        expect(requests).toHaveLength(2);
++      }),
++    ),
++  );
++});

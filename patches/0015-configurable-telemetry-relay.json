@@ -1,9 +1,11 @@
 {
   "identity": "executor-configurable-telemetry-relay",
   "file": "0015-configurable-telemetry-relay.patch",
-  "content_sha256": "eda94d6999c5b6dae16b880b26d2519f32e273e49545c837d418cbf75c0a503c",
+  "content_sha256": "e5bc32722d285a230aae3c36952cf793ae30ee6304dac19beb1fa99a886f0826",
   "kind": "upstream",
   "upstream_pull_request": 2363,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "eda94d6999c5b6dae16b880b26d2519f32e273e49545c837d418cbf75c0a503c",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

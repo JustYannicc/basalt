@@ -1,0 +1,1442 @@
+diff --git a/.oxfmtrc.json b/.oxfmtrc.json
+index 9da5f460..b823d4c5 100644
+--- a/.oxfmtrc.json
++++ b/.oxfmtrc.json
+@@ -1,6 +1,9 @@
+ {
+   "$schema": "./node_modules/oxfmt/configuration_schema.json",
+   "ignorePatterns": [
++    "**/pool-app-source.ts",
++    "**/pool-provider-capabilities.ts",
++    "**/pool-token.ts",
+     ".preview/**",
+     ".alchemy",
+     ".blume",
+diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
+index ec86e9f3..8cf5e018 100644
+--- a/apps/hosted/cloud/scripts/worker-sizes.ts
++++ b/apps/hosted/cloud/scripts/worker-sizes.ts
+@@ -341,9 +341,7 @@ const buildWorkers = (target: Target) =>
+             }),
+           );
+           if (Exit.isFailure(exit)) {
+-            failures.push(
+-              `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`,
+-            );
++            failures.push(`${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause)}`);
+             continue;
+           }
+           for (const file of exit.value.files) {
+diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 12aa378c..5ce09705 100644
+--- a/apps/hosted/cloud/src/implementation/error-reporting.ts
++++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
+@@ -46,7 +46,9 @@ const Settings = Schema.Struct({
+ type SentrySettings = typeof Settings.Type;
+ 
+ const boundedLabel = (value: unknown, maxLength: number): string | undefined =>
+-  typeof value === "string" && value.length <= maxLength && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
++  typeof value === "string" &&
++  value.length <= maxLength &&
++  /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
+     ? value
+     : undefined;
+ 
+@@ -54,7 +56,10 @@ const opaqueUserId = (value: unknown): value is string =>
+   typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+ 
+ const traceId = (value: unknown, length: number): string | undefined =>
+-  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value)
++  typeof value === "string" &&
++  value.length === length &&
++  /^[0-9a-f]+$/i.test(value) &&
++  !/^0+$/.test(value)
+     ? value.toLowerCase()
+     : undefined;
+ 
+diff --git a/apps/hosted/cloud/src/implementation/migration-guard.ts b/apps/hosted/cloud/src/implementation/migration-guard.ts
+index 295a2455..78027aec 100644
+--- a/apps/hosted/cloud/src/implementation/migration-guard.ts
++++ b/apps/hosted/cloud/src/implementation/migration-guard.ts
+@@ -127,9 +127,10 @@ const failureTags = (cause: unknown) => {
+ 
+ const describe = (cause: unknown) => {
+   const state = sqlStateOf(cause);
+-  const version = cause instanceof HostedMigrationFailed && cause.migrationVersion !== undefined
+-    ? ` at executor version ${cause.migrationVersion}`
+-    : "";
++  const version =
++    cause instanceof HostedMigrationFailed && cause.migrationVersion !== undefined
++      ? ` at executor version ${cause.migrationVersion}`
++      : "";
+   if (state === "55P03") return `lock timeout (55P03)${version}`;
+   if (state === "57014") return `statement timeout or cancel (57014)${version}`;
+   // Its message holds only cause tags and a SQLSTATE.
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index 6c14d77c..40483b8f 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -305,7 +305,6 @@ export const cloudMigrationSteps = {
+   "17_v1_import_billing": migrateV1ImportBilling,
+   "18_v1_import_displacement": migrateV1ImportDisplacement,
+   "19_v1_import_into": migrateV1ImportInto,
+-
+ };
+ 
+ /** One run with its own sessions: Better Auth and product migrations, then close both pools. */
+diff --git a/apps/hosted/cloud/src/implementation/product-analytics.ts b/apps/hosted/cloud/src/implementation/product-analytics.ts
+index 97a57168..986cb87c 100644
+--- a/apps/hosted/cloud/src/implementation/product-analytics.ts
++++ b/apps/hosted/cloud/src/implementation/product-analytics.ts
+@@ -283,7 +283,8 @@ export const withProductAnalytics = <A, E, R>(
+         add,
+       }),
+       Effect.provideService(FeatureFlags, {
+-        evaluate: (keys, distinctId) => config === undefined ? Effect.succeed({}) : evaluateFlags(config, keys, distinctId),
++        evaluate: (keys, distinctId) =>
++          config === undefined ? Effect.succeed({}) : evaluateFlags(config, keys, distinctId),
+       }),
+       Effect.provideService(ProductAnalytics, {
+         enabled: true,
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domain-control.ts b/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
+index ed52c836..2f83e1a8 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
+@@ -1,4 +1,6 @@
+ /** Actions owns the lifecycle control key; runtime receives a secret binding. */
+ import { Config, Effect } from "effect";
+ 
+-export const appDomainControlSecret = Config.Redacted("APP_DOMAIN_CONTROL_SECRET").pipe(Effect.orDie);
++export const appDomainControlSecret = Config.Redacted("APP_DOMAIN_CONTROL_SECRET").pipe(
++  Effect.orDie,
++);
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts b/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
+index 7641eb89..c3e99a9e 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
+@@ -18,10 +18,9 @@ export class AppDomainZone extends Alchemy.Stack<AppDomainZone, AppDomainZoneOut
+ ) {}
+ 
+ /** Stage-independent reference to the single shared zone owner. */
+-export const sharedAppDomainZone = Output.stackRef<AppDomainZoneOutput>(
+-  "basalt-app-domains",
+-  { stage: "shared" },
+-);
++export const sharedAppDomainZone = Output.stackRef<AppDomainZoneOutput>("basalt-app-domains", {
++  stage: "shared",
++});
+ 
+ /** Test domains use the shared deployment-user quota; production retains its account-owned token. */
+ export const appDomainControllerToken = Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/batch-execution.ts b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
+index 663d9b5f..ece613d3 100644
+--- a/apps/hosted/cloud/src/infrastructure/batch-execution.ts
++++ b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
+@@ -26,5 +26,7 @@ export const withBatchExecution = <A, E, R>(handler: Effect.Effect<A, E, R>) =>
+ /** Execution memos normally follow the caller's scope; batched reads share their resource scope. */
+ export const makeBatchExecutionMemo = <A, E, R>(build: Effect.Effect<A, E, R | Scope.Scope>) =>
+   Effect.map(makeExecutionMemo(build), (memo) =>
+-    Effect.flatMap(BatchScope, (scope) => (scope === undefined ? memo : Scope.provide(memo, scope))),
++    Effect.flatMap(BatchScope, (scope) =>
++      scope === undefined ? memo : Scope.provide(memo, scope),
++    ),
+   );
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 23040937..f39da682 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -4,11 +4,7 @@ export { cloudEgress } from "./egress.ts";
+ /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
+-import {
+-  firstPartyOAuthClients,
+-  hostedApi,
+-  hostedApiRevision,
+-} from "@executor-js/hosted-server";
++import { firstPartyOAuthClients, hostedApi, hostedApiRevision } from "@executor-js/hosted-server";
+ import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import api from "../../.generated/executor-api-revision.json" with { type: "json" };
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+index 423a13f3..4a19d484 100644
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+@@ -104,7 +104,11 @@ export const makeMcpSession = Effect.fn(function* ({
+       undefined,
+       mcpSessionStore(state.storage),
+       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
+-    ).pipe(Effect.provideService(CurrentProductBrand, brand), Effect.provideService(McpAppAssets, readAppAsset), Effect.provide(HttpServer.layerServices));
++    ).pipe(
++      Effect.provideService(CurrentProductBrand, brand),
++      Effect.provideService(McpAppAssets, readAppAsset),
++      Effect.provide(HttpServer.layerServices),
++    );
+     /** While the object holds a program, an alarm is due within `holdMillis`. */
+     const hold = Effect.gen(function* () {
+       if (handler.programs() === 0) return;
+diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+index 26da73b8..e43bb677 100644
+--- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
++++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+@@ -484,7 +484,10 @@ export const cloudV1ImportSettings = Effect.gen(function* () {
+         ? Option.none()
+         : Option.map(billing, (configured) =>
+             Effect.all({
+-              options: Effect.all({ serverUrl: configured.serverUrl, secretKey: configured.secretKey }),
++              options: Effect.all({
++                serverUrl: configured.serverUrl,
++                secretKey: configured.secretKey,
++              }),
+               catalog: configured.catalog,
+             }),
+           ),
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+index 640a1c7c..7523a624 100644
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -98,7 +98,9 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+     );
+   }).pipe(
+     Effect.map((report) => ({ ok: true as const, report })),
+-    Effect.catchCause((cause) => Effect.succeed({ ok: false as const, outcome: jobFailedWith(cause) })),
++    Effect.catchCause((cause) =>
++      Effect.succeed({ ok: false as const, outcome: jobFailedWith(cause) }),
++    ),
+   );
+   if (!report.ok) {
+     yield* Console.info(
+diff --git a/apps/hosted/cloud/src/infrastructure/sentry.ts b/apps/hosted/cloud/src/infrastructure/sentry.ts
+index c6b141be..f6db4300 100644
+--- a/apps/hosted/cloud/src/infrastructure/sentry.ts
++++ b/apps/hosted/cloud/src/infrastructure/sentry.ts
+@@ -25,16 +25,25 @@ export interface DirectSentryOtlpTarget {
+ /** The operator DSN must be HTTPS on one Sentry EU ingest host and one numeric project. */
+ export function parseDirectSentryDsn(value: unknown): DirectSentryDsn | undefined {
+   if (typeof value !== "string" || value === "" || value.trim() === "") return undefined;
+-  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(value);
++  const match =
++    /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(
++      value,
++    );
+   if (!match) return undefined;
+   try {
+     const url = new URL(value);
+     const [, publicKey, host, projectId] = match;
+     if (
+-      url.protocol !== "https:" || url.username !== publicKey || url.password !== "" ||
+-      url.port !== "" || url.search !== "" || url.hash !== "" ||
+-      url.hostname.toLowerCase() !== host!.toLowerCase() || url.pathname !== `/${projectId}`
+-    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== publicKey ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== host!.toLowerCase() ||
++      url.pathname !== `/${projectId}`
++    )
++      return undefined;
+     return { dsn: value, publicKey: publicKey!, host: host!.toLowerCase(), projectId: projectId! };
+   } catch {
+     return undefined;
+@@ -55,9 +64,15 @@ export function parseDirectSentryOtlpEndpoint(
+   try {
+     const url = new URL(value);
+     if (
+-      url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "" ||
+-      url.search !== "" || url.hash !== "" || url.hostname.toLowerCase() !== dsn.host
+-    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== "" ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== dsn.host
++    )
++      return undefined;
+     return { url: url.href, authHeader: `sentry sentry_key=${dsn.publicKey}` };
+   } catch {
+     return undefined;
+@@ -108,7 +123,12 @@ export const sentryBindings = Effect.gen(function* () {
+     const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+     return {
+       env: {
+-        EXECUTOR_SENTRY: Output.asOutput({ dsn: parsed.dsn, environment, release, strictPrivacy: true }),
++        EXECUTOR_SENTRY: Output.asOutput({
++          dsn: parsed.dsn,
++          environment,
++          release,
++          strictPrivacy: true,
++        }),
+       },
+       // The direct public key is server-only here. Browser reporting requires the managed tunnel.
+       build: {},
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index 28722048..f0931f59 100644
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -222,17 +222,21 @@ export const telemetryBindings = Effect.gen(function* () {
+     const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+     const environment = yield* Stage;
+     return {
+-      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
+-        service: "executor-cloud",
+-        clock: "cloudflare-io",
+-        version,
+-        environment,
+-        strictPrivacy: true,
+-        traces: {
+-          url: direct.target.url,
+-          headers: { "x-sentry-auth": direct.target.authHeader },
+-        },
+-      }))),
++      [binding]: Output.asOutput(
++        Redacted.make(
++          JSON.stringify({
++            service: "executor-cloud",
++            clock: "cloudflare-io",
++            version,
++            environment,
++            strictPrivacy: true,
++            traces: {
++              url: direct.target.url,
++              headers: { "x-sentry-auth": direct.target.authHeader },
++            },
++          }),
++        ),
++      ),
+     };
+   }
+   const resources = yield* telemetryResources;
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+index f5b61602..43a95bec 100644
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -196,9 +196,14 @@ export const workerBuild = (
+         input: {
+           resolve: {
+             alias: {
+-              ...(worker === "oauth-wire" ? {} : {
+-                "@executor-js/sdk/oauth-protocol": new URL("./oauth-protocol.ts", import.meta.url).pathname,
+-              }),
++              ...(worker === "oauth-wire"
++                ? {}
++                : {
++                    "@executor-js/sdk/oauth-protocol": new URL(
++                      "./oauth-protocol.ts",
++                      import.meta.url,
++                    ).pathname,
++                  }),
+               ...(options.localTestHooks === true ? localTestHooks() : {}),
+             },
+           },
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+index 7fdb4ca1..441021d0 100644
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -31,7 +31,7 @@ export const PoolUsageSeriesInput = Schema.Struct({
+   ),
+   accounts: Schema.optionalKey(Schema.Array(AccountId).check(Schema.isMaxLength(500))),
+   sources: Schema.optionalKey(
+-      Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
++    Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
+       Schema.isMaxLength(500),
+     ),
+   ),
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index d3c86a95..15b0a84b 100644
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -720,7 +720,8 @@ export const hostedAppUi = <R = never>(
+       );
+       return {
+         accounts: resolution.accounts,
+-        notice: problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
++        notice:
++          problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
+       };
+     });
+     // The document's read needs only the version and no SQL, so it runs beside the account
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+index 69d45777..3f0446f7 100644
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -557,21 +557,22 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+         continue;
+       }
+       const catalogClient = catalogOAuthClientDefinitions.some(({ id }) => id === definition.id);
+-      const service = catalogClient || isZohoOAuthClient(definition.id)
+-        ? definition.label.replace(/^Executor for /u, "")
+-        : definition.id === "google"
+-          ? "Google"
+-          : definition.id === "github" || definition.id === "github-oauth"
+-            ? "GitHub"
+-            : definition.id === "gitlab"
+-              ? "GitLab"
+-              : definition.id === "miro"
+-                ? "Miro"
+-                : definition.id === "slack" || definition.id === "slack-rest"
+-                  ? "Slack"
+-                  : definition.id === "atlassian"
+-                    ? "Atlassian"
+-                    : undefined;
++      const service =
++        catalogClient || isZohoOAuthClient(definition.id)
++          ? definition.label.replace(/^Executor for /u, "")
++          : definition.id === "google"
++            ? "Google"
++            : definition.id === "github" || definition.id === "github-oauth"
++              ? "GitHub"
++              : definition.id === "gitlab"
++                ? "GitLab"
++                : definition.id === "miro"
++                  ? "Miro"
++                  : definition.id === "slack" || definition.id === "slack-rest"
++                    ? "Slack"
++                    : definition.id === "atlassian"
++                      ? "Atlassian"
++                      : undefined;
+       clients.push(
+         service === undefined
+           ? client.value
+diff --git a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
+index 0c8b8adc..db28a9e9 100644
+--- a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
++++ b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
+@@ -186,14 +186,19 @@ export const ensureHostedRoutesAccount = (
+           // A live personal link is the authority to repair a host-owned credential after key
+           // rotation. Keep the same account so selections and explicit relinks survive.
+           const token = yield* Effect.tryPromise({
+-            try: () => signHostedRoutesToken(tokenKey, {
+-              app: app.id, organization, user, nonce: current.nonce,
+-              origin: configuration.origin,
+-            }),
++            try: () =>
++              signHostedRoutesToken(tokenKey, {
++                app: app.id,
++                organization,
++                user,
++                nonce: current.nonce,
++                origin: configuration.origin,
++              }),
+             catch: () => new StorageError(),
+           });
+           yield* executor.managedAccounts.replaceCredentials({
+-            owner, account: current.account,
++            owner,
++            account: current.account,
+             fields: Redacted.make({ origin: configuration.origin, token }),
+           });
+           yield* sql`update basalt_hosted_routes_accounts set state = 'linked'
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index 6bb1cd48..20102119 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -56,7 +56,9 @@ import {
+ } from "../../contracts/oauth-clients.ts";
+ 
+ // The dialog owns catalog guidance; both normal and loopback forms read the same value.
+-export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(undefined);
++export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(
++  undefined,
++);
+ 
+ /**
+  * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
+@@ -396,34 +398,36 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                 if (required) refresh();
+                 return required;
+               }}
+-              start={(input: OAuthSubmission) => inOrder(async () => {
+-                const saved = await savedClient(
+-                  input,
+-                  setup !== "unresolved" && setup.grant === "authorization_code"
+-                    ? setup.issuer
+-                    : undefined,
+-                );
+-                if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
+-                const registeredClient = saved.value;
+-                if (registeredClient !== undefined) refresh();
+-                const exit = await start({
+-                  method,
+-                  ...(registeredClient !== undefined
+-                    ? { client: { id: registeredClient } }
+-                    : input.client !== undefined
+-                      ? { client: input.client }
+-                      : {}),
+-                });
+-                return Exit.map(exit, (value) => ({
+-                  ...value,
+-                  // Entered details reopen after a failed return; chosen clients do not.
+-                  manualClient:
+-                    registeredClient === undefined &&
+-                    input.client !== undefined &&
+-                    Schema.is(OAuthClientInput)(input.client),
+-                  ...(registeredClient !== undefined ? { registeredClient } : {}),
+-                }));
+-              })}
++              start={(input: OAuthSubmission) =>
++                inOrder(async () => {
++                  const saved = await savedClient(
++                    input,
++                    setup !== "unresolved" && setup.grant === "authorization_code"
++                      ? setup.issuer
++                      : undefined,
++                  );
++                  if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
++                  const registeredClient = saved.value;
++                  if (registeredClient !== undefined) refresh();
++                  const exit = await start({
++                    method,
++                    ...(registeredClient !== undefined
++                      ? { client: { id: registeredClient } }
++                      : input.client !== undefined
++                        ? { client: input.client }
++                        : {}),
++                  });
++                  return Exit.map(exit, (value) => ({
++                    ...value,
++                    // Entered details reopen after a failed return; chosen clients do not.
++                    manualClient:
++                      registeredClient === undefined &&
++                      input.client !== undefined &&
++                      Schema.is(OAuthClientInput)(input.client),
++                    ...(registeredClient !== undefined ? { registeredClient } : {}),
++                  }));
++                })
++              }
+               onAuthorized={(value) => {
+                 refresh();
+                 if (value.status !== "completed") return onAuthorized(value);
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+index 70fd306f..bc352407 100644
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -1,7 +1,10 @@
+ import { Link, useNavigate } from "@tanstack/react-router";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Code } from "@executor-js/ui/dashboard/code";
+-import { AssistantGuideExtensionsProvider, McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
++import {
++  AssistantGuideExtensionsProvider,
++  McpInstallInstructions,
++} from "@executor-js/ui/dashboard/connect";
+ import {
+   ScopedConnectionPage,
+   ScopedConnectionsPage,
+@@ -122,13 +125,15 @@ function useConnectionBindings(personalInstallation?: (target: ConnectTarget) =>
+     Failure: HostedFailure,
+     ConnectionLink,
+     renderInstallation: (target: ConnectTarget) =>
+-      target.apps === undefined ? (personalInstallation?.(target) ?? (
+-        <McpInstallInstructions
+-          endpoint={target.url}
+-          docs={docs}
+-          token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={origins.mcp[0]} />}
+-        />
+-      )) : (
++      target.apps === undefined ? (
++        (personalInstallation?.(target) ?? (
++          <McpInstallInstructions
++            endpoint={target.url}
++            docs={docs}
++            token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={origins.mcp[0]} />}
++          />
++        ))
++      ) : (
+         <McpInstallInstructions
+           endpoint={target.url}
+           docs={docs}
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 42e15b26..571ade10 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -267,7 +267,9 @@ export const startCloudEnvironment = (input: {
+       ),
+     );
+     const emulators = `${directory}/emulators.json`;
+-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
++    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), {
++      mode: 0o600,
++    });
+     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
+     const analyticsPort = yield* startAnalyticsCollector(directory);
+     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+diff --git a/e2e/tests/cloud-dashboard-batch-resources.spec.ts b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
+index 1dc06bc2..fe30b57f 100644
+--- a/e2e/tests/cloud-dashboard-batch-resources.spec.ts
++++ b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
+@@ -105,8 +105,12 @@ export default defineApp({}, async () => ({ tools: router({
+             Effect.flatMap((result) =>
+               result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
+                 .length === reads.length &&
+-              result.data.some(({ span }) => span.operationName === "runtime.cloud.database.initialize") &&
+-              result.data.some(({ span }) => span.operationName === "runtime.cloud.executor.initialize")
++              result.data.some(
++                ({ span }) => span.operationName === "runtime.cloud.database.initialize",
++              ) &&
++              result.data.some(
++                ({ span }) => span.operationName === "runtime.cloud.executor.initialize",
++              )
+                 ? Effect.succeed(result.data)
+                 : Effect.fail(new Error("The completed batch trace has not reached Motel")),
+             ),
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+index 91874db2..90d13346 100644
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1804,9 +1804,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         yield* browser.login(actors.owner);
+         const copy = yield* browser.use(
+           "Finish a sign-in with unrequested broader access",
+-          (page) => page.goto(`${callback.pathname}${callback.search}`)
+-            .then(() => page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor())
+-            .then(() => page.getByRole("alert").innerText()),
++          (page) =>
++            page
++              .goto(`${callback.pathname}${callback.search}`)
++              .then(() =>
++                page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor(),
++              )
++              .then(() => page.getByRole("alert").innerText()),
+         );
+         yield* browser.checkpoint("OAuth-scope-refusal");
+         expect(copy).toContain("nothing was saved");
+diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
+index f55b30e4..cdc8a5cb 100644
+--- a/e2e/tests/hosted-routes.spec.ts
++++ b/e2e/tests/hosted-routes.spec.ts
+@@ -132,7 +132,8 @@ layer(RuntimeLive, { excludeTestServices: true })("Hosted Google Routes", (it) =
+             const accounts = yield* linkedAccountIds(actor, app.path);
+             expect(accounts).toHaveLength(1);
+             return { actor, app, account: accounts[0]! };
+-          }));
++          }),
++        );
+         const results = yield* Effect.forEach(
+           selected,
+           ({ actor, app, account }) =>
+@@ -145,9 +146,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Hosted Google Routes", (it) =
+         );
+         const completed = results.filter(
+           (result) =>
+-            result.status === 200 &&
+-            isRecord(result.body) &&
+-            Array.isArray(result.body.routes),
++            result.status === 200 && isRecord(result.body) && Array.isArray(result.body.routes),
+         );
+         const rejected = results.filter(
+           (result) =>
+@@ -233,13 +232,19 @@ layer(RuntimeLive, { excludeTestServices: true })("Hosted Google Routes", (it) =
+ 
+         // Explicitly relinking the retained account restores access without provisioning another.
+         yield* linkAccount(actors.member, installed[1]!.path, "hostedRoutes", memberAccount);
+-        const restored = yield* api.request(actors.member, "GET", `${installed[1]!.path}/tools/index`);
++        const restored = yield* api.request(
++          actors.member,
++          "GET",
++          `${installed[1]!.path}/tools/index`,
++        );
+         expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+         expect(JSON.stringify(restored.body)).toContain("hosted.computeRoutes");
+-        expect(yield* database.run({
+-          sql: "select state, account_id from basalt_hosted_routes_accounts where app = $1 and user_id = $2",
+-          params: [installed[1]!.id, memberUser.user.id],
+-        })).toEqual([{ state: "linked", account_id: memberAccount }]);
++        expect(
++          yield* database.run({
++            sql: "select state, account_id from basalt_hosted_routes_accounts where app = $1 and user_id = $2",
++            params: [installed[1]!.id, memberUser.user.id],
++          }),
++        ).toEqual([{ state: "linked", account_id: memberAccount }]);
+         expect(yield* linkedAccountIds(actors.member, installed[1]!.path)).toEqual([memberAccount]);
+ 
+         // The monthly refusal stays observable even when shorter limits also apply.
+diff --git a/e2e/tests/local-server-rendered-dashboard.spec.ts b/e2e/tests/local-server-rendered-dashboard.spec.ts
+index 74ad4221..88961ad7 100644
+--- a/e2e/tests/local-server-rendered-dashboard.spec.ts
++++ b/e2e/tests/local-server-rendered-dashboard.spec.ts
+@@ -154,16 +154,16 @@ export default defineApp({app:{accounts:{service:service.many()}}},async()=>({to
+           expect(failures, `${label} hydrates to the server's markup`).toEqual([]);
+         }
+         yield* browser.use("Open the local apps list with shared accounts", (page) =>
+-          page.goto("/apps").then(() =>
+-            page
+-              .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
+-              .waitFor({ state: "visible" }),
+-          ),
++          page
++            .goto("/apps")
++            .then(() =>
++              page
++                .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
++                .waitFor({ state: "visible" }),
++            ),
+         );
+         const sharedCard = yield* browser.use("Read the local shared app card", (page) =>
+-          page
+-            .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
+-            .innerText(),
++          page.getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true }).innerText(),
+         );
+         expect(sharedCard).toContain("2 accounts · for everyone");
+         yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
+diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-recovery.spec.ts
+index 9bde5361..954105b0 100644
+--- a/e2e/tests/oauth-client-recovery.spec.ts
++++ b/e2e/tests/oauth-client-recovery.spec.ts
+@@ -208,9 +208,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+                 .getByLabel("Client secret", { exact: true })
+                 .fill(` ${recoveryClients.original.clientSecret} `),
+             )
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect Gmail", exact: true }).click(),
+-            )
++            .then(() => page.getByRole("button", { name: "Connect Gmail", exact: true }).click())
+             .then(() => nameConnectedAccount(page, "Recovery account"))
+             .then(() =>
+               linkedChoice(page, "Gmail", "Recovery account").waitFor({
+@@ -289,23 +287,26 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+               .then(() => clients.count());
+           }),
+         ).toBe(1);
+-        yield* browser.use("The saved client stays selected beside the shared and BYO choices", (page) => {
+-          const clients = page.getByRole("combobox", { name: "OAuth client" });
+-          return clients
+-            .filter({ hasText: "Current client" })
+-            .waitFor({ state: "visible" })
+-            .then(() => clients.click())
+-            .then(() =>
+-              page
+-                .getByRole("option", { name: "synthetic-registered-client", exact: true })
+-                .waitFor({ state: "visible" }),
+-            )
+-            .then(() =>
+-              page
+-                .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
+-                .waitFor({ state: "visible" }),
+-            );
+-        });
++        yield* browser.use(
++          "The saved client stays selected beside the shared and BYO choices",
++          (page) => {
++            const clients = page.getByRole("combobox", { name: "OAuth client" });
++            return clients
++              .filter({ hasText: "Current client" })
++              .waitFor({ state: "visible" })
++              .then(() => clients.click())
++              .then(() =>
++                page
++                  .getByRole("option", { name: "synthetic-registered-client", exact: true })
++                  .waitFor({ state: "visible" }),
++              )
++              .then(() =>
++                page
++                  .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
++                  .waitFor({ state: "visible" }),
++              );
++          },
++        );
+         yield* browser.checkpoint("Google shared and BYO client options");
+         yield* browser.use("Close Google client choices", (page) => page.keyboard.press("Escape"));
+         yield* browser.checkpoint("Reconnect with the shared client and Google BYO available");
+@@ -317,12 +318,14 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           )).status,
+         ).toBe(200);
+         yield* browser.use("Reopen the reconnect without the registered client", (page) =>
+-          page.reload().then(() =>
+-            page
+-              .getByRole("combobox", { name: "OAuth client" })
+-              .filter({ hasText: "Current client" })
+-              .waitFor({ state: "visible" }),
+-          ),
++          page
++            .reload()
++            .then(() =>
++              page
++                .getByRole("combobox", { name: "OAuth client" })
++                .filter({ hasText: "Current client" })
++                .waitFor({ state: "visible" }),
++            ),
+         );
+         yield* browser.checkpoint("Reconnect OAuth client options");
+         yield* browser.use("The account's client can be replaced", (page) =>
+@@ -330,7 +333,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             .getByRole("combobox", { name: "OAuth client" })
+             .click()
+             .then(() =>
+-              page.getByRole("option", { name: "Your own Google app (OAuth)", exact: true }).click(),
++              page
++                .getByRole("option", { name: "Your own Google app (OAuth)", exact: true })
++                .click(),
+             ),
+         );
+         yield* browser.checkpoint("Account client can be replaced");
+@@ -339,11 +344,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             .getByLabel("Client ID", { exact: true })
+             .fill(recoveryClients.replacement.clientId)
+             .then(() => page.getByLabel("Client secret", { exact: true }).fill("wrong-secret"))
+-            .then(() =>
+-              page
+-                .getByRole("button", { name: "Reconnect Gmail", exact: true })
+-                .click(),
+-            )
++            .then(() => page.getByRole("button", { name: "Reconnect Gmail", exact: true }).click())
+             .then(() =>
+               page
+                 .getByRole("link", { name: "Update client details", exact: true })
+@@ -366,11 +367,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+                 .getByLabel("Client secret", { exact: true })
+                 .fill(recoveryClients.replacement.clientSecret),
+             )
+-            .then(() =>
+-              page
+-                .getByRole("button", { name: "Reconnect Gmail", exact: true })
+-                .click(),
+-            )
++            .then(() => page.getByRole("button", { name: "Reconnect Gmail", exact: true }).click())
+             .then(() =>
+               page
+                 // A reconnect through the app returns to that app's accounts.
+diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implementation/server.ts
+index f5758378..48666582 100644
+--- a/packages/mcp/src/implementation/server.ts
++++ b/packages/mcp/src/implementation/server.ts
+@@ -201,9 +201,15 @@ export const makeMcp = (options: McpOptions) =>
+           );
+         // Search and describe read the catalog directly; call runs as an execution so it can pause.
+         const search = (input: Parameters<typeof searchCatalog>[1]) =>
+-          searchCatalog(options.backend, input).pipe(withMcpAppProfile(options.backend), withOperationSpan("mcp.search"));
++          searchCatalog(options.backend, input).pipe(
++            withMcpAppProfile(options.backend),
++            withOperationSpan("mcp.search"),
++          );
+         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
+-          describeCatalog(options.backend, input).pipe(withMcpAppProfile(options.backend), withOperationSpan("mcp.describe"));
++          describeCatalog(options.backend, input).pipe(
++            withMcpAppProfile(options.backend),
++            withOperationSpan("mcp.describe"),
++          );
+         const toolkit =
+           mode === "native"
+             ? McpServer.toolkit(NativeMcpToolkit).pipe(
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index 870d48a1..983a2c42 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -126,7 +126,6 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
+     return label;
+   });
+ 
+-
+ /** Apply the caller's owner filter before reading or mutating a saved account. */
+ export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
+   storedAccount(db, input.account, input.owner);
+diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+index 404c94d2..9bd98ccf 100644
+--- a/packages/sdk/src/implementation/app-runtime.ts
++++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -461,7 +461,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
+             "executor.webhook.operation": webhookOperations[input.command.operation],
+           }),
+         ),
+-      connect: (input) => dispatch(input, input.command, Json, HostCallError).pipe(traced("connect", app(input))),
++      connect: (input) =>
++        dispatch(input, input.command, Json, HostCallError).pipe(traced("connect", app(input))),
+       checkAccount: ({ requirement, ...input }) =>
+         dispatch(
+           { ...input, database: false },
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index e8b8ba72..cdd38b5e 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -799,7 +799,10 @@ export const makeOAuth = (
+     Effect.gen(function* () {
+       if (protocol === undefined || options === undefined)
+         return yield* new OAuthSetupFailed({ reason: "unsupported" });
+-      return yield* setupOf(yield* storedProvider(input.provider), input, { skipOptionalMetadata, definition: targetDefinition });
++      return yield* setupOf(yield* storedProvider(input.provider), input, {
++        skipOptionalMetadata,
++        definition: targetDefinition,
++      });
+     });
+ 
+   const storedProvider = (id: ProviderId) =>
+@@ -812,8 +815,15 @@ export const makeOAuth = (
+   /** `resolveSetup` for a provider already read, or one an undeployed app declares. */
+   const setupOf = (
+     provider: Provider,
+-    input: { readonly method: string; readonly redirectUri?: string | undefined; readonly site?: string | undefined },
+-    { skipOptionalMetadata = false, definition: targetDefinition }: {
++    input: {
++      readonly method: string;
++      readonly redirectUri?: string | undefined;
++      readonly site?: string | undefined;
++    },
++    {
++      skipOptionalMetadata = false,
++      definition: targetDefinition,
++    }: {
+       readonly skipOptionalMetadata?: boolean;
+       readonly definition?: ProviderDefinition | undefined;
+     } = {},
+@@ -3336,7 +3346,11 @@ export const makeOAuth = (
+       const granted = [
+         ...new Set(
+           checks
+-            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
++            .filter(
++              ({ account, provider }) =>
++                provider.auth[account.method]?.type !== "secrets" &&
++                provider.auth[account.method]?.type !== "interactive",
++            )
+             .map(({ account }) => accountGrantId(account)),
+         ),
+       ];
+@@ -3591,7 +3605,11 @@ export const makeOAuth = (
+   ) =>
+     Effect.gen(function* () {
+       const ids = selected
+-        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
++        .filter(
++          ({ account, provider }) =>
++            provider.auth[account.method]?.type !== "secrets" &&
++            provider.auth[account.method]?.type !== "interactive",
++        )
+         .map(({ account }) => accountGrantId(account));
+       if (ids.length === 0) return undefined;
+       const rows = yield* query(() =>
+diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index 975a0415..c7d975c9 100644
+--- a/packages/sdk/src/implementation/workerd-entry.ts
++++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -365,12 +365,12 @@ class AppApi extends RpcTarget {
+                       await callbacks.elicit(JSON.stringify(input)),
+                     )
+                 : null,
+-            models: models
+-              ? async (input) =>
+-                  Schema.decodeUnknownSync(encodedJson)(
+-                    await callbacks.model(JSON.stringify(input)),
+-                  )
+-              : null,
++              models: models
++                ? async (input) =>
++                    Schema.decodeUnknownSync(encodedJson)(
++                      await callbacks.model(JSON.stringify(input)),
++                    )
++                : null,
+               controls: workflowControls
+                 ? async (input) =>
+                     Schema.decodeUnknownSync(encodedJson)(
+diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.ts
+index 7b8de60e..4e5bf090 100644
+--- a/packages/telemetry/src/isolate.ts
++++ b/packages/telemetry/src/isolate.ts
+@@ -38,23 +38,97 @@ interface Pending {
+ 
+ const traceMethods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+ const safeRouteWords = new Set([
+-  "api", "v1", "v2", "v8", "auth", "oauth", "organizations", "organization", "apps", "app",
+-  "files", "data", "telemetry", "setup", "tools", "mcp", "pool", "models", "requests", "billing",
+-  "accounts", "account", "computers", "sessions", "invitations", "invites", "status", "health", "ready",
+-  "sign-ins", "callback", "logout", "login", "signup", "feedback", "traces", "metrics", "logs", "operations",
+-  "workflows", "webhooks", "projects", "deployments", "usage", "connectors", "providers", "teams", "members",
+-  "current", "me", "claim", "finish", "start", "cancel", "remove", "search", "list", "create", "update",
+-  "delete", "index", "home", "docs", "terms", "privacy", "static", "healthz", "readyz", "openapi.json",
++  "api",
++  "v1",
++  "v2",
++  "v8",
++  "auth",
++  "oauth",
++  "organizations",
++  "organization",
++  "apps",
++  "app",
++  "files",
++  "data",
++  "telemetry",
++  "setup",
++  "tools",
++  "mcp",
++  "pool",
++  "models",
++  "requests",
++  "billing",
++  "accounts",
++  "account",
++  "computers",
++  "sessions",
++  "invitations",
++  "invites",
++  "status",
++  "health",
++  "ready",
++  "sign-ins",
++  "callback",
++  "logout",
++  "login",
++  "signup",
++  "feedback",
++  "traces",
++  "metrics",
++  "logs",
++  "operations",
++  "workflows",
++  "webhooks",
++  "projects",
++  "deployments",
++  "usage",
++  "connectors",
++  "providers",
++  "teams",
++  "members",
++  "current",
++  "me",
++  "claim",
++  "finish",
++  "start",
++  "cancel",
++  "remove",
++  "search",
++  "list",
++  "create",
++  "update",
++  "delete",
++  "index",
++  "home",
++  "docs",
++  "terms",
++  "privacy",
++  "static",
++  "healthz",
++  "readyz",
++  "openapi.json",
+ ]);
+ 
+ const traceId = (value: unknown, length: number): value is string =>
+-  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value);
++  typeof value === "string" &&
++  value.length === length &&
++  /^[0-9a-f]+$/i.test(value) &&
++  !/^0+$/.test(value);
+ 
+ const safeLabel = (value: unknown, max: number): value is string =>
+-  typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
++  typeof value === "string" &&
++  value.length > 0 &&
++  value.length <= max &&
++  /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+ 
+ const routeTemplate = (value: unknown): string | undefined => {
+-  if (typeof value !== "string" || value.length > 192 || !value.startsWith("/") || value.startsWith("//")) return undefined;
++  if (
++    typeof value !== "string" ||
++    value.length > 192 ||
++    !value.startsWith("/") ||
++    value.startsWith("//")
++  )
++    return undefined;
+   const segments = value.split("/").slice(1);
+   if (segments.length > 8 || segments.some((segment) => segment === "")) return undefined;
+   const safeSegments = segments.map((segment) => {
+@@ -65,7 +139,14 @@ const routeTemplate = (value: unknown): string | undefined => {
+ };
+ 
+ const attribute = (
+-  attributes: ReadonlyArray<{ key: string; value: { stringValue?: string | null; intValue?: string | number | null; doubleValue?: number | null } }>,
++  attributes: ReadonlyArray<{
++    key: string;
++    value: {
++      stringValue?: string | null;
++      intValue?: string | number | null;
++      doubleValue?: number | null;
++    };
++  }>,
+   key: string,
+ ) => attributes.find((entry) => entry.key === key)?.value;
+ 
+@@ -74,9 +155,19 @@ export function strictPrivacyTraceData(
+   data: OtlpTracer.TraceData,
+   config: Pick<TelemetryConfig, "service" | "version" | "environment">,
+ ): OtlpTracer.TraceData {
+-  const resourceAttributes = [{ key: "service.name", value: { stringValue: safeLabel(config.service, 64) ? config.service : "service" } }];
+-  if (safeLabel(config.version, 128)) resourceAttributes.push({ key: "service.version", value: { stringValue: config.version } });
+-  if (safeLabel(config.environment, 64)) resourceAttributes.push({ key: "deployment.environment.name", value: { stringValue: config.environment } });
++  const resourceAttributes = [
++    {
++      key: "service.name",
++      value: { stringValue: safeLabel(config.service, 64) ? config.service : "service" },
++    },
++  ];
++  if (safeLabel(config.version, 128))
++    resourceAttributes.push({ key: "service.version", value: { stringValue: config.version } });
++  if (safeLabel(config.environment, 64))
++    resourceAttributes.push({
++      key: "deployment.environment.name",
++      value: { stringValue: config.environment },
++    });
+   const resource = { attributes: resourceAttributes, droppedAttributesCount: 0 };
+   return {
+     resourceSpans: data.resourceSpans.map((resourceSpan) => ({
+@@ -85,17 +176,28 @@ export function strictPrivacyTraceData(
+         scope: { name: "basalt.telemetry" },
+         spans: scopeSpan.spans.flatMap((span) => {
+           if (!traceId(span.traceId, 32) || !traceId(span.spanId, 16)) return [];
+-          const start = /^\d{1,20}$/.test(span.startTimeUnixNano) ? BigInt(span.startTimeUnixNano) : undefined;
+-          const end = /^\d{1,20}$/.test(span.endTimeUnixNano) ? BigInt(span.endTimeUnixNano) : undefined;
++          const start = /^\d{1,20}$/.test(span.startTimeUnixNano)
++            ? BigInt(span.startTimeUnixNano)
++            : undefined;
++          const end = /^\d{1,20}$/.test(span.endTimeUnixNano)
++            ? BigInt(span.endTimeUnixNano)
++            : undefined;
+           if (start === undefined || end === undefined || end < start) return [];
+           const methodValue = attribute(span.attributes, "http.request.method")?.stringValue;
+-          const method = typeof methodValue === "string" && traceMethods.has(methodValue) ? methodValue : undefined;
++          const method =
++            typeof methodValue === "string" && traceMethods.has(methodValue)
++              ? methodValue
++              : undefined;
+           const route = routeTemplate(attribute(span.attributes, "http.route")?.stringValue);
+           const statusValue = attribute(span.attributes, "http.response.status_code");
+           const statusCode = statusValue?.intValue ?? statusValue?.doubleValue;
+-          const status = typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+-            ? statusCode
+-            : undefined;
++          const status =
++            typeof statusCode === "number" &&
++            Number.isInteger(statusCode) &&
++            statusCode >= 100 &&
++            statusCode <= 599
++              ? statusCode
++              : undefined;
+           const queryDurations = ["session_access", "caller_accounts", "dispatch"].flatMap(
+             (phase) => {
+               const key = `app.ui.query.${phase}.duration_ms`;
+@@ -112,33 +214,40 @@ export function strictPrivacyTraceData(
+             phaseOrder === "session_access,caller_accounts" ||
+             phaseOrder === "session_access,caller_accounts,dispatch";
+           const attributes = [
+-            ...(method === undefined ? [] : [{ key: "http.request.method", value: { stringValue: method } }]),
++            ...(method === undefined
++              ? []
++              : [{ key: "http.request.method", value: { stringValue: method } }]),
+             ...(route === undefined ? [] : [{ key: "http.route", value: { stringValue: route } }]),
+-            ...(status === undefined ? [] : [{ key: "http.response.status_code", value: { intValue: status } }]),
++            ...(status === undefined
++              ? []
++              : [{ key: "http.response.status_code", value: { intValue: status } }]),
+             ...queryDurations,
+             ...(knownOrder
+               ? [{ key: "app.ui.query.phase_order", value: { stringValue: phaseOrder } }]
+               : []),
+           ];
+           const parentSpanId = traceId(span.parentSpanId, 16) ? span.parentSpanId : undefined;
+-          const kind = Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
++          const kind =
++            Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
+           const statusCodeSafe = [0, 1, 2].includes(span.status.code) ? span.status.code : 0;
+-          return [{
+-            traceId: span.traceId.toLowerCase(),
+-            spanId: span.spanId.toLowerCase(),
+-            parentSpanId,
+-            name: route === undefined ? "operation" : `${method ?? "HTTP"} ${route}`,
+-            kind,
+-            startTimeUnixNano: start.toString(),
+-            endTimeUnixNano: end.toString(),
+-            attributes,
+-            droppedAttributesCount: 0,
+-            events: [],
+-            droppedEventsCount: 0,
+-            status: { code: statusCodeSafe },
+-            links: [],
+-            droppedLinksCount: 0,
+-          }];
++          return [
++            {
++              traceId: span.traceId.toLowerCase(),
++              spanId: span.spanId.toLowerCase(),
++              parentSpanId,
++              name: route === undefined ? "operation" : `${method ?? "HTTP"} ${route}`,
++              kind,
++              startTimeUnixNano: start.toString(),
++              endTimeUnixNano: end.toString(),
++              attributes,
++              droppedAttributesCount: 0,
++              events: [],
++              droppedEventsCount: 0,
++              status: { code: statusCodeSafe },
++              links: [],
++              droppedLinksCount: 0,
++            },
++          ];
+         }),
+       })),
+     })),
+@@ -267,11 +376,16 @@ export const isolateTelemetry = (
+           [
+             config.traces === undefined || traces.length === 0
+               ? Effect.void
+-              : post("OtlpTracer", config.traces, json.traces({
+-                  resourceSpans: config.strictPrivacy === true
+-                    ? strictPrivacyTraceData({ resourceSpans: traces }, config).resourceSpans
+-                    : traces,
+-                })),
++              : post(
++                  "OtlpTracer",
++                  config.traces,
++                  json.traces({
++                    resourceSpans:
++                      config.strictPrivacy === true
++                        ? strictPrivacyTraceData({ resourceSpans: traces }, config).resourceSpans
++                        : traces,
++                  }),
++                ),
+             config.logs === undefined || logs.length === 0
+               ? Effect.void
+               : post("OtlpLogger", config.logs, json.logs({ resourceLogs: logs })),
+diff --git a/packages/ui/src/contracts/http.ts b/packages/ui/src/contracts/http.ts
+index 357f166b..3432fef0 100644
+--- a/packages/ui/src/contracts/http.ts
++++ b/packages/ui/src/contracts/http.ts
+@@ -35,7 +35,15 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.eff
+   Effect.map(HttpClient.HttpClient, (client) =>
+     stateRevision(typeof window === "undefined" ? addressHost(client) : client),
+   ),
+-).pipe(Layer.provide(typeof window === "undefined" ? FetchHttpClient.layer : FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)))));
++).pipe(
++  Layer.provide(
++    typeof window === "undefined"
++      ? FetchHttpClient.layer
++      : FetchHttpClient.layer.pipe(
++          Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)),
++        ),
++  ),
++);
+ 
+ /** A deterministic key for a request, independent of property order. */
+ export const requestKey = (value: unknown): string => {
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 63854211..d13c5788 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -221,7 +221,9 @@ export function AccountHealthPanel<E>({
+     driverCheckable && driver?.check?.current !== true
+       ? `driver:${driver?.check?.checkedAt.getTime() ?? "none"}`
+       : "",
+-  ].filter(Boolean).join(",");
++  ]
++    .filter(Boolean)
++    .join(",");
+   const checked = useRef(new Set<string>());
+   useEffect(() => {
+     if (staleResults === "" || checked.current.has(staleResults)) return;
+@@ -337,7 +339,11 @@ export function AccountCheckResult({
+       className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
+       data-check-status={health.check.status}
+       data-check-current={health.check.current}
+-      title={health.check.current ? undefined : "Checked before the app was redeployed or the account’s credentials changed"}
++      title={
++        health.check.current
++          ? undefined
++          : "Checked before the app was redeployed or the account’s credentials changed"
++      }
+     >
+       {health.check.current ? label : `${label} · outdated`}
+     </span>
+diff --git a/packages/ui/src/implementation/dashboard/agent-setup.tsx b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+index 6a2aa79e..5122a0af 100644
+--- a/packages/ui/src/implementation/dashboard/agent-setup.tsx
++++ b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+@@ -51,4 +51,5 @@ export function AgentSetupPrompt({
+   );
+ }
+ 
+-export const agentSetupPrompt = (product: string, endpoint?: string) => newAppPrompt("", endpoint, product);
++export const agentSetupPrompt = (product: string, endpoint?: string) =>
++  newAppPrompt("", endpoint, product);
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 69dd2412..fbf62959 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -622,34 +622,34 @@ export function AppAccounts<E>({
+     <div className="accounts-section space-y-8">
+       {appRequirements.length > 0 && (
+         <Checking.Provider value={appChecks}>
+-        <LinkScope
+-          app={app}
+-          scope="app"
+-          title="App accounts"
+-          description="Linked for everyone"
+-          requirements={appRequirements}
+-          data={appAccounts}
+-          accounts={accounts}
+-          methods={methods}
+-          showProvisionedProblems={repairs.app}
+-          Failure={Failure}
+-        />
++          <LinkScope
++            app={app}
++            scope="app"
++            title="App accounts"
++            description="Linked for everyone"
++            requirements={appRequirements}
++            data={appAccounts}
++            accounts={accounts}
++            methods={methods}
++            showProvisionedProblems={repairs.app}
++            Failure={Failure}
++          />
+         </Checking.Provider>
+       )}
+       {userRequirements.length > 0 && (
+         <Checking.Provider value={userChecks}>
+-        <LinkScope
+-          app={app}
+-          scope="user"
+-          title="Your accounts"
+-          description="Linked for you"
+-          requirements={userRequirements}
+-          data={yourAccounts}
+-          accounts={accounts}
+-          methods={methods}
+-          showProvisionedProblems={repairs.user}
+-          Failure={Failure}
+-        />
++          <LinkScope
++            app={app}
++            scope="user"
++            title="Your accounts"
++            description="Linked for you"
++            requirements={userRequirements}
++            data={yourAccounts}
++            accounts={accounts}
++            methods={methods}
++            showProvisionedProblems={repairs.user}
++            Failure={Failure}
++          />
+         </Checking.Provider>
+       )}
+     </div>
+@@ -690,30 +690,32 @@ function LinkScope<E>({
+   const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <Checking.Provider value={checking}>
+-    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+-      <div>
+-        <h2 className="text-sm font-medium">{title}</h2>
+-        <p className="text-xs text-muted-foreground">{description}</p>
+-      </div>
+-      {readOnly && data.readOnly !== undefined && (
+-        <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+-      )}
+-      <div className="space-y-5">
+-        {open.map(([slot, requirement]) => (
+-          <RequirementView
+-            key={slot}
+-            {...props}
+-            slot={slot}
+-            requirement={requirement}
+-            linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
+-            readOnlyNote={readOnly ? undefined : data.readOnly}
+-          />
+-        ))}
+-        {closed.length > 0 && (
+-          <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
++      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
++        <div>
++          <h2 className="text-sm font-medium">{title}</h2>
++          <p className="text-xs text-muted-foreground">{description}</p>
++        </div>
++        {readOnly && data.readOnly !== undefined && (
++          <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+         )}
+-      </div>
+-    </section>
++        <div className="space-y-5">
++          {open.map(([slot, requirement]) => (
++            <RequirementView
++              key={slot}
++              {...props}
++              slot={slot}
++              requirement={requirement}
++              linked={data.links.flatMap((link) =>
++                link.requirement === slot ? [link.account] : [],
++              )}
++              readOnlyNote={readOnly ? undefined : data.readOnly}
++            />
++          ))}
++          {closed.length > 0 && (
++            <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
++          )}
++        </div>
++      </section>
+     </Checking.Provider>
+   );
+ }
+@@ -1535,12 +1537,21 @@ function AccountStatus({
+   const rechecks = useContext(Checking);
+   const account = row.account;
+   const health = account.health?.apps.find((entry) => entry.app === app.id);
+-  if (!accountNeedsSignIn(account) && account.signIn?.state !== "unavailable" &&
+-      health?.checkable === true && health.check?.current !== true &&
+-      (rechecks.running.has(account.id) || rechecks.failed.has(account.id)))
+-    return <AccountCheckResult health={health} part="header"
+-      checking={rechecks.running.has(account.id)}
+-      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined} />;
++  if (
++    !accountNeedsSignIn(account) &&
++    account.signIn?.state !== "unavailable" &&
++    health?.checkable === true &&
++    health.check?.current !== true &&
++    (rechecks.running.has(account.id) || rechecks.failed.has(account.id))
++  )
++    return (
++      <AccountCheckResult
++        health={health}
++        part="header"
++        checking={rechecks.running.has(account.id)}
++        retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
++      />
++    );
+   return (
+     <AccountHealthCell
+       health={appRowHealth(row, row.bindings[0]!)}
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+index f0ae68d1..d3310c5c 100644
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -140,7 +140,15 @@ function ConnectionReads<E, EL extends E>({
+       }}
+       pending={pending}
+     >
+-      {(value) => children({ ...value.inventory, apps: value.inventory.apps.map((app) => ({ ...app, name: appDisplayName(app, brand) })) }, value.stored)}
++      {(value) =>
++        children(
++          {
++            ...value.inventory,
++            apps: value.inventory.apps.map((app) => ({ ...app, name: appDisplayName(app, brand) })),
++          },
++          value.stored,
++        )
++      }
+     </QueryResult>
+   );
+ }
+@@ -334,7 +342,10 @@ function ConnectionCard({
+ 
+ const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
+   new Map(
+-    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks)]),
++    inventory.apps.map((app) => [
++      app.id,
++      appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks),
++    ]),
+   );
+ 
+ /** A stored connection as an editable draft, keeping removed apps and accounts visible. */
