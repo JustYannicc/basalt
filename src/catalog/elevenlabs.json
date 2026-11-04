@@ -23,7 +23,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/elevenlabs\",\n  \"description\": \"ElevenLabs AI audio: text to speech, speech to text, voices, dubbing, sound effects, music, conversational agents and workspace management.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.8\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"ElevenLabs\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/elevenlabs\",\n  \"description\": \"ElevenLabs AI audio: text to speech, speech to text, voices, dubbing, sound effects, music, conversational agents and workspace management.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.9\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"ElevenLabs\"\n  }\n}\n"
     },
     {
       "path": "mcp.ts",
