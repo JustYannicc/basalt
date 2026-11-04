@@ -108,6 +108,7 @@ function previewSmokeCredentials(source: NodeJS.ProcessEnv): void {
 }
 
 export const optionalConnectorClients = [
+  { name: "PlanetScale", id: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID", secret: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET", ready: "PLANETSCALE_CONNECTOR_READY" },
   { name: "Notion", id: "EXECUTOR_OAUTH_NOTION_CLIENT_ID", secret: "EXECUTOR_OAUTH_NOTION_CLIENT_SECRET", ready: "NOTION_CONNECTOR_READY" },
   { name: "Todoist", id: "EXECUTOR_OAUTH_TODOIST_CLIENT_ID", secret: "EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET", ready: "TODOIST_CONNECTOR_READY" },
   { name: "Trello", id: "EXECUTOR_OAUTH_TRELLO_CLIENT_ID", secret: "EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET", ready: "TRELLO_CONNECTOR_READY" },
