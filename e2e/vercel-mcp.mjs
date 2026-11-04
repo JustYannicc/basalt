@@ -57,7 +57,7 @@ export const proveVercelMcp = ({
       (client) => Effect.promise(() => client.close()),
     );
     for (const [name, accountId, expected] of [
-      ["fixture_read", token, { transport: "rest", marker: "retained-token" }],
+      ["fixture.read", token, { transport: "rest", marker: "retained-token" }],
       ["read_project", oauth, { transport: "mcp", marker: "read_project" }],
     ]) {
       const search = yield* Effect.promise(() =>
