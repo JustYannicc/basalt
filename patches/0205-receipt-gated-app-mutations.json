@@ -1,7 +1,7 @@
 {
   "identity": "basalt-receipt-gated-app-mutations",
   "file": "0205-receipt-gated-app-mutations.patch",
-  "content_sha256": "91a1e0bc1c9fc7850ec2e05a9bae9354c013af7dd7c37e32b36627dc5b2932ca",
+  "content_sha256": "f3216239f2fba68a848d243baaeb19259e17d2a7c24cf3f35ddf77c837ff03f2",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

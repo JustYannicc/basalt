@@ -2,7 +2,7 @@ diff --git a/e2e/support/app-call-delivery.ts b/e2e/support/app-call-delivery.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-call-delivery.ts
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,101 @@
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Deferred, Effect, Layer, Schema } from "effect";
 +import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -13,6 +13,7 @@ new file mode 100644
 +  const makeSlot = Effect.gen(function* () {
 +    return {
 +      arrived: yield* Deferred.make<void>(),
++      duplicate: yield* Deferred.make<void>(),
 +      released: yield* Deferred.make<void>(),
 +      finished: yield* Deferred.make<Schema.Json>(),
 +      held: false,
@@ -39,6 +40,7 @@ new file mode 100644
 +        );
 +        const value = yield* slot(input.subject);
 +        value.count++;
++        if (value.count > 1) yield* Deferred.succeed(value.duplicate, undefined);
 +        yield* Deferred.succeed(value.arrived, undefined);
 +        if (value.held) yield* Deferred.await(value.released);
 +        return yield* HttpServerResponse.json({
@@ -90,6 +92,8 @@ new file mode 100644
 +        ),
 +        Effect.asVoid,
 +      ),
++    duplicate: (subject: string) =>
++      slot(subject).pipe(Effect.flatMap((value) => Deferred.await(value.duplicate))),
 +    arrived: (subject: string) =>
 +      slot(subject).pipe(Effect.flatMap((value) => Deferred.await(value.arrived))),
 +    finished: (subject: string) =>
@@ -223,7 +227,7 @@ diff --git a/e2e/tests/app-call-effects.spec.ts b/e2e/tests/app-call-effects.spe
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-call-effects.spec.ts
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,184 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schema } from "effect";
 +import { appCallDelivery } from "../support/app-call-delivery.ts";
@@ -238,9 +242,10 @@ new file mode 100644
 +      context,
 +      Effect.gen(function* () {
 +        const delivery = yield* appCallDelivery;
-+        const sdk = yield* appCallSdkHost(appCallEffectsSdkSource, "app-call-effects-sdk", {
-+          deliveryOrigin: delivery.origin,
-+        });
++        const sdk = yield* appCallSdkHost(
++          appCallEffectsSdkSource.replace("DELIVERY_ORIGIN", JSON.stringify(delivery.origin)),
++          "app-call-effects-sdk",
++        );
 +        yield* Effect.addFinalizer(() => delivery.releaseAll);
 +        const setup = yield* sdk.request("setup", null);
 +        expect(setup.status, JSON.stringify(setup.body)).toBe(200);
@@ -364,7 +369,16 @@ new file mode 100644
 +        yield* delivery.hold("concurrent");
 +        const first = yield* call("concurrent", "concurrent").pipe(Effect.forkChild);
 +        yield* delivery.arrived("concurrent");
-+        expect((yield* call("concurrent", "concurrent")).body).toEqual({ reason: "in_progress" });
++        const contender = yield* Effect.raceFirst(
++          call("concurrent", "concurrent").pipe(
++            Effect.map((reply) => ({ status: "reply" as const, reply })),
++          ),
++          delivery.duplicate("concurrent").pipe(Effect.as({ status: "duplicate" as const })),
++        );
++        expect(contender.status).toBe("reply");
++        if (contender.status !== "reply")
++          return yield* Effect.die("A concurrent call delivered twice");
++        expect(contender.reply.body).toEqual({ reason: "in_progress" });
 +        expect(yield* delivery.count("concurrent")).toBe(1);
 +        yield* delivery.release("concurrent");
 +        expect((yield* Fiber.join(first)).body).toEqual({
