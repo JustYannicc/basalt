@@ -17,9 +17,8 @@ import { providerDeclaration } from "../../.upstream/packages/apps/src/implement
 import type { ProviderDefinition } from "../../.upstream/packages/sdk/src/contracts/provider.ts";
 import { identifyProvider } from "../../.upstream/packages/sdk/src/implementation/provider.ts";
 const { planAccountConsumerMethod } = await load("packages/sdk/src/contracts/account-consumers.ts");
-const { accountOffering, accountKindLabel, accountMethodKindLabel, connectionKindLabel } = await load(
-  "packages/ui/src/contracts/account-identities.ts",
-);
+const { accountOffering, accountKindLabel, accountMethodKindLabel, connectionKindLabel } =
+  await load("packages/ui/src/contracts/account-identities.ts");
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
   digest: (_algorithm, data) =>
@@ -128,7 +127,10 @@ test("unknown and contradictory declarations stay unknown and never imply subscr
   assert.equal(accountMethodKindLabel(definition("subscription"), "oauth"), "OAuth · Subscription");
 
   assert.equal(accountOffering(inventory(definition("subscription")), account), "subscription");
-  assert.equal(accountKindLabel(inventory(definition("subscription")), account), "OAuth · Subscription");
+  assert.equal(
+    accountKindLabel(inventory(definition("subscription")), account),
+    "OAuth · Subscription",
+  );
   assert.equal(
     accountOffering(inventory(definition("subscription"), definition("prepaid")), account),
     "unknown",
@@ -159,7 +161,6 @@ test("offering hints do not change the capability planner's availability or requ
   assert.equal(unknown.status, "unavailable");
   assert.deepEqual(plan("subscription"), unknown);
 });
-
 
 test("public connection labels preserve offering and credential meanings independently", () => {
   assert.equal(connectionKindLabel("api-key", "subscription"), "API key · Subscription");
