@@ -534,40 +534,10 @@ index 4e1b860..c352f7e 100644
                if (
                  account.hostManaged === true ||
 diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
-index a746084..1c1ae64 100644
+index a746084..d4bf51e 100644
 --- a/e2e/support/pool-usage-series-backend.ts
 +++ b/e2e/support/pool-usage-series-backend.ts
-@@ -17,9 +17,23 @@ const Assertion = Schema.Struct({
-   }),
- });
- 
--/** The hosted server is real; this loopback peer implements only the external pool protocol. */
-+export type SeriesAssertion = typeof Assertion.Type;
-+
-+/** Each signed action's route, as Basalt's src/pool/model-history/series-http.ts serves it. */
-+const actionPaths = {
-+  poolUsageSeries: "/pool/v1/usage/series",
-+  lastSuccessAt: "/pool/v1/usage/last-success",
-+} as const satisfies Record<SeriesAssertion["action"], string>;
-+
-+/**
-+ * The hosted server is real; this loopback peer implements only the external pool protocol.
-+ * `respond` replaces the fixed answers with a scenario's own, computed from each signed call.
-+ */
- export const poolUsageSeriesBackend = Effect.gen(function* () {
-   const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
-+  const responder = yield* Ref.make<((assertion: SeriesAssertion) => unknown) | undefined>(
-+    undefined,
-+  );
-   const handler = Effect.gen(function* () {
-     const request = yield* HttpServerRequest.HttpServerRequest;
-     const body = yield* request.json.pipe(
-@@ -46,10 +60,12 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
-     if (
-       assertion.expiresAt <= now ||
-       assertion.expiresAt > now + 30_000 ||
--      !request.url.endsWith(`/${assertion.action}`)
-+      new URL(request.url, "http://loopback").pathname !== actionPaths[assertion.action]
+@@ -50,6 +50,8 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
      )
        return HttpServerResponse.empty({ status: 401 });
      yield* Ref.update(calls, (values) => [...values, assertion]);
@@ -576,7 +546,18 @@ index a746084..1c1ae64 100644
      const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
      if (assertion.action === "lastSuccessAt")
        return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
-@@ -146,5 +162,9 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+@@ -134,6 +136,10 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+       hostReference: "private-reference-sentinel",
+     });
+   });
++  // A scenario's own answers, computed from each signed call, replace the fixed ones above.
++  const responder = yield* Ref.make<((assertion: SeriesAssertion) => unknown) | undefined>(
++    undefined,
++  );
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+@@ -146,5 +152,12 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
    );
    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
    if (!("port" in server.address)) return yield* Effect.die("Pool series fixture requires TCP");
@@ -587,6 +568,9 @@ index a746084..1c1ae64 100644
 +    respond: (answer: (assertion: SeriesAssertion) => unknown) => Ref.set(responder, answer),
 +  };
  });
++
++/** One signed call the fixture received. */
++export type SeriesAssertion = typeof Assertion.Type;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index a57b0b7..f39c61a 100644
 --- a/e2e/test-plan.ts
