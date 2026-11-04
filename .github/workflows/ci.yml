@@ -429,15 +429,18 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 2
-        run: npm run prepare:upstream
+        run: |
+          npm run prepare:upstream
+          cd .upstream
+          bunx playwright install --with-deps chromium
       - name: Build the isolated Google recovery test assets
         timeout-minutes: 2
         working-directory: .upstream
         run: bun run e2e:prepare
-      - name: Install the Google recovery browser engine
+      - name: Verify the prepared Google recovery browser engine
         timeout-minutes: 1
         working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        run: node ../scripts/check-e2e-browser.mjs
       - name: Verify Google recovery through signed Cloud operations
         timeout-minutes: 6
         working-directory: .upstream
