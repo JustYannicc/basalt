@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { createHash } from "node:crypto";
 import { Effect, Schema } from "effect";
 import { CodeFiles, RuntimeBuildFailed } from "../../.upstream/packages/sdk/src/core.ts";
 import { CompiledCloudApp } from "../../.upstream/apps/hosted/cloud/src/contracts/builds.ts";
 import { cachedCompilerResult } from "../../.upstream/apps/hosted/cloud/src/implementation/compiler-result-cache.ts";
+
+import { compilerCacheRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/compiler-cache-config.ts";
 
 const source = (text = "export default {}", version = "1.2.3") =>
   Schema.decodeUnknownSync(CodeFiles)([
@@ -27,6 +30,7 @@ const input = (files = source(), release: string | undefined = "release-one") =>
   files,
   release,
   enabled: true,
+  dependencyFiles: [{ path: "node_modules/scheduler/index.js", content: "exports.value = 1" }],
   publicPaths: ["logo.png"],
 });
 
@@ -213,4 +217,85 @@ test("oversized successful output is returned without retaining a cache entry", 
   const result = await Effect.runPromise(cachedCompilerResult(input(), Effect.succeed(large)));
   assert.equal(result.sourceMap.length, large.sourceMap.length);
   assert.equal(fixture.entries.size, 0);
+});
+
+test("a newly resolved transitive dependency or framework asset cannot reuse old output", async (context) => {
+  const fixture = cacheFixture(context);
+  await Effect.runPromise(cachedCompilerResult(input(), fixture.compile));
+  for (const dependencyFiles of [
+    [{ path: "node_modules/scheduler/index.js", content: "exports.value = 2" }],
+    [
+      ...input().dependencyFiles,
+      { path: "node_modules/apps/runtime.json", content: "new framework" },
+    ],
+    [
+      ...input().dependencyFiles,
+      { path: "node_modules/asset/bytes.wasm", content: null, bytes: [0, 1] },
+    ],
+    [
+      ...input().dependencyFiles,
+      { path: "node_modules/asset/bytes.wasm", content: null, bytes: [0, 2] },
+    ],
+  ])
+    await Effect.runPromise(cachedCompilerResult({ ...input(), dependencyFiles }, fixture.compile));
+  assert.equal(fixture.compiles(), 5);
+});
+
+const production = {
+  stage: "production",
+  release: "a".repeat(40),
+  registry: undefined,
+  framework: "/released/framework",
+  expectedFramework: "/released/framework",
+  version: "1.2.3",
+  expectedVersion: "1.2.3",
+};
+test("the compiler caller excludes inherited test releases, registries and framework overrides", () => {
+  assert.equal(compilerCacheRelease(production), production.release);
+  for (const config of [
+    { ...production, stage: "test-e2e-cache" },
+    { ...production, stage: "development" },
+    { ...production, stage: undefined },
+    { ...production, framework: "/test/framework" },
+    { ...production, version: "1.2.4" },
+    { ...production, registry: "https://registry.example.test" },
+    { ...production, expectedFramework: undefined },
+    { ...production, release: undefined },
+  ])
+    assert.equal(compilerCacheRelease(config), undefined);
+});
+
+for (const damage of ["javascript", "entry", "binary"] as const) {
+  test(`valid JSON with damaged ${damage} is a miss`, async (context) => {
+    const fixture = cacheFixture(context);
+    await Effect.runPromise(cachedCompilerResult(input(), fixture.compile));
+    const key = fixture.entries.keys().next().value;
+    assert.ok(key);
+    const envelope = JSON.parse(await fixture.entries.get(key)!.clone().text());
+    const payload = JSON.parse(envelope.payload);
+    if (damage === "javascript") payload.bundle.modules["index.js"] = "broken javascript {{{";
+    if (damage === "binary") payload.bundle.modules["sample.wasm"].wasm = "AAAA";
+    if (damage === "entry") payload.bundle.mainModule = "missing.js";
+    envelope.payload = JSON.stringify(payload);
+    // Even a correctly checksummed record must describe an executable entry module.
+    if (damage === "entry")
+      envelope.digest = createHash("sha256").update(envelope.payload).digest("hex");
+    fixture.entries.set(key, new Response(JSON.stringify(envelope)));
+    const value = await Effect.runPromise(cachedCompilerResult(input(), fixture.compile));
+    assert.deepEqual(value, output);
+    assert.equal(fixture.compiles(), 2);
+  });
+}
+
+test("server-only output survives the JSON cache boundary without a UI field", async (context) => {
+  cacheFixture(context);
+  let count = 0;
+  const compile = Effect.sync(() => {
+    count++;
+    return { ...output, ui: undefined };
+  });
+  await Effect.runPromise(cachedCompilerResult(input(), compile));
+  const hit = await Effect.runPromise(cachedCompilerResult(input(), compile));
+  assert.equal(hit.ui, undefined);
+  assert.equal(count, 1);
 });

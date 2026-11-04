@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -83,10 +84,12 @@ export interface PreviewIdentity {
   readonly origin: string;
 }
 
-const dnsName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
+const dnsName =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 
 function previewPullRequest(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error("PR number must be a positive integer");
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error("PR number must be a positive integer");
   return value;
 }
 
@@ -97,40 +100,109 @@ function previewDomain(value: string): string {
 }
 
 function previewStateKey(value: string): void {
-  if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("PREVIEW_STATE_KEY must be 32 bytes of lowercase hex");
+  if (!/^[a-f0-9]{64}$/.test(value))
+    throw new Error("PREVIEW_STATE_KEY must be 32 bytes of lowercase hex");
 }
 
 function previewSmokeCredentials(source: NodeJS.ProcessEnv): void {
-  if (!source.PREVIEW_SMOKE_EMAIL?.trim()) throw new Error("Missing GitHub Actions secret: PREVIEW_SMOKE_EMAIL");
-  if (!source.PREVIEW_SMOKE_PASSWORD?.trim()) throw new Error("Missing GitHub Actions secret: PREVIEW_SMOKE_PASSWORD");
+  if (!source.PREVIEW_SMOKE_EMAIL?.trim())
+    throw new Error("Missing GitHub Actions secret: PREVIEW_SMOKE_EMAIL");
+  if (!source.PREVIEW_SMOKE_PASSWORD?.trim())
+    throw new Error("Missing GitHub Actions secret: PREVIEW_SMOKE_PASSWORD");
   if (!source.PREVIEW_SMOKE_EMAIL.endsWith("@example.invalid"))
     throw new Error("PREVIEW_SMOKE_EMAIL must use the reserved example.invalid domain");
 }
 
 export const optionalConnectorClients = [
-  { name: "PlanetScale", id: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID", secret: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET", ready: "PLANETSCALE_CONNECTOR_READY" },
-  { name: "Notion", id: "EXECUTOR_OAUTH_NOTION_CLIENT_ID", secret: "EXECUTOR_OAUTH_NOTION_CLIENT_SECRET", ready: "NOTION_CONNECTOR_READY" },
-  { name: "Todoist", id: "EXECUTOR_OAUTH_TODOIST_CLIENT_ID", secret: "EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET", ready: "TODOIST_CONNECTOR_READY" },
-  { name: "Trello", id: "EXECUTOR_OAUTH_TRELLO_CLIENT_ID", secret: "EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET", ready: "TRELLO_CONNECTOR_READY" },
-  { name: "GitLab", id: "EXECUTOR_OAUTH_GITLAB_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET", ready: "GITLAB_CONNECTOR_READY" },
-  { name: "Miro", id: "EXECUTOR_OAUTH_MIRO_CLIENT_ID", secret: "EXECUTOR_OAUTH_MIRO_CLIENT_SECRET", ready: "MIRO_CONNECTOR_READY" },
-  { name: "Zoho CRM", id: "EXECUTOR_OAUTH_ZOHO_CLIENT_ID", secret: "EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET", ready: "ZOHO_CONNECTOR_READY" },
-  { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
-  { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
-  { name: "Atlassian", id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET", ready: "ATLASSIAN_CONNECTOR_READY" },
-  { name: "Slack", id: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID", secret: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET", ready: "SLACK_CONNECTOR_READY" },
-  { name: "Zendesk", id: "EXECUTOR_OAUTH_ZENDESK_CLIENT_ID", secret: "EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET", ready: "ZENDESK_CONNECTOR_READY" },
+  {
+    name: "PlanetScale",
+    id: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET",
+    ready: "PLANETSCALE_CONNECTOR_READY",
+  },
+  {
+    name: "Notion",
+    id: "EXECUTOR_OAUTH_NOTION_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_NOTION_CLIENT_SECRET",
+    ready: "NOTION_CONNECTOR_READY",
+  },
+  {
+    name: "Todoist",
+    id: "EXECUTOR_OAUTH_TODOIST_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET",
+    ready: "TODOIST_CONNECTOR_READY",
+  },
+  {
+    name: "Trello",
+    id: "EXECUTOR_OAUTH_TRELLO_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET",
+    ready: "TRELLO_CONNECTOR_READY",
+  },
+  {
+    name: "GitLab",
+    id: "EXECUTOR_OAUTH_GITLAB_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET",
+    ready: "GITLAB_CONNECTOR_READY",
+  },
+  {
+    name: "Miro",
+    id: "EXECUTOR_OAUTH_MIRO_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_MIRO_CLIENT_SECRET",
+    ready: "MIRO_CONNECTOR_READY",
+  },
+  {
+    name: "Zoho CRM",
+    id: "EXECUTOR_OAUTH_ZOHO_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET",
+    ready: "ZOHO_CONNECTOR_READY",
+  },
+  {
+    name: "Google",
+    id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
+    ready: "GOOGLE_CONNECTOR_READY",
+  },
+  {
+    name: "GitHub",
+    id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET",
+    ready: "GITHUB_CONNECTOR_READY",
+  },
+  {
+    name: "Atlassian",
+    id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET",
+    ready: "ATLASSIAN_CONNECTOR_READY",
+  },
+  {
+    name: "Slack",
+    id: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET",
+    ready: "SLACK_CONNECTOR_READY",
+  },
+  {
+    name: "Zendesk",
+    id: "EXECUTOR_OAUTH_ZENDESK_CLIENT_ID",
+    secret: "EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET",
+    ready: "ZENDESK_CONNECTOR_READY",
+  },
 ] as const;
 
 /** One warning per unavailable client, never per missing secret or containing credential values. */
 export function connectorWarnings(environment: NodeJS.ProcessEnv): string[] {
-  return optionalConnectorClients.filter(client => environment[client.ready] !== "true")
-    .map(client => client.name === "Zendesk"
-      ? "Zendesk's optional hosted OAuth client is unavailable; native public-client selection and BYO remain available."
-      : `${client.name} connector is not set up yet; its optional OAuth client credentials are incomplete.`);
+  return optionalConnectorClients
+    .filter((client) => environment[client.ready] !== "true")
+    .map((client) =>
+      client.name === "Zendesk"
+        ? "Zendesk's optional hosted OAuth client is unavailable; native public-client selection and BYO remain available."
+        : `${client.name} connector is not set up yet; its optional OAuth client credentials are incomplete.`,
+    );
 }
 
-export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
+export function deployEnvironment(
+  source = process.env,
+  checkout = fileURLToPath(new URL("..", import.meta.url)),
+): NodeJS.ProcessEnv {
   for (const name of [
     "EXECUTOR_EMULATORS",
     "TEST_STAGE_DATABASE_PROVIDER",
@@ -154,10 +226,23 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex");
   if (previousSigningKey === source.POOL_APP_SIGNING_KEY)
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY");
-  if (appHosting.enabled && appHosting.scheme === "nested" && !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()) {
+  if (
+    appHosting.enabled &&
+    appHosting.scheme === "nested" &&
+    !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()
+  ) {
     throw new Error("Missing GitHub Actions secret: APP_DOMAIN_CONTROLLER_TOKEN");
   }
-  zendeskMarketplaceMetadata(source.ZENDESK_MARKETPLACE_ORGANIZATION_ID, source.ZENDESK_MARKETPLACE_APP_ID);
+  zendeskMarketplaceMetadata(
+    source.ZENDESK_MARKETPLACE_ORGANIZATION_ID,
+    source.ZENDESK_MARKETPLACE_APP_ID,
+  );
+  const release = execFileSync("git", ["-C", checkout, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+  if (!/^[a-f0-9]{40}$/.test(release))
+    throw new Error("Deployment requires an immutable checkout commit");
+  const framework = fileURLToPath(new URL("../.upstream/.local/basalt-framework", import.meta.url));
   const { commit } = JSON.parse(readFileSync(new URL("../upstream.json", import.meta.url), "utf8"));
   // Retire the former deployment tenant even when a runner still has its old setting.
   const connectors: NodeJS.ProcessEnv = { EXECUTOR_ZENDESK_SUBDOMAIN: undefined };
@@ -195,7 +280,9 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_PRODUCT_TERMS_URL: brand.links.terms ?? undefined,
     EXECUTOR_PRODUCT_SOURCE_URL: brand.links.source ?? undefined,
     // The router's feedback host sends only to Sentry, so the sidebar offers the form only with it.
-    EXECUTOR_PRODUCT_FEEDBACK_URL: validSentryDsn(source.SENTRY_DSN) ? feedbackEndpoints.submit : undefined,
+    EXECUTOR_PRODUCT_FEEDBACK_URL: validSentryDsn(source.SENTRY_DSN)
+      ? feedbackEndpoints.submit
+      : undefined,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GITHUB_CLIENT_ID: source.AUTH_GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: source.AUTH_GITHUB_CLIENT_SECRET,
@@ -206,26 +293,27 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
     EXECUTOR_BUILD_VERSION: commit,
     // Released framework assets are immutable. Test and preview overrides do not opt in.
-    EXECUTOR_COMPILER_CACHE_RELEASE: commit,
+    EXECUTOR_COMPILER_CACHE_RELEASE: release,
+    EXECUTOR_COMPILER_CACHE_FRAMEWORK: framework,
+    EXECUTOR_COMPILER_CACHE_APPS_VERSION: servedFrameworkVersion,
     EXECUTOR_APPS_VERSION: servedFrameworkVersion,
-    EXECUTOR_APPS_FRAMEWORK: fileURLToPath(
-      new URL("../.upstream/.local/basalt-framework", import.meta.url),
-    ),
+    EXECUTOR_APPS_FRAMEWORK: framework,
     CLOUD_DATA_STEPS: "apply",
     SENTRY_ENABLED: "false",
     POSTHOG_ENABLED: "false",
     // Separate purpose from pool signatures without another operator-managed secret.
-    TELEMETRY_RELAY_KEY: createHash("sha256").update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`).digest("hex"),
+    TELEMETRY_RELAY_KEY: createHash("sha256")
+      .update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`)
+      .digest("hex"),
     EXECUTOR_TELEMETRY_RELAY_URL: `https://${brand.host}/__telemetry/v1`,
-    EXECUTOR_TELEMETRY_RELAY_TOKEN: createHash("sha256").update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`).digest("hex"),
+    EXECUTOR_TELEMETRY_RELAY_TOKEN: createHash("sha256")
+      .update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`)
+      .digest("hex"),
   };
 }
 
 /** Derive one temporary PR environment; production credentials never enter the returned env. */
-export function previewEnvironment(
-  pullRequest: number,
-  source = process.env,
-): PreviewEnvironment {
+export function previewEnvironment(pullRequest: number, source = process.env): PreviewEnvironment {
   const number = previewPullRequest(pullRequest);
   const identity = previewIdentity(number, source);
   for (const name of requiredPreviewDeploySecrets) {
@@ -246,7 +334,14 @@ export function previewEnvironment(
 
   const deploy: NodeJS.ProcessEnv = {};
   for (const name of [
-    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "BUN_INSTALL",
+    "ALCHEMY_HOME",
+    "RUNNER_TEMP",
+    "GITHUB_ACTIONS",
     ...requiredPreviewSecrets,
   ]) {
     if (source[name] !== undefined) deploy[name] = source[name];
@@ -272,7 +367,11 @@ export function previewEnvironment(
     EXECUTOR_CATALOG_URL: `${origin}${catalog.path}index.json`,
     TELEMETRY_RELAY_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "TELEMETRY_RELAY_KEY"),
     EXECUTOR_TELEMETRY_RELAY_URL: `${origin}/__telemetry/v1`,
-    EXECUTOR_TELEMETRY_RELAY_TOKEN: previewKey(source.PREVIEW_STATE_KEY!, number, "TELEMETRY_RELAY_KEY"),
+    EXECUTOR_TELEMETRY_RELAY_TOKEN: previewKey(
+      source.PREVIEW_STATE_KEY!,
+      number,
+      "TELEMETRY_RELAY_KEY",
+    ),
     AUTH_EMAIL_DOMAIN: `auth.${slug}.${domain}`,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GOOGLE_CLIENT_ID: source.GOOGLE_CLIENT_ID,
@@ -349,10 +448,7 @@ export function previewStageOrigin(slug: string, domain: string, app = true): st
 }
 
 /** Deterministic stage identity; it reads no provider credentials and performs no I/O. */
-export function previewIdentity(
-  pullRequest: number,
-  source = process.env,
-): PreviewIdentity {
+export function previewIdentity(pullRequest: number, source = process.env): PreviewIdentity {
   const number = previewPullRequest(pullRequest);
   const domain = previewDomain(source.TEST_STAGE_DOMAIN ?? "");
   const slug = `pr-${number}`;
