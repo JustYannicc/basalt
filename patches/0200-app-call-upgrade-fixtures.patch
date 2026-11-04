@@ -1,0 +1,103 @@
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,6 +1,14 @@
++/** Remove the 4.0.27 app-call tables before reconstructing an earlier SDK layout. */
++export const beforeAppCalls = () =>
++  [
++    { sql: "DROP TABLE executor_app_call_receipts" },
++    { sql: "DROP TABLE executor_app_connections" },
++  ] as const;
++
+ /** Remove later additive columns before a fixture labels retained data as pre-identity storage. */
+ export const beforeAccountIdentities = () =>
+   [
++    ...beforeAppCalls(),
+     {
+       sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
+     },
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -57,7 +57,7 @@
+         expect(afterInput.slice(0, retainedTables.length)).toEqual(
+           beforeInput.slice(0, retainedTables.length),
+         );
+-        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.25" }]);
++        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.27" }]);
+         expect(afterInput[retainedTables.length + 1]).toEqual([
+           { table_name: "executor_workflow_inputs" },
+         ]);
+@@ -89,7 +89,7 @@
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.25" }]);
++        expect(version).toEqual([{ value: "4.0.27" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -57,7 +57,7 @@
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.25" }]]);
++        expect(storage).toEqual([[{ value: "4.0.27" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -136,7 +136,7 @@
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.25" }]);
++  expect(version).toEqual([{ value: "4.0.27" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.25" }]);
++        expect(version).toEqual([{ value: "4.0.27" }]);
+ 
+         expect(credentials).toEqual([
+           { client: ids.a },
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.25" }]);
++        expect(version).toEqual([{ value: "4.0.27" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
+--- a/e2e/tests/native-pool-account-mirrors.spec.ts
++++ b/e2e/tests/native-pool-account-mirrors.spec.ts
+@@ -1,3 +1,4 @@
++import { beforeAppCalls } from "../support/profile-removal-rollback.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Fiber, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+@@ -112,6 +113,7 @@
+         // Reconstruct the released 4.0.24 acquisition layout over retained real token accounts.
+         // The next full product start must migrate it without replacing those accounts or fields.
+         yield* legacyStorage([
++          ...beforeAppCalls(),
+           {
+             sql: "alter table executor_account_acquisitions drop column mirror_reference, drop column mirror_ready, drop column mirror_operation",
+           },

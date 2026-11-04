@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-call-upgrade-fixtures",
+  "file": "0200-app-call-upgrade-fixtures.patch",
+  "content_sha256": "302c75a1170c2d2a98ae7af1510e1bd090e09661810c41adf676bc7096616635",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
