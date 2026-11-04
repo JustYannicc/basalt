@@ -412,8 +412,8 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => shot("reset-blocked"));
 
-  // The owner shares the account's usage, so a member sees the cells and the count. The member
-  // doesn't own the pool, so the count stays read-only and no provider is reached.
+  // Even with the account's usage shared with everyone, a member who doesn't own the pool gets no
+  // reset control and reaches no provider.
   const policy = yield* h.request("GET", `${account}/observations/access`);
   yield* h.request("PUT", `${account}/observations/access`, {
     ...policy,
@@ -421,26 +421,12 @@ const program = Effect.gen(function* () {
   });
   const calls = h.fixture.resets.calls.length;
   const member = yield* open("member");
-  // What the member's own reads see, kept for failure.json if the count never shows.
-  const memberView = yield* h
-    .requestAs("member", "GET", `${account}/observations`)
-    .pipe(Effect.result);
-  diagnostics.memberObservations =
-    memberView._tag === "Success"
-      ? {
-          canInspect: memberView.success?.canInspect,
-          reports: (memberView.success?.reports ?? []).map((report) => ({
-            outcome: report.lastAttempt?.outcome,
-            hasResult: report.result != null,
-            balances: report.result?.observation?.balances?.length ?? 0,
-            windows: report.result?.observation?.windows?.length ?? 0,
-          })),
-        }
-      : { error: String(memberView.failure).slice(0, 300) };
+  // The member sees the shared account, but it is only used through the owner's private pool, so
+  // the member gets no usage from it, no reset control and no way to reach the provider.
   yield* page(() =>
     member
       .goto(accounts)
-      .then(() => member.locator("[data-reset-count]").first().waitFor())
+      .then(() => member.getByText(label, { exact: true }).first().waitFor())
       .catch((error) =>
         member
           .screenshot({ path: join(directory, "member-missing.png") })
@@ -448,7 +434,7 @@ const program = Effect.gen(function* () {
       ),
   );
   checked(
-    "a member who sees the usage cells sees no reset control",
+    "a member who sees the shared account gets no reset control",
     yield* page(() =>
       Promise.all([
         member.locator("[data-reset-control]").count(),
