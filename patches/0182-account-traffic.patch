@@ -1,0 +1,2027 @@
+diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/web/src/contracts/pool-usage-series.ts
+new file mode 100644
+index 0000000..15c66a3
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/pool-usage-series.ts
+@@ -0,0 +1,330 @@
++/**
++ * What pools counted for the accounts on a page, read through the host's manager-only series
++ * routes. One atom serves every visible row: two series reads and one last-success lookup per pool,
++ * and one token read per distinct window start. Only an account the series names with its own key
++ * gets numbers; other accounts' counts, unmapped requests and failed reads give nothing, never 0.
++ */
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { windowStart, type TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
++import { Clock, Effect } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import type { AccountId, AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { HostedClient } from "./api.ts";
++import { accountObservationsAtom } from "./account-observations.ts";
++
++const hour = 3_600_000;
++const day = 24 * hour;
++/** Ticks cover the current hour and the seven before it. */
++const tickHours = 8;
++/** A page of the series holds 5,000 buckets; past this many pages the counts are not shown. */
++const pageLimit = 20;
++/** The series' `accounts` filter takes at most this many IDs. */
++const maxAccounts = 500;
++const iso = (at: number) => new Date(at).toISOString();
++
++interface Bucket {
++  readonly at: string;
++  readonly requests: number;
++  readonly failed: number;
++  readonly tokens?: {
++    readonly total: {
++      readonly sum: string | null;
++      readonly known: number;
++      readonly missing: number;
++    };
++  };
++}
++
++/** Every page of one read, as each named account's buckets; undefined unless mapping is proven. */
++const accountBuckets = (
++  organization: OrganizationReference,
++  pool: AppId,
++  input: {
++    readonly from: string;
++    readonly to: string;
++    readonly bucket: "hour" | "day";
++    readonly accounts?: readonly AccountId[];
++  },
++) =>
++  Effect.gen(function* () {
++    const client = yield* HostedClient;
++    const accounts = new Map<string, Bucket[]>();
++    let after: string | undefined;
++    for (let page = 0; page < pageLimit; page += 1) {
++      const result = yield* client.poolUsage.poolUsageSeries({
++        params: { organization, app: pool },
++        payload: { ...input, by: ["account"], ...(after === undefined ? {} : { after }) },
++      });
++      if (result === null || result.coverage.mapping.proof !== "proven") return undefined;
++      for (const group of result.groups) {
++        const account = group.key.account;
++        // Other accounts and unmapped requests are counts without an owner the caller may see.
++        if (typeof account !== "string" || account === "otherAccounts" || account === "unmapped")
++          continue;
++        // One account has a group per cost currency; its buckets add up.
++        accounts.set(account, [...(accounts.get(account) ?? []), ...group.buckets]);
++      }
++      if (result.next === null) return accounts;
++      after = result.next;
++    }
++    return undefined;
++  });
++
++const lastSuccess = (
++  organization: OrganizationReference,
++  pool: AppId,
++  accounts: readonly AccountId[],
++) =>
++  accounts.length === 0
++    ? Effect.succeed(undefined)
++    : Effect.flatMap(HostedClient, (client) =>
++        client.poolUsage.lastSuccessAt({
++          params: { organization, app: pool },
++          payload: { accounts },
++        }),
++      ).pipe(
++        Effect.map((result) =>
++          result === null || result.mapping.proof !== "proven"
++            ? undefined
++            : new Map(result.accounts.map((entry) => [entry.account, entry.lastSuccessAt])),
++        ),
++      );
++
++/** One account's requests in one pool. */
++export interface PoolAccountTraffic {
++  readonly requests: number;
++  readonly failed: number;
++  readonly ticks: readonly TrafficTick[];
++  readonly lastSuccessAt: string | null | undefined;
++}
++
++const tick = (bucket: Bucket | undefined): TrafficTick =>
++  bucket === undefined || bucket.requests === 0 ? "none" : bucket.failed > 0 ? "bad" : "good";
++
++const poolTraffic = (
++  organization: OrganizationReference,
++  pool: AppId,
++  accounts: readonly AccountId[],
++) =>
++  Effect.gen(function* () {
++    const now = yield* Clock.currentTimeMillis;
++    const current = Math.floor(now / hour) * hour;
++    const read = (filter: { readonly accounts?: readonly AccountId[] }) =>
++      Effect.all(
++        [
++          accountBuckets(organization, pool, {
++            from: iso(now - 7 * day),
++            to: iso(now),
++            bucket: "day",
++            ...filter,
++          }),
++          accountBuckets(organization, pool, {
++            from: iso(current - (tickHours - 1) * hour),
++            to: iso(now),
++            bucket: "hour",
++            ...filter,
++          }),
++        ],
++        { concurrency: "unbounded" },
++      );
++    // The visible accounts bound the reads, so a large pool never pages past its cap. One account
++    // the caller may not inspect refuses the filtered read, so it falls back to the whole pool,
++    // where such accounts are only other accounts' counts.
++    const [week, hours] = yield* accounts.length > 0 && accounts.length <= maxAccounts
++      ? read({ accounts }).pipe(Effect.catch(() => read({})))
++      : read({});
++    const traffic = new Map<AccountId, PoolAccountTraffic>();
++    if (week === undefined) return { readable: false, traffic };
++    // An account this caller may not inspect fails the lookup for all, so retry with the accounts
++    // the series already named; without an answer, last success stays unread.
++    const named = accounts.filter((account) => week.has(account));
++    const last = yield* lastSuccess(organization, pool, accounts).pipe(
++      Effect.catch(() =>
++        named.length === accounts.length
++          ? Effect.succeed(undefined)
++          : lastSuccess(organization, pool, named),
++      ),
++      Effect.catch(() => Effect.succeed(undefined)),
++    );
++    for (const account of accounts) {
++      const buckets = week.get(account);
++      const at = last?.get(account);
++      // Absent from the series, only a recorded success proves the account is mapped and idle.
++      if (buckets === undefined && typeof at !== "string") continue;
++      const recent = hours?.get(account) ?? [];
++      traffic.set(account, {
++        requests: buckets?.reduce((sum, bucket) => sum + bucket.requests, 0) ?? 0,
++        failed: buckets?.reduce((sum, bucket) => sum + bucket.failed, 0) ?? 0,
++        ticks: Array.from({ length: tickHours }, (_, index) => {
++          const start = current - (tickHours - 1 - index) * hour;
++          const matching = recent.filter((bucket) => Date.parse(bucket.at) === start);
++          return tick(
++            matching.length === 0
++              ? undefined
++              : {
++                  at: iso(start),
++                  requests: matching.reduce((sum, bucket) => sum + bucket.requests, 0),
++                  failed: matching.reduce((sum, bucket) => sum + bucket.failed, 0),
++                },
++          );
++        }),
++        lastSuccessAt: last === undefined ? undefined : (at ?? null),
++      });
++    }
++    return { readable: true, traffic };
++  });
++
++/** A pool's counts: `readable` is false when the caller may not read its series at all. */
++export interface PoolTraffic {
++  readonly readable: boolean;
++  readonly traffic: ReadonlyMap<AccountId, PoolAccountTraffic>;
++}
++
++interface TrafficKey {
++  readonly organization: OrganizationReference;
++  readonly pools: readonly { readonly pool: AppId; readonly accounts: readonly AccountId[] }[];
++}
++
++// String keys: the family reuses the atom, and its polling, while the visible accounts stay put.
++const traffic = Atom.family((key: string) => {
++  const { organization, pools } = JSON.parse(key) as TrafficKey;
++  return pollingQuery(
++    browserOnly(
++      HostedClient.runtime.atom(
++        Effect.forEach(
++          pools,
++          ({ pool, accounts }) =>
++            poolTraffic(organization, pool, accounts).pipe(
++              // Not a manager, not a pool, or unreachable: this pool shows nothing.
++              Effect.catch(() =>
++                Effect.succeed<PoolTraffic>({ readable: false, traffic: new Map() }),
++              ),
++              Effect.map((counted) => [pool, counted] as const),
++            ),
++          { concurrency: "unbounded" },
++        ).pipe(Effect.map((entries) => new Map(entries))),
++      ),
++    ),
++  );
++});
++/** Each pool's counts for its visible accounts, polled while the page is visible. */
++export const accountTrafficAtom = (key: TrafficKey) => traffic(JSON.stringify(key));
++
++/** Tokens counted in one window, keyed `pool|account|start`. */
++export interface PoolWindowTokens {
++  readonly total: number | null;
++  readonly known: number;
++  readonly missing: number;
++}
++export const windowTokensKey = (pool: AppId, account: AccountId, start: string) =>
++  `${pool}|${account}|${start}`;
++
++const sumTokens = (buckets: readonly Bucket[]): PoolWindowTokens => {
++  const totals = buckets.flatMap((bucket) =>
++    bucket.tokens === undefined ? [] : [bucket.tokens.total],
++  );
++  // Display only: a float can round a huge sum, while the contract keeps exact decimal strings.
++  const sums = totals.flatMap((total) => (total.sum === null ? [] : [Number(total.sum)]));
++  return {
++    total: sums.length === 0 ? null : sums.reduce((sum, value) => sum + value, 0),
++    known: totals.reduce((sum, total) => sum + total.known, 0),
++    // Buckets without token fields are counted requests whose tokens nobody may see.
++    missing:
++      totals.reduce((sum, total) => sum + total.missing, 0) +
++      buckets
++        .filter((bucket) => bucket.tokens === undefined)
++        .reduce((sum, bucket) => sum + bucket.requests, 0),
++  };
++};
++
++interface TokensKey {
++  readonly organization: OrganizationReference;
++  readonly reads: readonly {
++    readonly pool: AppId;
++    readonly start: string;
++    readonly accounts: readonly AccountId[];
++  }[];
++}
++
++const tokens = Atom.family((key: string) => {
++  const { organization, reads } = JSON.parse(key) as TokensKey;
++  return pollingQuery(
++    browserOnly(
++      HostedClient.runtime.atom(
++        Effect.gen(function* () {
++          const now = yield* Clock.currentTimeMillis;
++          const entries = yield* Effect.forEach(
++            reads,
++            ({ pool, start, accounts }) =>
++              accountBuckets(organization, pool, {
++                from: start,
++                to: iso(now),
++                bucket: "day",
++                accounts,
++              }).pipe(
++                // Every account here was already named, so an absent one counted no requests.
++                Effect.map((named) =>
++                  named === undefined
++                    ? []
++                    : accounts.map(
++                        (account) =>
++                          [
++                            windowTokensKey(pool, account, start),
++                            sumTokens(named.get(account) ?? []),
++                          ] as const,
++                      ),
++                ),
++                Effect.catch(() => Effect.succeed([])),
++              ),
++            { concurrency: "unbounded" },
++          );
++          return new Map(entries.flat());
++        }),
++      ),
++    ),
++  );
++});
++/** Tokens for the given window starts, one read per pool and start. */
++export const windowTokensAtom = (key: string) => tokens(key);
++
++interface NeedsKey {
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly { readonly account: AccountId; readonly pools: readonly AppId[] }[];
++}
++/**
++ * The token reads the visible usage cells need, as a `windowTokensAtom` key. It follows the rows'
++ * own observation reads, so it adds no request, and its key changes only when a window starts.
++ */
++const needs = Atom.family((key: string) => {
++  const { organization, accounts } = JSON.parse(key) as NeedsKey;
++  return Atom.readable((get) => {
++    const reads = new Map<string, { pool: AppId; start: string; accounts: AccountId[] }>();
++    for (const { account, pools } of accounts) {
++      const result = get(accountObservationsAtom({ organization, account }));
++      if (!AsyncResult.isSuccess(result) || !result.value.canInspect) continue;
++      const windows = result.value.reports.flatMap(
++        (report) => report.result?.observation.windows ?? [],
++      );
++      for (const entry of windows) {
++        if (entry.measure.unlimited === true) continue;
++        const start = windowStart(entry, Date.now());
++        if (start === undefined) continue;
++        for (const pool of pools) {
++          const read = reads.get(`${pool}|${start}`) ?? { pool, start, accounts: [] };
++          if (!read.accounts.includes(account)) read.accounts.push(account);
++          reads.set(`${pool}|${start}`, read);
++        }
++      }
++    }
++    return JSON.stringify({
++      organization,
++      reads: [...reads.values()].sort((a, b) =>
++        `${a.pool}|${a.start}`.localeCompare(`${b.pool}|${b.start}`),
++      ),
++    } satisfies TokensKey);
++  });
++});
++/** The window token reads for these accounts, each with the pools that named it. */
++export const windowNeedsAtom = (key: NeedsKey) => needs(JSON.stringify(key));
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+index ef50bd1..af69864 100644
+--- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
+@@ -1,7 +1,7 @@
+ /** Hosted account rows show usage under the policy the server enforces on every read. */
+ import { useAtomSet } from "@effect/atom-react";
+ import { Exit } from "effect";
+-import { useState } from "react";
++import { useState, type ComponentProps } from "react";
+ import type { AccountId, App } from "@executor-js/sdk";
+ import type { Group } from "@executor-js/hosted-server/groups";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+@@ -36,11 +36,14 @@ export function HostedAccountObservations({
+   apps,
+   app,
+   canReconnect,
++  windowTokens,
+ }: {
+   readonly account: AccountSummary;
+   readonly apps?: readonly App[];
+   readonly app?: App;
+   readonly canReconnect?: (app: App) => boolean;
++  /** Footer counts for the account's usage windows, such as its pool's tokens. */
++  readonly windowTokens?: ComponentProps<typeof AccountObservations>["windowTokens"];
+ }) {
+   const { organization } = useOrganizationRoute();
+   const key = { organization, account: account.id };
+@@ -54,6 +57,7 @@ export function HostedAccountObservations({
+       account={account}
+       query={accountObservationsAtom(key)}
+       refresh={() => refresh()}
++      windowTokens={windowTokens}
+       {...(app === undefined
+         ? apps === undefined
+           ? {}
+diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+new file mode 100644
+index 0000000..2e2cf23
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+@@ -0,0 +1,117 @@
++/** The Accounts list's pool traffic: Requests 7d, the Health ticks and usage cell token counts. */
++import { useAtomValue } from "@effect/atom-react";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { useMemo, type ReactNode } from "react";
++import type { AccountId, AppId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import { useDisplayFormat } from "@executor-js/ui/hooks/display-format";
++import {
++  WindowTokensFooter,
++  mergeTokens,
++  mergeTraffic,
++  windowStart,
++  type AccountRowTraffic,
++} from "@executor-js/ui/dashboard/account-traffic";
++import {
++  accountTrafficAtom,
++  windowNeedsAtom,
++  windowTokensAtom,
++  windowTokensKey,
++} from "../../contracts/pool-usage-series.ts";
++
++type Window = Parameters<typeof windowStart>[0];
++
++/** Saved-account rows as the list reads them: only pool links carry traffic. */
++type Rows = readonly {
++  readonly id: AccountId;
++  readonly bindings: readonly { readonly pool?: AppId | undefined }[];
++}[];
++
++/**
++ * One batched, polled read for every visible pool account. App (connector) accounts have no pool
++ * link, so they get no Requests value and keep their sign-in health.
++ */
++export function useAccountTraffic(
++  organization: OrganizationReference,
++  rows: Rows | undefined,
++  poolName: (pool: AppId) => string,
++) {
++  const format = useDisplayFormat();
++  const accountPools = useMemo(() => {
++    const pools = new Map<AccountId, AppId[]>();
++    for (const row of rows ?? [])
++      for (const { pool } of row.bindings)
++        if (pool !== undefined && !(pools.get(row.id) ?? []).includes(pool))
++          pools.set(row.id, [...(pools.get(row.id) ?? []), pool].sort());
++    return pools;
++  }, [rows]);
++  const trafficKey = useMemo(() => {
++    const members = new Map<AppId, AccountId[]>();
++    for (const [account, pools] of accountPools)
++      for (const pool of pools) members.set(pool, [...(members.get(pool) ?? []), account]);
++    return {
++      organization,
++      pools: [...members]
++        .sort(([a], [b]) => a.localeCompare(b))
++        .map(([pool, accounts]) => ({ pool, accounts: accounts.sort() })),
++    };
++  }, [organization, accountPools]);
++  const counted = Option.getOrUndefined(
++    AsyncResult.value(useAtomValue(accountTrafficAtom(trafficKey))),
++  );
++  // Token reads only for accounts the series named, in the pools that named them.
++  const named = useMemo(
++    () => ({
++      organization,
++      accounts: [...accountPools]
++        .map(([account, pools]) => ({
++          account,
++          pools: pools.filter((pool) => counted?.get(pool)?.traffic.has(account) === true),
++        }))
++        .filter((entry) => entry.pools.length > 0)
++        .sort((a, b) => a.account.localeCompare(b.account)),
++    }),
++    [organization, accountPools, counted],
++  );
++  const needs = useAtomValue(windowNeedsAtom(named));
++  const tokens = Option.getOrUndefined(AsyncResult.value(useAtomValue(windowTokensAtom(needs))));
++
++  // Callers who may read no visible pool's series get no Requests column at all, rather than a
++  // column of blank cells; it appears once a read answers.
++  const readable = counted !== undefined && [...counted.values()].some((pool) => pool.readable);
++  const traffic = readable
++    ? (accounts: readonly AccountSummary[]): AccountRowTraffic | undefined =>
++        mergeTraffic(
++          accounts.flatMap((account) =>
++            (accountPools.get(account.id) ?? []).map((pool) => {
++              const entry = counted.get(pool)?.traffic.get(account.id);
++              return entry === undefined ? undefined : { ...entry, gateways: [poolName(pool)] };
++            }),
++          ),
++        )
++    : undefined;
++  const windowTokens =
++    (account: AccountSummary) =>
++    (entry: Window): ReactNode => {
++      const start = windowStart(entry, Date.now());
++      if (start === undefined || tokens === undefined) return undefined;
++      const merged = mergeTokens(
++        (accountPools.get(account.id) ?? []).map((pool) => {
++          const value = tokens.get(windowTokensKey(pool, account.id, start));
++          return value === undefined ? undefined : { ...value, gateways: [poolName(pool)] };
++        }),
++      );
++      // Nothing true to show when no counted request reported tokens.
++      if (merged === undefined || (merged.total === null && merged.missing > 0)) return undefined;
++      return (
++        <WindowTokensFooter
++          tokens={merged}
++          provider={account.providerName ?? account.identity?.name}
++          format={format}
++        />
++      );
++    };
++  return { traffic, windowTokens };
++}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 4e1b860..c352f7e 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -24,6 +24,7 @@ import { HostedAccountObservations, HostedAccountPlan } from "./account-observat
+ import { inventoryAtom } from "../../contracts/organization.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+ import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
++import { useAccountTraffic } from "./account-traffic.tsx";
+ 
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ 
+@@ -45,6 +46,14 @@ export function AccountsPage({
+   const setup = useQuery(inventoryAtom(organization));
+   // Rows read the saved-account list; the inventory still drives grouping, apps and access.
+   const savedRows = useQuery(savedAccountRowsAtom({ organization }));
++  const traffic = useAccountTraffic(
++    organization,
++    Option.getOrUndefined(savedRows.data),
++    (pool) =>
++      (Option.isSome(directory.data)
++        ? directory.data.value.apps.find((entry) => entry.app.id === pool)?.app.name
++        : undefined) ?? "the pool",
++  );
+ 
+   const [dialog, setDialog] = useState<{
+     account: AccountId;
+@@ -146,10 +155,12 @@ export function AccountsPage({
+             : undefined;
+           return saved === undefined ? undefined : accountRowFromSaved(saved);
+         }}
++        accountTraffic={traffic.traffic}
+         accountDetails={(account, apps) => (
+           <HostedAccountObservations
+             account={account}
+             apps={apps}
++            windowTokens={traffic.windowTokens(account)}
+             canReconnect={(app) => {
+               if (
+                 account.hostManaged === true ||
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+index 522174b..48b0257 100644
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -50,6 +50,8 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+     )
+       return HttpServerResponse.empty({ status: 401 });
+     yield* Ref.update(calls, (values) => [...values, assertion]);
++    const respond = yield* Ref.get(responder);
++    if (respond !== undefined) return HttpServerResponse.jsonUnsafe(respond(assertion));
+     const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
+     if (assertion.action === "lastSuccessAt")
+       return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
+@@ -134,6 +136,10 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+       hostReference: "private-reference-sentinel",
+     });
+   });
++  // A scenario's own answers, computed from each signed call, replace the fixed ones above.
++  const responder = yield* Ref.make<((assertion: SeriesAssertion) => unknown) | undefined>(
++    undefined,
++  );
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+@@ -145,5 +151,12 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+   );
+   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+   if (!("port" in server.address)) return yield* Effect.die("Pool series fixture requires TCP");
+-  return { origin: `http://127.0.0.1:${server.address.port}`, calls: Ref.get(calls) };
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    respond: (answer: (assertion: SeriesAssertion) => unknown) => Ref.set(responder, answer),
++  };
+ });
++
++/** One signed call the fixture received. */
++export type SeriesAssertion = typeof Assertion.Type;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4e568dc..9964a96 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9048,6 +9048,18 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows."),
+     },
+   },
++  accountTraffic: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-traffic.spec.ts",
++    title:
++      "account rows show a mapped pool account's requests, hourly ticks, success share and window tokens and nothing for counts-only or connector accounts",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
++      local: na("Exercises hosted account rows and native pool usage."),
++    },
++  },
+   accountUsageHomeReporter: {
+     fixtures: "actors",
+     file: "account-usage-home-reporter.spec.ts",
+diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
+new file mode 100644
+index 0000000..0d93255
+--- /dev/null
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -0,0 +1,604 @@
++/** Account rows show what the account's pool counted, and nothing it can't attribute. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Resource } from "../support/contracts.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import {
++  observationBackend,
++  observationFixture,
++  observationSource,
++  observationToken,
++} from "../support/account-observation-fixture.ts";
++import { accountRow, openRowMenu } from "../support/account-rows.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import {
++  poolUsageSeriesBackend,
++  type SeriesAssertion,
++} from "../support/pool-usage-series-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const hour = 3_600_000;
++const day = 24 * hour;
++
++/** A full series bucket, as the pool sends one for an account the caller may inspect. */
++const bucket = (
++  at: number,
++  requests: number,
++  failed: number,
++  total = { sum: null as string | null, known: 0, missing: requests },
++) => {
++  const token = { sum: null, known: 0, missing: requests };
++  const none = { amount: null, currency: null, priced: 0, unpriced: requests };
++  return {
++    at: new Date(at).toISOString(),
++    partial: false,
++    requests,
++    failed,
++    unassignedFailures: 0,
++    successRate: requests === 0 ? null : (requests - failed) / requests,
++    lastSuccessAtInRange: null,
++    tokens: {
++      input: token,
++      output: token,
++      cacheRead: token,
++      cacheWrite: token,
++      reasoning: token,
++      total,
++    },
++    tokenQuality: { complete: 0, legacy: 0, unclassified: requests, inconsistent: 0 },
++    cost: {
++      homeCharge: none,
++      importedApiPrice: none,
++      apiEquivalent: { status: "unavailable", reason: "No API price provenance." },
++      unpricedRequests: requests,
++    },
++    attribution: { chargeSnapshot: 0, keyAtCapture: 0, importOwner: 0, unknown: requests },
++  };
++};
++
++const SeriesInput = Schema.Struct({
++  from: Schema.String,
++  to: Schema.String,
++  bucket: Schema.Literals(["hour", "day"]),
++  accounts: Schema.optional(Schema.Array(Schema.String)),
++});
++
++/** The pool accounts by role; the series names each by its saved account ID. */
++interface Ids {
++  readonly traffic: string;
++  readonly steady: string;
++  readonly rejected: string;
++  readonly idle: string;
++}
++
++/**
++ * The traffic account made 41 requests in 7 days, 3 of them failed (92.6%). In the last hours it
++ * succeeded now and three hours ago and failed an hour ago, and its weekly window counted at least
++ * 1.2M tokens, one request without a count. The steady account succeeded 199 of 200 (99.5%), the
++ * rejected one 10 of 10, and the idle one last succeeded 3 days ago. The fifth account's requests
++ * are only other accounts' counts. Without `proven`, the pool can't map any request to an account.
++ */
++// Last successes are fixed at `anchor`, like real records, so polls don't move them. The browser's
++// Date is fixed at the same instant, so ages read exactly.
++const answer =
++  (ids: Ids, proven = true, anchor = Date.now()) =>
++  (assertion: SeriesAssertion) => {
++    const unavailable = { status: "unavailable", reason: "Synthetic." };
++    const mapping = {
++      current: true,
++      historicalGenerations: "unknown",
++      proof: proven ? "proven" : "unavailable",
++    };
++    if (assertion.action === "lastSuccessAt") {
++      const { accounts } = Schema.decodeUnknownSync(
++        Schema.Struct({ accounts: Schema.Array(Schema.String) }),
++      )(assertion.input);
++      const ago = {
++        [ids.traffic]: 12 * 60_000,
++        [ids.steady]: 5 * 60_000,
++        [ids.rejected]: 2 * hour,
++        [ids.idle]: 3 * day,
++      };
++      return {
++        asOf: new Date().toISOString(),
++        mapping,
++        accounts: accounts.map((account) => ({
++          account,
++          lastSuccessAt:
++            ago[account] === undefined ? null : new Date(anchor - ago[account]).toISOString(),
++        })),
++      };
++    }
++    const input = Schema.decodeUnknownSync(SeriesInput)(assertion.input);
++    const from = Date.parse(input.from);
++    const to = Date.parse(input.to);
++    const current = Math.floor(to / hour) * hour;
++    const week = input.bucket === "day" && to - from > 6 * day;
++    const named = (account: string) =>
++      input.accounts === undefined || input.accounts.includes(account);
++    const all = !proven
++      ? []
++      : input.bucket === "hour"
++        ? [
++            {
++              key: { currency: null, account: ids.traffic },
++              buckets: [
++                bucket(current - 3 * hour, 2, 0),
++                bucket(current - hour, 4, 1),
++                bucket(current, 5, 0),
++              ],
++            },
++            { key: { currency: null, account: ids.steady }, buckets: [bucket(current, 20, 0)] },
++            { key: { currency: null, account: ids.rejected }, buckets: [bucket(current, 1, 0)] },
++          ]
++        : week
++          ? [
++              {
++                key: { currency: null, account: ids.traffic },
++                buckets: [bucket(to - 2 * day, 30, 1), bucket(to - day, 11, 2)],
++              },
++              { key: { currency: null, account: ids.steady }, buckets: [bucket(to - day, 200, 1)] },
++              {
++                key: { currency: null, account: ids.rejected },
++                buckets: [bucket(to - day, 10, 0)],
++              },
++            ]
++          : [
++              {
++                key: { currency: null, account: ids.traffic },
++                buckets: [bucket(from, 41, 3, { sum: "1234567", known: 40, missing: 1 })],
++              },
++            ];
++    // Only an unfiltered read carries other accounts' counts.
++    const others =
++      proven && week && input.accounts === undefined
++        ? [
++            {
++              key: { currency: null, account: "otherAccounts" },
++              buckets: [
++                {
++                  at: new Date(to - day).toISOString(),
++                  partial: false,
++                  requests: 9,
++                  failed: 4,
++                  unassignedFailures: 0,
++                  successRate: 5 / 9,
++                },
++              ],
++            },
++          ]
++        : [];
++    return {
++      from: input.from,
++      to: input.to,
++      bucket: input.bucket,
++      asOf: new Date().toISOString(),
++      coverage: {
++        sources: [],
++        firstAt: null,
++        lastAt: null,
++        capturedThrough: null,
++        mapping: { ...mapping, mapped: 251, unmapped: 0, otherAccounts: 9 },
++        pricing: {
++          homeCharge: 0,
++          importedApiPrice: 0,
++          unpriced: 260,
++          missing: 0,
++          missingSnapshot: 0,
++          missingVersion: 0,
++          apiEquivalent: unavailable,
++        },
++        priceProjection: unavailable,
++        percentiles: unavailable,
++        seasonalTrainingRange: unavailable,
++      },
++      groups: [...all.filter((group) => named(group.key.account)), ...others],
++      next: null,
++    };
++  };
++
++/** A weekly window that started a day ago, so its tokens are read over exactly that day. */
++const weekly = (at = new Date().toISOString()) => ({
++  observedAt: at,
++  observation: {
++    offering: "subscription",
++    plan: { label: "Pro", observedAt: at },
++    windows: [
++      {
++        id: "seven_day",
++        label: "Weekly",
++        observedAt: at,
++        measure: { unit: "percent", used: 11, limit: 100, remainingRatio: 0.89 },
++        period: { mode: "fixed", seconds: 7 * 86_400 },
++        resetsAt: new Date(Date.parse(at) + 6 * day).toISOString(),
++      },
++    ],
++    balances: [],
++  },
++});
++
++const cells = (page: Page, label: string) => {
++  const row = accountRow(page, label);
++  return Promise.all([
++    row.locator("[data-account-requests]").count(),
++    row.locator('[data-health-state="traffic"]').count(),
++    row.locator("[data-window-tokens]").count(),
++  ]);
++};
++
++layer(HostedLive, { excludeTestServices: true })("Account traffic", (it) => {
++  it.effect(scenarios.accountTraffic.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          observed = yield* observationBackend,
++          pool = yield* poolUsageSeriesBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        // A connector outside any pool keeps its sign-in health and gets no Requests value.
++        const connector = yield* observationFixture({
++          name: "Traffic connector",
++          observe: false,
++          health: true,
++        });
++        expect(
++          (yield* api.request(actors.owner, "PATCH", connector.accountPath, {
++            label: "Connector mail",
++          })).status,
++        ).toBe(200);
++        expect((yield* connector.check()).status).toBe(200);
++
++        // The pool app: two accounts linked for everyone who uses it.
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Traffic pool",
++          files: [
++            {
++              path: "index.ts",
++              content: observationSource(observed.origin, { observe: true, health: true }).replace(
++                "{ user:{accounts:{service}} }",
++                "{ app:{accounts:{service:service.many()}} }",
++              ),
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = (yield* body(Resource, deployed)).id;
++        const appPath = `${prefix}/apps/${app}`;
++        const saved: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            yield* api.request(actors.owner, "DELETE", appPath);
++            for (const account of saved)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const labels = [
++          "Traffic account",
++          "Steady account",
++          "Rejected traffic",
++          "Idle account",
++          "Counted elsewhere",
++        ] as const;
++        for (const label of labels) {
++          const pending = yield* body(
++            Resource,
++            yield* api.request(
++              actors.owner,
++              "POST",
++              connectionsPath(appPath, "app", "service"),
++              {},
++            ),
++          );
++          const submitted = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${pending.id}/submit`,
++            { method: "key", fields: { token: observationToken } },
++          );
++          expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
++          const account = (yield* body(Resource, submitted)).id;
++          saved.push(account);
++          expect(
++            (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account}`, { label }))
++              .status,
++          ).toBe(200);
++        }
++        const [traffic, steady, rejected, idle] = saved as [string, string, string, string];
++        const ids = { traffic, steady, rejected, idle };
++        const check = (account: string) =>
++          api
++            .request(actors.owner, "POST", `${prefix}/accounts/${account}/health`)
++            .pipe(Effect.map((response) => response.status));
++        yield* observed.answer({ status: 200, body: weekly() });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/accounts/${traffic}/observations/refresh`,
++          )).status,
++        ).toBe(200);
++        for (const account of [traffic, steady, idle]) expect(yield* check(account)).toBe(200);
++        // The service now refuses the credential, so this account's current check is a rejection.
++        yield* observed.health({ status: 401, body: {} });
++        expect(yield* check(rejected)).toBe(200);
++        yield* observed.health({ status: 200, body: { accountInfo: {} } });
++
++        // Opt the app in as the owner's native pool, with the signed loopback usage backend.
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        // One instant for the fixture's records and the browser's Date; timers still run.
++        const anchor = yield* Clock.currentTimeMillis;
++        yield* pool.respond(answer(ids, true, anchor));
++        const pools = (value: object) => ({
++          sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
++          params: [JSON.stringify(value), actors.organization.id],
++        });
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          pools({
++            [viewer.userId]: {
++              app,
++              version: "retained-version",
++              authorization: "executor-app-v1",
++              membership: "executor-links-v1",
++            },
++          }),
++        ]);
++        // Opted out again before the app and accounts are removed: a native pool's link changes
++        // would notify the pool, which this loopback backend does not implement.
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* legacyStorage([pools({})]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: pool.origin,
++        });
++        yield* serverControl("start");
++
++        const accounts = `/org/${actors.organization.slug}/accounts`;
++        const ready = (page: Page) =>
++          Promise.all([
++            accountRow(page, "Traffic account").locator('[data-health-state="traffic"]').waitFor(),
++            accountRow(page, "Traffic account").locator("[data-window-tokens]").waitFor(),
++            accountRow(page, "Steady account").locator('[data-health-state="traffic"]').waitFor(),
++            accountRow(page, "Idle account").locator("[data-account-requests]").waitFor(),
++            accountRow(page, "Rejected traffic")
++              .locator('[data-health-state="credentials_rejected"]')
++              .waitFor(),
++            accountRow(page, "Connector mail").locator('[data-health-state="healthy"]').waitFor(),
++          ]);
++        yield* browser.login(actors.owner);
++        yield* browser.use("Fix the page's Date at the fixture's instant", (page) =>
++          page.clock.setFixedTime(anchor),
++        );
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Open accounts at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(accounts))
++              .then(() => ready(page)),
++          );
++          yield* evidence.attach(
++            `account-traffic-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture accounts", (page) => page.screenshot({ fullPage: true })),
++          );
++        }
++
++        // One page load: exactly one read of each kind for the whole list, never one per row.
++        const before = (yield* pool.calls).length;
++        const wide = yield* browser.use("Read the rows at 1280px", (page) => {
++          const row = accountRow(page, "Traffic account");
++          return page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() =>
++              Promise.all([
++                page.locator("[data-requests-header]").getAttribute("title"),
++                row.locator("[data-account-requests]").getAttribute("data-account-requests"),
++                row.locator("[data-account-requests]").getAttribute("title"),
++                row.locator('[data-health-state="traffic"]').getAttribute("data-ticks"),
++                row.locator("[data-success-share]").innerText(),
++                row.locator("[data-success-share]").getAttribute("class"),
++                row.locator('[data-health-state="traffic"]').getAttribute("title"),
++                row.locator("[data-window-tokens]").innerText(),
++                row.locator("[data-window-tokens]").getAttribute("title"),
++                row.locator("[data-tokens-floor]").count(),
++                accountRow(page, "Steady account").locator("[data-success-share]").innerText(),
++                accountRow(page, "Steady account")
++                  .locator("[data-success-share]")
++                  .getAttribute("class"),
++                accountRow(page, "Rejected traffic")
++                  .locator("[data-account-requests]")
++                  .getAttribute("data-account-requests"),
++                accountRow(page, "Rejected traffic")
++                  .locator('[data-health-state="traffic"]')
++                  .count(),
++                accountRow(page, "Idle account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("data-account-requests"),
++                accountRow(page, "Idle account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("class"),
++                accountRow(page, "Idle account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("title"),
++                accountRow(page, "Idle account").locator('[data-health-state="traffic"]').count(),
++                cells(page, "Counted elsewhere"),
++                cells(page, "Connector mail"),
++              ]),
++            );
++        });
++        const load = (yield* pool.calls).slice(before).map((call) => ({
++          action: call.action,
++          input: Schema.decodeUnknownSync(
++            Schema.Struct({
++              from: Schema.optional(Schema.String),
++              to: Schema.optional(Schema.String),
++              bucket: Schema.optional(Schema.String),
++              accounts: Schema.optional(Schema.Array(Schema.String)),
++            }),
++          )(call.input),
++        }));
++        const span = (input: {
++          readonly from?: string | undefined;
++          readonly to?: string | undefined;
++        }) => Date.parse(input.to ?? "") - Date.parse(input.from ?? "");
++        const visible = [...saved].sort();
++        const weekReads = load.filter(
++          (call) => call.input.bucket === "day" && span(call.input) > 6 * day,
++        );
++        const hourReads = load.filter((call) => call.input.bucket === "hour");
++        const tokenReads = load.filter(
++          (call) => call.input.bucket === "day" && span(call.input) <= 6 * day,
++        );
++        const lastReads = load.filter((call) => call.action === "lastSuccessAt");
++        expect(
++          [weekReads.length, hourReads.length, tokenReads.length, lastReads.length],
++          "one read per kind for every visible row",
++        ).toEqual([1, 1, 1, 1]);
++        // The visible pool accounts bound the 7-day and hourly reads; tokens name only the
++        // account with a window.
++        expect(weekReads[0]?.input.accounts).toEqual(visible);
++        expect(hourReads[0]?.input.accounts).toEqual(visible);
++        expect([...(lastReads[0]?.input.accounts ?? [])].sort()).toEqual(visible);
++        expect(tokenReads[0]?.input.accounts).toEqual([traffic]);
++
++        const [
++          headerTitle,
++          requests,
++          requestsTitle,
++          ticks,
++          share,
++          shareClass,
++          healthTitle,
++          tokens,
++          tokensTitle,
++          floor,
++          steadyShare,
++          steadyClass,
++          rejectedRequests,
++          rejectedTraffic,
++          idleRequests,
++          idleClass,
++          idleTitle,
++          idleTraffic,
++          countsOnly,
++          connectorCells,
++        ] = wide;
++        // Some rows have no history this viewer may see, so the header says what empty means.
++        expect(headerTitle).toContain("An empty cell means there's no request history you can see");
++        expect(requests).toBe("41");
++        expect(requestsTitle).toBe("41 requests in the last 7 days, counted by Traffic pool");
++        // Oldest first: three hours ago good, an hour ago failed, the current hour good.
++        expect(ticks).toBe("nnnngnbg");
++        // 38 of 41 succeeded: truncated, never rounded up, and amber below 95%.
++        expect(share).toBe("92.6%");
++        expect(shareClass).toContain("amber");
++        expect(healthTitle).toMatch(
++          /^41 requests in 7 days · 92\.6% succeeded · last success 12 min ago, counted by Traffic pool\nHealthy by .+ · checked /,
++        );
++        // 199 of 200 is at or above 95%, so it is not amber.
++        expect(steadyShare).toBe("99.5%");
++        expect(steadyClass).not.toContain("amber");
++        // A current rejection beats traffic in Health; the count stays.
++        expect(rejectedRequests).toBe("10");
++        expect(rejectedTraffic).toBe(0);
++        // Mapped and idle: a muted 0, and Health keeps the sign-in check.
++        expect(idleRequests).toBe("0");
++        expect(idleClass).toContain("text-muted-foreground");
++        expect(idleTitle).toBe(
++          "No requests in the last 7 days, counted by Traffic pool · last success 3 days ago",
++        );
++        expect(idleTraffic).toBe(0);
++        expect(tokens).toBe("≥ 1.2M tokens");
++        expect(floor).toBe(1);
++        expect(tokensTitle).toContain(
++          "1 of 41 requests didn't report tokens, so this is a minimum.",
++        );
++        expect(tokensTitle).toContain("API-equivalent cost isn't available yet.");
++        expect(tokens).not.toContain("$");
++        // Counted only as other accounts' requests, and a connector outside the pool: no numbers.
++        expect(countsOnly).toEqual([0, 0, 0]);
++        expect(connectorCells).toEqual([0, 0, 0]);
++
++        const details = yield* browser.use("Open the traffic account's details", (page) =>
++          openRowMenu(page, accountRow(page, "Traffic account"), "Traffic account")
++            .then((menu) => menu.getByRole("menuitem", { name: "Details", exact: true }).click())
++            .then(() =>
++              accountRow(page, "Traffic account")
++                .locator("[data-account-traffic-details]")
++                .innerText(),
++            ),
++        );
++        expect(details).toMatch(
++          /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
++        );
++
++        const phone = yield* browser.use("Read the rows at 390px", (page) =>
++          page
++            .setViewportSize({ width: 390, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() =>
++              Promise.all([
++                page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                accountRow(page, "Traffic account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("data-account-requests"),
++                accountRow(page, "Traffic account").locator("[data-requests-unit]").isVisible(),
++              ]),
++            ),
++        );
++        expect(phone[0], "no horizontal scroll at 390px").toBe(true);
++        // The column header is hidden here, so the count says what it counts.
++        expect(phone[1]).toBe("41");
++        expect(phone[2], "the count reads 41 req on a phone").toBe(true);
++
++        // Once the pool can't map any request, no row has numbers: the column and the ticks go,
++        // rather than leaving a column of blank cells. The next 30-second poll reads it.
++        yield* pool.respond(answer(ids, false, anchor));
++        const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() =>
++              page
++                .locator("[data-requests-header]")
++                .waitFor({ state: "detached", timeout: 45_000 }),
++            )
++            .then(() =>
++              Promise.all([
++                page.locator("[data-account-requests]").count(),
++                page.locator('[data-health-state="traffic"]').count(),
++                accountRow(page, "Traffic account")
++                  .locator('[data-health-state="healthy"]')
++                  .count(),
++              ]),
++            ),
++        );
++        expect(hidden).toEqual([0, 0, 1]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 77d09c2..0433e94 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -4,6 +4,7 @@
+  * drawn bar is clamped. Nothing here invents a capacity, a reset time or a refill.
+  */
+ import type { AccountObservationRecord } from "@executor-js/sdk";
++import { Atom } from "effect/reactivity";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { formatMoment } from "../hooks/display-format.ts";
+ 
+@@ -13,6 +14,14 @@ type Window = Observation["windows"][number];
+ type Balance = Observation["balances"][number];
+ export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
+ 
++/** One slow clock for every visible block: ages and countdowns move by the half minute. */
++export const observationClock = Atom.readable((get) => {
++  if (typeof window === "undefined") return Date.now();
++  const timer = window.setInterval(() => get.setSelf(Date.now()), 30_000);
++  get.addFinalizer(() => window.clearInterval(timer));
++  return Date.now();
++});
++
+ /** Elapsed time in its two largest units, such as "2 h 14 min". */
+ export const span = (milliseconds: number) => {
+   const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 788a925..0236ffa 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -1,22 +1,28 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { bankedResets, resetWindow } from "./account-observation-format.ts";
+ import { UsageCell } from "./account-usage-cell.tsx";
+ 
++type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
++
+ /**
+  * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
+  * not limits, so they get no cell; balances and their expiry live in the account's details.
++ * `tokens` gives a window's footer count, where a gateway counted one.
+  */
+ export function ObservationReadings({
+   record,
+   source,
+   now,
+   format,
++  tokens,
+ }: {
+   readonly record: AccountObservationRecord;
+   readonly source?: string;
+   readonly now: number;
+   readonly format: DisplayFormat;
++  readonly tokens?: ((entry: Window) => ReactNode) | undefined;
+ }) {
+   const observation = record.result?.observation;
+   const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
+@@ -39,6 +45,7 @@ export function ObservationReadings({
+           resets={entry.id === target ? resets : undefined}
+           now={now}
+           format={format}
++          tokens={tokens?.(entry)}
+         />
+       ))}
+     </div>
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index 7f0bed0..489007e 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -1,8 +1,8 @@
+ import type { AccountObservationRecord, App } from "@executor-js/sdk";
+ import { useAtomValue } from "@effect/atom-react";
+ import { Exit, Option, type Cause } from "effect";
+-import { AsyncResult, Atom } from "effect/reactivity";
+-import { useEffect, useId, useRef, useState, type ComponentType } from "react";
++import { AsyncResult } from "effect/reactivity";
++import { useEffect, useId, useRef, useState, type ComponentProps, type ComponentType } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
+@@ -16,6 +16,7 @@ import {
+   age,
+   attemptNote,
+   moment,
++  observationClock,
+   planLabel,
+   readingTimes,
+   refreshBlocked,
+@@ -35,14 +36,6 @@ export interface AccountObservationsView {
+   readonly reports: readonly AccountObservationRecord[];
+ }
+ 
+-/** One slow clock for every visible block: ages and countdowns move by the half minute. */
+-const clock = Atom.readable((get) => {
+-  if (typeof window === "undefined") return Date.now();
+-  const timer = window.setInterval(() => get.setSelf(Date.now()), 30_000);
+-  get.addFinalizer(() => window.clearInterval(timer));
+-  return Date.now();
+-});
+-
+ /**
+  * An account's reported usage under its row, with the latest credential checks when the row does
+  * not already show them. Usage and health have their own times, actions and failures, so a usage
+@@ -56,6 +49,7 @@ export function AccountObservations<E>({
+   query,
+   refresh,
+   health,
++  windowTokens,
+   Failure,
+ }: {
+   readonly account: AccountSummary;
+@@ -69,10 +63,12 @@ export function AccountObservations<E>({
+     readonly showStatus?: boolean;
+     readonly canReconnect?: (app: App) => boolean;
+   };
++  /** A window's footer count, such as the tokens the account's pool counted in it. */
++  readonly windowTokens?: ComponentProps<typeof ObservationReadings>["tokens"];
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const { result, refresh: reload } = useQuery(query);
+-  const now = useAtomValue(clock);
++  const now = useAtomValue(observationClock);
+   const format = useDisplayFormat();
+   const row = useAccountRow();
+   const compact = row?.menu === true;
+@@ -173,6 +169,7 @@ export function AccountObservations<E>({
+               {...(inspected.reports.length > 1 ? { source: report.source.label } : {})}
+               now={now}
+               format={format}
++              tokens={windowTokens}
+             />
+           ),
+       )}
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+index cf5248d..d508f76 100644
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -1,6 +1,7 @@
+ import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
++import { useAtomValue } from "@effect/atom-react";
+ import type { ReactNode } from "react";
+ import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboard.ts";
+ import { shortMoment } from "../components/local-time.tsx";
+@@ -8,6 +9,8 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+ import { describeAccountCheck } from "./account-health.tsx";
+ import type { AccountRowBinding, AccountRowInput } from "./account-row.tsx";
++import { TrafficHealth, type AccountRowTraffic } from "./account-traffic.tsx";
++import { observationClock } from "./account-observation-format.ts";
+ import { useDashboard } from "./context.tsx";
+ 
+ type Check = NonNullable<AccountDriverHealth["check"]>;
+@@ -177,7 +180,8 @@ const texts = {
+ /**
+  * The account's health in a few words. A current rejection is the row's one inline recovery:
+  * `recover` where the page has one, or with `link` a "Needs re-auth ↗" link to the first rejecting
+- * member's app.
++ * member's app. With `traffic` that has requests, its ticks and success share replace the word,
++ * except where a grant problem, a current rejection or an outdated check says more.
+  */
+ export function AccountHealthCell({
+   health,
+@@ -185,6 +189,7 @@ export function AccountHealthCell({
+   recover,
+   link = false,
+   unavailableLabel = "Account unavailable",
++  traffic,
+ }: {
+   readonly health: AccountRowHealth;
+   readonly appName: (app: AppId) => string;
+@@ -192,8 +197,11 @@ export function AccountHealthCell({
+   /** Link an app's rejection to that app's accounts, where the account is reconnected. */
+   readonly link?: boolean;
+   readonly unavailableLabel?: string;
++  readonly traffic?: AccountRowTraffic | undefined;
+ }) {
+   const format = useDisplayFormat();
++  const now = useAtomValue(observationClock);
++  const busy = traffic !== undefined && traffic.requests > 0 ? traffic : undefined;
+   const { AppLink } = useDashboard();
+   const cell = "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
+   const dot = (tone: keyof typeof dots, hollow = false) => (
+@@ -218,6 +226,8 @@ export function AccountHealthCell({
+         {health.kind === "needs-sign-in" && recover}
+       </span>
+     );
++  if (busy !== undefined && (health.kind === "no-check" || health.kind === "not-checked"))
++    return <TrafficHealth traffic={busy} now={now} format={format} />;
+   if (health.kind === "no-check") return null;
+   if (health.kind !== "check")
+     return (
+@@ -259,6 +269,9 @@ export function AccountHealthCell({
+         Not rechecked
+       </span>
+     );
++  const rejected = check.status === "credentials_rejected";
++  if (busy !== undefined && !rejected)
++    return <TrafficHealth traffic={busy} check={title} now={now} format={format} />;
+   const content = (
+     <>
+       {dot(tone)}
+@@ -273,7 +286,6 @@ export function AccountHealthCell({
+       </span>
+     </>
+   );
+-  const rejected = check.status === "credentials_rejected";
+   const first = sources.find((source) => source.app !== undefined)?.app;
+   if (rejected && recover === undefined && link && first !== undefined)
+     return (
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 8eec5e8..767c9df 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -234,13 +234,18 @@ const narrow = {
+   lead: "@max-[640px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
+ };
+ 
+-/** Columns: [choice] · logo · account · type · plan · health · used by · menu. */
+-export const accountRowGrid = (lead: boolean) =>
++/**
++ * Columns: [choice] · logo · account · type · plan · [requests 7d] · health · used by · menu. A
++ * list with `requests` passes every row's `requests` cell, empty where nothing was counted.
++ */
++export const accountRowGrid = (lead: boolean, requests = false) =>
+   cn(
+     "grid items-center gap-x-3",
+     lead
+       ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
+-      : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
++      : requests
++        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
++        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
+     lead ? narrow.lead : narrow.plain,
+   );
+ 
+@@ -253,6 +258,7 @@ export function AccountRowCells({
+   lead = false,
+   type,
+   plan,
++  requests,
+   health,
+   users,
+   usersLabel,
+@@ -260,6 +266,8 @@ export function AccountRowCells({
+   readonly lead?: boolean;
+   readonly type?: ReactNode;
+   readonly plan?: ReactNode;
++  /** Only in a grid with the requests column; null leaves this row's cell empty. */
++  readonly requests?: ReactNode;
+   readonly health?: ReactNode;
+   readonly users?: ReactNode;
+   /** Names the users cell where the column header is hidden, such as "Used by". */
+@@ -282,6 +290,14 @@ export function AccountRowCells({
+       <span data-account-plan-cell className={cn("flex min-w-0 flex-wrap gap-1", empty)}>
+         {plan}
+       </span>
++      {requests !== undefined && (
++        <span
++          data-account-requests-cell
++          className={cn("flex min-w-0 justify-end @max-[640px]/account-rows:justify-start", empty)}
++        >
++          {requests}
++        </span>
++      )}
+       <span className={cn("flex min-w-0 items-center", empty)}>{health}</span>
+       <span
+         className={cn(
+@@ -314,17 +330,33 @@ export function AccountRowMenu({ children }: { readonly children?: ReactNode })
+ }
+ 
+ /** Column names for a list of rows without a choice column; hidden where the cells wrap. */
+-export function AccountRowHeader({ users }: { readonly users: string }) {
++export function AccountRowHeader({
++  users,
++  requests,
++}: {
++  readonly users: string;
++  /** Adds the Requests 7d column; `title` explains what its empty cells mean. */
++  readonly requests?: { readonly title?: string | undefined } | undefined;
++}) {
+   return (
+     <div
+       className={cn(
+-        accountRowGrid(false),
++        accountRowGrid(false, requests !== undefined),
+         "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
+       )}
+     >
+       <span className="col-span-2">Account</span>
+       <span>Type</span>
+       <span>Plan</span>
++      {requests !== undefined && (
++        <span
++          className="text-right whitespace-nowrap"
++          data-requests-header
++          {...(requests.title === undefined ? {} : { title: requests.title })}
++        >
++          Requests 7d
++        </span>
++      )}
+       <span>Health</span>
+       <span>{users}</span>
+       <span className="sr-only">Actions</span>
+diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+new file mode 100644
+index 0000000..0956ae2
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+@@ -0,0 +1,285 @@
++/**
++ * What the gateway that carries an account's requests counted: the Requests 7d cell, the Health
++ * column's recent ticks and 7-day success share, and the token count under a usage cell. Hosts
++ * pass only counts their source attributes to the account; an account the caller can't inspect,
++ * or one its source can't map, gets no traffic at all rather than zeros.
++ */
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { cn } from "../lib/utils.ts";
++import { age } from "./account-observation-format.ts";
++
++type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
++
++/** One recent bucket: any failure is bad, requests without one are good, no requests is none. */
++export type TrafficTick = "good" | "bad" | "none";
++
++/** An account's requests as its gateways counted them. */
++export interface AccountRowTraffic {
++  /** Requests in the last 7 days. */
++  readonly requests: number;
++  readonly failed: number;
++  /** The last hours, oldest first; the newest is the current, partial hour. */
++  readonly ticks: readonly TrafficTick[];
++  /** The latest successful request; null when none is recorded, undefined when unread. */
++  readonly lastSuccessAt: string | null | undefined;
++  /** The gateways that counted, such as the pool's name. */
++  readonly gateways: readonly string[];
++}
++
++/** Tokens a gateway counted in one usage window. `missing` requests reported no token count. */
++export interface WindowTokens {
++  readonly total: number | null;
++  readonly known: number;
++  readonly missing: number;
++  readonly gateways: readonly string[];
++}
++
++/** Several accounts or gateways as one: counts add up, a bad tick wins, the latest success wins. */
++export const mergeTraffic = (
++  entries: readonly (AccountRowTraffic | undefined)[],
++): AccountRowTraffic | undefined => {
++  const present = entries.filter((entry) => entry !== undefined);
++  const [first, ...rest] = present;
++  if (first === undefined) return undefined;
++  return rest.reduce<AccountRowTraffic>(
++    (sum, next) => ({
++      requests: sum.requests + next.requests,
++      failed: sum.failed + next.failed,
++      ticks: sum.ticks.map((tick, index) => {
++        const other = next.ticks[index] ?? "none";
++        return tick === "bad" || other === "bad" ? "bad" : tick === "good" ? tick : other;
++      }),
++      lastSuccessAt: latest(sum.lastSuccessAt, next.lastSuccessAt),
++      gateways: [...new Set([...sum.gateways, ...next.gateways])],
++    }),
++    first,
++  );
++};
++
++const latest = (a: string | null | undefined, b: string | null | undefined) =>
++  a === undefined || b === undefined
++    ? (a ?? b)
++    : a === null || (b !== null && Date.parse(b) > Date.parse(a))
++      ? b
++      : a;
++
++/** Tokens from several gateways as one; a missing count on any side stays missing. */
++export const mergeTokens = (
++  entries: readonly (WindowTokens | undefined)[],
++): WindowTokens | undefined => {
++  const present = entries.filter((entry) => entry !== undefined);
++  if (present.length === 0) return undefined;
++  return {
++    total: present.some((entry) => entry.total !== null)
++      ? present.reduce((sum, entry) => sum + (entry.total ?? 0), 0)
++      : null,
++    known: present.reduce((sum, entry) => sum + entry.known, 0),
++    missing: present.reduce((sum, entry) => sum + entry.missing, 0),
++    gateways: [...new Set(present.flatMap((entry) => entry.gateways))],
++  };
++};
++
++/**
++ * Where a window's current period began, only when the source says so exactly: its stated start,
++ * or a fixed period's reset minus its length. Rolling windows and passed resets have none.
++ */
++export const windowStart = (entry: Window, now: number): string | undefined => {
++  const period = entry.period;
++  const reset = entry.resetsAt === undefined ? undefined : Date.parse(entry.resetsAt);
++  const start =
++    period?.startsAt !== undefined
++      ? Date.parse(period.startsAt)
++      : period?.mode === "fixed" &&
++          period.seconds !== undefined &&
++          reset !== undefined &&
++          reset > now
++        ? reset - period.seconds * 1000
++        : undefined;
++  return start === undefined || !Number.isFinite(start) || start >= now
++    ? undefined
++    : new Date(start).toISOString();
++};
++
++/** The 7-day success share, or null without requests. */
++export const successShare = (traffic: AccountRowTraffic) =>
++  traffic.requests === 0 ? null : (traffic.requests - traffic.failed) / traffic.requests;
++
++/** Below this share the percentage turns amber. */
++const healthyShare = 0.95;
++
++/** Truncated, never rounded up: one failure in thousands never reads as 100%. */
++const percent = (share: number, format: DisplayFormat) =>
++  `${new Intl.NumberFormat(format.locale, { maximumFractionDigits: 1 }).format(
++    Math.floor(share * 1000) / 10,
++  )}%`;
++
++const via = (gateways: readonly string[]) =>
++  gateways.length === 0 ? "" : `, counted by ${gateways.join(" and ")}`;
++
++const lastSuccess = (traffic: AccountRowTraffic, now: number) =>
++  traffic.lastSuccessAt === undefined
++    ? undefined
++    : traffic.lastSuccessAt === null
++      ? "no successful request recorded"
++      : `last success ${age(traffic.lastSuccessAt, now)}`;
++
++/** The Requests 7d cell: the count, muted at zero, with " req" where the column header is hidden. */
++export function AccountRequestsCell({
++  traffic,
++  now,
++  format,
++}: {
++  readonly traffic: AccountRowTraffic;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const count = new Intl.NumberFormat(format.locale).format(traffic.requests);
++  const success = lastSuccess(traffic, now);
++  const title =
++    traffic.requests === 0
++      ? `No requests in the last 7 days${via(traffic.gateways)}${success === undefined ? "" : ` · ${success}`}`
++      : `${count} requests in the last 7 days${via(traffic.gateways)}`;
++  return (
++    <span
++      className={cn(
++        "text-[13px] whitespace-nowrap tabular-nums @max-[640px]/account-rows:text-[12px]",
++        traffic.requests === 0 && "text-muted-foreground",
++      )}
++      title={title}
++      data-account-requests={traffic.requests}
++      suppressHydrationWarning
++    >
++      <span className={traffic.requests === 0 ? undefined : "font-medium"}>{count}</span>
++      <span
++        className="hidden text-muted-foreground @max-[640px]/account-rows:inline"
++        data-requests-unit
++      >
++        {" req"}
++      </span>
++      <span className="sr-only"> requests in the last 7 days</span>
++    </span>
++  );
++}
++
++const tickColors = { good: "bg-emerald-500", bad: "bg-destructive", none: "bg-border" };
++
++/**
++ * The Health column while the account has requests: one tick per recent hour and the 7-day success
++ * share, amber below 95%. `check` adds the sign-in check that traffic took precedence over.
++ */
++export function TrafficHealth({
++  traffic,
++  check,
++  now,
++  format,
++}: {
++  readonly traffic: AccountRowTraffic;
++  readonly check?: string | undefined;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const share = successShare(traffic) ?? 1;
++  const shown = percent(share, format);
++  const success = lastSuccess(traffic, now);
++  const title = [
++    `${new Intl.NumberFormat(format.locale).format(traffic.requests)} requests in 7 days`,
++    `${shown} succeeded`,
++    success,
++  ]
++    .filter((part) => part !== undefined)
++    .join(" · ");
++  return (
++    <span
++      className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[640px]/account-rows:text-[12px]"
++      title={`${title}${via(traffic.gateways)}${check === undefined ? "" : `\n${check}`}`}
++      data-account-health-cell
++      data-health-state="traffic"
++      data-ticks={traffic.ticks.map((tick) => tick[0]).join("")}
++      suppressHydrationWarning
++    >
++      <span aria-hidden className="inline-flex h-3 items-center gap-0.5">
++        {traffic.ticks.map((tick, index) => (
++          <span
++            // Position is the identity: each tick is one hour back from now.
++            key={index}
++            className={cn("h-3 w-[3px] rounded-[1px]", tickColors[tick])}
++            data-tick={tick}
++          />
++        ))}
++      </span>
++      <span
++        className={cn(
++          "font-medium tabular-nums",
++          share < healthyShare ? "text-amber-700 dark:text-amber-400" : "text-foreground",
++        )}
++        data-success-share={shown}
++      >
++        {shown}
++      </span>
++      <span className="sr-only"> of requests succeeded in the last 7 days</span>
++    </span>
++  );
++}
++
++/** Details' Requests line, in the same words as the cells' tooltips. */
++export const trafficSummary = (traffic: AccountRowTraffic, now: number, format: DisplayFormat) => {
++  const share = successShare(traffic);
++  const success = lastSuccess(traffic, now);
++  return [
++    traffic.requests === 0
++      ? "None in 7 days"
++      : `${new Intl.NumberFormat(format.locale).format(traffic.requests)} in 7 days`,
++    share === null ? undefined : `${percent(share, format)} succeeded`,
++    success,
++    traffic.gateways.length === 0 ? undefined : `counted by ${traffic.gateways.join(" and ")}`,
++  ]
++    .filter((part) => part !== undefined)
++    .join(" · ");
++};
++
++/**
++ * The left of a usage cell's footer: tokens the gateway counted in that window, never a provider
++ * figure. A total with uncounted requests is a floor, marked "≥"; with no counted request at all
++ * there is nothing true to show. Cost stays out until an API-equivalent price is proven.
++ */
++export function WindowTokensFooter({
++  tokens,
++  provider,
++  format,
++}: {
++  readonly tokens: WindowTokens;
++  readonly provider: string | undefined;
++  readonly format: DisplayFormat;
++}) {
++  if (tokens.total === null && tokens.missing > 0) return null;
++  const total = tokens.total ?? 0;
++  const floor = tokens.missing > 0;
++  const figure = new Intl.NumberFormat(format.locale, {
++    notation: "compact",
++    maximumFractionDigits: 1,
++  }).format(total);
++  const requests = tokens.known + tokens.missing;
++  const title = [
++    `Counted by ${tokens.gateways.join(" and ") || "the gateway"} from its own requests in this window${provider === undefined ? "" : `, not reported by ${provider}`}.`,
++    floor
++      ? `${tokens.missing} of ${requests} requests didn't report tokens, so this is a minimum.`
++      : undefined,
++    "API-equivalent cost isn't available yet.",
++  ]
++    .filter((part) => part !== undefined)
++    .join("\n");
++  return (
++    <span
++      className={cn("min-w-0 truncate", total === 0 && "text-muted-foreground")}
++      title={title}
++      data-window-tokens={total}
++      {...(floor ? { "data-tokens-floor": "" } : {})}
++    >
++      <span className={total === 0 ? undefined : "font-medium text-foreground"}>
++        {floor ? `≥ ${figure}` : figure}
++      </span>{" "}
++      tokens
++    </span>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+index 73a739e..5031d12 100644
+--- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -1,4 +1,5 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { cn } from "../lib/utils.ts";
+ import { age, windowView, type ObservationMeterState } from "./account-observation-format.ts";
+@@ -22,7 +23,8 @@ const valueTones: Partial<Record<ObservationMeterState, string>> = {
+ /**
+  * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
+  * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
+- * reset count for the window they refill; it is a count only, never a control.
++ * reset count for the window they refill; it is a count only, never a control. `tokens` is what a
++ * gateway counted in the window, at the left of the footer.
+  */
+ export function UsageCell({
+   entry,
+@@ -30,12 +32,14 @@ export function UsageCell({
+   resets,
+   now,
+   format,
++  tokens,
+ }: {
+   readonly entry: Window;
+   readonly stale: boolean;
+   readonly resets?: { readonly count: number; readonly title: string } | undefined;
+   readonly now: number;
+   readonly format: DisplayFormat;
++  readonly tokens?: ReactNode;
+ }) {
+   const reading = windowView(entry, now, format);
+   const read = age(entry.observedAt, now);
+@@ -122,23 +126,25 @@ export function UsageCell({
+           />
+         )}
+       </span>
+-      {/* The left of this line is reserved for the pool's own token and cost counts. */}
+-      {reading.reset !== undefined && (
+-        <div className="flex min-w-0 justify-end text-muted-foreground tabular-nums">
+-          <span
+-            className={cn(
+-              "truncate",
+-              reading.reset.due ? "text-sign-in-warning" : "text-foreground",
+-            )}
+-            {...(reading.reset.title === undefined ? {} : { title: reading.reset.title })}
+-            data-reset
+-          >
+-            {reading.reset.at === undefined ? (
+-              reading.reset.text
+-            ) : (
+-              <time dateTime={reading.reset.at}>{reading.reset.text}</time>
+-            )}
+-          </span>
++      {(reading.reset !== undefined || (tokens !== undefined && tokens !== null)) && (
++        <div className="flex min-w-0 justify-between gap-2 text-muted-foreground tabular-nums">
++          {tokens ?? <span />}
++          {reading.reset !== undefined && (
++            <span
++              className={cn(
++                "truncate",
++                reading.reset.due ? "text-sign-in-warning" : "text-foreground",
++              )}
++              {...(reading.reset.title === undefined ? {} : { title: reading.reset.title })}
++              data-reset
++            >
++              {reading.reset.at === undefined ? (
++                reading.reset.text
++              ) : (
++                <time dateTime={reading.reset.at}>{reading.reset.text}</time>
++              )}
++            </span>
++          )}
+         </div>
+       )}
+     </div>
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index d59e3fa..b140659 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -21,6 +21,10 @@ import {
+   accountRowsContainer,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
++import { AccountRequestsCell, trafficSummary, type AccountRowTraffic } from "./account-traffic.tsx";
++import { useDisplayFormat } from "../hooks/display-format.ts";
++import { observationClock } from "./account-observation-format.ts";
++import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+@@ -73,6 +77,13 @@ export function AccountsPage<E>({
+    * list. Without one, or before it loads, the row reads the inventory.
+    */
+   readonly accountRow?: (account: AccountSummary) => AccountRowInput | undefined;
++  /**
++   * What the gateways carrying a row's saved accounts counted. Given at all, the list has a
++   * Requests 7d column; undefined for a row leaves its cell empty and its Health a check.
++   */
++  readonly accountTraffic?:
++    | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
++    | undefined;
+   /** A full-width block under the row, such as the account's usage, given the apps using it. */
+   readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+@@ -127,6 +138,7 @@ function AccountsList({
+   accountMeta,
+   accountPlan,
+   accountRow,
++  accountTraffic,
+   accountDetails,
+   highlight,
+   empty,
+@@ -148,10 +160,16 @@ function AccountsList({
+   readonly accountMeta?: (account: AccountSummary) => ReactNode;
+   readonly accountPlan?: (account: AccountSummary) => ReactNode;
+   readonly accountRow?: (account: AccountSummary) => AccountRowInput | undefined;
++  readonly accountTraffic?:
++    | ((accounts: readonly AccountSummary[]) => AccountRowTraffic | undefined)
++    | undefined;
+   readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   readonly highlight?: AccountId | undefined;
+ }) {
+   const brand = useProductBrand();
++  const format = useDisplayFormat();
++  const requests = accountTraffic !== undefined;
++  const now = useAtomValue(observationClock);
+   const { AppLink } = useDashboard();
+   const highlighted = useRef<HTMLDivElement>(null);
+   useEffect(() => {
+@@ -169,6 +187,7 @@ function AccountsList({
+         .includes(search.toLowerCase()),
+     ),
+   );
++  const traffics = groups.map(({ bindings }) => accountTraffic?.(bindings));
+   return (
+     <>
+       {data.accounts.length === 0 ? (
+@@ -191,8 +210,19 @@ function AccountsList({
+             "inventory overflow-hidden rounded-[8px] border border-border",
+           )}
+         >
+-          <AccountRowHeader users="Used by" />
+-          {groups.map(({ account, bindings }) => {
++          <AccountRowHeader
++            users="Used by"
++            {...(requests
++              ? {
++                  requests: {
++                    title: traffics.some((traffic) => traffic === undefined)
++                      ? "Requests in the last 7 days, counted by the account's pool. An empty cell means there's no request history you can see for that account."
++                      : undefined,
++                  },
++                }
++              : {})}
++          />
++          {groups.map(({ account, bindings }, index) => {
+             const apps = bindingApps(data, bindings);
+             const marked = bindings.some((binding) => binding.id === highlight);
+             const family = bindingFamily(data, account);
+@@ -202,6 +232,7 @@ function AccountsList({
+               (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
+             );
+             const row = accountRowGroup(members)!;
++            const traffic = traffics[index];
+             const appName = (id: string) => {
+               const app = apps.find((item) => item.id === id);
+               return app === undefined ? "an app" : appDisplayName(app, brand);
+@@ -211,7 +242,7 @@ function AccountsList({
+               <AccountRowProvider key={account.id}>
+                 <div
+                   className={cn(
+-                    accountRowGrid(false),
++                    accountRowGrid(false, requests),
+                     "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
+                   )}
+                   {...(marked
+@@ -231,11 +262,20 @@ function AccountsList({
+                       bindings.map((binding) => accountKindLabel(data, binding)),
+                     )}
+                     plan={accountPlan?.(account)}
++                    {...(requests
++                      ? {
++                          requests:
++                            traffic === undefined ? null : (
++                              <AccountRequestsCell traffic={traffic} now={now} format={format} />
++                            ),
++                        }
++                      : {})}
+                     health={
+                       <AccountHealthCell
+                         health={accountRowHealth(members)}
+                         appName={appName}
+                         link
++                        traffic={traffic}
+                       />
+                     }
+                     usersLabel="Used by"
+@@ -317,6 +357,21 @@ function AccountsList({
+                       </div>
+                     </AccountRowDetails>
+                   )}
++                  {traffic !== undefined && (
++                    <AccountRowDetails inline={false}>
++                      <p
++                        className={cn(
++                          accountRowBand(false),
++                          "text-[12px] text-muted-foreground wrap-anywhere",
++                        )}
++                        data-account-traffic-details
++                        suppressHydrationWarning
++                      >
++                        <span className="text-foreground">Requests:</span>{" "}
++                        {trafficSummary(traffic, now, format)}
++                      </p>
++                    </AccountRowDetails>
++                  )}
+                   {access.length > 0 && (
+                     <AccountRowDetails>
+                       <div className={accountRowBand(false)}>
