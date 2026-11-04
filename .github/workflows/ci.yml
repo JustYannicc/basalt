@@ -36,11 +36,12 @@ jobs:
       - name: Resolve the comparison commit
         id: comparison
         env:
+          BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base="$(git merge-base "$HEAD_SHA" origin/main)"
           fi
           base="$(git rev-parse --verify "$base^{commit}")"

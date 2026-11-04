@@ -310,7 +310,7 @@ test("fast unit selection runs changed tests and nearby source tests, with a con
     assert.deepEqual(selectUnitTests(tests, [input]), tests, input);
 });
 
-test("first batch pushes resolve their zero before SHA to the main merge base", () => {
+test("batch pushes compare with main even when a force push removes the previous head", () => {
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
@@ -332,12 +332,22 @@ test("first batch pushes resolve their zero before SHA to the main merge base", 
     writeFileSync(join(root, "input"), "batch");
     git("commit", "-qam", "batch");
     const head = git("rev-parse", "HEAD");
-    for (const before of ["0".repeat(40), base]) {
+    for (const [before, batchPush] of [
+      ["0".repeat(40), "false"],
+      [base, "false"],
+      ["f".repeat(40), "true"],
+    ]) {
       const output = join(root, "output");
       writeFileSync(output, "");
       execFileSync("bash", ["-e", "-c", step.run], {
         cwd: root,
-        env: { ...process.env, BASE_SHA: before, HEAD_SHA: head, GITHUB_OUTPUT: output },
+        env: {
+          ...process.env,
+          BASE_SHA: before,
+          HEAD_SHA: head,
+          BATCH_PUSH: batchPush,
+          GITHUB_OUTPUT: output,
+        },
       });
       assert.equal(readFileSync(output, "utf8"), `base_sha=${base}\n`);
       assert.deepEqual(changedInputs(root, base, head).changed, ["input"]);
