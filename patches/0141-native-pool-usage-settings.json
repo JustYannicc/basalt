@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-pool-usage-settings",
+  "file": "0141-native-pool-usage-settings.patch",
+  "content_sha256": "0a5f0e43e6863f276a5c67565f93e6a488441b4897a85f223383c2705123f348",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

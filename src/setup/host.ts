@@ -50,8 +50,13 @@ async function ownPool(request: Request, env: SetupEnv, person: string): Promise
   const organizations: unknown = await response.json().catch(() => undefined);
   if (!Array.isArray(organizations)) throw new SetupError(502, "Could not find your own organization. Try again.");
   for (const organization of organizations.map(record)) {
-    const pools = poolsOf(organization);
-    const pool = Object.hasOwn(pools, person) ? record(pools[person]).app : undefined;
+    const owned = Object.entries(poolsOf(organization))
+      .map(([key, value]) => ({ key, pool: record(value) }))
+      .filter(({ key, pool }) => (pool.owner ?? key) === person && text(pool.app, 512));
+    const primary = owned.filter(({ pool }) => pool.primary === true);
+    const selected = primary.length === 1 ? primary[0] : primary.length > 1 ? undefined
+      : owned.find(value => value.key === person) ?? (owned.length === 1 ? owned[0] : undefined);
+    const pool = selected?.pool.app;
     if (!text(pool, 512) || !text(organization.id, 512)) continue;
     // Metadata is only a pointer. The tools service's own access record must say the person created it.
     const access = await native(request, env,
@@ -147,7 +152,7 @@ function linkResponse(request: Request, result: Record<string, unknown>): Respon
   const link = `${origin}/setup/claim/${result.token}`;
   return json({
     computer: computerSummary(result.computer), computerId: record(result.computer).id, link,
-    prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+, delete the file, and tell me what it changed.`,
+    prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+. If it finds existing MCP connections, ask me whether to replace the old Executor connection or keep both; don't choose for me. Run it again with my choice, delete the file, and tell me what it changed.`,
     ...commands(origin, ["--link", link]), undoPrompt: undo(origin), expiresAt: result.expiresAt,
   });
 }

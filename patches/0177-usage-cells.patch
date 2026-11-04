@@ -1,0 +1,1704 @@
+diff --git a/apps/hosted/server/src/contracts/account-observations.ts b/apps/hosted/server/src/contracts/account-observations.ts
+index 8185385..fe3f067 100644
+--- a/apps/hosted/server/src/contracts/account-observations.ts
++++ b/apps/hosted/server/src/contracts/account-observations.ts
+@@ -15,6 +15,8 @@ export type ObservationPolicy = typeof ObservationPolicy.Type;
+ 
+ export const HostedAccountObservations = Schema.Struct({
+   ...AccountObservationView.fields,
++  hasUsageReporter: Schema.Boolean,
++  usageReporterLabel: Schema.NullOr(Schema.String),
+   canInspect: Schema.Boolean,
+   canRefresh: Schema.Boolean,
+ });
+diff --git a/apps/hosted/server/src/implementation/account-observations.ts b/apps/hosted/server/src/implementation/account-observations.ts
+index 1c33a1a..de49c7e 100644
+--- a/apps/hosted/server/src/implementation/account-observations.ts
++++ b/apps/hosted/server/src/implementation/account-observations.ts
+@@ -1,13 +1,77 @@
+-import { Effect } from "effect";
++import { Effect, Schema } from "effect";
++import {
++  AccountAcquisitionConfiguration,
++  AccountAcquisitionHost,
++  StorageError,
++  type AccountId,
++  type AccountObservationView,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { AccountGrants } from "./proofs/account-access.ts";
+ import { linkedApps } from "./accounts.ts";
++import { policyDatabase } from "./resource-policy.ts";
+ import { observationAccess, requireObservationAccess } from "./account-observation-policy.ts";
+ 
++/** Reporter discovery reads binding and registration metadata, never the private source. */
++const usageReporter = (
++  executor: Executor,
++  owner: OwnerId,
++  account: AccountId,
++  view: AccountObservationView,
++) =>
++  Effect.gen(function* () {
++    const retained = view.reports[0];
++    if (retained !== undefined)
++      return { hasUsageReporter: true, usageReporterLabel: retained.source.label };
++    const binding = yield* executor[AccountAcquisitionHost].binding({ owner, account });
++    const absent = { hasUsageReporter: false, usageReporterLabel: null };
++    if (
++      binding === undefined ||
++      binding.removal !== null ||
++      binding.account !== account ||
++      binding.owner !== owner
++    )
++      return absent;
++    const { registrations } = yield* AccountAcquisitionConfiguration;
++    const registered = registrations.find(
++      (entry) =>
++        entry.provider === binding.provider &&
++        entry.method === binding.method &&
++        entry.driver.id === binding.driver &&
++        entry.driver.revision === binding.driverRevision &&
++        entry.driver.observeAccount !== undefined,
++    );
++    if (registered === undefined) return absent;
++    const sql = yield* policyDatabase;
++    const rows = yield* sql`select credential_generation as generation from executor_accounts
++      where id = ${account} and owner = ${owner} and provider = ${binding.provider} and method = ${binding.method}`;
++    const current = (yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ generation: Schema.Int })),
++    )(rows))[0];
++    return current?.generation === binding.generation
++      ? { hasUsageReporter: true, usageReporterLabel: registered.driver.id }
++      : absent;
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new StorageError(),
++    }),
++  );
++
+ export const getAccountObservations = Effect.gen(function* () {
+   const { owner, account } = yield* AccountGrants.inspect;
+   const access = yield* observationAccess(account);
+-  if (!access.canInspect) return { account, reports: [], canInspect: false, canRefresh: false };
++  if (!access.canInspect)
++    return {
++      account,
++      reports: [],
++      canInspect: false,
++      canRefresh: false,
++      hasUsageReporter: false,
++      usageReporterLabel: null,
++    };
+   const executor = yield* Effect.flatten(HostedExecutor);
+   const apps = yield* linkedApps(owner, account);
+   const view = yield* executor.accounts.observations({
+@@ -15,8 +79,9 @@ export const getAccountObservations = Effect.gen(function* () {
+     account,
+     apps: apps.map((app) => app.id),
+   });
++  const reporter = yield* usageReporter(executor, owner, account, view);
+   yield* requireObservationAccess(account);
+-  return { ...view, canInspect: true, canRefresh: access.canRefresh };
++  return { ...view, ...reporter, canInspect: true, canRefresh: access.canRefresh };
+ });
+ 
+ export const refreshAccountObservations = Effect.gen(function* () {
+@@ -29,6 +94,7 @@ export const refreshAccountObservations = Effect.gen(function* () {
+     account,
+     apps: apps.map((app) => app.id),
+   });
++  const reporter = yield* usageReporter(executor, owner, account, view);
+   yield* requireObservationAccess(account, true);
+-  return { ...view, canInspect: true, canRefresh: true };
++  return { ...view, ...reporter, canInspect: true, canRefresh: true };
+ });
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index 4501070..fbd54a3 100644
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -116,7 +116,14 @@ ${options.observe ? 'observeAccount: context => read(context, "/observation"),'
+ export default defineApp({ user:{accounts:{service}} }, { tools:router({ ping:query({input:object({})},async()=>true) }) });`;
+ 
+ export const observationFixture = (
+-  options: { observe?: boolean; health?: boolean; shared?: boolean; framework?: string } = {
++  options: {
++    observe?: boolean;
++    health?: boolean;
++    shared?: boolean;
++    framework?: string;
++    /** App names are unique per owner, so a case with several fixtures names each one. */
++    name?: string;
++  } = {
+     observe: true,
+     health: true,
+   },
+@@ -136,7 +143,7 @@ export const observationFixture = (
+           },
+     ];
+     const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-      name: "Observation fixture",
++      name: options.name ?? "Observation fixture",
+       files: files(observationSource(backend.origin, options)),
+     });
+     expect(created.status, JSON.stringify(created.body)).toBe(200);
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 8c6572f..b70193e 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8853,6 +8853,28 @@ export const scenarios = plan({
+       local: na("Hosted rows read the server's retained reports."),
+     },
+   },
++  accountUsageCells: {
++    fixtures: "actors",
++    file: "account-usage-cells.spec.ts",
++    title:
++      "usage cells show only reported limited windows in threshold colors, grey only stale readings, count banked resets and leave accounts without limits bare",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback allowance services."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
++  accountUsageHomeReporter: {
++    fixtures: "actors",
++    file: "account-usage-home-reporter.spec.ts",
++    title:
++      "a Home-bound account with no reading offers Refresh and shows the reading it brings while a connector shows no usage",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback Home service."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
+   accountObservations: {
+     fixtures: "actors",
+     file: "account-observations.spec.ts",
+diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
+index c7d2530..2480744 100644
+--- a/e2e/tests/account-observation-interval.spec.ts
++++ b/e2e/tests/account-observation-interval.spec.ts
+@@ -111,7 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Automatic account readings", (
+             .then(() =>
+               Promise.all([
+                 page.locator("[data-account-observations]").getByText("Refresh failed").count(),
+-                page.locator("[data-account-observations]").getByText("No usage reported").count(),
++                page.locator("[data-account-observations]").getByText("no reading yet").count(),
+               ]),
+             )
+             .then((counts) => expect(counts).toEqual([0, 0])),
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index 44c80b6..dc33ef4 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -29,11 +29,20 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+ 
+         yield* installBrowserClock;
+         yield* browser.login(f.actors.owner);
+-        yield* browser.use("Open Accounts with nothing retained yet", (page) =>
+-          page
++        yield* browser.use("Open Accounts with nothing retained yet", (page) => {
++          // The row's own observations read must have answered before an empty row means anything.
++          const loaded = page.waitForResponse(
++            (response) =>
++              response.request().method() === "GET" &&
++              new URL(response.url()).pathname.endsWith(`/accounts/${f.account}/observations`) &&
++              response.ok(),
++          );
++          return page
+             .goto(`/org/${f.actors.organization.slug}/accounts`)
+-            .then(() => block(page).getByText("No usage reported").waitFor()),
+-        );
++            .then(() => loaded)
++            .then(() => block(page).locator("[data-usage]").count())
++            .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
++        });
+ 
+         // Stands in for the server interval: a report is retained while the row stays open.
+         expect((yield* f.refresh()).status).toBe(200);
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+index e28b65a..b080476 100644
+--- a/e2e/tests/account-observation-rows.spec.ts
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -1,4 +1,4 @@
+-/** Account rows show retained usage beside independent health, only to callers who may see it. */
++/** Account rows show retained usage cells beside independent health, only to callers who may see it. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import type { Page } from "playwright";
+@@ -64,40 +64,62 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           block(page).locator(inventoryRow).locator("[data-account-plan]");
+ 
+         yield* browser.login(f.actors.owner);
+-        yield* browser.use("Open Accounts as the account manager", (page) =>
+-          page.goto(accounts).then(() => block(page).getByText("No usage reported").waitFor()),
++        const unread = yield* browser.use("Open Accounts before anything was reported", (page) =>
++          page
++            .goto(accounts)
++            .then(() => block(page).locator("[data-account-health]").waitFor())
++            .then(() =>
++              Promise.all([
++                block(page).locator("[data-usage]").count(),
++                block(page).locator("[data-reading]").count(),
++                block(page).getByText("No usage reported").count(),
++                refreshButton(page).count(),
++              ]),
++            ),
+         );
+-        expect(yield* f.backend.calls, "showing retained usage collects nothing").toBe(0);
++        expect(
++          unread,
++          "an unread app-declared reporter is not discovered until it has a retained report",
++        ).toEqual([0, 0, 0, 0]);
++        expect(yield* f.backend.calls, "showing an account collects nothing").toBe(0);
+ 
+-        yield* browser.use("Refresh usage from the row", (page) =>
+-          refreshButton(page)
+-            .click()
+-            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
+-        );
++        expect((yield* f.refresh()).status).toBe(200);
+         expect(yield* f.backend.calls).toBe(1);
++        yield* browser.use("Show the first reading as a usage cell", (page) =>
++          page.reload().then(() => reading(page).getByText("Rem 88%").waitFor()),
++        );
+         const fresh = yield* browser.use("Read the fresh row", (page) => {
+           const row = block(page);
+           const meter = row.getByRole("meter", { name: "Requests per minute", exact: true });
+           return Promise.all([
+             meter.getAttribute("aria-valuenow"),
+             meter.getAttribute("aria-valuemax"),
+-            row.locator('[data-reading="credits"] [data-reading-value]').innerText(),
++            reading(page).locator("[data-reading-value]").innerText(),
++            row.locator('[data-reading="credits"]').count(),
+             plan(page).allInnerTexts(),
+             refreshButton(page).getAttribute("aria-disabled"),
+             row.locator("[data-usage-source] time").getAttribute("datetime"),
++            reading(page).locator("[data-stale-age]").count(),
++            row.innerText(),
+           ]);
+         });
+-        expect(fresh.slice(0, 3)).toEqual(["88", "100", "$25.00 available"]);
++        expect(fresh.slice(0, 4)).toEqual(["88", "100", "Rem 88%", 0]);
++        expect(fresh[7], "a fresh reading names no age").toBe(0);
++        expect(fresh[8], "the cell replaces the text readings").not.toMatch(/ left\b| of 100/);
+         const units = yield* browser.use("Keep RPM as a count while USD remains money", (page) =>
+-          reading(page).innerText(),
++          block(page)
++            .getByRole("button", { name: "Details", exact: true })
++            .click()
++            .then(() => block(page).locator("[data-observation-details]").innerText()),
+         );
+-        expect(units).toContain("12 used");
+-        expect(units).not.toContain("spent");
++        expect(units).toContain("88 / 100 RPM remaining");
++        expect(units).toContain("$25.00");
+         expect(units).not.toContain("88.00");
+-        expect(fresh[3]).toContain("Developer");
+-        expect(fresh[4], "the source's next allowed refresh holds Refresh").toBe("true");
++        const [, , , , planTags, refreshHeld, sourceTime] = fresh;
++        expect(planTags).toContain("Developer");
++        expect(refreshHeld, "the source's next allowed refresh holds Refresh").toBe("true");
+         const observedAt = (yield* body(Retained, yield* f.read())).reports[0]?.result.observedAt;
+-        expect(fresh[5]).toBe(observedAt);
++        expect(sourceTime).toBe(observedAt);
+         yield* evidence.attach(
+           "account-observation-row-fresh.png",
+           "image/png",
+@@ -132,6 +154,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             row.locator("[data-attempt-note]").innerText(),
+             reading(page).locator("[data-reading-value]").innerText(),
+             reading(page).getAttribute("data-stale"),
++            reading(page).locator("[data-stale-age]").innerText(),
+             row.locator("[data-usage-source] [data-freshness]").getAttribute("data-freshness"),
+             row.locator("[data-usage-source] time").getAttribute("datetime"),
+             row.getByRole("link", { name: /^Reconnect/ }).count(),
+@@ -141,13 +164,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         });
+         expect(failed[0]).toContain("Refresh failed");
+         expect(failed[0]).toContain("Showing the last successful reading.");
+-        expect(failed[1]).toBe("88 of 100 RPM left");
++        expect(failed[1]).toBe("Rem 88%");
+         expect(failed[2]).toBe("");
+-        expect(failed[3]).toBe("stale");
+-        expect(failed[4], "the retained reading keeps its source time").toBe(observedAt);
+-        expect(failed[5], "a usage failure never asks to reconnect").toBe(0);
+-        expect(failed[6]).toBe(1);
+-        expect(failed[7]).toBe("true");
++        // The server clock moved, not the browser's, so only the stale label is stable here.
++        expect(failed[3]).toMatch(/^last read /);
++        expect(failed[4]).toBe("stale");
++        expect(failed[5], "the retained reading keeps its source time").toBe(observedAt);
++        expect(failed[6], "a usage failure never asks to reconnect").toBe(0);
++        expect(failed[7]).toBe(1);
++        expect(failed[8]).toBe("true");
+         yield* evidence.attach(
+           "account-observation-row-failed.png",
+           "image/png",
+@@ -157,13 +182,15 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+         // Using a shared account shows its health, never its usage, until the policy allows it.
+         yield* browser.login(f.actors.member);
+         yield* browser.use("Open Accounts as a member who uses the account", (page) =>
+-          page.goto(accounts).then(() => block(page).locator("[data-usage-restricted]").waitFor()),
++          page
++            .goto(accounts)
++            .then(() => block(page).locator("[data-account-health] [data-check-status]").waitFor()),
+         );
+         const denied = yield* browser.use("Read the restricted row", (page) => {
+           const row = block(page);
+           return Promise.all([
+             row.locator("[data-reading]").count(),
+-            row.getByText("88 of 100", { exact: false }).count(),
++            row.getByText("Rem 88%", { exact: false }).count(),
+             plan(page).count(),
+             row.getByRole("button", { name: "Refresh", exact: true }).count(),
+             row.locator("[data-usage-source]").count(),
+@@ -175,6 +202,22 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+           ]);
+         });
+         expect(denied).toEqual([0, 0, 0, 0, 0, 1, 0]);
++        expect(
++          (yield* f.api.request(f.actors.member, "GET", `${f.accountPath}/observations`)).body,
++        ).toMatchObject({ hasUsageReporter: false, usageReporterLabel: null });
++        const restrictedLayout = yield* browser.use(
++          "Keep restricted Details at the right edge",
++          (page) =>
++            block(page)
++              .getByRole("button", { name: "Details", exact: true })
++              .evaluate((button) => ({
++                right: button.getBoundingClientRect().right,
++                footerRight: button.parentElement!.getBoundingClientRect().right,
++              })),
++        );
++        expect(Math.abs(restrictedLayout.right - restrictedLayout.footerRight)).toBeLessThanOrEqual(
++          1,
++        );
+         yield* evidence.attach(
+           "account-observation-row-restricted.png",
+           "image/png",
+@@ -212,7 +255,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+ 
+         yield* browser.login(f.actors.member);
+         yield* browser.use("Open Accounts after the grant", (page) =>
+-          page.goto(accounts).then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
++          page.goto(accounts).then(() => reading(page).getByText("Rem 88%").waitFor()),
+         );
+         expect(
+           yield* browser.use("Refresh stays with the account managers", (page) =>
+@@ -225,7 +268,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+               .getByRole("region", { name: "Your accounts", exact: true })
+               .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
+               .locator('[data-reading="requests"]')
+-              .getByText("88 of 100 RPM left")
++              .getByText("Rem 88%")
+               .waitFor(),
+           ),
+         );
+@@ -250,7 +293,7 @@ layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it
+             .setViewportSize({ width: 390, height: 900 })
+             .then(() => page.emulateMedia({ colorScheme: "dark" }))
+             .then(() => page.goto(accounts))
+-            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor())
++            .then(() => reading(page).getByText("Rem 88%").waitFor())
+             .then(() =>
+               page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+             ),
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+new file mode 100644
+index 0000000..d0a0365
+--- /dev/null
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -0,0 +1,397 @@
++/** Usage cells show only the windows an account reports, in color, and nothing for accounts without limits. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
++import { observationFixture } from "../support/account-observation-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const hour = 3_600_000;
++const day = 24 * hour;
++const iso = (at: number) => new Date(at).toISOString();
++const percentWindow = (
++  id: string,
++  label: string,
++  remaining: number,
++  seconds: number,
++  resetsIn: number,
++  at: number,
++  stale?: number,
++) => ({
++  id,
++  label,
++  observedAt: iso(at),
++  ...(stale === undefined ? {} : { staleAt: iso(stale) }),
++  measure: { unit: "%", used: 100 - remaining, remainingRatio: remaining / 100 },
++  period: { mode: "fixed", seconds },
++  resetsAt: iso(at + resetsIn),
++});
++const subscription = <const W, const B = readonly []>(at: number, windows: W, balances?: B) => ({
++  observedAt: iso(at),
++  observation: { offering: "subscription", windows, balances: balances ?? [] },
++});
++const banked = (index: number, at: number, expiresIn: number) => ({
++  id: `resets-${index}`,
++  label: "Banked resets",
++  unit: "resets",
++  available: 1,
++  observedAt: iso(at),
++  expiresAt: iso(at + expiresIn),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) => {
++  it.effect(scenarios.accountUsageCells.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const now = yield* Clock.currentTimeMillis;
++        // Two windows that both exist, plus one the provider calls unlimited.
++        const studio = yield* observationFixture({
++          name: "Studio fixture",
++          observe: true,
++          health: true,
++        });
++        yield* studio.backend.answer({
++          status: 200,
++          body: subscription(now, [
++            percentWindow("five_hour", "5-hour", 34, 5 * hour, 2 * hour + 14 * 60_000, now),
++            percentWindow("seven_day", "Weekly", 96, 7 * day, 4 * day + hour, now),
++            {
++              id: "daily",
++              label: "Daily",
++              observedAt: iso(now),
++              measure: { unit: "requests", unlimited: true },
++            },
++          ]),
++        });
++        // Weekly only, nearly spent, with two banked resets.
++        const spare = yield* observationFixture({
++          name: "Spare fixture",
++          observe: true,
++          health: true,
++        });
++        yield* spare.backend.answer({
++          status: 200,
++          body: subscription(
++            now,
++            [percentWindow("seven_day", "Weekly", 8, 7 * day, 2 * day + hour, now)],
++            [banked(0, now, 27 * day), banked(1, now, 28 * day)],
++          ),
++        });
++        // A reading three hours old that its source marked stale an hour ago.
++        const old = now - 3 * hour;
++        const stale = yield* observationFixture({
++          name: "Default fixture",
++          observe: true,
++          health: true,
++        });
++        yield* stale.backend.answer({
++          status: 200,
++          body: subscription(
++            old,
++            [percentWindow("seven_day", "Weekly", 89, 7 * day, 6 * day, old, now - hour)],
++            [banked(0, old, 27 * day)],
++          ),
++        });
++        // A connector: health, no usage reporter.
++        const connector = yield* observationFixture({
++          name: "Work mail fixture",
++          observe: false,
++          health: true,
++        });
++        const named = [
++          [studio, "Studio"],
++          [spare, "Spare"],
++          [stale, "Default"],
++          [connector, "Work mail"],
++        ] as const;
++        for (const [fixture, label] of named) {
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.refresh()).status).toBe(200);
++        }
++        expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
++
++        // The driver account has no retained report. Its first collection must start in the UI.
++        const driver = yield* acquisitionFixture();
++        const { account: unreadAccount } = yield* driver.create(driver.actors.owner, {
++          kind: "shared",
++          audience: { kind: "everyone" },
++        });
++        const unreadPath = `${driver.prefix}/accounts/${unreadAccount}`;
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "PATCH", unreadPath, {
++            label: "New reporter",
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          hasUsageReporter: true,
++          reports: [],
++          usageReporterLabel: "synthetic-account-driver",
++        });
++        expect(
++          (yield* driver.api.request(driver.actors.member, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          canInspect: false,
++          hasUsageReporter: false,
++          usageReporterLabel: null,
++          reports: [],
++        });
++        expect((yield* connector.read()).body).toMatchObject({
++          hasUsageReporter: false,
++          reports: [],
++        });
++        const accounts = `/org/${studio.actors.organization.slug}/accounts`;
++        const block = (page: Page, label: string) =>
++          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const cell = (page: Page, label: string, window: string) =>
++          block(page, label).locator(`[data-reading="${window}"]`);
++        const ready = (page: Page) =>
++          Promise.all([
++            cell(page, "Studio", "seven_day").waitFor(),
++            cell(page, "Spare", "seven_day").waitFor(),
++            cell(page, "Default", "seven_day").waitFor(),
++            block(page, "Work mail").locator("[data-account-health]").waitFor(),
++            block(page, "New reporter")
++              .getByText("no reading yet", { exact: true })
++              .waitFor({ timeout: 5000 }),
++          ]);
++
++        yield* browser.login(studio.actors.owner);
++        for (const width of [1280, 390])
++          for (const scheme of ["light", "dark"] as const) {
++            yield* browser.use(`Open Accounts at ${width}px in ${scheme} mode`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.emulateMedia({ colorScheme: scheme }))
++                .then(() => page.goto(accounts))
++                .then(() => ready(page))
++                .then(() => cell(page, "Studio", "seven_day").scrollIntoViewIfNeeded()),
++            );
++            yield* evidence.attach(
++              `after-usage-cells-${width}-${scheme}.png`,
++              "image/png",
++              yield* browser.use("Capture the account list", (page) => page.screenshot()),
++            );
++            for (const [label, file] of [
++              ["Work mail", "work-mail"],
++              ["New reporter", "new-reporter"],
++            ] as const) {
++              yield* browser.use(`Show the whole ${label} row`, (page) =>
++                block(page, label)
++                  .locator(
++                    "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]",
++                  )
++                  .scrollIntoViewIfNeeded(),
++              );
++              yield* evidence.attach(
++                `after-usage-cells-${width}-${scheme}-${file}.png`,
++                "image/png",
++                yield* browser.use(`Capture ${label}`, (page) => page.screenshot()),
++              );
++            }
++          }
++
++        const read = yield* browser.use("Read every cell", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.emulateMedia({ colorScheme: "light" }))
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() => {
++              const view = (label: string) =>
++                block(page, label)
++                  .locator("[data-reading]")
++                  .evaluateAll((cells) =>
++                    cells.map((element) => ({
++                      id: element.getAttribute("data-reading"),
++                      state: element.getAttribute("data-meter-state"),
++                      stale: element.hasAttribute("data-stale"),
++                      value: element.querySelector("[data-reading-value]")?.textContent ?? "",
++                      age: element.querySelector("[data-stale-age]")?.textContent ?? null,
++                      fill: (() => {
++                        const bar = element.querySelector('[role="meter"] > span');
++                        return bar === null ? null : getComputedStyle(bar).backgroundColor;
++                      })(),
++                      reset: element.querySelector("[data-reset]")?.textContent ?? null,
++                      resetTitle:
++                        element.querySelector("[data-reset]")?.getAttribute("title") ?? null,
++                      count: element.querySelector("[data-reset-count]")?.textContent ?? null,
++                      countColor: (() => {
++                        const count = element.querySelector("[data-reset-count]");
++                        return count === null ? null : getComputedStyle(count).color;
++                      })(),
++                      mutedColor: (() => {
++                        const value = element.querySelector("[data-reading-value]");
++                        return value === null ? null : getComputedStyle(value).color;
++                      })(),
++                      countTitle:
++                        element.querySelector("[data-reset-count]")?.getAttribute("title") ?? null,
++                      buttons: element.querySelectorAll("button").length,
++                    })),
++                  );
++              return Promise.all([
++                view("Studio"),
++                view("Spare"),
++                view("Default"),
++                view("Work mail"),
++                block(page, "Work mail").innerText(),
++                block(page, "Work mail").locator("[data-usage]").count(),
++                block(page, "Work mail").getByRole("meter").count(),
++              ]);
++            }),
++        );
++        const [
++          studioCells,
++          spareCells,
++          staleCells,
++          connectorCells,
++          connectorText,
++          ...connectorParts
++        ] = read;
++
++        // Only reported, limited windows render; the unlimited one gets no cell.
++        expect(studioCells.map((entry) => entry.id)).toEqual(["five_hour", "seven_day"]);
++        expect(spareCells.map((entry) => entry.id)).toEqual(["seven_day"]);
++        // Thresholds: green from 70% remaining, amber from 30%, red below with "Low".
++        expect(studioCells.map((entry) => [entry.state, entry.value])).toEqual([
++          ["warn", "Rem 34%"],
++          ["good", "Rem 96%"],
++        ]);
++        expect([spareCells[0]?.state, spareCells[0]?.value]).toEqual(["bad", "Rem 8% · Low"]);
++        const fills = new Set([studioCells[0]?.fill, studioCells[1]?.fill, spareCells[0]?.fill]);
++        expect(fills.size, "green, amber and red are distinct fills").toBe(3);
++        // The reset reads as a countdown with the exact moment on hover.
++        expect(studioCells[0]?.reset).toMatch(/^in [12] h \d+ min$/);
++        expect(studioCells[1]?.reset).toBe("in 4 days");
++        expect(studioCells[1]?.resetTitle).toMatch(/^Resets /);
++        // Stale only when stale: fresh cells name no age and keep their color.
++        expect(
++          [...studioCells, ...spareCells].every((entry) => !entry.stale && entry.age === null),
++        ).toBe(true);
++        expect(staleCells).toHaveLength(1);
++        expect(staleCells[0]?.stale).toBe(true);
++        expect(staleCells[0]?.age).toBe("last read 3 h ago");
++        expect(staleCells[0]?.value, "a stale cell keeps its exact amount").toBe("Rem 89%");
++        expect(fills.has(staleCells[0]?.fill), "a stale bar is grey").toBe(false);
++        expect(staleCells[0]?.count).toContain("↻ 1");
++        expect(staleCells[0]?.countColor, "a stale reset count uses the muted tone").toBe(
++          staleCells[0]?.mutedColor,
++        );
++        expect(spareCells[0]?.countColor, "a fresh reset count keeps its foreground tone").not.toBe(
++          spareCells[0]?.mutedColor,
++        );
++        // Banked resets are a count on the window they refill, never a control.
++        expect(spareCells[0]?.count).toContain("↻ 2");
++        expect(spareCells[0]?.countTitle).toMatch(/^2 banked resets · soonest expires /);
++        expect(spareCells[0]?.buttons).toBe(0);
++        expect(studioCells.every((entry) => entry.count === null)).toBe(true);
++        // A connector without a usage reporter has no usage area or text.
++        expect(connectorCells).toEqual([]);
++        expect(connectorParts).toEqual([0, 0]);
++        expect(connectorText).not.toMatch(/usage/i);
++        const aligned = yield* browser.use("Keep connector Details at the right edge", (page) =>
++          block(page, "Work mail")
++            .getByRole("button", { name: "Details", exact: true })
++            .evaluate((button) => ({
++              right: button.getBoundingClientRect().right,
++              footerRight: button.parentElement!.getBoundingClientRect().right,
++            })),
++        );
++        expect(Math.abs(aligned.right - aligned.footerRight)).toBeLessThanOrEqual(1);
++        expect(
++          (yield* driver.backend.calls).filter((call) => call.step === "observe"),
++        ).toHaveLength(0);
++        yield* browser.use("Collect the new reporter's first reading through Refresh", (page) =>
++          block(page, "New reporter")
++            .getByRole("button", { name: "Refresh", exact: true })
++            .click()
++            .then(() => block(page, "New reporter").locator('[data-reading="requests"]').waitFor()),
++        );
++        expect(
++          (yield* driver.backend.calls).filter((call) => call.step === "observe"),
++        ).toHaveLength(1);
++        expect(
++          (yield* driver.api.request(driver.actors.owner, "GET", `${unreadPath}/observations`))
++            .body,
++        ).toMatchObject({
++          hasUsageReporter: true,
++          reports: [{ lastAttempt: { outcome: "success" } }],
++        });
++        // Non-cell readings stay in Details, including their only Refresh action.
++        for (const [label, windows, balances] of [
++          [
++            "Credits only",
++            [],
++            [{ id: "credits", label: "Credits", unit: "USD", available: 25, observedAt: iso(now) }],
++          ],
++          [
++            "Unlimited only",
++            [
++              {
++                id: "unlimited",
++                label: "Unlimited",
++                observedAt: iso(now),
++                measure: { unit: "requests", unlimited: true },
++              },
++            ],
++            [],
++          ],
++        ] as const) {
++          const fixture = yield* observationFixture({ name: label, observe: true, health: true });
++          yield* fixture.backend.answer({
++            status: 200,
++            body: subscription(now, windows, balances),
++          });
++          expect(
++            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++              label,
++            })).status,
++          ).toBe(200);
++          expect((yield* fixture.refresh()).status).toBe(200);
++          yield* browser.use(`Read ${label} without an empty usage line`, (page) =>
++            page
++              .goto(accounts)
++              .then(() =>
++                block(page, label).getByRole("button", { name: "Details", exact: true }).waitFor(),
++              ),
++          );
++          expect(
++            yield* browser.use(`Inspect the collapsed ${label} row`, (page) =>
++              Promise.all([
++                block(page, label).locator("[data-reading]").count(),
++                block(page, label).locator("[data-usage]").count(),
++                block(page, label).getByRole("button", { name: "Refresh", exact: true }).count(),
++              ]),
++            ),
++          ).toEqual([0, 0, 0]);
++          yield* browser.use(`Open ${label} Details`, (page) =>
++            block(page, label)
++              .getByRole("button", { name: "Details", exact: true })
++              .click()
++              .then(() =>
++                block(page, label).getByRole("button", { name: "Refresh", exact: true }).waitFor(),
++              ),
++          );
++          expect(
++            yield* browser.use(`Read ${label} details`, (page) =>
++              block(page, label).locator("[data-observation-details]").innerText(),
++            ),
++          ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
++        }
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
+new file mode 100644
+index 0000000..feaa234
+--- /dev/null
++++ b/e2e/tests/account-usage-home-reporter.spec.ts
+@@ -0,0 +1,152 @@
++/** A real Home-bound account with nothing retained offers its first reading; a connector shows no usage. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Unread = Schema.Struct({
++  hasUsageReporter: Schema.Boolean,
++  usageReporterLabel: Schema.NullOr(Schema.String),
++  reports: Schema.Array(Schema.Json),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) => {
++  it.effect(scenarios.accountUsageHomeReporter.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          home = yield* providerAppsCatalog;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        // The same Home path as the interval case: a production driver with observeAccount.
++        yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "provider-openai",
++          name: "Home reporter fixture",
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const app = (yield* body(Resource, installed)).id;
++        apps.push(app);
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app}/accounts/app/openai/connections`,
++          {},
++        );
++        const connect = `${prefix}/connections/${(yield* body(Resource, pending)).id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${connect}/start`, { method: "codex" }))
++            .status,
++        ).toBe(200);
++        const connected = yield* api.request(actors.owner, "POST", `${connect}/submit`, {
++          value: "synthetic-callback",
++        });
++        const account = (yield* body(Schema.Struct({ account: Resource }), connected)).account.id;
++        accounts.push(account);
++        // Without the app the account has no app reporter; only the Home driver reports usage.
++        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++          200,
++        );
++        const accountPath = `${prefix}/accounts/${account}`;
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accountPath, { label: "Home reporter" }))
++            .status,
++        ).toBe(200);
++        expect(
++          yield* body(
++            Unread,
++            yield* api.request(actors.owner, "GET", `${accountPath}/observations`),
++          ),
++        ).toEqual({ hasUsageReporter: true, usageReporterLabel: "basalt-home", reports: [] });
++        const observed = () =>
++          home.calls.pipe(
++            Effect.map((calls) => calls.filter((call) => call.action === "observe").length),
++          );
++        expect(yield* observed(), "reading the account collects nothing").toBe(0);
++
++        const connector = yield* observationFixture({
++          name: "Connector fixture",
++          observe: false,
++          health: true,
++        });
++        expect(
++          (yield* api.request(actors.owner, "PATCH", connector.accountPath, {
++            label: "Work mail",
++          })).status,
++        ).toBe(200);
++
++        const block = (page: Page, label: string) =>
++          page.getByRole("group", { name: new RegExp(`^Usage( and health)? of ${label}$`) });
++        const refreshButton = (page: Page) =>
++          block(page, "Home reporter").getByRole("button", { name: "Refresh", exact: true });
++        const browser = yield* Browser;
++        yield* browser.login(actors.owner);
++        const unread = yield* browser.use("Open Accounts before Home reported", (page) => {
++          // The connector's own observations read must have answered before its empty row counts.
++          const connectorLoaded = page.waitForResponse(
++            (response) =>
++              response.request().method() === "GET" &&
++              new URL(response.url()).pathname.endsWith(
++                `/accounts/${connector.account}/observations`,
++              ) &&
++              response.ok(),
++          );
++          return page
++            .goto(`/org/${actors.organization.slug}/accounts`)
++            .then(() => connectorLoaded)
++            .then(() => block(page, "Home reporter").locator("[data-usage-unread]").waitFor())
++            .then(() =>
++              Promise.all([
++                block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
++                refreshButton(page).isEnabled(),
++                block(page, "Home reporter").getByText("Refresh failed").count(),
++                block(page, "Work mail").locator("[data-usage]").count(),
++                block(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
++              ]),
++            );
++        });
++        expect(unread[0]).toMatch(/Usage from basalt-home\s*·\s*no reading yet/);
++        expect(unread.slice(1)).toEqual([true, 0, 0, 0]);
++        expect(yield* observed(), "showing the row collects nothing").toBe(0);
++
++        yield* home.observation(allowance());
++        yield* browser.use("Refresh the Home account from its row", (page) =>
++          refreshButton(page)
++            .click()
++            .then(() =>
++              block(page, "Home reporter").locator('[data-reading="requests"]').waitFor(),
++            ),
++        );
++        expect(yield* observed()).toBe(1);
++        const after = yield* browser.use("Read both rows after the refresh", (page) =>
++          Promise.all([
++            block(page, "Home reporter").locator("[data-usage-unread]").count(),
++            block(page, "Home reporter").locator("[data-usage-source] time").count(),
++            block(page, "Work mail").locator("[data-usage]").count(),
++          ]),
++        );
++        expect(after).toEqual([0, 1, 0]);
++        expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index a0d65f6..77d09c2 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -13,8 +13,6 @@ type Window = Observation["windows"][number];
+ type Balance = Observation["balances"][number];
+ export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
+ 
+-const day = 86_400_000;
+-
+ /** Elapsed time in its two largest units, such as "2 h 14 min". */
+ export const span = (milliseconds: number) => {
+   const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
+@@ -79,7 +77,10 @@ const periodSpan = (period: NonNullable<Window["period"]>) => {
+   return `${seconds / size}-${unit}`;
+ };
+ 
+-/** One reported window: its amount, drawn width and reset, exactly as the source gave them. */
++/**
++ * One reported window as a usage cell: the remaining share in its header, the drawn width and the
++ * reset. Where no share is known the header names the remaining or used amount instead.
++ */
+ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+   const { unit, used, limit } = entry.measure;
+   const unlimited = entry.measure.unlimited === true;
+@@ -92,16 +93,6 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+   const over = remaining !== undefined && remaining < 0;
+   const short = (value: number) => amount(value, unit, format);
+   const long = (value: number) => amount(value, unit, format, true);
+-  const phrase = (last: (value: number) => string) =>
+-    remaining !== undefined && limit !== undefined
+-      ? over
+-        ? `${short(limit - remaining)} of ${last(limit)} used`
+-        : `${short(remaining)} of ${last(limit)} left`
+-      : remaining !== undefined
+-        ? `${last(remaining)} left`
+-        : used !== undefined
+-          ? `${last(used)} used`
+-          : undefined;
+   const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
+   const state: ObservationMeterState = unlimited
+     ? "unlimited"
+@@ -110,17 +101,36 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+       : ratio === undefined
+         ? "unknown"
+         : toneOf(ratio);
+-  const absolute = phrase(long);
++  const absolute =
++    remaining !== undefined && limit !== undefined
++      ? over
++        ? `${short(limit - remaining)} / ${long(limit)} used, over the limit`
++        : `${short(remaining)} / ${long(limit)} remaining`
++      : remaining !== undefined
++        ? `${long(remaining)} remaining`
++        : used !== undefined
++          ? `${long(used)} used`
++          : undefined;
+   return {
+     state,
+-    value: unlimited
+-      ? "Unlimited"
+-      : (phrase(long) ?? (percent === undefined ? "Usage unknown" : `${percent}% left`)),
++    // The header reads "Rem 89%": a quiet lead and the figure that carries the tone.
++    ...(unlimited
++      ? { lead: undefined, figure: "Unlimited" }
++      : over
++        ? { lead: undefined, figure: "Over limit" }
++        : percent !== undefined
++          ? // A sliver that rounds to zero still reads as some left, not as exhausted.
++            { lead: "Rem", figure: percent === 0 && state !== "exhausted" ? "<1%" : `${percent}%` }
++          : remaining !== undefined
++            ? { lead: "Rem", figure: long(remaining) }
++            : used !== undefined
++              ? { lead: "Used", figure: long(used) }
++              : { lead: undefined, figure: "Unknown" }),
+     flag: over
+-      ? "Over limit"
++      ? undefined
+       : state === "exhausted"
+         ? "Exhausted"
+-        : state === "warn" || state === "bad"
++        : state === "bad"
+           ? "Low"
+           : undefined,
+     detail: unlimited
+@@ -128,9 +138,9 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+       : absolute !== undefined
+         ? `${absolute}${isCurrency(unit) ? ` (${unit})` : ""}`
+         : percent !== undefined
+-          ? `${percent}% left (percent only)`
++          ? `${percent}% remaining`
+           : limit !== undefined
+-            ? `Unknown of ${long(limit)}`
++            ? `Limit ${long(limit)}, amount unknown`
+             : "Unknown",
+     // The bar draws the remaining share only; it never grows past full or below empty.
+     width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
+@@ -140,12 +150,6 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+         : percent !== undefined
+           ? { now: Math.min(100, Math.max(0, percent)), max: 100 }
+           : { now: undefined, max: limit ?? 100 },
+-    note:
+-      state === "unknown" && limit !== undefined && remaining === undefined
+-        ? `Limit ${long(limit)}`
+-        : used !== undefined && remaining !== undefined && limit !== undefined && !over
+-          ? `${short(used)} ${isCurrency(unit) ? "spent" : "used"}`
+-          : undefined,
+     ...windowTiming(entry, now, format),
+   };
+ }
+@@ -156,42 +160,35 @@ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+     const at = Date.parse(entry.resetsAt);
+     const when = moment(entry.resetsAt, now, format);
+     if (at <= now)
+-      return { timing: `Reset was due ${when}, not read since`, when: `Was due ${when}` };
++      return {
++        reset: { text: `was due ${when}`, at: entry.resetsAt, due: true },
++        when: `Was due ${when}`,
++      };
+     return {
+-      timing: at - now < day ? `Resets in ${span(at - now)}` : `Resets ${when}`,
++      reset: {
++        text: `in ${span(at - now)}`,
++        at: entry.resetsAt,
++        title: `Resets ${when}`,
++        due: false,
++      },
+       when,
+     };
+   }
+   const length = entry.period === undefined ? undefined : periodSpan(entry.period);
+   if (entry.period?.mode === "rolling")
+     return {
+-      timing: length === undefined ? "Rolling window" : `Rolling ${length} window`,
++      reset: { text: length === undefined ? "rolling" : `rolling ${length}`, due: false },
+       when: "Rolling, no single reset",
+     };
+-  if (length !== undefined) return { timing: `${length} window`, when: "Reset not reported" };
+-  return { timing: undefined, when: "Not reported" };
++  return { reset: undefined, when: length === undefined ? "Not reported" : "Reset not reported" };
+ }
+ 
+ /** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
+ export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
+   const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
+   const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
+-  const units =
+-    !isCurrency(balance.unit) && Number.isInteger(balance.available) && balance.available > 0
+-      ? balance.available
+-      : 0;
+   return {
+-    value: `${amount(balance.available, balance.unit, format, true)} available`,
+     detail: amount(balance.available, balance.unit, format, true),
+-    expired: expires !== undefined && expires <= now,
+-    // One pip per whole unit up to eight; larger counts read better as the number alone.
+-    pips: units <= 8 ? units : 0,
+-    timing:
+-      expires === undefined
+-        ? undefined
+-        : expires <= now
+-          ? `Expired ${when}`
+-          : `Expires ${when} · in ${span(expires - now)}`,
+     when:
+       expires === undefined
+         ? "Does not expire"
+@@ -199,6 +196,53 @@ export function balanceView(balance: Balance, now: number, format: DisplayFormat
+   };
+ }
+ 
++/**
++ * Unexpired balances counted in resets, which refill a window early. They belong to the window
++ * with the longest period, which is the one a banked reset clears.
++ */
++export function bankedResets(observation: Observation, now: number, format: DisplayFormat) {
++  const live = observation.balances.filter(
++    (balance) =>
++      balance.unit === "resets" &&
++      balance.available > 0 &&
++      (balance.expiresAt === undefined || Date.parse(balance.expiresAt) > now),
++  );
++  const count = live.reduce((total, balance) => total + balance.available, 0);
++  if (count === 0) return undefined;
++  const soonest = live
++    .flatMap((balance) => (balance.expiresAt === undefined ? [] : [balance.expiresAt]))
++    .sort((a, b) => Date.parse(a) - Date.parse(b))[0];
++  return {
++    count,
++    title: `${count} banked ${count === 1 ? "reset" : "resets"}${
++      soonest === undefined ? "" : ` · soonest expires ${moment(soonest, now, format)}`
++    }`,
++  };
++}
++
++const unitSeconds: Readonly<Record<string, number>> = {
++  second: 1,
++  minute: 60,
++  hour: 3_600,
++  day: 86_400,
++  week: 604_800,
++  month: 2_592_000,
++};
++/** A period's length in seconds, from `seconds` or a value and unit such as 1 week. */
++const periodSeconds = (period: Window["period"]) =>
++  period?.seconds ??
++  (period?.value ?? 0) * (unitSeconds[period?.unit?.toLowerCase().replace(/s$/u, "") ?? ""] ?? 0);
++
++/** The limited window a banked reset applies to: the longest period, else the last reported. */
++export const resetWindow = (windows: readonly Window[]) =>
++  windows.reduce<Window | undefined>(
++    (best, entry) =>
++      best === undefined || periodSeconds(entry.period) >= periodSeconds(best.period)
++        ? entry
++        : best,
++    undefined,
++  )?.id;
++
+ const offerings = {
+   subscription: "Subscription",
+   metered_api: "Metered API",
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 0807713..788a925 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -1,30 +1,12 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+-import { cn } from "../lib/utils.ts";
+-import {
+-  age,
+-  balanceView,
+-  readingTimes,
+-  windowView,
+-  type ObservationMeterState,
+-} from "./account-observation-format.ts";
++import { bankedResets, resetWindow } from "./account-observation-format.ts";
++import { UsageCell } from "./account-usage-cell.tsx";
+ 
+-const fills = {
+-  good: "bg-emerald-500",
+-  warn: "bg-amber-500",
+-  bad: "bg-destructive",
+-  exhausted: "",
+-  unknown: "",
+-  unlimited: "",
+-} satisfies Record<ObservationMeterState, string>;
+-const flagTone = (flag: string, stale: boolean) =>
+-  stale
+-    ? ""
+-    : flag === "Low"
+-      ? "font-medium text-amber-700 dark:text-amber-400"
+-      : "font-medium text-destructive";
+-
+-/** One cell per window or balance; a stale reading keeps its exact amount and drawn width. */
++/**
++ * One usage cell per limited window the source reported, and nothing else. Unlimited windows are
++ * not limits, so they get no cell; balances and their expiry live in the account's details.
++ */
+ export function ObservationReadings({
+   record,
+   source,
+@@ -36,132 +18,29 @@ export function ObservationReadings({
+   readonly now: number;
+   readonly format: DisplayFormat;
+ }) {
+-  const result = record.result;
+-  if (result === null) return null;
+-  const { windows, balances } = result.observation;
+-  if (windows.length === 0 && balances.length === 0) return null;
++  const observation = record.result?.observation;
++  const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
++  if (observation === undefined || windows.length === 0) return null;
+   const stale = record.freshness !== "fresh";
+-  const newest = Date.parse(readingTimes(result)[0] ?? result.observedAt);
+-  // A reading older than the rest of its read names its own age.
+-  const ownAge = (observedAt: string) =>
+-    newest - Date.parse(observedAt) >= 60_000 ? (
+-      <span className={stale ? "text-sign-in-warning" : undefined}>
+-        read <time dateTime={observedAt}>{age(observedAt, now)}</time>
+-      </span>
+-    ) : null;
++  const resets = bankedResets(observation, now, format);
++  const target = resets === undefined ? undefined : resetWindow(windows);
+   return (
+     <div
+       {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
+       data-observation-source={record.source.id}
+       data-freshness={record.freshness}
+-      className="grid max-w-[900px] grid-cols-[repeat(auto-fill,_minmax(190px,_1fr))] gap-x-6 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
++      className="grid max-w-[760px] grid-cols-[repeat(auto-fill,_minmax(250px,_1fr))] gap-x-7 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
+     >
+-      {windows.map((entry) => {
+-        const reading = windowView(entry, now, format);
+-        const sub = [reading.timing, reading.note].filter((part) => part !== undefined);
+-        return (
+-          <div
+-            key={entry.id}
+-            className="flex min-w-0 flex-col gap-1"
+-            data-reading={entry.id}
+-            data-meter-state={reading.state}
+-            {...(stale ? { "data-stale": "" } : {})}
+-          >
+-            <div className="flex min-w-0 items-baseline justify-between gap-2">
+-              <span className="truncate font-medium text-foreground" title={entry.label}>
+-                {entry.label}
+-              </span>
+-              <span className="shrink-0 tabular-nums" data-reading-value>
+-                {reading.value}
+-                {reading.flag !== undefined && (
+-                  <>
+-                    {" · "}
+-                    <span className={flagTone(reading.flag, stale)}>{reading.flag}</span>
+-                  </>
+-                )}
+-              </span>
+-            </div>
+-            {reading.state !== "unlimited" && (
+-              <span
+-                role="meter"
+-                aria-label={stale ? `${entry.label}, stale` : entry.label}
+-                aria-valuemin={0}
+-                aria-valuemax={reading.aria.max}
+-                {...(reading.aria.now === undefined ? {} : { "aria-valuenow": reading.aria.now })}
+-                aria-valuetext={[
+-                  reading.value,
+-                  reading.flag,
+-                  stale ? `when last read ${age(entry.observedAt, now)}` : undefined,
+-                  reading.timing,
+-                ]
+-                  .filter((part) => part !== undefined)
+-                  .join(", ")}
+-                className={cn(
+-                  "block h-1.5 overflow-hidden rounded-full bg-border",
+-                  reading.state === "unknown" &&
+-                    "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)] opacity-55",
+-                  reading.state === "exhausted" &&
+-                    (stale
+-                      ? "ring-1 ring-inset ring-muted-foreground/60"
+-                      : "bg-destructive/20 ring-1 ring-inset ring-destructive/40"),
+-                )}
+-              >
+-                {reading.width !== undefined && reading.width > 0 && (
+-                  <span
+-                    className={cn(
+-                      "block h-full rounded-full",
+-                      stale ? "bg-muted-foreground/45" : fills[reading.state],
+-                    )}
+-                    style={{ width: `${reading.width}%` }}
+-                  />
+-                )}
+-              </span>
+-            )}
+-            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
+-              {sub.length > 0 && <span className="wrap-anywhere">{sub.join(" · ")}</span>}
+-              {ownAge(entry.observedAt)}
+-            </div>
+-          </div>
+-        );
+-      })}
+-      {balances.map((entry) => {
+-        const balance = balanceView(entry, now, format);
+-        return (
+-          <div
+-            key={entry.id}
+-            className="flex min-w-0 flex-col gap-1"
+-            data-reading={entry.id}
+-            data-balance
+-            {...(stale || balance.expired ? { "data-stale": "" } : {})}
+-          >
+-            <div className="flex min-w-0 items-baseline justify-between gap-2">
+-              <span className="truncate font-medium text-foreground" title={entry.label}>
+-                {entry.label}
+-              </span>
+-              <span className="shrink-0 tabular-nums" data-reading-value>
+-                {balance.value}
+-              </span>
+-            </div>
+-            <span className="flex h-1.5 gap-[3px]" aria-hidden>
+-              {Array.from({ length: balance.pips }, (_, index) => (
+-                <i
+-                  key={index}
+-                  className={cn(
+-                    "w-4 rounded-full",
+-                    stale || balance.expired ? "bg-muted-foreground/45" : "bg-foreground/55",
+-                  )}
+-                />
+-              ))}
+-            </span>
+-            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
+-              {balance.timing !== undefined && (
+-                <span className="wrap-anywhere">{balance.timing}</span>
+-              )}
+-              {ownAge(entry.observedAt)}
+-            </div>
+-          </div>
+-        );
+-      })}
++      {windows.map((entry) => (
++        <UsageCell
++          key={entry.id}
++          entry={entry}
++          stale={stale}
++          resets={entry.id === target ? resets : undefined}
++          now={now}
++          format={format}
++        />
++      ))}
+     </div>
+   );
+ }
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index c98acfb..a711e92 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -28,6 +28,9 @@ export interface AccountObservationsView {
+   /** False: the caller may use the account but not see its usage; `reports` is then empty. */
+   readonly canInspect: boolean;
+   readonly canRefresh: boolean;
++  /** Hosted discovery includes registered drivers before their first reading. */
++  readonly hasUsageReporter?: boolean;
++  readonly usageReporterLabel?: string | null;
+   readonly reports: readonly AccountObservationRecord[];
+ }
+ 
+@@ -80,6 +83,12 @@ export function AccountObservations<E>({
+     if (collecting) reload();
+   }, [collecting, now, reload]);
+   const label = account.label || "Unnamed account";
++  // Accounts with no reporter, such as most connectors, and callers who may not see usage get no
++  // usage area at all; only the account's own health, when given, remains.
++  const reported =
++    inspected !== undefined &&
++    (inspected.reports.length > 0 || inspected.hasUsageReporter === true);
++  if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
+   return (
+     <div
+       role="group"
+@@ -119,11 +128,11 @@ export function AccountObservations<E>({
+           format={format}
+           Failure={Failure}
+         />
+-        {(inspected !== undefined && inspected.reports.length > 0) || health !== undefined ? (
++        {reported || health !== undefined ? (
+           <Button
+             variant="ghost"
+             size="xs"
+-            className="justify-self-start text-muted-foreground hover:text-foreground"
++            className="justify-self-start text-muted-foreground hover:text-foreground @[740px]:col-start-[-2] @[740px]:justify-self-end"
+             aria-expanded={open}
+             aria-controls={details}
+             onClick={() => setOpen((value) => !value)}
+@@ -139,14 +148,26 @@ export function AccountObservations<E>({
+         ) : null}
+       </div>
+       {open && (
+-        <ObservationDetails
+-          id={details}
+-          reports={inspected?.reports ?? []}
+-          account={account}
+-          apps={health?.apps}
+-          now={now}
+-          format={format}
+-        />
++        <div id={details} className="grid gap-2.5">
++          <UsageFact
++            result={result}
++            retry={reload}
++            refresh={refresh}
++            plan={plan}
++            now={now}
++            format={format}
++            detailsOnly
++            Failure={Failure}
++          />
++          <ObservationDetails
++            id={`${details}-readings`}
++            reports={inspected?.reports ?? []}
++            account={account}
++            apps={health?.apps}
++            now={now}
++            format={format}
++          />
++        </div>
+       )}
+     </div>
+   );
+@@ -180,6 +201,16 @@ function PlanTags({ view }: { readonly view: AccountObservationsView }) {
+   ));
+ }
+ 
++/**
++ * The one state of a reporter with nothing retained. A collection under way, or a source that
++ * answered without a reading yet, is still checking; otherwise it simply has not been read. Only a
++ * recorded failed attempt adds its own note, so an unread account never reads as failed.
++ */
++const unreadLabel = (report?: AccountObservationRecord) =>
++  report !== undefined && (report.collecting || report.lastAttempt === null)
++    ? "Checking usage…"
++    : "no reading yet";
++
+ /**
+  * Where usage came from and how old it is, with Refresh. Retained readings keep their original
+  * age after a failed refresh, and a denied caller sees no source, time or attempt.
+@@ -191,6 +222,7 @@ function UsageFact<E>({
+   plan,
+   now,
+   format,
++  detailsOnly = false,
+   Failure,
+ }: {
+   readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
+@@ -199,6 +231,7 @@ function UsageFact<E>({
+   readonly plan: boolean;
+   readonly now: number;
+   readonly format: DisplayFormat;
++  readonly detailsOnly?: boolean;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const [pending, setPending] = useState(false);
+@@ -210,17 +243,17 @@ function UsageFact<E>({
+       <div className="min-w-0">
+         <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
+       </div>
+-    ) : (
+-      <div role="status" className={line}>
+-        Loading usage…
+-      </div>
+-    );
+-  if (!view.canInspect)
+-    return (
+-      <div className={line} data-usage-restricted>
+-        Usage isn't shared with you. Ask the owner if you need it.
+-      </div>
++    ) : null;
++  if (!view.canInspect) return null;
++  // Reports with only balances or unlimited windows keep their refresh beside their details.
++  const reports = view.reports.filter((report) => {
++    const hasCells = report.result?.observation.windows.some(
++      (entry) => entry.measure.unlimited !== true,
+     );
++    return detailsOnly ? report.result !== null && !hasCells : report.result === null || hasCells;
++  });
++  const unread = !detailsOnly && view.reports.length === 0 && view.hasUsageReporter === true;
++  if (reports.length === 0 && !unread) return null;
+   const run = async () => {
+     if (pending) return;
+     setPending(true);
+@@ -244,24 +277,30 @@ function UsageFact<E>({
+   );
+   return (
+     <div className="flex min-w-0 flex-col gap-0.75" data-usage>
+-      {view.reports.length === 0 && (
+-        <div className={line}>
+-          <span>No usage reported for this account.</span>
++      {unread && (
++        <div className={line} data-usage-unread>
++          <span>Usage from {view.usageReporterLabel}</span>
++          <span aria-hidden>·</span>
++          <span>{unreadLabel()}</span>
+           {action}
+         </div>
+       )}
+-      {view.reports.map((report, index) => {
++      {reports.map((report, index) => {
+         const read = report.result === null ? undefined : readingTimes(report.result)[0];
+         const stale = report.freshness !== "fresh";
+         const note = attemptNote(report, now, format);
+         return (
+           <div key={report.source.id} className="flex min-w-0 flex-col gap-0.75">
+-            <div className={line} data-usage-source={report.source.id}>
++            <div
++              className={line}
++              data-usage-source={report.source.id}
++              data-usage-unread={read === undefined ? "" : undefined}
++            >
+               {index === 0 && plan && <PlanTags view={view} />}
+               <span>Usage from {report.source.label}</span>
+               <span aria-hidden>·</span>
+               {read === undefined ? (
+-                <span>{report.lastAttempt === null ? "Checking usage…" : "no reading yet"}</span>
++                <span>{unreadLabel(report)}</span>
+               ) : (
+                 <span
+                   className={stale ? "text-sign-in-warning" : undefined}
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+new file mode 100644
+index 0000000..73a739e
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -0,0 +1,146 @@
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { cn } from "../lib/utils.ts";
++import { age, windowView, type ObservationMeterState } from "./account-observation-format.ts";
++
++type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
++
++const fills = {
++  good: "bg-emerald-500",
++  warn: "bg-amber-500",
++  bad: "bg-destructive",
++  exhausted: "",
++  unknown: "",
++  unlimited: "",
++} satisfies Record<ObservationMeterState, string>;
++const valueTones: Partial<Record<ObservationMeterState, string>> = {
++  warn: "text-amber-700 dark:text-amber-400",
++  bad: "text-destructive",
++  exhausted: "text-destructive",
++};
++
++/**
++ * One limited window: its label, what remains, the bar and when it resets. A stale reading keeps
++ * its exact amount and drawn width, greys the bar and says how old it is. `resets` is the banked
++ * reset count for the window they refill; it is a count only, never a control.
++ */
++export function UsageCell({
++  entry,
++  stale,
++  resets,
++  now,
++  format,
++}: {
++  readonly entry: Window;
++  readonly stale: boolean;
++  readonly resets?: { readonly count: number; readonly title: string } | undefined;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const reading = windowView(entry, now, format);
++  const read = age(entry.observedAt, now);
++  const value = reading.lead === undefined ? reading.figure : `${reading.lead} ${reading.figure}`;
++  return (
++    <div
++      className="flex min-w-0 flex-col gap-1.25 text-xs"
++      data-reading={entry.id}
++      data-meter-state={reading.state}
++      {...(stale ? { "data-stale": "" } : {})}
++    >
++      <div className="flex min-h-5.5 min-w-0 items-center gap-2">
++        <span
++          className="truncate rounded border bg-muted px-1.5 text-[11px] leading-[18px] font-medium text-foreground"
++          title={entry.label}
++        >
++          {entry.label}
++        </span>
++        {stale && (
++          <span className="shrink-0 text-sign-in-warning" data-stale-age>
++            last read <time dateTime={entry.observedAt}>{read}</time>
++          </span>
++        )}
++        <span className="flex-1" />
++        {resets !== undefined && (
++          <>
++            <span
++              className={cn(
++                "shrink-0 font-semibold tabular-nums",
++                stale ? "text-muted-foreground" : "text-foreground",
++              )}
++              title={resets.title}
++              data-reset-count={resets.count}
++            >
++              <span aria-hidden>↻ {resets.count}</span>
++              <span className="sr-only">{resets.title}</span>
++            </span>
++            <span className="h-3 w-px shrink-0 bg-border" aria-hidden />
++          </>
++        )}
++        <span className="shrink-0 text-muted-foreground tabular-nums" data-reading-value>
++          {reading.lead !== undefined && `${reading.lead} `}
++          <span
++            className={cn("font-semibold text-foreground", !stale && valueTones[reading.state])}
++          >
++            {reading.figure}
++          </span>
++          {reading.flag !== undefined && !stale && (
++            <span className={cn("font-medium", valueTones[reading.state])}> · {reading.flag}</span>
++          )}
++        </span>
++      </div>
++      <span
++        role="meter"
++        aria-label={stale ? `${entry.label}, stale` : entry.label}
++        aria-valuemin={0}
++        aria-valuemax={reading.aria.max}
++        {...(reading.aria.now === undefined ? {} : { "aria-valuenow": reading.aria.now })}
++        aria-valuetext={[
++          value,
++          stale ? undefined : reading.flag,
++          stale ? `when last read ${read}` : undefined,
++          reading.reset === undefined ? undefined : `resets ${reading.reset.text}`,
++        ]
++          .filter((part) => part !== undefined)
++          .join(", ")}
++        className={cn(
++          "block h-1.5 overflow-hidden rounded-full bg-border",
++          reading.state === "unknown" &&
++            "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)] opacity-55",
++          reading.state === "exhausted" &&
++            (stale
++              ? "ring-1 ring-muted-foreground/60 ring-inset"
++              : "bg-destructive/20 ring-1 ring-destructive/40 ring-inset"),
++        )}
++      >
++        {reading.width !== undefined && reading.width > 0 && (
++          <span
++            className={cn(
++              "block h-full rounded-full",
++              stale ? "bg-muted-foreground/45" : fills[reading.state],
++            )}
++            style={{ width: `${reading.width}%` }}
++          />
++        )}
++      </span>
++      {/* The left of this line is reserved for the pool's own token and cost counts. */}
++      {reading.reset !== undefined && (
++        <div className="flex min-w-0 justify-end text-muted-foreground tabular-nums">
++          <span
++            className={cn(
++              "truncate",
++              reading.reset.due ? "text-sign-in-warning" : "text-foreground",
++            )}
++            {...(reading.reset.title === undefined ? {} : { title: reading.reset.title })}
++            data-reset
++          >
++            {reading.reset.at === undefined ? (
++              reading.reset.text
++            ) : (
++              <time dateTime={reading.reset.at}>{reading.reset.text}</time>
++            )}
++          </span>
++        </div>
++      )}
++    </div>
++  );
++}
