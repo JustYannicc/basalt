@@ -1,11 +1,11 @@
 diff --git a/apps/hosted/web/src/contracts/identity-consent.ts b/apps/hosted/web/src/contracts/identity-consent.ts
-index 85a7440..a454f12 100644
+index 85a7440..e5667b4 100644
 --- a/apps/hosted/web/src/contracts/identity-consent.ts
 +++ b/apps/hosted/web/src/contracts/identity-consent.ts
 @@ -1,11 +1,14 @@
  /** Hosted commands keep each request's product authorization and reviewed account destination. */
 -import { Effect } from "effect";
-+import { Effect, Option } from "effect";
++import { Effect, Exit } from "effect";
  import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
  import type { OrganizationReference } from "@executor-js/hosted-server/organization";
  import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
@@ -19,49 +19,87 @@ index 85a7440..a454f12 100644
  import { refreshAppLinks } from "./app-accounts.ts";
  
  export const identityConsentAtoms = (key: {
-@@ -56,7 +59,31 @@ export const identityConsentAtoms = (key: {
+@@ -31,6 +34,36 @@ export const identityConsentAtoms = (key: {
+     }),
+   );
+   return {
++    reconcile: HostedClient.runtime.fn((input: IdentityConsentSelection, get) =>
++      Effect.gen(function* () {
++        refreshResourceDirectory(get, key.organization);
++        const directory = yield* get
++          .result(resourceDirectoryAtom(key.organization), { suspendOnWaiting: true })
++          .pipe(Effect.exit);
++        for (const target of [key, ...(input.additionalTargets ?? [])]) {
++          const app = Exit.isSuccess(directory)
++            ? directory.value.apps.find((entry) => entry.app.id === target.app)?.app
++            : undefined;
++          refreshAppLinks(get, {
++            organization: key.organization,
++            app: target.app,
++            requirements: app?.requirements.accounts,
++          });
++          refreshAppDiscovery(get, {
++            organization: key.organization,
++            app: target.app,
++            version: app?.activeVersion ?? null,
++          });
++        }
++        yield* Effect.all([
++          get.result(inventoryAtom(key.organization), { suspendOnWaiting: true }),
++          get.result(savedAccountRowsAtom({ organization: key.organization }), {
++            suspendOnWaiting: true,
++          }),
++        ]);
++        if (Exit.isFailure(directory)) return yield* Effect.failCause(directory.cause);
++      }),
++    ),
+     plan: HostedClient.runtime.fn((input: IdentityConsentSelection & { readonly method: string }) =>
+       Effect.gen(function* () {
+         const { connection, ...selection } = yield* prepare(input);
+@@ -46,7 +79,6 @@ export const identityConsentAtoms = (key: {
+           readonly method: string;
+           readonly sourceAccount: NonNullable<IdentityConsentSelection["sourceAccount"]>;
+         },
+-        get,
+       ) =>
+         Effect.gen(function* () {
+           const { connection, additionalConnections } = yield* prepare(input);
+@@ -54,10 +86,6 @@ export const identityConsentAtoms = (key: {
+             params: { organization: key.organization, connection },
+             payload: { additionalConnections, method: input.method, account: input.sourceAccount },
            });
-           if (result.status === "completed") {
-             refreshResourceDirectory(get, key.organization);
+-          if (result.status === "completed") {
+-            refreshResourceDirectory(get, key.organization);
 -            refreshAppLinks(get, { organization: key.organization, app: key.app });
-+            // The mutation is committed. Failed reads remain query errors, never a failed save.
-+            const directory = yield* get
-+              .result(resourceDirectoryAtom(key.organization), { suspendOnWaiting: true })
-+              .pipe(Effect.option);
-+            for (const target of [key, ...(input.additionalTargets ?? [])]) {
-+              const app = Option.isSome(directory)
-+                ? directory.value.apps.find((entry) => entry.app.id === target.app)?.app
-+                : undefined;
-+              refreshAppLinks(get, {
-+                organization: key.organization,
-+                app: target.app,
-+                requirements: app?.requirements.accounts,
-+              });
-+              refreshAppDiscovery(get, {
-+                organization: key.organization,
-+                app: target.app,
-+                version: app?.activeVersion ?? null,
-+              });
-+            }
-+            yield* Effect.all([
-+              get.result(inventoryAtom(key.organization), { suspendOnWaiting: true }),
-+              get.result(savedAccountRowsAtom({ organization: key.organization }), {
-+                suspendOnWaiting: true,
-+              }),
-+            ]).pipe(Effect.ignore);
-           }
+-          }
            return result;
          }),
+     ),
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 7105f19..1c827c5 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -577,6 +577,7 @@ function AppConnectionFields({
+   );
+   const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
++  const reconcile = useAtomSet(identityAtoms.reconcile, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
+   const handoff = useOAuthHandoff({ provider: form.provider, onSaved, onPendingChange });
+   const fields = (selection: IdentityConsentSelection) => (
+@@ -637,6 +638,7 @@ function AppConnectionFields({
+       onPendingChange={onPendingChange}
+       plan={plan}
+       reuse={reuse}
++      reconcile={reconcile}
+       start={(selection) => authorize({ method: form.method, ...selection })}
+       onSaved={onSaved}
+       onAuthorized={(value) => {
 diff --git a/apps/local/web/src/contracts/identity-consent.ts b/apps/local/web/src/contracts/identity-consent.ts
-index b38ed86..2e9cb0e 100644
+index b38ed86..457ef79 100644
 --- a/apps/local/web/src/contracts/identity-consent.ts
 +++ b/apps/local/web/src/contracts/identity-consent.ts
-@@ -1,10 +1,11 @@
- /** Local browser commands preserve app scopes and reuse the existing OAuth return path. */
--import { Effect } from "effect";
-+import { Effect, Option } from "effect";
- import type { AccountScope, AppId, OAuthClientSelection } from "@executor-js/sdk";
- import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+@@ -5,6 +5,7 @@ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identit
  import { identityRequests } from "@executor-js/ui/contracts/identity-requests";
  import { DashboardClient, overviewAtom } from "./api.ts";
  import { accountCredentialsChanged } from "./accounts.ts";
@@ -69,25 +107,284 @@ index b38ed86..2e9cb0e 100644
  import { refreshAppLinks } from "./app-accounts.ts";
  
  export const identityConsentAtoms = (target: {
-@@ -40,8 +41,16 @@ export const identityConsentAtoms = (target: {
+@@ -18,6 +19,17 @@ export const identityConsentAtoms = (target: {
+     ),
+   );
+   return {
++    reconcile: DashboardClient.runtime.fn((input: IdentityConsentSelection, get) =>
++      Effect.gen(function* () {
++        get.refresh(overviewAtom);
++        const inventory = yield* get.result(overviewAtom, { suspendOnWaiting: true });
++        for (const app of [target, ...(input.additionalTargets ?? [])]) {
++          refreshAppLinks(get, app.app, app.requirement);
++          const saved = inventory.apps.find((entry) => entry.id === app.app);
++          refreshAppDiscovery(get, { app: app.app, version: saved?.activeVersion ?? null });
++        }
++      }),
++    ),
+     plan: DashboardClient.runtime.fn(
+       (input: IdentityConsentSelection & { readonly method: string }) =>
+         Effect.gen(function* () {
+@@ -40,8 +52,6 @@ export const identityConsentAtoms = (target: {
            });
            if (result.status === "completed") {
              accountCredentialsChanged(get, result.account);
 -            refreshAppLinks(get, target.app, target.requirement);
 -            get.refresh(overviewAtom);
-+            const inventory = yield* get
-+              .result(overviewAtom, { suspendOnWaiting: true })
-+              .pipe(Effect.option);
-+            for (const app of [target, ...(input.additionalTargets ?? [])]) {
-+              refreshAppLinks(get, app.app, app.requirement);
-+              const saved = Option.isSome(inventory)
-+                ? inventory.value.apps.find((entry) => entry.id === app.app)
-+                : undefined;
-+              refreshAppDiscovery(get, { app: app.app, version: saved?.activeVersion ?? null });
-+            }
            }
            return result;
          }),
+diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+index 697dccb..e6cd8e5 100644
+--- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
++++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+@@ -67,6 +67,7 @@ export function AppOAuthFields({
+   const [identityAtoms] = useState(() => identityConsentAtoms({ app, scope, requirement }));
+   const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
++  const reconcile = useAtomSet(identityAtoms.reconcile, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
+   const reconnect = props.account !== undefined;
+   // Catalog guidance follows the catalog app this one was copied from.
+@@ -130,6 +131,7 @@ export function AppOAuthFields({
+       onPendingChange={props.onPendingChange}
+       plan={plan}
+       reuse={reuse}
++      reconcile={reconcile}
+       start={(selection) => authorizeIdentity(selection, {})}
+       onSaved={onSaved}
+       onAuthorized={(value) => {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index fa6e7ff..492684f 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -310,6 +310,16 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  accountIdentityReconciliation: {
++    fixtures: "actors",
++    file: "account-identity-reconciliation.spec.ts",
++    title: "Hosted saved sign-in completion retries a failed account read without repeating reuse",
++    targets: {
++      local: na("The hosted account projection has its own read contract."),
++      "self-host": scheduled,
++      cloud: na("The synthetic authorization server listens on loopback."),
++    },
++  },
+   accountIdentityPolicy: {
+     fixtures: "actors",
+     file: "account-identity-policy.spec.ts",
+diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
+new file mode 100644
+index 0000000..231906a
+--- /dev/null
++++ b/e2e/tests/account-identity-reconciliation.spec.ts
+@@ -0,0 +1,204 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { IdentityAccount } from "../support/account-identity-product.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Links = Schema.Array(Schema.Struct({ account: Resource }));
++
++layer(HostedLive, { excludeTestServices: true })("Account reconciliation", (it) => {
++  it.effect(scenarios.accountIdentityReconciliation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          http = yield* HttpClient.HttpClient,
++          issuer = yield* accountIdentityIssuer;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const accounts = new Set<string>(),
++          apps: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const app of apps) {
++              const links = yield* api.request(
++                actors.owner,
++                "GET",
++                `${prefix}/apps/${app}/accounts/user`,
++              );
++              if (links.status === 200)
++                for (const link of yield* body(Links, links)) accounts.add(link.account.id);
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            }
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const deploy = (name: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [
++                appsManifest,
++                {
++                  path: "index.ts",
++                  content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2(${JSON.stringify({ authorizationUrl: issuer.origin + "/authorize", tokenUrl: issuer.origin + "/token", scopes: ["read"], tokenEndpointAuthMethod: "none", identity: { issuer: issuer.origin, name: "Reconciliation identity" } })})}});
++export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})}));`,
++                },
++              ],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = (yield* body(Resource, response)).id;
++            apps.push(app);
++            return app;
++          });
++        const first = yield* deploy("Reconciliation source");
++        const created = yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(`${prefix}/apps/${first}`, "user", "service"),
++          {},
++        );
++        expect(created.status).toBe(200);
++        const connection = (yield* body(Resource, created)).id;
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection}/oauth/start`,
++          { method: "oauth", client: { clientId: "reconciliation-client" } },
++        );
++        expect(started.status).toBe(200);
++        const authorization = yield* body(
++          Schema.Struct({ authorizationUrl: Schema.String }),
++          started,
++        );
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++            expect(response.status).toBe(302);
++            if (response.headers.location === undefined)
++              return yield* Effect.die("Issuer omitted callback");
++            return response.headers.location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status).toBe(200);
++        const source = yield* body(IdentityAccount, completed);
++        accounts.add(source.id);
++        expect(source.identity).toBeDefined();
++        const target = yield* deploy("Reconciliation target");
++        yield* browser.login(actors.owner);
++        let committed = false,
++          blocked = true,
++          saves = 0,
++          projectionReads = 0,
++          failedReads = 0;
++        yield* browser.use(
++          "Keep the real save and fail only its following account projection",
++          (page) =>
++            page
++              .route(/\/connections\/[^/]+\/oauth\/reuse$/, (route) => {
++                saves++;
++                return route.fetch().then((response) => {
++                  committed = response.ok();
++                  return route.fulfill({ response });
++                });
++              })
++              .then(() =>
++                page.route(/\/resources\/accounts(?:\?.*)?$/, (route) => {
++                  projectionReads++;
++                  if (committed && blocked) {
++                    failedReads++;
++                    return route.abort("failed");
++                  }
++                  return route.continue();
++                }),
++              ),
++        );
++        yield* browser.use("Open the initial saved account", (page) =>
++          page.goto(`/org/${actors.organization.slug}/accounts`),
++        );
++        yield* browser.use("Add the second app from its saved identity", (page) =>
++          page
++            .getByRole("button", { name: "Add Reconciliation identity app", exact: true })
++            .click(),
++        );
++        yield* browser.use("Choose the target app", (page) =>
++          page
++            .getByRole("combobox", { name: "App", exact: true })
++            .click()
++            .then(() =>
++              page.getByRole("option", { name: "Reconciliation target", exact: true }).click(),
++            ),
++        );
++        yield* browser.use("Save once using the covering grant", (page) =>
++          page.getByRole("button", { name: "Add app", exact: true }).click(),
++        );
++        yield* browser.use("Keep save success visible", (page) =>
++          page.getByRole("status").filter({ hasText: "Apps connected" }).waitFor(),
++        );
++        yield* browser.use("Expose the failed account read", (page) =>
++          page
++            .getByRole("alert")
++            .filter({ hasText: "the account list could not refresh" })
++            .waitFor(),
++        );
++        expect(committed).toBe(true);
++        expect(saves).toBe(1);
++        expect(failedReads).toBeGreaterThan(0);
++        const linked = yield* body(
++          Links,
++          yield* api.request(actors.owner, "GET", `${prefix}/apps/${target}/accounts/user`),
++        );
++        expect(linked).toHaveLength(1);
++        accounts.add(linked[0]!.account.id);
++        yield* browser.checkpoint("Connection committed while only the account projection failed");
++        const beforeRetry = projectionReads,
++          failedBeforeRetry = failedReads;
++        blocked = false;
++        yield* browser.use("Retry only the account reads", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).click(),
++        );
++        yield* browser.use("The warning clears after fresh reads", (page) =>
++          page
++            .getByRole("alert")
++            .filter({ hasText: "the account list could not refresh" })
++            .waitFor({ state: "detached" }),
++        );
++        expect(projectionReads).toBeGreaterThan(beforeRetry);
++        expect(failedReads).toBe(failedBeforeRetry);
++        expect(saves).toBe(1);
++        expect((yield* issuer.metrics).authorizations).toBe(1);
++        yield* browser.use("Both apps remain on the verified row", (page) =>
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("link", { name: "Reconciliation target", exact: true })
++            .waitFor(),
++        );
++        yield* browser.use("Dismiss confirmed completion", (page) =>
++          page
++            .getByRole("button", { name: "Done", exact: true })
++            .click()
++            .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++        );
++        yield* browser.checkpoint("Read-only retry refreshed the account without another reuse");
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
 index 788ece8..b1fe43d 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
@@ -176,6 +473,18 @@ index 788ece8..b1fe43d 100644
          for (const retainedBinding of retained) {
            expect((yield* product.read(retainedBinding.app)).status).toBe(200);
            expect(
+diff --git a/packages/ui/src/contracts/identity-consent.ts b/packages/ui/src/contracts/identity-consent.ts
+index a3223cd..b727dcf 100644
+--- a/packages/ui/src/contracts/identity-consent.ts
++++ b/packages/ui/src/contracts/identity-consent.ts
+@@ -21,6 +21,7 @@ export interface IdentityConsentSelection {
+   readonly additionalTargets?: readonly IdentityAppTarget[] | undefined;
+ }
+ export interface IdentityConsentBindings<E> {
++  readonly reconcile: (input: IdentityConsentSelection) => Promise<Exit.Exit<void, E>>;
+   readonly plan: (
+     input: IdentityConsentSelection & { readonly method: string },
+   ) => Promise<Exit.Exit<OAuthConnectionPlan, E>>;
 diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
 index 7b6a676..104f831 100644
 --- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
@@ -213,16 +522,26 @@ index 7b6a676..104f831 100644
                Every installed app for this account is connected. Install another app, then return
                here.
 diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
-index cfe806d..799f592 100644
+index cfe806d..5c400c7 100644
 --- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
-@@ -119,10 +119,14 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+@@ -18,6 +18,7 @@ import {
+   type IdentityConsentSelection,
+ } from "../../contracts/identity-consent.ts";
+ import { QueryView } from "./context.tsx";
++import { IdentityConsentComplete } from "./identity-consent-complete.tsx";
+ import { ScopeList } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
+@@ -119,10 +120,16 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
      setPlanningResult({ group, method: props.method, targets: additionalTargets, value });
    const [error, setError] = useState<Cause.Cause<E>>();
    const [pending, setPending] = useState(false);
 +  const [completed, setCompleted] = useState<{
 +    readonly account: Account;
 +    readonly apps: readonly string[];
++    readonly selection: IdentityConsentSelection;
++    readonly warning: boolean;
 +  }>();
    const { plan, method } = props;
    useEffect(() => {
@@ -232,7 +551,7 @@ index cfe806d..799f592 100644
      // An Atom command has one result; overlapping writes would cancel or misassociate plans.
      void (async () => {
        const ready: { source: AccountId; plan: OAuthConnectionPlan }[] = [];
-@@ -146,7 +150,7 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+@@ -146,7 +153,7 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
      return () => {
        current = false;
      };
@@ -241,21 +560,21 @@ index cfe806d..799f592 100644
    const selection = {
      sourceAccount: group === undefined ? null : (planned?.source ?? group.account.id),
      additionalTargets,
-@@ -156,8 +160,20 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+@@ -156,8 +163,20 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
      setChoice(value);
      setError(undefined);
    };
 +  if (completed !== undefined)
 +    return (
-+      <div className="min-w-0 space-y-4 wrap-anywhere">
-+        <div role="status" className="space-y-2">
-+          <p className="font-medium">Apps connected</p>
-+          <p className="text-sm text-muted-foreground">
-+            {completed.apps.join(", ")} can now use {completed.account.identity?.label ?? family}.
-+          </p>
-+        </div>
-+        <Button onClick={() => props.onSaved(completed.account)}>Done</Button>
-+      </div>
++      <IdentityConsentComplete
++        account={completed.account}
++        apps={completed.apps}
++        family={family}
++        warning={completed.warning}
++        retry={() => props.reconcile(completed.selection)}
++        onPendingChange={props.onPendingChange}
++        onDone={() => props.onSaved(completed.account)}
++      />
 +    );
    return (
 -    <div className="space-y-4">
@@ -263,7 +582,7 @@ index cfe806d..799f592 100644
        {groups.length > 0 && (
          <div className="space-y-2">
            <Label htmlFor="saved-identity">{family} account</Label>
-@@ -217,13 +233,15 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+@@ -217,13 +236,15 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
        ) : (
          <div className="space-y-3">
            <p className="text-sm text-muted-foreground">
@@ -286,13 +605,17 @@ index cfe806d..799f592 100644
            </p>
            {!planning &&
              planned?.plan.status === "consent-required" &&
-@@ -247,7 +265,17 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+@@ -247,8 +268,21 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
                if (planned.plan.status === "reuse") {
                  const result = await props.reuse({ method, ...selected });
                  if (Exit.isFailure(result)) setError(result.cause);
 -                else if (result.value.status === "completed") props.onSaved(result.value.account);
-+                else if (result.value.status === "completed")
+-                else
++                else if (result.value.status === "completed") {
++                  const reconciled = await props.reconcile(selected);
 +                  setCompleted({
++                    selection: selected,
++                    warning: Exit.isFailure(reconciled),
 +                    account: result.value.account,
 +                    apps: inventory.apps
 +                      .filter(
@@ -302,6 +625,69 @@ index cfe806d..799f592 100644
 +                      )
 +                      .map((app) => app.name),
 +                  });
-                 else
++                } else
                    setPlanned({
                      source: planned.source,
+                     plan: {
+diff --git a/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx b/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx
+new file mode 100644
+index 0000000..ad2598c
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx
+@@ -0,0 +1,56 @@
++import { useState } from "react";
++import { Exit } from "effect";
++import type { Account } from "@executor-js/sdk";
++import { Button } from "../components/button.tsx";
++
++/** Retrying account reads must never repeat the already committed connection. */
++export function IdentityConsentComplete<E>(props: {
++  readonly account: Account;
++  readonly apps: readonly string[];
++  readonly family: string;
++  readonly warning: boolean;
++  readonly retry: () => Promise<Exit.Exit<void, E>>;
++  readonly onPendingChange: (pending: boolean) => void;
++  readonly onDone: () => void;
++}) {
++  const [warning, setWarning] = useState(props.warning);
++  const [pending, setPending] = useState(false);
++  return (
++    <div className="min-w-0 space-y-4 wrap-anywhere">
++      <div role="status" className="space-y-2">
++        <p className="font-medium">Apps connected</p>
++        <p className="text-sm text-muted-foreground">
++          {props.apps.join(", ")} can now use {props.account.identity?.label ?? props.family}.
++        </p>
++      </div>
++      {warning && (
++        <div className="space-y-2">
++          <p role="alert" className="text-sm text-muted-foreground">
++            Your apps are connected, but the account list could not refresh.
++          </p>
++          <Button
++            variant="outline"
++            loading={pending}
++            disabled={pending}
++            onClick={async () => {
++              if (pending) return;
++              setPending(true);
++              props.onPendingChange(true);
++              try {
++                setWarning(Exit.isFailure(await props.retry()));
++              } finally {
++                setPending(false);
++                props.onPendingChange(false);
++              }
++            }}
++          >
++            Retry
++          </Button>
++        </div>
++      )}
++      <Button disabled={pending} onClick={props.onDone}>
++        Done
++      </Button>
++    </div>
++  );
++}
