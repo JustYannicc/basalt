@@ -47,6 +47,10 @@ test("legacy display hints require an exact provider and method; declarations ta
   assert.equal(accountKindLabel(inventory(row.provider, declared("unknown")), account), undefined);
   assert.equal(accountKindLabel(inventory(row.provider, declared("subscription"), declared("prepaid")), account), undefined);
   assert.equal(accountKindLabel(inventory(row.provider, declared("unknown", "oauth"), declared("unknown", "api-key")), account), undefined);
+  const mechanismOnly = (mechanism: string) => ({ ...row.definition,
+    family: { id: "test", name: "Test", methods: { codex: { mechanism } } },
+  });
+  assert.equal(accountKindLabel(inventory(row.provider, mechanismOnly("oauth"), mechanismOnly("api-key")), account), undefined);
   assert.equal(accountKindLabel(inventory("prv_unknown", { auth: { apiKey: { type: "secrets" } } }), { provider: "prv_unknown", method: "apiKey" }), undefined);
 });
 
