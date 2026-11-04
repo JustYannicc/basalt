@@ -13,11 +13,9 @@ import {
   AccountOffering,
   declaredAccountOffering,
 } from "../../.upstream/packages/apps/src/contracts/host.ts";
-import { providerDeclaration } from "../../.upstream/packages/apps/src/host.ts";
-import {
-  type ProviderDefinition,
-  identifyProvider,
-} from "../../.upstream/packages/sdk/src/core.ts";
+import { providerDeclaration } from "../../.upstream/packages/apps/src/implementation/host.ts";
+import type { ProviderDefinition } from "../../.upstream/packages/sdk/src/contracts/provider.ts";
+import { identifyProvider } from "../../.upstream/packages/sdk/src/implementation/provider.ts";
 const { planAccountConsumerMethod } = await load("packages/sdk/src/contracts/account-consumers.ts");
 const { accountOffering, accountKindLabel, accountMethodKindLabel, connectionKindLabel } = await load(
   "packages/ui/src/contracts/account-identities.ts",
@@ -112,7 +110,7 @@ const inventory = (...definitions: object[]) => ({
 
 test("unknown and contradictory declarations stay unknown and never imply subscription", () => {
   assert.equal(accountOffering(inventory(definition()), account), "unknown");
-  assert.equal(accountKindLabel(inventory(definition()), account), undefined);
+  assert.equal(accountKindLabel(inventory(definition()), account), "OAuth");
   const family = Schema.decodeUnknownSync(AccountFamily);
   assert.equal(declaredAccountOffering([], "oauth"), undefined);
   assert.equal(
@@ -126,11 +124,11 @@ test("unknown and contradictory declarations stay unknown and never imply subscr
     ),
     undefined,
   );
-  assert.equal(accountMethodKindLabel(definition(), "oauth"), undefined);
-  assert.equal(accountMethodKindLabel(definition("subscription"), "oauth"), "Subscription");
+  assert.equal(accountMethodKindLabel(definition(), "oauth"), "OAuth");
+  assert.equal(accountMethodKindLabel(definition("subscription"), "oauth"), "OAuth · Subscription");
 
   assert.equal(accountOffering(inventory(definition("subscription")), account), "subscription");
-  assert.equal(accountKindLabel(inventory(definition("subscription")), account), "Subscription");
+  assert.equal(accountKindLabel(inventory(definition("subscription")), account), "OAuth · Subscription");
   assert.equal(
     accountOffering(inventory(definition("subscription"), definition("prepaid")), account),
     "unknown",
@@ -165,8 +163,8 @@ test("offering hints do not change the capability planner's availability or requ
 
 test("public connection labels preserve offering and credential meanings independently", () => {
   assert.equal(connectionKindLabel("api-key", "subscription"), "API key · Subscription");
-  assert.equal(connectionKindLabel("oauth", "metered_api"), "Metered API");
+  assert.equal(connectionKindLabel("oauth", "metered_api"), "OAuth · Metered API");
   assert.equal(connectionKindLabel(undefined, "prepaid"), "Prepaid");
   assert.equal(connectionKindLabel("api-key", "unknown"), "API key");
-  assert.equal(connectionKindLabel("oauth", undefined), undefined);
+  assert.equal(connectionKindLabel("oauth", undefined), "OAuth");
 });
