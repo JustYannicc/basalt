@@ -41,6 +41,7 @@ function useUsage(load: () => Promise<Result<UsageSummary>>, poll: Poll) {
     } else setError(result.message);
   }, [load]);
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- read awaits the backend before updating state
     void read();
     return poll(() => void read(), 5 * 60_000);
   }, [read, poll]);
