@@ -1412,13 +1412,12 @@ index 3643ce7..06d8267 100644
      };
    });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
-index ddd7b7e..a7b789b 100644
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
-@@ -56,6 +56,24 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
-       ].every((endpoint) => endpoint.startsWith(`${baseUrl}/`)),
+@@ -57,6 +57,25 @@
    ),
  );
+ 
 +const RoutesFixture = Schema.Struct({
 +  baseUrl: Schema.String.check(
 +    Schema.makeFilter((value) => {
@@ -1437,10 +1436,11 @@ index ddd7b7e..a7b789b 100644
 +  ),
 +  token: Schema.NonEmptyString,
 +});
- 
++
  /** The fields of v1 WorkOS listings that seeding reads back. */
  const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
-@@ -74,6 +92,7 @@ export const EmulatorFixture = Schema.Struct({
+ const V1Organization = Schema.Struct({ metadata: Schema.Record(Schema.String, Schema.String) });
+@@ -74,6 +93,7 @@
    version: Schema.Literal(4),
    origin: Schema.String,
    services: Schema.Struct({
@@ -1448,35 +1448,10 @@ index ddd7b7e..a7b789b 100644
      google: GoogleProvider,
      github: Provider,
      mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-@@ -493,47 +512,51 @@ const make = Effect.gen(function* () {
+@@ -493,6 +513,44 @@
        ),
      );
    return {
--    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
--      Effect.gen(function* () {
--        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
--        if (!match?.[1])
--          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
--        return yield* request(
--          value.services.billing.baseUrl,
--          "/v1/customers.get",
--          { customer_id: `${match[1]}:organization:${input.organizationId}` },
--          value.services.billing.token,
--        ).pipe(
--          Effect.flatMap(
--            Schema.decodeUnknownEffect(
--              Schema.Struct({
--                balances: Schema.Record(
--                  Schema.String,
--                  Schema.Struct({
--                    feature_id: Schema.String,
--                    usage: Schema.Number,
--                    remaining: Schema.Number,
--                    unlimited: Schema.Boolean,
--                  }),
--                ),
--                subscriptions: Schema.Array(
--                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
 +    mapsRoutes:
 +      value.services.mapsRoutes === undefined
 +        ? undefined
@@ -1505,12 +1480,7 @@ index ddd7b7e..a7b789b 100644
 +                      ),
 +                    }),
 +                  ),
-                 ),
--              }),
--            ),
--          ),
--        );
--      }),
++                ),
 +              ),
 +            reset: () =>
 +              request(
@@ -1520,20 +1490,9 @@ index ddd7b7e..a7b789b 100644
 +                value.services.mapsRoutes!.token,
 +              ).pipe(Effect.asVoid),
 +          },
-     billingSubscription: (input: {
-       readonly organizationId: string;
-       readonly planId: string;
-       readonly status: "active" | "trialing" | "scheduled" | "expired";
-     }) =>
+     billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
        Effect.gen(function* () {
--        const match =
--          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
--            input.planId,
--          );
-+        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
-         if (!match?.[1])
-           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
-         yield* request(
+         const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
 diff --git a/e2e/support/maps-routes-emulator.ts b/e2e/support/maps-routes-emulator.ts
 new file mode 100644
 index 0000000..5984ec5
