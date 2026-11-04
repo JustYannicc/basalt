@@ -984,9 +984,11 @@ jobs:
           bun run --cwd .upstream auth:security
       - name: Build documentation without Google font requests
         run: node scripts/docs-fonts/check.ts
-      - name: Verify Cloud startup failure diagnostics
+      - name: Verify Cloud startup diagnostics and app listeners
         working-directory: .upstream
-        run: bunx vitest run --config e2e/alchemy-dev-output.config.ts
+        run: |
+          bunx vitest run --config e2e/alchemy-dev-output.config.ts
+          bunx vitest run --config e2e/cloud-app-listener.config.ts
       - name: Check the pool acceptance runner
         run: node --test scripts/pool-acceptance/*.test.ts
       - name: Check the provider table against the pinned pool backend
