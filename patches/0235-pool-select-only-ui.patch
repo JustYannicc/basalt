@@ -651,7 +651,7 @@ index 84a59f1..becf70d 100644
                  />
                </div>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index cd2813a..bb67323 100644
+index cd2813a..ff7774b 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -22,7 +22,12 @@ import { Cause, Match, Option, Exit, Schema } from "effect";
@@ -743,7 +743,7 @@ index cd2813a..bb67323 100644
    if (connection.state.status !== "pending" && !handoff.active)
      return (
        <>
-@@ -99,15 +163,7 @@ export function ConnectionFields({
+@@ -99,19 +163,12 @@ export function ConnectionFields({
              ? "Account connected."
              : "This connection has expired. Start a new connection from the app."}
          </p>
@@ -760,77 +760,21 @@ index cd2813a..bb67323 100644
        </>
      );
    return (
-@@ -115,37 +171,39 @@ export function ConnectionFields({
+-    <>
++    // A refusal from the loopback step or the form closes both.
++    <ConnectionRefusedContext value={setRefused}>
        {handoff.step}
        {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
        <div className={handoff.active ? "hidden" : "contents"}>
--        <HostedAccountForm
--          provider={connection.provider}
--          site={connection.target.site}
--          app={connection.checkable ? connection.target.app : undefined}
--          {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
--          redirectUri={connection.redirectUri}
--          initialMethod={initialMethod}
--          manualClient={manualClient}
--          setupQuery={(method) =>
--            connectionOAuthSetupAtom({ organization, connection: connection.id, method })
--          }
--          submit={submit}
--          start={startOAuth}
--          interactive={interactive}
--          onSaved={onSaved}
--          {...(onPendingChange ? { onPendingChange } : {})}
--          onAuthorized={(value) =>
--            handoff.open(
--              {
--                organization,
--                organizationSlug,
--                connection: connection.id,
--                app: connection.target.app,
--                redirectUri: value.redirectUri,
--                ...(connection.reconnectAccount ? { reconnect: true } : {}),
--                manualClient: value.manualClient,
--              },
--              value,
--            )
--          }
--        />
-+        <ConnectionRefusedContext value={setRefused}>
-+          <HostedAccountForm
-+            provider={connection.provider}
-+            site={connection.target.site}
-+            app={connection.checkable ? connection.target.app : undefined}
-+            {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
-+            redirectUri={connection.redirectUri}
-+            initialMethod={initialMethod}
-+            manualClient={manualClient}
-+            setupQuery={(method) =>
-+              connectionOAuthSetupAtom({ organization, connection: connection.id, method })
-+            }
-+            submit={submit}
-+            start={startOAuth}
-+            interactive={interactive}
-+            onSaved={onSaved}
-+            {...(onPendingChange ? { onPendingChange } : {})}
-+            onAuthorized={(value) =>
-+              handoff.open(
-+                {
-+                  organization,
-+                  organizationSlug,
-+                  connection: connection.id,
-+                  app: connection.target.app,
-+                  redirectUri: value.redirectUri,
-+                  ...(connection.reconnectAccount ? { reconnect: true } : {}),
-+                  manualClient: value.manualClient,
-+                },
-+                value,
-+              )
-+            }
-+          />
-+        </ConnectionRefusedContext>
+@@ -147,7 +204,7 @@ export function ConnectionFields({
+           }
+         />
        </div>
-     </>
+-    </>
++    </ConnectionRefusedContext>
    );
+ }
+ 
 diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 new file mode 100644
 index 0000000..8090e5d
