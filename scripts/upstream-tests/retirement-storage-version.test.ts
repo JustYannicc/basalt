@@ -10,7 +10,10 @@ import { retirementReader } from "../../.upstream/apps/hosted/cloud/scripts/pool
 const require = createRequire(
   new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
 );
-const { PgliteClient } = await import(require.resolve("@effect/sql-pglite/PgliteClient"));
+const {
+  PgliteClient,
+}: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pglite/dist/PgliteClient.js") =
+  await import(require.resolve("@effect/sql-pglite/PgliteClient"));
 
 test("retirement accepts the migrated host schema and refuses other storage versions", async () => {
   await Effect.runPromise(
