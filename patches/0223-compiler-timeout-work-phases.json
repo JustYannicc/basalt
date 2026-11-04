@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compiler-timeout-work-phases",
+  "file": "0223-compiler-timeout-work-phases.patch",
+  "content_sha256": "19cebdfd6b8f3c853a8c9181d1e4a49002ee362999ebf2da2d8c4de3a02d2cb6",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
