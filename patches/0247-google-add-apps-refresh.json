@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-google-add-apps-refresh",
+  "file": "0247-google-add-apps-refresh.patch",
+  "content_sha256": "1e5e5da8fd349d30955e385837666f3d1a61e164f7073a78229fa7dd4a055b10",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

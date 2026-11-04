@@ -7,9 +7,8 @@ import threading
 import time
 from typing import Literal
 
-from .pool_contract import HOME_URL, request_json, native_policy_request
+from .pool_contract import HOME_URL, native_policy_request, request_json
 from .readiness import POLICY_INSTANCE_ID, POLICY_PLUGIN_ID, Readiness
-
 
 POLICY_REFRESH_SECONDS = 0.5
 POLICY_PROBE_TIMEOUT_SECONDS = 0.25
@@ -22,6 +21,7 @@ def probe_home_policy(
     management_key: str,
     readiness: Readiness,
 ) -> tuple[ProbeState, str | None]:
+    generation = readiness.generation()
     deadline = time.monotonic() + POLICY_PROBE_TIMEOUT_SECONDS
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -34,7 +34,9 @@ def probe_home_policy(
     )
     if status != 200:
         return "missed", None
-    if payload.get("plugins_enabled") is not True or not isinstance(payload.get("plugins"), list):
+    if payload.get("plugins_enabled") is not True or not isinstance(
+        payload.get("plugins"), list
+    ):
         return "unavailable", None
     plugin = next(
         (
@@ -70,7 +72,9 @@ def probe_home_policy(
     ):
         return "unavailable", None
     remaining = deadline - time.monotonic()
-    if remaining <= 0 or not readiness.wait_for_policy_probe(nonce, remaining):
+    if remaining <= 0 or not readiness.wait_for_policy_probe(
+        nonce, remaining, generation
+    ):
         return "missed", None
     return "healthy", probe["instance"]
 
@@ -85,12 +89,15 @@ class PolicyHealthMonitor:
         self.management_key = management_key
 
     def check_once(self) -> ProbeState:
+        generation = self.readiness.policy_observation_generation()
+        if generation is None:
+            return "missed"
         state, instance = probe_home_policy(self.management_key, self.readiness)
         if state == "healthy" and instance is not None:
-            if not self.readiness.refresh_policy_lease(instance):
+            if not self.readiness.refresh_policy_lease(instance, generation):
                 return "unavailable"
         elif state == "unavailable":
-            self.readiness.invalidate_policy()
+            self.readiness.invalidate_policy(generation)
         return state
 
     def run(self, stop: threading.Event) -> None:
