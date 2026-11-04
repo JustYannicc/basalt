@@ -3,6 +3,7 @@ import { homeHistorySource } from "./home.ts";
 import { counter, historyObject, identifier, invalidHistory, type ModelRequest } from "./record.ts";
 import { historyBatchSize } from "./store.ts";
 import { importedHomeRequest, type ImportContext } from "./import-home.ts";
+import { importedManagerRequest } from "./import-cpamp.ts";
 import { legacySnapshot } from "./import-legacy.ts";
 import { importPrices, priceImportedRequest } from "./import-prices.ts";
 
@@ -14,7 +15,7 @@ export interface ParsedImport {
   digest: string;
   next: number | null;
   report: {
-    format: "home-v8-jsonl" | "cpa-v6";
+    format: "home-v8-jsonl" | "cpa-v6" | "cpamp-v1-jsonl";
     totalDetails: number;
     pageDetails: number;
     aggregateOnlyNotImportable: string;
@@ -30,7 +31,7 @@ export interface ParsedImport {
 /** Only the selected metadata leaves this function. The source export is never persisted. */
 export async function parseUsageImport(raw: unknown, owner: { pool: string; person: string }): Promise<ParsedImport> {
   const input = historyObject(raw);
-  if (input.format !== "home-v8-jsonl" && input.format !== "cpa-v6") return invalidHistory();
+  if (input.format !== "home-v8-jsonl" && input.format !== "cpa-v6" && input.format !== "cpamp-v1-jsonl") return invalidHistory();
   if (typeof input.source !== "string" || input.source !== homeHistorySource && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(input.source)) return invalidHistory();
   if (typeof input.data !== "string" || new TextEncoder().encode(input.data).byteLength > maximumImportBytes) return invalidHistory();
   const offset = input.offset ?? 0;
@@ -57,8 +58,9 @@ export async function parseUsageImport(raw: unknown, owner: { pool: string; pers
   } else {
     const lines = input.data.split(/\r?\n/).filter((line) => line.trim());
     const page = lines.slice(offset, offset + historyBatchSize).map((line) => historyObject(JSON.parse(line)));
-    homeUsageIds = page.map((row) => counter(row.usage_id));
-    selected = { records: await Promise.all(page.map((row) => importedHomeRequest(row, context))), total: lines.length, aggregateOnly: "0", indistinguishableDetails: 0 };
+    homeUsageIds = input.format === "home-v8-jsonl" ? page.map((row) => counter(row.usage_id)) : [];
+    const parse = input.format === "cpamp-v1-jsonl" ? importedManagerRequest : importedHomeRequest;
+    selected = { records: await Promise.all(page.map((row) => parse(row, context))), total: lines.length, aggregateOnly: "0", indistinguishableDetails: 0 };
   }
   if (offset > selected.total) return invalidHistory();
   const prices = await importPrices(input.prices);

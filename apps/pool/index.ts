@@ -25,7 +25,7 @@ import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity }
 import { requirements } from "./requirements.ts";
 import { control, type Result } from "./control.ts";
 export type { Result } from "./control.ts";
-import { refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, useReset } from "./account-actions.ts";
+import { refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset } from "./account-actions.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 type Context = QueryContext<typeof requirements>;
@@ -102,7 +102,7 @@ const identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
 export default defineApp(requirements, {
-  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, useReset }),
+  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),
   // The pool Worker refuses every step unless the caller owns the pool.
   connect: {
     subscriptions: {
