@@ -292,7 +292,7 @@ diff --git a/package.json b/package.json
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.103"
-+    "apps": "0.0.1-beta.104-basalt.8"
++    "apps": "0.0.1-beta.104-basalt.9"
    },
    "executor": {
      "title": "Atlassian"

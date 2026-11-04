@@ -5,10 +5,10 @@ from __future__ import annotations
 import threading
 
 try:
-    from . import policy_monitor, readiness
+    from . import readiness
     from .policy_monitor import PolicyHealthMonitor, ProbeState
 except ImportError:
-    from pool import policy_monitor, readiness
+    from pool import readiness
     from pool.policy_monitor import PolicyHealthMonitor, ProbeState
 
 
@@ -23,8 +23,8 @@ def run_monitor_until_policy_lease(
     original_refresh = ready.refresh_policy_lease
     original_check = monitor.check_once
 
-    def observe_refresh(instance_id: str) -> bool:
-        accepted = original_refresh(instance_id)
+    def observe_refresh(instance_id: str, generation: str | None = None) -> bool:
+        accepted = original_refresh(instance_id, generation)
         if accepted:
             lease_acquired.set()
         return accepted
@@ -51,5 +51,7 @@ def run_monitor_until_policy_lease(
         ready.refresh_policy_lease = original_refresh
         monitor.check_once = original_check
     if thread.is_alive():
-        raise AssertionError("production policy monitor run loop did not stop after its bounded probe")
+        raise AssertionError(
+            "production policy monitor run loop did not stop after its bounded probe"
+        )
     return acquired, states

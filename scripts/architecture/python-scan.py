@@ -197,7 +197,7 @@ for node, scope in calls:
 
 for node, scope in calls:
     name = symbol(node.func, scope)
-    if isinstance(node.func, ast.Attribute) and node.func.attr == "set_proxy":
+    if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_proxy", "set_tunnel"}:
         report(scope.file, node, "Unsupported Python request destination mutation")
     if name in SINKS or name == REQUEST:
         destination = argument(node, "fullurl" if name in SINKS else "url")
@@ -210,6 +210,10 @@ for node, scope in calls:
           and all(kw.arg in {"family", "type"} for kw in node.keywords)
           and symbol(argument(node, "family"), scope) == "socket.AF_UNIX"):
         # A newly created Unix-domain socket cannot address an outside host.
+        pass
+    elif (name == "http.client.HTTPConnection"
+          and values(argument(node, "host"), scope) <= {"127.0.0.1", "::1", "localhost"}):
+        # Only literal loopback connections have no outside-service dependency.
         pass
     elif name and name.startswith(NETWORK):
         report(scope.file, node, "Unsupported Python network call: " + name)

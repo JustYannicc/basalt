@@ -939,6 +939,8 @@ jobs:
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
+      - name: Verify the banked reset control in a browser with a synthetic provider
+        run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -946,6 +948,9 @@ jobs:
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
+            .generated/pool-reset-ui/**/report.json
+            .generated/pool-reset-ui/**/failure.json
+            .generated/pool-reset-ui/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -1177,7 +1182,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"

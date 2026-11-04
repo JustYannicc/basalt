@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import http.client
+import json
 import os
 import pathlib
 import socket
@@ -12,6 +12,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .recovery_deadline import current_deadline
+from .recovery_http import request_with_deadline
 
 HOME_URL = "http://127.0.0.1:8327"
 NODE_URL = "http://127.0.0.1:8317"
@@ -48,9 +50,11 @@ def boolean_env(name: str, default: bool) -> bool:
 def require_tmpfs(path: pathlib.Path) -> None:
     target = os.path.realpath(path)
     try:
-        lines = pathlib.Path("/proc/self/mountinfo").read_text(
-            encoding="utf-8"
-        ).splitlines()
+        lines = (
+            pathlib.Path("/proc/self/mountinfo")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
     except OSError as error:
         raise StartupError("cannot verify memory-backed secret storage") from error
     for line in lines:
@@ -159,6 +163,9 @@ def request_json(
     headers = {"X-Management-Key": management_key}
     if body is not None:
         headers["Content-Type"] = "application/json"
+    deadline = current_deadline()
+    if deadline is not None:
+        return request_with_deadline(url, method, body, headers, timeout, deadline)
     request = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -256,7 +263,9 @@ def child_environment(
 def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
     return {
         "server": {"port": 8317, "commercial-mode": True},
-        "observability": {"logs": {"request-log": False, "debug": False, "logging-to-file": False}},
+        "observability": {
+            "logs": {"request-log": False, "debug": False, "logging-to-file": False}
+        },
         "routing": {
             "strategy": "round-robin",
             "session-affinity": True,
