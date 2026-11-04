@@ -2,6 +2,8 @@
 
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
+The connector acceptance runner reports its failing phase, assertion count, error category and repository-relative source position in CI. Raw child output and session files remain private; a failure before screenshots still produces a bounded diagnostic.
+
 The tools gateway pins its authentication dependency overlays to Better Auth and core 1.7.5. Social token and signing-key fetches refuse redirects; administrator updates cannot replace a user ID, and banned users cannot acquire a new session through a context-free adapter call. These checks protect the identity that account and pool authority rely on, while the existing private SSO transport remains responsible for its own requests.
 
 The MCP session Worker uses grant-only authentication options and the admin table columns its reads need. Administration endpoints and session-creation hooks stay on the API and self-host sign-in instances. MCP authentication still uses the shared grant and API-key plugins. This keeps the admin route implementation out of every MCP cold start without changing grants, storage or upload budgets. Worker-size failures retain their full diagnostic cause in CI.

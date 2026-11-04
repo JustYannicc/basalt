@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyConnectorsSource } from "./connectors-source.ts";
+import { awsFailureSummary } from "../e2e/aws/diagnostics.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -111,8 +112,17 @@ if (process.argv.includes("--preflight")) {
     await writeFile(join(directory, "runtime.json"), JSON.stringify({ code, timedOut, stdout, stderr }), {
       mode: 0o600,
     });
-    if (timedOut || code !== 0)
+    if (timedOut || code !== 0) {
+      const context = await readFile(join(directory, "failure-context.json"), "utf8")
+        .then((text) => JSON.parse(text) as { phase?: unknown; checks?: unknown })
+        .catch(() => ({}));
+      const summary = awsFailureSummary({ ...context, code, timedOut, stderr });
+      await writeFile(join(directory, "failure-summary.json"), JSON.stringify(summary, null, 2), {
+        mode: 0o600,
+      });
+      console.error(`AWS proof failure: ${JSON.stringify(summary)}`);
       throw new Error("AWS proof failed; private diagnostics remain in its run directory.");
+    }
     const report = stdout.split(/\r?\n/).flatMap((line) => {
       try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
     }).find((entry) => entry.upstream === "synthetic AWS MCP and OAuth service only");

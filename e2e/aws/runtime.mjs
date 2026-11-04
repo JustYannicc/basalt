@@ -16,6 +16,7 @@ import { appsVersion } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveAwsPasteUi } from "./browser.mjs";
 import { startAwsFixture } from "./fixture.mjs";
 import { proveAwsOAuth } from "./oauth.mjs";
+import { awsFailureSummary } from "./diagnostics.ts";
 
 const [root, upstream, evidenceDirectory, browserExecutable] = process.argv.slice(2);
 const require = createRequire(join(upstream, "package.json"));
@@ -28,6 +29,7 @@ await mkdir(EVIDENCE, { recursive: true, mode: 0o700 });
 await chmod(EVIDENCE, 0o700);
 
 let checks = 0;
+let phase = "fixture";
 const check = (condition, message) => {
   checks++;
   assert.ok(condition, message);
@@ -48,20 +50,25 @@ const run = Effect.gen(function* () {
   );
 
   // OAuth state and token exchange run through the isolated self-host server APIs.
+  phase = "environment";
   const base = yield* startEnvironment({ target: "self-host", headless: true });
+  phase = "registry";
   const registry = yield* localNpmRegistry;
+  phase = "framework";
   const frameworkDirectory = join(upstream, ".local/basalt-framework");
   const framework = JSON.parse(yield* Effect.promise(() =>
     readFile(join(frameworkDirectory, "framework.json"), "utf8"),
   ));
   const frameworkManifest = JSON.parse(framework["package.json"]);
   equal(frameworkManifest.version, appsVersion, "The built framework must match the pinned host release");
+  phase = "server";
   const target = yield* startScenario(base.target, "AWS self-host MCP acceptance", undefined, {
     EXECUTOR_NPM_REGISTRY: registry.url,
     EXECUTOR_APPS_FRAMEWORK: frameworkDirectory,
     EXECUTOR_APPS_VERSION: appsVersion,
   });
 
+  phase = "actors";
   const services = yield* Layer.build(
     Actors.layer.pipe(
       Layer.provideMerge(SessionClients.layer),
@@ -110,6 +117,7 @@ const run = Effect.gen(function* () {
       files: ["provider.ts"],
   }, null, 2), { mode: 0o600 }));
 
+  phase = "deploy";
   const deployed = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "AWS self-host MCP acceptance",
     files,
@@ -120,6 +128,7 @@ const run = Effect.gen(function* () {
       ? Effect.void
       : Effect.die(new Error(`Delete the AWS proof app returned HTTP ${response.status}`))),
   ));
+  phase = "inventory";
   const inventory = checked(yield* request(actors.owner, "GET", `${prefix}/inventory`),
     200, "Read the deployed AWS app contract");
   const details = inventory.apps.find((item) => item.id === app.id);
@@ -135,6 +144,7 @@ const run = Effect.gen(function* () {
   equal(details.requirements.accounts.aws.definition.auth.oauth.scopes, []);
   equal(details.requirements.accounts.aws.definition.hosts, [fixture.host]);
 
+  phase = "access";
   const access = checked(yield* request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
     200, "Read AWS app access");
   checked(yield* request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
@@ -142,6 +152,7 @@ const run = Effect.gen(function* () {
     audience: { kind: "everyone" },
   }), 200, "Share the AWS app with the test organization");
 
+  phase = "oauth";
   const oauth = yield* proveAwsOAuth({
     request,
     checked,
@@ -153,6 +164,7 @@ const run = Effect.gen(function* () {
     app,
   });
 
+  phase = "health";
   for (const [actor, account] of [[actors.owner, oauth.ownerAccount], [actors.member, oauth.memberAccount]]) {
     const health = checked(yield* request(actor, "POST", `${prefix}/accounts/${account}/health`),
       200, "Verify the personal AWS MCP account through the app health check");
@@ -160,6 +172,7 @@ const run = Effect.gen(function* () {
     check(appCheck?.status === "healthy", `AWS account health check failed: ${JSON.stringify(appCheck)}`);
   }
 
+  phase = "mcp-keys";
   const issued = [];
   for (const actor of [actors.owner, actors.member]) {
     const token = checked(yield* request(actor, "POST", "/api/auth/api-key/create", {
@@ -178,6 +191,7 @@ const run = Effect.gen(function* () {
     { discard: true }),
   );
 
+  phase = "mcp-connect";
   const clients = [];
   const approvals = [];
   for (const { key } of issued) {
@@ -207,6 +221,7 @@ const run = Effect.gen(function* () {
     clients[clients.length - 1].nextDecision = (decision) => { nextDecision = decision; };
   }
 
+  phase = "tools";
   const outcomes = [];
   for (const [index, client] of clients.entries()) {
     const ownAccount = index === 0 ? oauth.ownerAccount : oauth.memberAccount;
@@ -311,11 +326,13 @@ const run = Effect.gen(function* () {
 
   check(typeof browserExecutable === "string" && browserExecutable.length > 0,
     "The AWS hosted paste proof requires the pinned Chromium executable");
+  phase = "browser";
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })),
     (instance) => Effect.promise(() => instance.close()),
   );
   const ownerCookies = Redacted.value(yield* actors.owner.cookies);
+  phase = "paste-ui";
   const hostedPasteUi = yield* Effect.promise(() => proveAwsPasteUi({
     browser,
     target,
@@ -328,6 +345,7 @@ const run = Effect.gen(function* () {
     equal,
   }));
 
+  phase = "refresh";
   const fixtureResult = fixture.observations();
   equal(fixtureResult.exchanges.length, 6,
     "Expected owner accounts, member account, API reconnect, and hosted UI connect/reconnect authorizations");
@@ -352,6 +370,7 @@ const run = Effect.gen(function* () {
   equal(fixtureResult.registrations.at(-1)?.callbacks, ["http://127.0.0.1:43119/oauth/callback"]);
   check(fixtureResult.registrations.every((entry) => entry.scopeCount === 0),
     "No AWS OAuth scope strings may be invented");
+  phase = "report";
   const result = {
     checks,
     oauth,
@@ -376,6 +395,9 @@ try {
   );
 } catch (error) {
   await writeFile(join(EVIDENCE, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
+  await writeFile(join(EVIDENCE, "failure-context.json"), JSON.stringify(awsFailureSummary({
+    code: 1, phase, checks, stderr: String(error?.stack ?? error),
+  })), { mode: 0o600 });
   console.error("AWS acceptance proof failed; private diagnostics retained.");
   process.exitCode = 1;
 }
