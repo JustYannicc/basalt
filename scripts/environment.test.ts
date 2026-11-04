@@ -43,6 +43,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);
+  assert.equal(env.EXECUTOR_COMPILER_CACHE_RELEASE, env.EXECUTOR_BUILD_VERSION);
 });
 
 test("production rejects emulator and foreign hosting overrides", () => {
@@ -164,6 +165,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(first.deploy.POOL_MODEL_HISTORY_ENABLED, undefined);
+  assert.equal(first.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, undefined);
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
   assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);

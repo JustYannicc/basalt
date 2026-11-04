@@ -1,0 +1,200 @@
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -11,6 +11,7 @@
+ import { Config, Effect, Option, Predicate, Schema } from "effect";
+ import { compileCloudApp } from "./implementation/app-build.ts";
+ import { makeBuildAdmission } from "./implementation/build-admission.ts";
++import { cachedCompilerResult } from "./implementation/compiler-result-cache.ts";
+ import { compilerPhases } from "./implementation/compiler-phases.ts";
+ import {
+   cloudObservability,
+@@ -31,13 +32,21 @@
+     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
+     // Only a test stage deploy supplies its checkout's `apps` package, as this Worker's own assets.
+     const framework = yield* Config.String("EXECUTOR_APPS_FRAMEWORK").pipe(Config.option);
++    const cacheRelease = yield* Config.NonEmptyString("EXECUTOR_COMPILER_CACHE_RELEASE").pipe(
++      Config.option,
++    );
+     return {
+       main: import.meta.url,
+       ...(yield* cloudObservability),
+       workersDev: false,
+       build: workerBuild("compiler"),
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+-      env: yield* telemetryBindings,
++      env: {
++        ...(yield* telemetryBindings),
++        ...(Option.isSome(cacheRelease)
++          ? { EXECUTOR_COMPILER_CACHE_RELEASE: cacheRelease.value }
++          : {}),
++      },
+       ...(Option.isSome(framework) ? { assets: { directory: framework.value } } : {}),
+     };
+   }),
+@@ -49,6 +58,7 @@
+       yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option),
+     );
+     const version = yield* Config.String("EXECUTOR_APPS_VERSION").pipe(Config.option);
++    const release = yield* Config.String("EXECUTOR_COMPILER_CACHE_RELEASE").pipe(Config.option);
+     const env = yield* WorkerEnvironment;
+     const read = Effect.gen(function* () {
+       const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
+@@ -111,7 +121,18 @@
+                 compileWithinDeadline(
+                   fingerprint.pipe(
+                     Effect.andThen(
+-                      compileCloudApp(input.files, { ...host, onPhase: phase }, input.publicPaths),
++                      cachedCompilerResult(
++                        {
++                          ...input,
++                          release: Option.getOrUndefined(release),
++                          enabled: registry === undefined,
++                        },
++                        compileCloudApp(
++                          input.files,
++                          { ...host, onPhase: phase },
++                          input.publicPaths,
++                        ),
++                      ),
+                     ),
+                   ),
+                 ),
+diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+@@ -0,0 +1,133 @@
++/** Private, release-bound reuse of successful compilation. App declarations still run per create. */
++import type { CodeFiles } from "@executor-js/sdk/core";
++import { Effect, Option, Schema } from "effect";
++import { CloudBundle, CompiledCloudApp } from "../contracts/builds.ts";
++
++const Package = Schema.Struct({
++  dependencies: Schema.Record(Schema.String, Schema.String),
++  devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++  optionalDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++  peerDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++});
++const exactVersion =
++  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
++const pinned = (files: CodeFiles) => {
++  const manifests = files.filter(
++    ({ path }) => path === "package.json" || path.endsWith("/package.json"),
++  );
++  if (!manifests.some(({ path }) => path === "package.json")) return false;
++  return manifests.every(({ content }) => {
++    const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(Package))(content);
++    return (
++      Option.isSome(decoded) &&
++      Object.values(decoded.value).every(
++        (group) =>
++          group === undefined ||
++          Object.values(group).every((version) => exactVersion.test(version)),
++      )
++    );
++  });
++};
++
++const CachedOutput = Schema.fromJsonString(
++  Schema.Struct({
++    ...CompiledCloudApp.fields,
++    bundle: CloudBundle,
++    ui: Schema.UndefinedOr(
++      Schema.Array(
++        Schema.Struct({
++          path: Schema.String,
++          contentType: Schema.String,
++          body: Schema.Uint8ArrayFromBase64,
++        }),
++      ),
++    ),
++  }),
++);
++class CacheUnavailable extends Schema.TaggedError<CacheUnavailable>()(
++  "CompilerCacheUnavailable",
++  {},
++) {}
++const attempt = <A>(work: () => Promise<A>) =>
++  Effect.tryPromise({ try: work, catch: () => new CacheUnavailable() });
++const maximumBytes = 8 * 1024 * 1024;
++const optional = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  work.pipe(
++    Effect.option,
++    Effect.timeoutOrElse({
++      duration: "250 millis",
++      orElse: () => Effect.succeed(Option.none<A>()),
++    }),
++  );
++
++/** Each caller owns its I/O. No pending promise or request context is shared. */
++export const cachedCompilerResult = <E, R>(
++  input: {
++    readonly files: CodeFiles;
++    readonly publicPaths: ReadonlyArray<string>;
++    readonly release: string | undefined;
++    readonly enabled: boolean;
++  },
++  compile: Effect.Effect<typeof CompiledCloudApp.Type, E, R>,
++) =>
++  Effect.gen(function* () {
++    if (!input.enabled || input.release === undefined || !pinned(input.files))
++      return yield* compile;
++    const cache = yield* optional(
++      attempt(() => caches.open("executor-private-compiler-results-v1")),
++    );
++    if (Option.isNone(cache)) return yield* compile;
++    const digest = yield* Effect.promise(async () => {
++      const identity = JSON.stringify([
++        input.release,
++        input.files
++          .map(({ path, content }) => ({ path, content }))
++          .sort((a, b) => a.path.localeCompare(b.path)),
++        [...input.publicPaths].sort(),
++      ]);
++      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
++      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join(
++        "",
++      );
++    });
++    const url = `https://compiler-cache.invalid/v1/${digest}`;
++    const hit = yield* optional(
++      attempt(() => cache.value.match(url)).pipe(
++        Effect.flatMap((response) =>
++          response === undefined
++            ? Effect.fail(new CacheUnavailable())
++            : Effect.gen(function* () {
++                const body = yield* attempt(() => response.text());
++                if (body.length * 2 > maximumBytes) return yield* new CacheUnavailable();
++                return yield* Schema.decodeUnknownEffect(CachedOutput)(body);
++              }),
++        ),
++      ),
++    );
++    yield* Effect.annotateCurrentSpan(
++      "executor.compiler.cache",
++      Option.isSome(hit) ? "hit" : "miss",
++    );
++    if (Option.isSome(hit)) return hit.value;
++    const value = yield* compile;
++    yield* optional(
++      Schema.encodeEffect(CachedOutput)(value).pipe(
++        Effect.flatMap((body) =>
++          body.length * 2 > maximumBytes
++            ? Effect.void
++            : attempt(() =>
++                cache.value.put(
++                  url,
++                  new Response(body, {
++                    headers: {
++                      "content-type": "application/json",
++                      "cache-control": "public, max-age=604800",
++                    },
++                  }),
++                ),
++              ),
++        ),
++      ),
++    );
++    return value;
++  });

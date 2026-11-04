@@ -205,6 +205,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
     EXECUTOR_BUILD_VERSION: commit,
+    // Released framework assets are immutable. Test and preview overrides do not opt in.
+    EXECUTOR_COMPILER_CACHE_RELEASE: commit,
     EXECUTOR_APPS_VERSION: servedFrameworkVersion,
     EXECUTOR_APPS_FRAMEWORK: fileURLToPath(
       new URL("../.upstream/.local/basalt-framework", import.meta.url),
