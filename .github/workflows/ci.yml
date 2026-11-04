@@ -1159,6 +1159,10 @@ jobs:
           npm run architecture:model
           npm run architecture:typecheck
       - run: npm run check
+      - name: Check app source snapshots against their separate repositories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/catalog-sources.ts --check
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries
