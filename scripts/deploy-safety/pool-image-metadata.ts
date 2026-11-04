@@ -118,12 +118,7 @@ export async function inspectPoolImage(
   };
   const base = `https://registry.cloudflare.com/v2/${repository.split("/").map(encodePathSegment).join("/")}`;
   const manifest = (digest: string) =>
-    boundedJson(
-      fetcher,
-      `${base}/manifests/${encodePathSegment(digest)}`,
-      { method: "GET", headers },
-      digest,
-    );
+    boundedJson(fetcher, `${base}/manifests/${digest}`, { method: "GET", headers }, digest);
   let publication = await manifest(expectedDigest);
   if (Array.isArray(publication.manifests)) {
     const matches = publication.manifests
@@ -139,7 +134,7 @@ export async function inspectPoolImage(
   const configDigest = descriptorDigest(publication.config);
   const config = await boundedJson(
     fetcher,
-    `${base}/blobs/${encodePathSegment(configDigest)}`,
+    `${base}/blobs/${configDigest}`,
     { method: "GET", headers },
     configDigest,
   );
