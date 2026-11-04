@@ -910,10 +910,11 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    },
    providerAdoption: {
 diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
+index 9fae5e314c72783426c03f10af8ce9ff66a1c05f..bd36f6c5f3698aa8f7caaee0174a5cacb476ec41 100644
 --- a/e2e/tests/provider-adoption.spec.ts
 +++ b/e2e/tests/provider-adoption.spec.ts
-@@ -12,6 +12,10 @@
- } from "../support/provider-adoption-locks.ts";
+@@ -7,6 +7,10 @@ import { providerAdoptionFixture } from "../support/provider-adoption-fixture.ts
+ import { DryRun, Plan, proveAdoptionRefusals } from "../support/provider-adoption-refusals.ts";
  import { proveConcurrentOrganizationPurge } from "../support/provider-adoption-purge.ts";
  import { scenarios } from "../test-plan.ts";
 +import {
@@ -923,7 +924,7 @@ diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.s
  
  const Applied = Schema.Struct({
    action: Schema.Literal("apply"),
-@@ -30,6 +34,12 @@
+@@ -25,6 +29,12 @@ const Snapshot = Schema.Array(
  );
  
  layer(HostedLive, { excludeTestServices: true })("Existing provider adoption", (it) => {
@@ -933,6 +934,6 @@ diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.s
 +  it.effect(scenarios.releasedRetirementRace.title, (context) =>
 +    withHostedCase(context, releasedRetirementRaceProof),
 +  );
-   it.effect(scenarios.providerAdoptionLocks.title, (context) =>
-     withHostedCase(context, proveConcurrentUnlink),
+   it.effect(scenarios.providerAdoptionPurge.title, (context) =>
+     withHostedCase(context, proveConcurrentOrganizationPurge),
    );
