@@ -144,22 +144,22 @@ function pointFor(group: PreparedGroup, at: number, key: string): StoredPoint {
 
 function updatePoint(old: StoredPoint | undefined, current: StoredPoint): StoredPoint {
   if (!old) return current;
-  const currentPlans = new Map(current.plans.map((plan) => [JSON.stringify(plan.plan), plan.last]));
-  const oldPlans = new Map(old.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
+  const lowest = current.minimum.remaining < old.minimum.remaining ? current : old;
+  const currentPlans = new Map(current.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
+  const minimumPlans = new Map(lowest.plans.map((plan) => [JSON.stringify(plan.plan), plan]));
   const plans = new Map<string, CapacityPlanHistory>();
-  for (const key of new Set([...oldPlans.keys(), ...currentPlans.keys()])) {
-    const previous = oldPlans.get(key), last = currentPlans.get(key) ?? null;
-    const candidate = last ?? previous?.minimum;
-    if (candidate === undefined) continue;
+  for (const entry of [...old.plans, ...current.plans]) {
+    const key = JSON.stringify(entry.plan);
     plans.set(key, {
-      plan: previous?.plan ?? current.plans.find((plan) => JSON.stringify(plan.plan) === key)!.plan,
-      minimum: !previous || candidate.remaining < previous.minimum.remaining ? candidate : previous.minimum,
-      last,
+      plan: entry.plan,
+      minimum: minimumPlans.get(key)?.minimum ?? {
+        ...lowest.minimum, remaining: 0, full: 0, accountCount: 0,
+        knownWeightCount: 0, unknownWeightCount: 0, weights: [],
+      },
+      last: currentPlans.get(key)?.last ?? null,
     });
   }
-  return {
-    ...current,
-    minimum: current.minimum.remaining < old.minimum.remaining ? current.minimum : old.minimum,
+  return { ...current, minimum: lowest.minimum,
     plans: [...plans.values()].sort((a, b) => (a.plan ?? "").localeCompare(b.plan ?? "")),
   };
 }

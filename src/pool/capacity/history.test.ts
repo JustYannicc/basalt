@@ -149,3 +149,20 @@ test("history is partitioned by day and pruned to 400 rolling days", async () =>
   assert.equal(index?.fromHour, latestAt - (400 * 24 - 1) * hour);
   assert.equal([...storage.values.keys()].filter((key) => key.includes(":day:")).length, 1);
 });
+
+test("plan contributions match the total minimum and an unknown plan can disappear safely", async () => {
+  const history = new CapacityHistory(new Memory());
+  await history.observe("pool-a", { at: start, expected: expected(2), readings: [
+    reading("a", 1, { plan: null }), reading("b", 4, { plan: "Pro" }),
+  ] });
+  await history.observe("pool-a", { at: start + 60_000, expected: expected(2), readings: [
+    reading("a", 4, { plan: "New", observedAt: start + 59_000 }),
+    reading("b", 0, { plan: "Pro", observedAt: start + 59_000 }),
+  ] });
+  const [point] = await history.read("pool-a");
+  assert.equal(point!.minimum.remaining, 4);
+  assert.equal(point!.plans.reduce((sum, plan) => sum + plan.minimum.remaining, 0), 4);
+  assert.equal(point!.plans.find((plan) => plan.plan === null)?.last, null);
+  assert.equal(point!.plans.find((plan) => plan.plan === null)?.minimum.remaining, 0);
+  assert.equal(point!.plans.reduce((sum, plan) => sum + (plan.last?.remaining ?? 0), 0), point!.last.remaining);
+});
