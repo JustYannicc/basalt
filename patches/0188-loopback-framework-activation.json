@@ -1,0 +1,9 @@
+{
+  "identity": "executor-loopback-framework-activation",
+  "file": "0188-loopback-framework-activation.patch",
+  "content_sha256": "dc5adcc514f298289d5707af165fb29a9e0465cf8ba00ed2ea8aafab84f77622",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

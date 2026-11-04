@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"description\": \"AWS services through the official managed MCP server, using your own AWS identity and permissions.\",\n  \"executor\": {\n    \"title\": \"AWS\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.3\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"aws\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"description\": \"AWS services through the official managed MCP server, using your own AWS identity and permissions.\",\n  \"executor\": {\n    \"title\": \"AWS\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.5\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  }\n}\n"
     }
   ]
 }

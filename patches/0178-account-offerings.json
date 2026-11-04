@@ -1,0 +1,9 @@
+{
+  "identity": "executor-account-offerings",
+  "file": "0178-account-offerings.patch",
+  "content_sha256": "6c8bf4e05378aa2af53d5f4dd42a535afa1c93bf0b10a390bc392d11a8096690",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
