@@ -1,0 +1,36 @@
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 1a2315e..519d015 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -59,7 +59,14 @@ const send = <A>(
+       }),
+     );
+     const client = yield* HttpClient.HttpClient;
+-    const response = yield* client.post(new URL(`/__setup/v1/${action}`, origin).href, {
++    // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++    const path =
++      action === "poolUsageSeries"
++        ? "/pool/v1/usage/series"
++        : action === "lastSuccessAt"
++          ? "/pool/v1/usage/last-success"
++          : `/__setup/v1/${action}`;
++    const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+     if (response.status !== 200) return yield* new PoolUsageUnavailable();
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+index 522174b..a746084 100644
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -137,8 +137,9 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+-        HttpRouter.add("POST", "/__setup/v1/poolUsageSeries", handler),
+-        HttpRouter.add("POST", "/__setup/v1/lastSuccessAt", handler),
++        // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
++        HttpRouter.add("POST", "/pool/v1/usage/series", handler),
++        HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
+       ),
+       { disableLogger: true, disableListenLog: true },
+     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
