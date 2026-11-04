@@ -173,8 +173,21 @@ index 7f1180470..44dfdef5b 100644
      HttpRouter.add("POST", "/operator", endpoint(operator)),
      HttpRouter.add("POST", "/remove", endpoint(remove)),
      HttpRouter.add(
+diff --git a/e2e/support/lifecycle.ts b/e2e/support/lifecycle.ts
+index 2a7c50ffb..88e82fd01 100644
+--- a/e2e/support/lifecycle.ts
++++ b/e2e/support/lifecycle.ts
+@@ -110,7 +110,7 @@ export const installScenarioLifecycle = () =>
+             if (plan.managementApps !== undefined)
+               yield* Effect.forEach(
+                 plan.managementApps,
+-                (role) => prepareManagementApp(actors[role], actors.organization.id),
++                (role) => prepareManagementApp(actors[role], actors.organization.id, target),
+                 { concurrency: 3, discard: true },
+               ).pipe(Effect.provideContext(fixtures));
+             return { target, actors };
 diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
-index a8c60164a..5867390d6 100644
+index a8c60164a..403c05772 100644
 --- a/e2e/support/management-app.ts
 +++ b/e2e/support/management-app.ts
 @@ -1,8 +1,10 @@
@@ -190,15 +203,20 @@ index a8c60164a..5867390d6 100644
  import type { Response } from "./platform.ts";
  
  export const managementApp = (actor: Session, organizationId?: string) =>
-@@ -17,27 +19,51 @@ export const managementApp = (actor: Session, organizationId?: string) =>
+@@ -15,29 +17,56 @@ export const managementApp = (actor: Session, organizationId?: string) =>
+   });
+ 
  /** Await a synthetic actor's linked Executor key inside the native setup deadline. */
- export const prepareManagementApp = (actor: Session, organizationId: string) =>
+-export const prepareManagementApp = (actor: Session, organizationId: string) =>
++export const prepareManagementApp = (
++  actor: Session,
++  organizationId: string,
++  target: typeof Target.Service,
++) =>
    Effect.gen(function* () {
--    const clients = yield* SessionClients;
+     const clients = yield* SessionClients;
 -    return yield* waitForManagementApp(organizationId, (path) =>
 -      clients.request(actor, "GET", path),
-+    const clients = yield* SessionClients,
-+      target = yield* Target;
 +    if (target.metadata.target !== "cloud")
 +      return yield* waitForManagementApp(organizationId, (path) =>
 +        clients.request(actor, "GET", path),
