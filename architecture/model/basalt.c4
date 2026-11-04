@@ -80,7 +80,7 @@ model {
         metadata { code ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts" }
       }
       contributionApi = door "Account and membership API" {
-        description "Native account requests and membership changes enter the same hosted authorization and database transaction boundaries."
+        description "Native account requests and membership changes enter the same hosted authorization and database transaction boundaries. Reset handlers resolve the endpoint’s inspect or use grant before sending a pool request. Browser-only approval-policy mutations authenticate the current browser principal in request middleware. Request grants and browser identity never become self-host startup dependencies."
         metadata { code ".upstream/apps/hosted/server/src/implementation/app-accounts.ts|.upstream/apps/hosted/server/src/implementation/organization.ts|.upstream/apps/hosted/server/src/implementation/organization-auth.ts" }
       }
       contributedLinks = part "Contributed account links" {
