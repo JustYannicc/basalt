@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-retirement-storage-version",
+  "file": "0203-retirement-storage-version.patch",
+  "content_sha256": "61d0010b57adc6157dd87b7306371860ebee7614dd54ee55a41886f805bfce80",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

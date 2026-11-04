@@ -77,6 +77,8 @@ export interface ComputerContext {
   readonly undoPrompt: string;
   /** Native app settings for a caller who can manage this pool. */
   readonly shareHref?: string;
+  /** The host owns the pool's single saved-account list for every authorized caller. */
+  readonly accountsHref?: string;
 }
 
 export const computerContext = query(

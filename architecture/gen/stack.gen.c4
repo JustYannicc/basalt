@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "ef53e30e7ce5fe50155e40b320aedd35fb92131ae9b6e40cfa37b0b69ea6dd48" }
+    metadata { bindings "e048f573a660210418f3d04af5b9929edd6f68658c82d7e907c453e2b3d7141d" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -11,6 +11,13 @@ deployment {
       storage resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b "Site Assets" {
         app = instanceOf assetsService {
           metadata { resource "resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b" }
+        }
+      }
+    }
+    zone group-55fe64b854913132 "Build" {
+      workflow resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef "Pool Image Publication Receipt" {
+        app = instanceOf basalt.build {
+          metadata { resource "resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef" }
         }
       }
     }
@@ -308,6 +315,11 @@ views {
   deployment view deployment_group_2703341ef73f1544 {
     title "Basalt/Deployment/Asset service"
     include deployed.group-2703341ef73f1544.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_55fe64b854913132 {
+    title "Basalt/Deployment/Build"
+    include deployed.group-55fe64b854913132.*
     autoLayout TopBottom
   }
   deployment view worker_resource_150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2 {

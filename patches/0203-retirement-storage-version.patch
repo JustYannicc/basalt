@@ -1,0 +1,12 @@
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+@@ -188,7 +188,7 @@
+               Schema.Struct({
+                 database: Identifier,
+                 snapshot: Identifier,
+-                version: Schema.Literal("4.0.25"),
++                version: Schema.Literal("4.0.27"),
+               }),
+             ),
+           ),

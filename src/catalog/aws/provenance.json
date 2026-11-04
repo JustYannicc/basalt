@@ -1,9 +1,9 @@
 {
   "kind": "new-app-contribution",
   "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
-  "sourceSha256": "68fa616f709402f4e46bc69e033d0f65e485bd99c5af91baeccf033e97732668",
+  "sourceSha256": "490fdbb0edbb26b76ad62c0e66690ac009d27d8ce00ab84828170e6a2060fbad",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.6",
+    "apps": "0.0.1-beta.104-basalt.8",
     "@modelcontextprotocol/sdk": "1.32.1"
   },
   "transport": {

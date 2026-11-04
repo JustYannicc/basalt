@@ -31,7 +31,7 @@ const emptyUsage = { ok: true, value: {
 
 // Optional PR evidence, never committed. Screenshots go to an absolute directory outside the checkout.
 const artifacts = process.env.POOL_UI_ARTIFACTS;
-// Optional baseline: build that commit's app.tsx and api.ts into the fixture instead of the working tree.
+// Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ?? (sourceRef ? `before-${sourceRef.slice(0, 8)}` : "after");
@@ -211,7 +211,7 @@ test(
       filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
     });
     if (sourceRef)
-      for (const file of ["ui/app.tsx", "ui/api.ts"])
+      for (const file of ["ui/app.tsx", "ui/accounts.tsx", "ui/api.ts"])
         writeFileSync(join(app, file), execFileSync("git", ["-C", root, "show", `${sourceRef}:apps/pool/${file}`]));
     writeFileSync(
       join(app, "deployment.ts"),
@@ -274,7 +274,9 @@ test(
           if (entry.fresh && answerFresh) answer(entry);
           else held.push(entry);
           arrived();
-        } else response.end(JSON.stringify(name === "usage" ? emptyUsage : failed));
+        } else response.end(JSON.stringify(name === "usage" ? emptyUsage : name === "computerContext"
+          ? { ok: true, value: { accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts` } }
+          : failed));
       } else if (request.url === "/") {
         response.setHeader("content-type", "text/html");
         response.end(
@@ -379,9 +381,9 @@ test(
         recovery
           ? `failed first load, then ${recovery} recovery`
           : sourced
-            ? "explicit live account rows"
+            ? "explicit live capacity"
             : populated
-              ? "account rows"
+              ? "capacity readings"
               : "authorized empty result",
         async () => {
           const value = populated
@@ -423,7 +425,7 @@ test(
             };
             assert.deepEqual(await accepted(), []);
             release();
-            const visible = populated ? "Synthetic subscription" : "No accounts yet.";
+            const visible = populated ? "1 account" : "Connect your first account";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
@@ -440,6 +442,10 @@ test(
               return;
             }
             await frame.getByText(visible, { exact: true }).waitFor();
+            assert.equal(await frame.getByRole("link", { name: "Accounts", exact: true }).getAttribute("href"),
+              `${parentOrigin}/org/fixture/apps/pool?view=accounts`);
+            assert.equal(await frame.getByRole("list", { name: "Accounts", exact: true }).count(), 0);
+            assert.equal(await frame.getByText("Synthetic subscription", { exact: true }).count(), 0);
             await page.waitForFunction(() => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0);
             assert.deepEqual(
               (await accepted()).map((entry) => entry.data),
@@ -472,7 +478,7 @@ test(
             await requests(1, true);
             viewResult = { ok: true, value: empty };
             release();
-            await frame.getByText("No accounts yet.", { exact: true }).waitFor();
+            await frame.getByText("Connect your first account", { exact: true }).waitFor();
             assert.equal((await marks()).length, 1);
             assert.equal((await accepted()).length, 1);
             // Keep the same WindowProxy, changing only its actual origin.
@@ -487,7 +493,7 @@ test(
       poolView(Date.now(), { source: "snapshot", observedAgo: 18 * minute, savedAgo: 6 * minute, left: [[0.42, 0.71], [0.08, 0.33], [0.9, 0.64]] });
     const live = () =>
       poolView(Date.now(), { source: "live", observedAgo: 20_000, savedAgo: 2_000, left: [[0.37, 0.69], [0.55, 0.31], [0.88, 0.63]] });
-    const saved = "build-seat-1@example.com";
+    const saved = sourceRef ? "build-seat-1@example.com" : "2 accounts";
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);
@@ -612,7 +618,7 @@ test(
         await page.goto(childOrigin);
         await requests(2, false);
         release();
-        await page.getByText("No accounts yet.", { exact: true }).waitFor();
+        await page.getByText(sourceRef ? "No accounts yet." : "Connect your first account", { exact: true }).waitFor();
         assert.deepEqual(await page.evaluate(() => Reflect.get(window, "sentReady")), {
           data: ready,
           targetOrigin: parentOrigin,

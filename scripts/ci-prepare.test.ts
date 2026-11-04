@@ -12,7 +12,8 @@ function job(file: string, name: string) {
 test("Check and Deploy share preparation before validation without separate install lists", () => {
   const prepare = "run: npm run prepare:upstream";
   for (const { file, name } of [
-    { file: "ci.yml", name: "check" },
+    { file: "ci.yml", name: "fast" },
+    { file: "ci.yml", name: "production-build" },
     { file: "deploy.yml", name: "deploy" },
   ]) {
     const section = job(file, name);

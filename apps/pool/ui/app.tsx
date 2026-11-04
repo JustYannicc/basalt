@@ -37,6 +37,7 @@ export function App({ api }: { api: PoolApi }) {
   const now = useNow();
   const [days, setDays] = useState<RangeDays>(7);
   const overview = useOverview(api, days);
+  const [accountsHref, setAccountsHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
   // Only the owner's context carries the share page; computers live on Connect. Its signed
   // intent lasts five minutes, so it is renewed well before that.
@@ -45,6 +46,7 @@ export function App({ api }: { api: PoolApi }) {
     const read = () =>
       void api.computerContext().then((result) => {
         if (live && result.ok) setShareHref(result.value.shareHref);
+          setAccountsHref(result.value.accountsHref);
       });
     read();
     const timer = setInterval(read, 4 * 60_000);
@@ -63,6 +65,11 @@ export function App({ api }: { api: PoolApi }) {
         <div className="flex items-center gap-2">
           {!overview.member && (
             <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
+          )}
+          {accountsHref && (
+            <a href={accountsHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+              Accounts <ExternalIcon />
+            </a>
           )}
           {shareHref && (
             <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
@@ -132,7 +139,7 @@ function Empty({ view }: { view: PoolView }) {
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {view.isOwner
-            ? `Requests through this pool use the subscriptions you connect, and their capacity and usage show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`
+            ? `Requests through this pool use the subscriptions you connect, and their capacity and usage show on this page.${offered ? ` You can connect ${offered}.` : ""} Manage saved accounts in this app's Accounts tab.`
             : "Its owner hasn't connected a subscription. Accounts show up here once they do."}
         </p>
       </div>

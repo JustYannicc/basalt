@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-generated-mcp-assets-format",
+  "file": "0204-generated-mcp-assets-format.patch",
+  "content_sha256": "5f37a6d8ea48f0754219ee97bfe50a99ff9e27a5edf090423854e7c6dad0cfb6",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
