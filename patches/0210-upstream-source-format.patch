@@ -1,14 +1,14 @@
 diff --git a/.oxfmtrc.json b/.oxfmtrc.json
-index 9da5f460..b823d4c5 100644
+index 9da5f460..25644ecb 100644
 --- a/.oxfmtrc.json
 +++ b/.oxfmtrc.json
 @@ -1,6 +1,9 @@
  {
    "$schema": "./node_modules/oxfmt/configuration_schema.json",
    "ignorePatterns": [
-+    "**/pool-app-source.ts",
-+    "**/pool-provider-capabilities.ts",
-+    "**/pool-token.ts",
++    "apps/hosted/server/src/implementation/pool-app-source.ts",
++    "apps/hosted/server/src/implementation/pool-provider-capabilities.ts",
++    "apps/hosted/server/src/implementation/pool-token.ts",
      ".preview/**",
      ".alchemy",
      ".blume",
