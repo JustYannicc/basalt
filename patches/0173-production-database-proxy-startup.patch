@@ -1,0 +1,308 @@
+diff --git a/e2e/support/production-ops-database-proxy.ts b/e2e/support/production-ops-database-proxy.ts
+index bd038ab0..f831d12a 100644
+--- a/e2e/support/production-ops-database-proxy.ts
++++ b/e2e/support/production-ops-database-proxy.ts
+@@ -1,21 +1,60 @@
+ import { Effect, Schema } from "effect";
+ import { connect, createServer, type Socket } from "node:net";
+
++const failureCodes = [
++  "EADDRINUSE",
++  "EACCES",
++  "EADDRNOTAVAIL",
++  "EMFILE",
++  "ENFILE",
++  "ENOBUFS",
++  "ENOMEM",
++  "ERR_SERVER_NOT_RUNNING",
++  "ERR_SOCKET_BAD_PORT",
++  "UNKNOWN",
++] as const;
++
+ class ProductionDatabaseProxyFailed extends Schema.TaggedError<ProductionDatabaseProxyFailed>()(
+   "ProductionDatabaseProxyFailed",
+-  { operation: Schema.Literals(["listen", "close"]) },
+-) {}
++  {
++    operation: Schema.Literals(["listen", "address", "close"]),
++    code: Schema.Literals(failureCodes),
++    errno: Schema.NullOr(Schema.Int),
++  },
++) {
++  get message() {
++    return `Database proxy ${this.operation} failed: ${this.code}${this.errno === null ? "" : ` (errno ${this.errno})`}`;
++  }
++}
++
++const failure = (operation: "listen" | "address" | "close", cause: unknown) => {
++  const error = typeof cause === "object" && cause !== null ? cause : {};
++  const code =
++    "code" in error ? (failureCodes.find((code) => code === error.code) ?? "UNKNOWN") : "UNKNOWN";
++  const errno =
++    "errno" in error &&
++    typeof error.errno === "number" &&
++    Number.isSafeInteger(error.errno) &&
++    Math.abs(error.errno) <= 65_535
++      ? error.errno
++      : null;
++  return new ProductionDatabaseProxyFailed({ operation, code, errno });
++};
+
+ /** Replace a disposable database behind the same endpoint without restarting the Cloud. */
+-export const productionOpsDatabaseProxy = (port: number, original: number) =>
++export const productionOpsDatabaseProxy = (port = 0) =>
+   Effect.gen(function* () {
+-    let target = original;
++    let target: number | undefined;
+     const sockets = new Set<Socket>();
+     const disconnect = () => {
+       for (const socket of sockets) socket.destroy();
+       sockets.clear();
+     };
+     const server = createServer((incoming) => {
++      if (target === undefined) {
++        incoming.destroy();
++        return;
++      }
+       const outgoing = connect({ host: "127.0.0.1", port: target });
+       sockets.add(incoming);
+       sockets.add(outgoing);
+@@ -41,7 +80,7 @@ export const productionOpsDatabaseProxy = (port: number, original: number) =>
+               resolve();
+             });
+           }),
+-        catch: () => new ProductionDatabaseProxyFailed({ operation: "listen" }),
++        catch: (cause) => failure("listen", cause),
+       }),
+       () =>
+         Effect.tryPromise({
+@@ -50,10 +89,14 @@ export const productionOpsDatabaseProxy = (port: number, original: number) =>
+               disconnect();
+               server.close((error) => (error === undefined ? resolve() : reject(error)));
+             }),
+-          catch: () => new ProductionDatabaseProxyFailed({ operation: "close" }),
++          catch: (cause) => failure("close", cause),
+         }).pipe(Effect.timeout("5 seconds"), Effect.orDie),
+     );
++    const address = server.address();
++    if (address === null || typeof address === "string")
++      return yield* failure("address", undefined);
+     return {
++      port: address.port,
+       select: (port: number) =>
+         Effect.sync(() => {
+           target = port;
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 1117788d..f26c6e21 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -182,8 +182,13 @@ export const startCloudEnvironment = (input: {
+     const cloud = path.resolve("apps/hosted/cloud");
+     const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
+     const directory = path.resolve(input.directory);
+-    const databaseBackendPort =
+-      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : input.databasePort;
++    const databaseProxy =
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++        ? yield* productionOpsDatabaseProxy()
++        : undefined;
++    const databaseBackendPort = databaseProxy === undefined ? input.databasePort : yield* freePort;
++    if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
++    const databasePort = databaseProxy?.port ?? input.databasePort;
+     const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+     if (input.manualCron && poolBackend)
+       return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
+@@ -272,7 +277,7 @@ export const startCloudEnvironment = (input: {
+     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
+     const env = {
+       BASALT_E2E_DATABASE_ORIGIN: "original",
+-      BASALT_E2E_DATABASE_TARGET_PORT: String(input.databasePort),
++      BASALT_E2E_DATABASE_TARGET_PORT: String(databasePort),
+       BASALT_E2E_OPS_RELEASE: "reviewed-release",
+       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
+         process.platform === "win32" ? ";" : ":",
+@@ -335,7 +340,7 @@ export const startCloudEnvironment = (input: {
+       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
+       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,
+       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+-      CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
++      CLOUD_DEV_DATABASE_PORT: String(databasePort),
+       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
+       CLOUD_DEV_EXTERNAL_DATABASE: "true",
+       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+@@ -464,10 +469,6 @@ export const startCloudEnvironment = (input: {
+       dockerEnv,
+       log: `${directory}/postgres.log`,
+     });
+-    const databaseProxy =
+-      alternatePort === undefined
+-        ? undefined
+-        : yield* productionOpsDatabaseProxy(input.databasePort, databaseBackendPort);
+     yield* createV1Database({
+       container,
+       dockerEnv,
+@@ -630,7 +631,7 @@ export const startCloudEnvironment = (input: {
+             dockerEnv,
+           });
+     const bindingEnvironment = (next: string) => ({
+-      CLOUD_DEV_DATABASE_PORT: String(next === "alternate" ? alternatePort : input.databasePort),
++      CLOUD_DEV_DATABASE_PORT: String(next === "alternate" ? alternatePort : databasePort),
+       BASALT_E2E_DATABASE_ORIGIN: next,
+       BASALT_E2E_OPS_RELEASE: next === "release" ? "replacement-release" : "reviewed-release",
+       CLOUD_DEV_DATABASE_PASSWORD:
+@@ -722,7 +723,7 @@ export const startCloudEnvironment = (input: {
+           return {
+             binding,
+             databaseName: "executor",
+-            origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
++            origin: { host: "127.0.0.1", port: databasePort, database: "executor" },
+           };
+         }
+         if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
+@@ -754,7 +755,7 @@ export const startCloudEnvironment = (input: {
+         return {
+           binding,
+           databaseName: "executor",
+-          origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
++          origin: { host: "127.0.0.1", port: databasePort, database: "executor" },
+         };
+       });
+     const controls = yield* cloudRuntimeControl(
+diff --git a/e2e/alchemy-dev-output.config.ts b/e2e/alchemy-dev-output.config.ts
+index fde906a9..44f09bc8 100644
+--- a/e2e/alchemy-dev-output.config.ts
++++ b/e2e/alchemy-dev-output.config.ts
+@@ -1,6 +1,12 @@
+ import { defineConfig } from "vitest/config";
+
+-/** Reads a child's piped output the way the managed local Cloud reads `alchemy dev`'s. */
++/** Startup diagnostics run without building or provisioning a Cloud. */
+ export default defineConfig({
+-  test: { include: ["e2e/tests/alchemy-dev-output.spec.ts"], testTimeout: 30_000 },
++  test: {
++    include: [
++      "e2e/tests/alchemy-dev-output.spec.ts",
++      "e2e/tests/production-ops-database-proxy.spec.ts",
++    ],
++    testTimeout: 30_000,
++  },
+ });
+diff --git a/e2e/support/production-ops-proxy-fixtures.ts b/e2e/support/production-ops-proxy-fixtures.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/production-ops-proxy-fixtures.ts
+@@ -0,0 +1,44 @@
++import { Effect } from "effect";
++import { createServer, type Server } from "node:http";
++import { createServer as tcpServer } from "node:net";
++import { driver } from "./platform.ts";
++
++const close = (server: Server) =>
++  Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve())));
++
++/** A real HTTP backend owned by the calling proof's scope. */
++export const proxyHttpBackend = (body: string, port = 0) =>
++  Effect.gen(function* () {
++    const server = yield* Effect.acquireRelease(
++      Effect.sync(() => createServer((_request, response) => response.end(body))),
++      close,
++    );
++    return yield* driver(
++      "bind database proxy HTTP backend",
++      () =>
++        new Promise<number>((resolve, reject) => {
++          server.once("error", reject);
++          server.listen(port, "127.0.0.1", () => {
++            server.off("error", reject);
++            const address = server.address();
++            if (address === null || typeof address === "string")
++              reject(new Error("No HTTP fixture port"));
++            else resolve(address.port);
++          });
++        }),
++    );
++  });
++
++/** A competitor must fail with a real bind collision while the proxy owns its listener. */
++export const proxyPortIsHeld = (port: number) =>
++  driver(
++    "contend for database proxy port",
++    () =>
++      new Promise<boolean>((resolve) => {
++        const contender = tcpServer();
++        contender.once("error", (error) => {
++          resolve("code" in error && error.code === "EADDRINUSE");
++        });
++        contender.listen(port, "127.0.0.1", () => contender.close(() => resolve(false)));
++      }),
++  );
+diff --git a/e2e/tests/production-ops-database-proxy.spec.ts b/e2e/tests/production-ops-database-proxy.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/production-ops-database-proxy.spec.ts
+@@ -0,0 +1,65 @@
++import { expect, layer } from "@effect/vitest";
++import { Cause, Effect } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { productionOpsDatabaseProxy } from "../support/production-ops-database-proxy.ts";
++import { proxyHttpBackend, proxyPortIsHeld } from "../support/production-ops-proxy-fixtures.ts";
++
++layer(FetchHttpClient.layer, { excludeTestServices: true })("database proxy startup", (it) => {
++  it.effect("owns its port before backend startup and forwards both target directions", () =>
++    Effect.gen(function* () {
++      const port = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const http = yield* HttpClient.HttpClient;
++          const proxy = yield* productionOpsDatabaseProxy();
++          const original = yield* proxyHttpBackend("original");
++          const replacement = yield* proxyHttpBackend("replacement");
++          expect(yield* proxyPortIsHeld(proxy.port)).toBe(true);
++          expect(proxy.port).not.toBe(original);
++          expect(proxy.port).not.toBe(replacement);
++          for (const [target, body] of [
++            [original, "original"],
++            [replacement, "replacement"],
++            [original, "original"],
++          ] as const) {
++            yield* proxy.select(target);
++            const response = yield* http.get(`http://127.0.0.1:${proxy.port}`, {
++              headers: { Connection: "close" },
++            });
++            expect(yield* response.text).toBe(body);
++          }
++          return proxy.port;
++        }),
++      );
++      expect(yield* proxyHttpBackend("released", port)).toBe(port);
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect("retains the OS cause instead of an empty failure message", () =>
++    Effect.gen(function* () {
++      const port = yield* proxyHttpBackend("occupied");
++      const exit = yield* Effect.exit(Effect.scoped(productionOpsDatabaseProxy(port)));
++      expect(exit._tag).toBe("Failure");
++      if (exit._tag === "Failure") {
++        const text = Cause.pretty(exit.cause);
++        expect(text).toContain("Database proxy listen failed: EADDRINUSE");
++        expect(text).not.toContain("127.0.0.1");
++      }
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect("releases its listener when later environment setup fails", () =>
++    Effect.gen(function* () {
++      let port = 0;
++      const exit = yield* Effect.exit(
++        Effect.scoped(
++          Effect.gen(function* () {
++            port = (yield* productionOpsDatabaseProxy()).port;
++            return yield* Effect.fail("Synthetic later setup failure");
++          }),
++        ),
++      );
++      expect(exit._tag).toBe("Failure");
++      expect(yield* proxyHttpBackend("released", port)).toBe(port);
++    }).pipe(Effect.scoped),
++  );
++});
