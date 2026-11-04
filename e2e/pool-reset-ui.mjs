@@ -24,6 +24,8 @@ const checked = (name, actual, expected) => {
 const id = "synthetic-codex-reset-ui";
 const label = "Synthetic Codex";
 const page = (fn) => Effect.promise(fn);
+// What the setup saw last, written to failure.json so a failed run names the hop that broke.
+const diagnostics = {};
 
 const program = Effect.gen(function* () {
   const h = yield* poolCloudHarness(directory, { resets: true });
@@ -55,9 +57,17 @@ const program = Effect.gen(function* () {
   // Five credits, so each journey below has one to spend.
   h.fixture.seedReset(pool.id, id, "codex", 5);
   yield* h.request("PATCH", account, { label });
-  yield* h.request("POST", `${account}/observations/refresh`);
+  // The same call the account row's Refresh makes (refreshAccountObservationsAtom).
+  diagnostics.refreshed = yield* h.request("POST", `${account}/observations/refresh`);
+  diagnostics.seededResets = h.fixture.resets.balances(id);
   yield* until(
-    h.request("GET", `${account}/observations`),
+    h.request("GET", `${account}/observations`).pipe(
+      Effect.tap((view) =>
+        Effect.sync(() => {
+          diagnostics.lastObservations = view;
+        }),
+      ),
+    ),
     (view) =>
       view.reports.some((report) =>
         report.result?.observation.balances.some((balance) => balance.unit === "resets"),
@@ -335,7 +345,7 @@ try {
 } catch (error) {
   await writeFile(
     join(directory, "failure.json"),
-    JSON.stringify({ checks, message: String(error) }, null, 2) + "\n",
+    JSON.stringify({ checks, message: String(error), diagnostics }, null, 2) + "\n",
     { mode: 0o600 },
   );
   throw error;
