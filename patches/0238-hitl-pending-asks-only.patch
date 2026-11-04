@@ -1,0 +1,159 @@
+diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+@@ -1,7 +1,3 @@
+-import { useState } from "react";
+-import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@executor-js/ui/components/tabs";
+-import { ToolPolicies } from "./tool-policies.tsx";
+ import { Link } from "@tanstack/react-router";
+ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/approvals";
+ import { approvalsAtom } from "../../contracts/workflow-inputs.ts";
+@@ -9,53 +5,27 @@
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ export function ApprovalsPage() {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+-  const [tab, setTab] = useState("requests");
+-  const [visitedRules, setVisitedRules] = useState(false);
+   return (
+-    <PageFrame>
+-      <PageHeader
+-        title="Human in the loop"
+-        description="Requests for your input and the rules for asking you."
+-      />
+-      <Tabs
+-        value={tab}
+-        onValueChange={(value) => {
+-          setTab(value);
+-          if (value === "rules") setVisitedRules(true);
+-        }}
+-      >
+-        <TabsList variant="line" aria-label="Human in the loop views">
+-          <TabsTrigger value="requests">Requests</TabsTrigger>
+-          <TabsTrigger value="rules">Rules</TabsTrigger>
+-        </TabsList>
+-        <TabsContent value="requests" forceMount hidden={tab !== "requests"}>
+-          <SharedApprovalsPage
+-            embedded
+-            query={approvalsAtom(organization)}
+-            Failure={HostedFailure}
+-            review={(item) =>
+-              item.kind === "workflow" ? (
+-                <Link
+-                  to="/org/$organizationSlug/approvals/workflow/$app/$input"
+-                  params={{ organizationSlug, app: item.input.app, input: item.input.id }}
+-                >
+-                  Respond
+-                </Link>
+-              ) : (
+-                <Link
+-                  to="/org/$organizationSlug/approvals/$runId"
+-                  params={{ organizationSlug, runId: item.run.id }}
+-                >
+-                  Review
+-                </Link>
+-              )
+-            }
+-          />
+-        </TabsContent>
+-        <TabsContent value="rules" forceMount hidden={tab !== "rules"}>
+-          {visitedRules && <ToolPolicies />}
+-        </TabsContent>
+-      </Tabs>
+-    </PageFrame>
++    <SharedApprovalsPage
++      query={approvalsAtom(organization)}
++      Failure={HostedFailure}
++      review={(item) =>
++        item.kind === "workflow" ? (
++          <Link
++            to="/org/$organizationSlug/approvals/workflow/$app/$input"
++            params={{ organizationSlug, app: item.input.app, input: item.input.id }}
++          >
++            Respond
++          </Link>
++        ) : (
++          <Link
++            to="/org/$organizationSlug/approvals/$runId"
++            params={{ organizationSlug, runId: item.run.id }}
++          >
++            Review
++          </Link>
++        )
++      }
++    />
+   );
+ }
+diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
+--- a/e2e/tests/workflow-input-browser.spec.ts
++++ b/e2e/tests/workflow-input-browser.spec.ts
+@@ -21,6 +21,37 @@
+         const f = yield* workflowInputFixture;
+         const browser = yield* Browser;
+         const run = yield* f.start(86400000, "no", f.actors.owner, "defaults");
++        const firstQuestion = yield* f.pending(run.id);
++        const policiesPath = `${f.prefix}/tool-policies`;
++        const saved = yield* f.api.request(f.actors.owner, "POST", policiesPath, {
++          target: { kind: "app", app: firstQuestion.app },
++          mode: "always-ask",
++          workflow: "retained-policy-only",
++        });
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        const policy = yield* body(
++          Schema.Struct({ id: Schema.String, revision: Schema.Int }),
++          saved,
++        );
++        yield* Effect.addFinalizer(() =>
++          f.api
++            .request(
++              f.actors.owner,
++              "DELETE",
++              `${policiesPath}/${policy.id}?revision=${policy.revision}`,
++            )
++            .pipe(Effect.asVoid, Effect.orDie),
++        );
++        const readPolicies = () => f.api.request(f.actors.owner, "GET", policiesPath);
++        const beforeVisit = yield* readPolicies();
++        expect(beforeVisit.status).toBe(200);
++        const storedPolicy = (reply: typeof beforeVisit) =>
++          body(
++            Schema.Struct({ policies: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }),
++            reply,
++          ).pipe(Effect.map((value) => value.policies.find((row) => row.id === policy.id)));
++        const beforePolicy = yield* storedPolicy(beforeVisit);
++        expect(beforePolicy).toBeDefined();
+         yield* browser.login(f.actors.owner);
+         const queue = `/org/${f.actors.organization.slug}/approvals`;
+         const types = [
+@@ -101,6 +132,23 @@
+                   ),
+               ),
+             ).toBe(message);
++            const ruleControls = () =>
++              Effect.gen(function* () {
++                const rules = yield* browser.use("HITL has no Rules tab", (page) =>
++                  page.getByRole("tab", { name: "Rules", exact: true }).count(),
++                );
++                const create = yield* browser.use("HITL has no rule creation form", (page) =>
++                  page.getByRole("button", { name: "New rule", exact: true }).count(),
++                );
++                const constraint = yield* browser.use("HITL has no JSON Schema editor", (page) =>
++                  page.getByRole("textbox", { name: "Input constraint JSON Schema" }).count(),
++                );
++                return { rules, create, constraint };
++              });
++            expect(yield* ruleControls()).toEqual({ rules: 0, create: 0, constraint: 0 });
++            const afterVisit = yield* readPolicies();
++            expect(afterVisit.status).toBe(200);
++            expect(yield* storedPolicy(afterVisit)).toEqual(beforePolicy);
+             yield* browser.checkpoint("Human in the loop shows the question and request type");
+             yield* browser.use("Use a phone-sized viewport", (page) =>
+               page.setViewportSize({ width: 390, height: 844 }),
+@@ -117,6 +165,7 @@
+             yield* browser.use("The phone queue retains the same pending request", (page) =>
+               page.getByRole("heading", { name: message, exact: true }).waitFor(),
+             );
++            expect(yield* ruleControls()).toEqual({ rules: 0, create: 0, constraint: 0 });
+             yield* browser.checkpoint("Human in the loop on a phone");
+             yield* browser.use("Restore the desktop viewport", (page) =>
+               page.setViewportSize({ width: 1440, height: 960 }),
