@@ -655,3 +655,66 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
        const outcome = yield* hook().pipe(
          Effect.flatMap((value) =>
            Schema.decodeUnknownEffect(AccountCheckResult)(value === undefined ? {} : value).pipe(
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -20,9 +20,17 @@
+     { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+   ] as const;
+
++/** Remove the latest hosted objects and journal together so earlier migrations can replay. */
++export const beforeHostedAccountRechecks = () =>
++  [
++    { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
++  ] as const;
++
+ /** Remove policy state and its journal row before replaying an earlier hosted migration. */
+ export const beforeHostedToolPolicies = () =>
+   [
++    ...beforeHostedAccountRechecks(),
+     { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
+   ] as const;
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+--- a/e2e/tests/contributed-departure-observability.spec.ts
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -164,15 +164,37 @@
+         expect(retained.items).toMatchObject([
+           { account, status: "failed", attempts: 8, queuedAt: null, lastError: null },
+         ]);
++        const journalQuery = {
++          sql: "SELECT migration_id, created_at FROM private_hosted_migrations WHERE migration_id IN (13, 17) ORDER BY migration_id",
++        };
++        const [upgraded, recheckTables] = yield* legacyStorage([
++          journalQuery,
++          {
++            sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('hosted_account_rechecks', 'hosted_account_recheck_families') ORDER BY table_name",
++          },
++        ]);
++        expect(upgraded?.map((row) => row.migration_id)).toEqual([13, 17]);
++        expect(recheckTables).toEqual([
++          { table_name: "hosted_account_recheck_families" },
++          { table_name: "hosted_account_rechecks" },
++        ]);
++        yield* serverControl("start");
+         yield* serverControl("restart");
+         expect(yield* read).toEqual(retained);
+         yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
+-        const [journal] = yield* legacyStorage([
++        const [journal, repeated] = yield* legacyStorage([
+           {
+             sql: "SELECT count(*)::integer AS count FROM private_hosted_migrations WHERE migration_id = 13",
+           },
++          journalQuery,
+         ]);
+         expect(journal).toEqual([{ count: 1 }]);
++        expect(repeated).toEqual(upgraded);
++        yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
++          upgraded,
++          recheckTables,
++          repeated,
++        });
+         yield* serverControl("start");
+       }),
+     ),
