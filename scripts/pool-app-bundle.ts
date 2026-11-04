@@ -8,7 +8,7 @@ export interface PoolAppFile {
   readonly content: string;
 }
 
-export const poolFrameworkVersion = "0.0.1-beta.104-basalt.2";
+export const poolFrameworkVersion = "0.0.1-beta.104-basalt.4";
 
 const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
 
