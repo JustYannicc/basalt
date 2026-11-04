@@ -1,0 +1,118 @@
+diff --git a/apps/hosted/server/src/implementation/account-resets.ts b/apps/hosted/server/src/implementation/account-resets.ts
+index 2f5ec99a..7f0af928 100644
+--- a/apps/hosted/server/src/implementation/account-resets.ts
++++ b/apps/hosted/server/src/implementation/account-resets.ts
+@@ -20,6 +20,7 @@ import {
+ } from "../contracts/account-resets.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+ import { AccountGrants } from "./proofs/account-access.ts";
++import type { AccountProof } from "../contracts/account-grants.ts";
+ import { browserOnly } from "./access.ts";
+ import {
+   currentResourceAuthority,
+@@ -32,10 +33,13 @@ import { signPoolToken } from "./pool-token.ts";
+ import { SqlClient } from "effect/sql";
+ 
+ /** Resolve a current saved-account link in this person's own pool. Never guess from a label. */
+-const target = (pool: AppId, spend: boolean) =>
++const target = (
++  pool: AppId,
++  grant: AccountProof<"inspect"> | AccountProof<"use">,
++  spend: boolean,
++) =>
+   Effect.gen(function* () {
+     if (spend) yield* browserOnly;
+-    const grant = yield* spend ? AccountGrants.use : AccountGrants.inspect;
+     const actor = yield* currentResourceAuthority;
+     yield* requireAppAccessAs(actor, pool, "use");
+     const sql = yield* policyDatabase;
+@@ -98,12 +102,13 @@ const target = (pool: AppId, spend: boolean) =>
+ 
+ const send = <A>(
+   pool: AppId,
++  grant: AccountProof<"inspect"> | AccountProof<"use">,
+   action: "resets" | "resets/attempt" | "resets/use",
+   schema: Schema.ConstraintDecoder<A, never>,
+   payload?: { readonly creditId: string; readonly requestId: string },
+ ) =>
+   Effect.gen(function* () {
+-    const resolved = yield* target(pool, payload !== undefined);
++    const resolved = yield* target(pool, grant, payload !== undefined);
+     const supplied = yield* AccountResetBackend;
+     const backend =
+       supplied ??
+@@ -164,11 +169,19 @@ export const hostedAccountResetHandlers = HttpApiBuilder.group(
+   "accountResets",
+   (handlers) =>
+     handlers
+-      .handle("credits", ({ params }) => fresh(send(params.pool, "resets", ResetCredits)))
++      .handle("credits", ({ params }) =>
++        Effect.flatMap(AccountGrants.inspect, (grant) =>
++          fresh(send(params.pool, grant, "resets", ResetCredits)),
++        ),
++      )
+       .handle("attempt", ({ params }) =>
+-        fresh(send(params.pool, "resets/attempt", Schema.NullOr(ResetAttempt))),
++        Effect.flatMap(AccountGrants.inspect, (grant) =>
++          fresh(send(params.pool, grant, "resets/attempt", Schema.NullOr(ResetAttempt))),
++        ),
+       )
+       .handle("use", ({ params, payload }) =>
+-        fresh(send(params.pool, "resets/use", ResetResult, payload)),
++        Effect.flatMap(AccountGrants.use, (grant) =>
++          fresh(send(params.pool, grant, "resets/use", ResetResult, payload)),
++        ),
+       ),
+ );
+diff --git a/apps/hosted/server/src/contracts/tool-policies.ts b/apps/hosted/server/src/contracts/tool-policies.ts
+index cc334b7e..26bde9b7 100644
+--- a/apps/hosted/server/src/contracts/tool-policies.ts
++++ b/apps/hosted/server/src/contracts/tool-policies.ts
+@@ -8,7 +8,7 @@ import {
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { Schema } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+-import { BrowserSessionOnly, Forbidden } from "./auth.ts";
++import { BrowserSessionOnly, Forbidden, RequireUser } from "./auth.ts";
+ import {
+   OrganizationForbidden,
+   OrganizationReference,
+@@ -109,7 +109,8 @@ export const HostedToolPolicies = HttpApiGroup.make("toolPolicies")
+       error,
+     })
+       .annotate(RequiredAction, "manage")
+-      .annotate(BrowserSessionOnly, true),
++      .annotate(BrowserSessionOnly, true)
++      .middleware(RequireUser),
+   )
+   .add(
+     HttpApiEndpoint.put("update", `${path}/:policy`, {
+@@ -119,7 +120,8 @@ export const HostedToolPolicies = HttpApiGroup.make("toolPolicies")
+       error,
+     })
+       .annotate(RequiredAction, "manage")
+-      .annotate(BrowserSessionOnly, true),
++      .annotate(BrowserSessionOnly, true)
++      .middleware(RequireUser),
+   )
+   .add(
+     HttpApiEndpoint.delete("revoke", `${path}/:policy`, {
+@@ -129,7 +131,8 @@ export const HostedToolPolicies = HttpApiGroup.make("toolPolicies")
+       error,
+     })
+       .annotate(RequiredAction, "manage")
+-      .annotate(BrowserSessionOnly, true),
++      .annotate(BrowserSessionOnly, true)
++      .middleware(RequireUser),
+   )
+   .add(
+     HttpApiEndpoint.get("history", `${path}/:policy/history`, {
+@@ -154,6 +157,7 @@ export const HostedToolPolicies = HttpApiGroup.make("toolPolicies")
+       error,
+     })
+       .annotate(RequiredAction, "manage")
+-      .annotate(BrowserSessionOnly, true),
++      .annotate(BrowserSessionOnly, true)
++      .middleware(RequireUser),
+   )
+   .middleware(RequireOrganization);

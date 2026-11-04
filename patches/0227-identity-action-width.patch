@@ -1,0 +1,49 @@
+diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+--- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+@@ -53,12 +53,13 @@
+       <Button
+         variant="outline"
+         size="sm"
++        className="max-w-24 sm:max-w-32"
+         onClick={() => {
+           setSelected("");
+           setOpen(true);
+         }}
+       >
+-        Add {identity.name} app
++        <span className="truncate">Add {identity.name} app</span>
+       </Button>
+       <Dialog
+         open={open}
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -251,6 +251,27 @@
+                           .waitFor(),
+                   ),
+               );
++              if (name === "accounts") {
++                const [identity, action] = yield* browser.use(
++                  "The verified name and Add app action both keep space",
++                  (page) =>
++                    Promise.all([
++                      accountRow(page, "Verified mail")
++                        .locator("[data-account-name]")
++                        .boundingBox(),
++                      accountRow(page, "Verified mail")
++                        .getByRole("button", { name: "Add Fixture identity app", exact: true })
++                        .boundingBox(),
++                    ]),
++                );
++                expect(identity).not.toBeNull();
++                expect(action).not.toBeNull();
++                if (identity && action) {
++                  expect(identity.width).toBeGreaterThanOrEqual(48);
++                  expect(action.width).toBeGreaterThan(0);
++                  expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
++                }
++              }
+               yield* evidence.attach(
+                 `compact-rows-${name}-${width}-${scheme}.png`,
+                 "image/png",

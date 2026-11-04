@@ -1,0 +1,417 @@
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -1,6 +1,11 @@
+ /** Private compiler entry point. The esbuild WASM module belongs only to this Worker. */
+ import { WorkerEnvironment } from "alchemy/Cloudflare";
+ import { CodeFiles, RuntimeBuildFailed } from "@executor-js/sdk/core";
++import {
++  compilerCompileBudget,
++  compilerQueueBudget,
++  compileWithinDeadline,
++} from "./implementation/compiler-request.ts";
+ import { CloudCompileResult } from "./contracts/builds.ts";
+ import { withRemoteSpan } from "@executor-js/telemetry";
+ import { Config, Effect, Option, Predicate, Schema } from "effect";
+@@ -72,9 +77,9 @@
+           ),
+     );
+     // Two builds still overlap one's npm downloads with the other's bundling, and a build
+-    // stalled on the registry leaves the other slot free. A slot is reclaimed after the API's
+-    // own compiler deadline, when no caller still waits for that build.
+-    const admitted = makeBuildAdmission(2, "50 seconds");
++    // stalled on the registry leaves the other slot free. The lease starts at admission and
++    // expires when that compile's deadline ends, even if request cleanup never runs.
++    const admitted = makeBuildAdmission(2, compilerCompileBudget, compilerQueueBudget);
+     const isolate = crypto.randomUUID();
+     const host = {
+       ...(registry === undefined ? {} : { registry }),
+@@ -99,9 +104,15 @@
+                 replied = () => phase("replied");
+                 failed = () => phase("error");
+                 return yield* admitted(
+-                  fingerprint.pipe(
+-                    Effect.andThen(
+-                      compileCloudApp(input.files, { ...host, onPhase: phase }, input.publicPaths),
++                  compileWithinDeadline(
++                    fingerprint.pipe(
++                      Effect.andThen(
++                        compileCloudApp(
++                          input.files,
++                          { ...host, onPhase: phase },
++                          input.publicPaths,
++                        ),
++                      ),
+                     ),
+                   ),
+                   phase,
+@@ -111,6 +122,7 @@
+             Effect.tapCause(() => Effect.sync(() => failed())),
+             Effect.map((value) => ({ ok: true as const, value })),
+             Effect.catchTags({
++              BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
+               RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
+               RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
+               RuntimeAppsDependencyMissing: (error) =>
+diff --git a/apps/hosted/cloud/src/contracts/builds.ts b/apps/hosted/cloud/src/contracts/builds.ts
+--- a/apps/hosted/cloud/src/contracts/builds.ts
++++ b/apps/hosted/cloud/src/contracts/builds.ts
+@@ -1,5 +1,6 @@
+ /** Retained Worker bundles use the shared SDK wire format. */
+ import {
++  BuildBusy,
+   RuntimeBuildFailed,
+   RuntimeProtocolUnsupported,
+   RuntimeAppsDependencyMissing,
+@@ -52,6 +53,7 @@
+   Schema.Struct({
+     ok: Schema.Literal(false),
+     error: Schema.Union([
++      BuildBusy,
+       RuntimeBuildFailed,
+       RuntimeProtocolUnsupported,
+       RuntimeAppsDependencyMissing,
+diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
+--- a/apps/hosted/cloud/src/implementation/build-admission.ts
++++ b/apps/hosted/cloud/src/implementation/build-admission.ts
+@@ -3,7 +3,7 @@
+  * Tickets and leases contain only values; each waiter owns its polling timer. Expiry removes
+  * requests whose cleanup never ran, and late cleanup cannot release a successor's lease.
+  */
+-import { RuntimeBuildFailed } from "@executor-js/sdk/core";
++import { BuildBusy } from "@executor-js/sdk/core";
+ import { Duration, Effect } from "effect";
+
+ interface Slot {
+@@ -12,29 +12,30 @@
+
+ const check = { min: 10, max: 200 };
+
+-export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
++export const makeBuildAdmission = (
++  slots: number,
++  lease: Duration.Input,
++  queueBudget: Duration.Input = lease,
++) => {
+   const leaseMillis = Duration.toMillis(lease);
++  const queueMillis = Duration.toMillis(queueBudget);
+   const held = new Set<Slot>();
+   const waiting = new Set<Slot>();
+   const acquire = Effect.suspend(() => {
+     const since = Date.now();
+-    const ticket = { expires: since + leaseMillis };
++    const ticket = { expires: since + queueMillis };
+     waiting.add(ticket);
+     return Effect.gen(function* () {
+       for (;;) {
+         const now = Date.now();
+         for (const slot of held) if (slot.expires <= now) held.delete(slot);
+         for (const queued of waiting) if (queued.expires <= now) waiting.delete(queued);
+-        if (ticket.expires <= now)
+-          return yield* new RuntimeBuildFailed({
+-            stage: "compile",
+-            message:
+-              "The compiler admission deadline elapsed. No new version was activated; deploy again.",
+-          });
++        if (ticket.expires <= now) return yield* new BuildBusy();
+         if (waiting.values().next().value === ticket && held.size < slots) {
+           waiting.delete(ticket);
+-          held.add(ticket);
+-          return ticket;
++          const slot = { expires: now + leaseMillis };
++          held.add(slot);
++          return slot;
+         }
+         yield* Effect.sleep(
+           Math.min(
+diff --git a/apps/hosted/cloud/src/implementation/compiler-request.ts b/apps/hosted/cloud/src/implementation/compiler-request.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-request.ts
+@@ -0,0 +1,47 @@
++/** Capacity waiting and admitted compile work each keep their existing 50-second budget. */
++import { RuntimeBuildFailed } from "@executor-js/sdk/core";
++import { Duration, Effect } from "effect";
++
++export const compilerQueueBudget = "50 seconds";
++export const compilerCompileBudget = "50 seconds";
++const compilerRequestBudget = Duration.sum(
++  Duration.fromInputUnsafe(compilerQueueBudget),
++  Duration.fromInputUnsafe(compilerCompileBudget),
++);
++
++const unanswered = (message: string) =>
++  Effect.annotateCurrentSpan("build.compiler_deadline_exceeded", true).pipe(
++    Effect.andThen(
++      Effect.fail(
++        new RuntimeBuildFailed({
++          stage: "compile",
++          message,
++          unanswered: true,
++        }),
++      ),
++    ),
++  );
++
++/** Called inside admission, so queued time never consumes compile time. */
++export const compileWithinDeadline = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  work.pipe(
++    Effect.timeoutOrElse({
++      duration: compilerCompileBudget,
++      orElse: () =>
++        unanswered(
++          `The compiler did not answer within ${compilerCompileBudget}. No new version was activated; deploy again.`,
++        ),
++    }),
++  );
++
++/** A lost Worker still cannot hold the RPC forever; normal queue and compile expiry report there. */
++export const requestCompile = <A, E, R>(request: Effect.Effect<A, E, R>) =>
++  request.pipe(
++    Effect.timeoutOrElse({
++      duration: compilerRequestBudget,
++      orElse: () =>
++        unanswered(
++          "The compiler request did not answer within its queue and compile budgets. No new version was activated; deploy again.",
++        ),
++    }),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
+--- a/apps/hosted/cloud/src/infrastructure/runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
+@@ -4,6 +4,7 @@
+   BuildId,
+   RuntimeBuildFailed,
+   BuildMemoryExceeded,
++  BuildBusy,
+   RuntimeProtocolUnsupported,
+   describeBuildCause,
+   RuntimeAppsDependencyMissing,
+@@ -26,6 +27,7 @@
+ import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
+ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+ import { CloudCompileResult } from "../contracts/builds.ts";
++import { requestCompile } from "../implementation/compiler-request.ts";
+ import { AppCompiler } from "./compiler.ts";
+ import { AppData } from "./app-data-worker.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
+@@ -39,29 +41,6 @@
+ /** The deployer sees the underlying failure; builds bind no accounts, so it holds no credentials. */
+ const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
+   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
+-/**
+- * How long a deploy waits for the compiler Worker to answer. A lost compiler isolate otherwise
+- * leaves the binding call open until the platform reports a lost connection, 100-230s later.
+- * Over September 2026, the slowest successful compiler requests took 16.5s in production and
+- * 34s on test stages (a cold default-app provision), and compiler memory failures surfaced within
+- * 37s, so they still report as such. The bound leaves the whole deploy room to answer within the
+- * 60s that MCP clients and the deployed scenarios commonly wait.
+- */
+-const compilerDeadline = "50 seconds";
+-const compilerDidNotAnswer = Effect.annotateCurrentSpan(
+-  "build.compiler_deadline_exceeded",
+-  true,
+-).pipe(
+-  Effect.andThen(
+-    Effect.fail(
+-      new RuntimeBuildFailed({
+-        stage: "compile",
+-        message: `The compiler did not answer within ${compilerDeadline}. No new version was activated; deploy again.`,
+-        unanswered: true,
+-      }),
+-    ),
+-  ),
+-);
+ /**
+  * Attribute Worker Loader use to the caller. Cloudflare bills each unique loaded Worker per day,
+  * and its own usage data cannot be split by user or organization.
+@@ -169,11 +148,9 @@
+         withActor(
+           Effect.gen(function* () {
+             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
+-            const result = yield* compiler.compile(files, publicPaths, headers).pipe(
+-              Effect.timeoutOrElse({
+-                duration: compilerDeadline,
+-                orElse: () => compilerDidNotAnswer,
+-              }),
++            const result = yield* requestCompile(
++              compiler.compile(files, publicPaths, headers),
++            ).pipe(
+               Effect.catchTag("RpcCallError", (error) => {
+                 const cause = error.cause;
+                 return Effect.fail(
+@@ -230,13 +207,15 @@
+           }).pipe(
+             Effect.tapError((error) =>
+               Effect.annotateCurrentSpan({
+-                "build.stage": Schema.is(BuildMemoryExceeded)(error)
+-                  ? "compile"
+-                  : Schema.is(RuntimeProtocolUnsupported)(error)
+-                    ? "protocol"
+-                    : Schema.is(RuntimeAppsDependencyMissing)(error)
+-                      ? "dependencies"
+-                      : error.stage,
++                "build.stage": Schema.is(BuildBusy)(error)
++                  ? "queued"
++                  : Schema.is(BuildMemoryExceeded)(error)
++                    ? "compile"
++                    : Schema.is(RuntimeProtocolUnsupported)(error)
++                      ? "protocol"
++                      : Schema.is(RuntimeAppsDependencyMissing)(error)
++                        ? "dependencies"
++                        : error.stage,
+                 // The message quotes the deployer's source and its compiler errors, which only the
+                 // deployer receives; the span records which failure it was.
+                 "build.error": error._tag,
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -34,6 +34,7 @@
+   AppSlugTaken,
+   AppNotFound,
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   SkillDefinitionInvalid,
+   SourceFiles,
+@@ -73,6 +74,7 @@
+   AppVersionChanged,
+   StorageError,
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   SkillDefinitionInvalid,
+   ...sourceErrors,
+diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
+--- a/apps/hosted/server/src/contracts/organization-defaults.ts
++++ b/apps/hosted/server/src/contracts/organization-defaults.ts
+@@ -10,6 +10,7 @@
+   AppNotDeployed,
+   AppVersionChanged,
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   VersionNotFound,
+   AppNameTaken,
+@@ -39,6 +40,7 @@
+   SourcePathNotUnicode,
+   TemplateError.annotate({ httpApiStatus: 422 }),
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   VersionNotFound,
+   AppNameTaken,
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -30,6 +30,7 @@
+   Version,
+   VersionMetadata,
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   VersionNotFound,
+   VersionSummary,
+@@ -625,6 +626,7 @@
+         VersionNotFound,
+         AppNotDeployed,
+         VersionBuildFailed,
++        BuildBusy,
+         BuildMemoryExceeded,
+         AccountNotFound,
+         AccountSelectionInvalid,
+@@ -639,6 +641,7 @@
+         ...sourceErrors,
+         StorageError,
+         VersionBuildFailed,
++        BuildBusy,
+         BuildMemoryExceeded,
+         AppNameTaken,
+         AppSlugTaken,
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -32,7 +32,12 @@
+   ToolSearchUnavailable,
+ } from "./tools.ts";
+ import type { AccountScope, App, AppRequirements } from "./apps.ts";
+-import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
++import type {
++  BuildBusy,
++  BuildMemoryExceeded,
++  BuildUnanswered,
++  VersionBuildFailed,
++} from "./version.ts";
+ import type { Account } from "./account.ts";
+ import type { AccountProvisioned } from "./provider.ts";
+ import type {
+@@ -535,7 +540,7 @@
+       readonly app?: AppId;
+     }) => Effect.Effect<
+       { readonly requirements: typeof AppRequirements.Type },
+-      VersionBuildFailed | BuildMemoryExceeded | BuildUnanswered | StorageError
++      VersionBuildFailed | BuildBusy | BuildMemoryExceeded | BuildUnanswered | StorageError
+     >;
+   };
+   readonly [WebhookSourceHost]: WebhookSourceDispatcher;
+diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
+--- a/packages/sdk/src/contracts/runtime.ts
++++ b/packages/sdk/src/contracts/runtime.ts
+@@ -18,7 +18,7 @@
+ } from "apps/contracts";
+ import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
+ import { RecordedMessage } from "@executor-js/utils/recorded-message";
+-import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./version.ts";
++import { BuildStage, SourceLocation, type BuildBusy, type BuildMemoryExceeded } from "./version.ts";
+ import type { CodeFiles } from "./source.ts";
+ import { BuildId, Json } from "./shared.ts";
+ import type { BlobKey, BlobRange } from "./blobs.ts";
+@@ -394,6 +394,7 @@
+     | RuntimeBuildFailed
+     | RuntimeProtocolUnsupported
+     | RuntimeAppsDependencyMissing
++    | BuildBusy
+     | BuildMemoryExceeded,
+     Requirements
+   >;
+diff --git a/packages/sdk/src/contracts/version.ts b/packages/sdk/src/contracts/version.ts
+--- a/packages/sdk/src/contracts/version.ts
++++ b/packages/sdk/src/contracts/version.ts
+@@ -153,3 +153,17 @@
+   owner: OwnerId,
+   name: Schema.NonEmptyString,
+ }) {}
++
++/** Capacity was unavailable throughout the queue budget; no compile judged the source. */
++export const BuildBusy = UserFacingError.define({
++  tag: "BuildBusy",
++  status: 503,
++  title: "App build is waiting for compiler capacity",
++  description: "The compiler is busy. No new version was activated; deploy again.",
++  recovery: {
++    action: "Try the build again when compiler capacity is available.",
++    instructions:
++      "The build waited for capacity and did not compile. Keep the source unchanged and try again later.",
++  },
++});
++export type BuildBusy = typeof BuildBusy.Type;
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -22,6 +22,7 @@
+   AppVersionChanged,
+   Version,
+   VersionBuildFailed,
++  BuildBusy,
+   BuildMemoryExceeded,
+   BuildUnanswered,
+   VersionNotFound,
+@@ -422,7 +423,7 @@
+         })
+         .pipe(
+           Effect.mapError((error) =>
+-            Schema.is(BuildMemoryExceeded)(error)
++            Schema.is(BuildMemoryExceeded)(error) || Schema.is(BuildBusy)(error)
+               ? error
+               : check !== undefined &&
+                   Schema.is(RuntimeBuildFailed)(error) &&
