@@ -3,7 +3,7 @@ import { onServedFramework } from "../../src/catalog/framework.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,7 +14,7 @@ const capture = Object.freeze({
   directory: "playground/demo-apps/atlassian",
   packageName: "atlassian",
   publicSnapshotSha256: "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
-  servedSdkVersion: "0.0.1-beta.104-basalt.2",
+  servedSdkVersion: "0.0.1-beta.104-basalt.8",
 });
 const publicPaths = ["index.ts", "package.json"];
 const servedPaths = [
@@ -90,6 +90,12 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     assert.equal(provenance[key], capture[key]);
   assert.equal(provenance.license, "MIT");
   assert.equal(provenance.snapshotSha256, sourceHash);
+  const pins = JSON.parse(await readFile(join(root, "scripts/catalog-sources.json"), "utf8"));
+  const pin = pins.apps.find((app) => app.package === "atlassian");
+  assert.equal(provenance.catalogSource.repository, `https://github.com/${pin.repository}`);
+  assert.equal(provenance.catalogSource.commit, pin.commit);
+  assert.equal(provenance.catalogSource.snapshotSha256, sourceHash);
+  assertSource(snapshot, [...pin.files].sort(), provenance.catalogSource.fileSha256);
   assert.equal(provenance.publicSource.snapshotSha256, capture.publicSnapshotSha256);
   assert.equal(provenance.localPatch.path, "source.patch");
   assert.equal(provenance.localPatch.sha256, sha256(rawPatch));
@@ -122,7 +128,9 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     JSON.parse(onServedFramework(JSON.stringify(template))),
     "Feed differs from captured source except its own asset origin and served framework",
   );
-  const capturedManifest = JSON.parse(snapshot.files.find((file) => file.path === "package.json").content);
+  const capturedManifest = JSON.parse(
+    snapshot.files.find((file) => file.path === "package.json").content,
+  );
   assert.equal(capturedManifest.dependencies.apps, capture.servedSdkVersion);
   const files = JSON.parse(onServedFramework(JSON.stringify(snapshot))).files;
   const manifest = JSON.parse(files.find((file) => file.path === "package.json").content);
