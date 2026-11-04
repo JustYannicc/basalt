@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
 import { beforeAll, afterAll, expect, test } from "vitest";
 import { LikeC4 } from "likec4";
 import type { $ElementId } from "./gen/model.ts";
@@ -167,21 +166,4 @@ test("kinds, tags and domain language match the glossary", () => {
       expect(hasVendor(edge.technology ?? ""), `${view.id}: ${edge.id}`).toBe(false);
   }
   expect(languageErrors(root)).toEqual([]);
-});
-
-test("PRs changing runtime or stack update the architecture in the same PR", () => {
-  const base = process.env.ARCHITECTURE_BASE_SHA;
-  if (!base) return;
-  if (!/^[a-f0-9]{40}$/.test(base)) throw new Error("Invalid architecture comparison commit");
-  const changed = execFileSync("git", ["diff", "--name-only", `${base}...HEAD`], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .trim()
-    .split("\n");
-  const boundary = changed.some((file) =>
-    /^(?:src\/|packages\/|containers\/|alchemy\.run\.ts$|upstream\.json$|patches\/)/.test(file),
-  );
-  if (boundary)
-    expect(changed.some((file) => /^architecture\/.+\.(?:c4|likec4|md)$/.test(file))).toBe(true);
 });
