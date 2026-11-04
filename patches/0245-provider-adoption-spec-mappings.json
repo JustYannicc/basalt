@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-adoption-spec-mappings",
+  "file": "0245-provider-adoption-spec-mappings.patch",
+  "content_sha256": "67845ba33a1e8b416ebb696269d3edb221ec6e7a52f9fe624e30024152ca20d9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
