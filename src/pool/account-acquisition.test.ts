@@ -1,3 +1,4 @@
+import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HomeAccountAcquisitions } from "./account-acquisition.ts";
@@ -24,6 +25,7 @@ function fixture(existing: readonly string[] = []) {
   const members = new Set<string>();
   let status: Record<string, unknown> = { status: "wait" };
   let failStart = false;
+  let statusError: Error | undefined;
   const home = new HomeClient(async (path, init) => {
     const method = init?.method ?? "GET";
     calls.push({ path, method });
@@ -32,7 +34,7 @@ function fixture(existing: readonly string[] = []) {
       if (failStart) throw new Error("Lost response after send");
       return Response.json({ state: "home-state", url: "https://provider.invalid/device", user_code: "CODE" });
     }
-    if (url.pathname.endsWith("/oauth/status")) return Response.json(status);
+    if (url.pathname.endsWith("/oauth/status")) { if (statusError) throw statusError; return Response.json(status); }
     if (url.pathname.endsWith("/oauth/session")) return Response.json({ cancelled: true });
     if (url.pathname.endsWith("/credentials")) {
       if (method === "DELETE") { credentials.delete(url.searchParams.get("id") ?? ""); return Response.json(null); }
@@ -53,6 +55,7 @@ function fixture(existing: readonly string[] = []) {
   let controller = make();
   return {
     calls, credentials, members, markers, excluded,
+    failStatus(error?: Error) { statusError = error; },
     restart() { controller = make(); },
     complete(ids: readonly string[]) { for (const id of ids) credentials.add(id); status = { status: "ok", auth_ids: ids }; },
     loseStart() { failStart = true; },
@@ -143,4 +146,27 @@ test("cancellation refuses to delete a credential already linked to a pool", asy
   f.members.add("fresh");
   assert.equal((await f.send("cancel", { session: started.session })).status, 503);
   assert.deepEqual([...f.credentials], ["fresh"]);
+});
+
+
+test("a status outage returns a closed receipt and keeps the same attempt recoverable", async () => {
+  const f = fixture();
+  const started = await body(await f.send("start"));
+  for (const [error, errorClass] of [
+    [new Error("private credential must never escape"), "transport"],
+    [new PoolRuntimeUnhealthy(), "runtime_unhealthy"],
+    [new DOMException("private timeout detail", "TimeoutError"), "timeout"],
+  ] as const) {
+    f.failStatus(error);
+    const unavailable = await f.send("status", { session: started.session });
+    assert.equal(unavailable.status, 503);
+    assert.deepEqual(await unavailable.json(), {
+      error: "acquisition_unavailable",
+      receipt: { phase: "oauth_status", errorClass, retryable: true },
+    });
+  }
+  f.restart();
+  f.failStatus();
+  f.complete(["recovered"]);
+  assert.equal((await body(await f.send("status", { session: started.session }))).state, "connected");
 });

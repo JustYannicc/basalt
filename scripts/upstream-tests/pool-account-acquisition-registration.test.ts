@@ -1,3 +1,7 @@
+import { HomeAccountAcquisitions } from "../../src/pool/account-acquisition.ts";
+import { PoolRuntimeUnhealthy } from "../../src/pool/lifecycle.ts";
+import { InteractiveConnectionFailed } from "../../.upstream/packages/sdk/src/core.ts";
+import { Schema } from "effect";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -96,4 +100,52 @@ test("Jev's registered Promise adapter mirrors its original token through the si
 
 test("a host without a signing key registers no acquisition or mirror driver", async () => {
   assert.deepEqual(await Effect.runPromise(poolAccountAcquisition(Option.none(), "https://pool.example").pipe(Effect.provideService(Crypto.Crypto, crypto))), { registrations: [] });
+});
+
+
+test("Claude status retries are bounded and preserve the runtime receipt without repeating a callback", async () => {
+  const options = await registrations();
+  const registration = options.registrations.find((entry) => entry.method === "claude");
+  assert.ok(registration?.driver.submit);
+  const stored = new Map<string, unknown>();
+  const storage = {
+    async get<T>(key: string): Promise<T | undefined> { return structuredClone(stored.get(key)) as T | undefined; },
+    async put(key: string, value: unknown) { stored.set(key, structuredClone(value)); },
+    async getAlarm() { return null; }, async setAlarm() {},
+  };
+  let unavailable = false, requests = 0, callbacks = 0, starts = 0;
+  const home = new HomeClient(async (path) => {
+    if (path.includes("/oauth/callback")) callbacks++;
+    if (unavailable) throw new PoolRuntimeUnhealthy();
+    if (path.includes("/credentials")) return Response.json({ files: [] });
+    if (path.includes("/oauth/auth-url")) { starts++; return Response.json({ state: "synthetic-state", url: "https://provider.invalid/authorize", flow: "callback" }); }
+    return Response.json({ status: "wait" });
+  });
+  const controller = new HomeAccountAcquisitions(storage, home, signingKey, { async begin() { return "fixture-marker"; }, async settle() {} });
+  const context = {
+    owner: OwnerId.make("organization:fixture"), provider: registration.provider, method: "claude",
+    operation: "fixture-start", deadline: Date.now() + 30_000, signal: new AbortController().signal,
+    fetch: (async (input, init) => { requests++; return controller.handle(new Request(input, init)); }) satisfies typeof fetch,
+  };
+  const started = await Effect.runPromise(registration.driver.start(context));
+  unavailable = true;
+  const before = requests;
+  const failed = await Effect.runPromise(registration.driver.status(context, { session: started.session }).pipe(
+    Effect.match({ onFailure: (error) => error, onSuccess: (value) => value }),
+  ));
+  assert.equal(requests - before, 3);
+  assert.ok(Schema.is(InteractiveConnectionFailed)(failed));
+  assert.deepEqual(failed.receipt, { phase: "oauth_status", errorClass: "runtime_unhealthy", retryable: true });
+  assert.match(failed.message, /temporarily unhealthy/);
+  const beforeSubmit = requests;
+  const submitted = await Effect.runPromise(registration.driver.submit(context, {
+    session: started.session, value: "http://localhost/callback?state=synthetic-state&code=synthetic",
+  }).pipe(Effect.match({ onFailure: (error) => error, onSuccess: (value) => value })));
+  assert.ok(Schema.is(InteractiveConnectionFailed)(submitted));
+  assert.equal(submitted.receipt?.phase, "oauth_callback");
+  assert.equal(requests - beforeSubmit, 1);
+  assert.equal(callbacks, 1);
+  unavailable = false;
+  assert.deepEqual(await Effect.runPromise(registration.driver.status(context, { session: started.session })), { state: "waiting" });
+  assert.equal(starts, 1);
 });
