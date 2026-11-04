@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compact-used-by",
+  "file": "0263-compact-used-by.patch",
+  "content_sha256": "9853d9aae0bc3216dde35e87f6edb9da80db2c6af472087c22148cabe002b627",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

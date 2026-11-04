@@ -1,0 +1,228 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index 8c3ec05..363c663 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+ import type { Page } from "playwright";
+ import { body } from "../support/api.ts";
+-import { connectionsPath } from "../support/app-accounts.ts";
++import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { IdentityAccount } from "../support/account-identity-product.ts";
+@@ -13,7 +13,11 @@ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
+-import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import {
++  allowance,
++  observationFixture,
++  observationSource,
++} from "../support/account-observation-fixture.ts";
+ import { accountRow, openRowMenu } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -184,6 +188,44 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+           expect((yield* fixture.check()).status).toBe(200);
+         }
+         expect((yield* usage.refresh()).status).toBe(200);
++        // One sign-in used by three apps: the row shows the first and "+2 more", which lists the rest.
++        const many = yield* observationFixture({
++          name: "Many apps first",
++          providerName: "Compact shared service",
++          observe: false,
++          health: true,
++        });
++        expect(
++          (yield* many.api.request(many.actors.owner, "PATCH", many.accountPath, {
++            label: "Many apps mail",
++          })).status,
++        ).toBe(200);
++        for (const name of ["Many apps second", "Many apps third"]) {
++          const deployed = yield* many.api.request(
++            many.actors.owner,
++            "POST",
++            `${many.prefix}/apps/deploy`,
++            {
++              name,
++              files: [
++                {
++                  path: "index.ts",
++                  content: observationSource(many.backend.origin, {
++                    health: true,
++                    providerName: "Compact shared service",
++                  }),
++                },
++                appsManifest,
++              ],
++            },
++          );
++          expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++          const appPath = `${many.prefix}/apps/${(yield* body(Resource, deployed)).id}`;
++          yield* Effect.addFinalizer(() =>
++            many.api.request(many.actors.owner, "DELETE", appPath).pipe(Effect.orDie),
++          );
++          yield* linkAccount(many.actors.owner, appPath, "service", many.account);
++        }
+         expect((yield* outdated.deploy({ observe: true, health: true })).status).toBe(200);
+         const checkOf = (detail: { readonly body: unknown }) =>
+           JSON.stringify((detail.body as { health?: unknown }).health ?? null);
+@@ -225,6 +267,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
+             accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
+             accountRow(page, "Verified mail").locator("[data-account-verified]").first().waitFor(),
++            accountRow(page, "Many apps mail").locator("[data-used-by-more]").waitFor(),
+           ]);
+         yield* browser.login(plain.actors.owner);
+         const surfaces = [
+@@ -271,6 +314,21 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                   expect(action.width).toBeGreaterThan(0);
+                   expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
+                 }
++                // A sign-in used by many apps keeps one app chip and "+N more" at every width.
++                const [chips, more, height] = yield* browser.use(
++                  `Read the many-apps row at ${width}px`,
++                  (page) => {
++                    const row = accountRow(page, "Many apps mail");
++                    return Promise.all([
++                      row.locator(".app-references > a").count(),
++                      row.locator("[data-used-by-more]").innerText(),
++                      row.evaluate((element) => element.getBoundingClientRect().height),
++                    ]);
++                  },
++                );
++                expect(chips).toBe(1);
++                expect(more).toBe("+2 more");
++                expect(height, "the row stays compact").toBeLessThan(width === 1280 ? 64 : 96);
+               }
+               yield* evidence.attach(
+                 `compact-rows-${name}-${width}-${scheme}.png`,
+@@ -281,6 +339,30 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+               );
+             }
+ 
++        // "+2 more" lists the other apps, each still a link to its Accounts tab.
++        const others = yield* browser.use("Open the many-apps list", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => ready(page))
++            .then(() => accountRow(page, "Many apps mail").locator("[data-used-by-more]").click())
++            .then(() => page.locator("[data-used-by-list]").waitFor())
++            .then(() =>
++              Promise.all([
++                accountRow(page, "Many apps mail").locator(".app-references > a").allInnerTexts(),
++                page.locator("[data-used-by-list] a").allInnerTexts(),
++              ]),
++            ),
++        );
++        // The chip and the list together name every app, each once.
++        expect(
++          others
++            .flat()
++            .map((text) => text.trim())
++            .toSorted(),
++        ).toEqual(["Many apps first", "Many apps second", "Many apps third"]);
++        yield* browser.use("Close the many-apps list", (page) => page.keyboard.press("Escape"));
++
+         const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index b140659..345688b 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -48,7 +48,18 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
++/** App references styled as chips; links are the direct children. */
++const appReferences =
++  "app-references flex min-w-0 gap-1 [&_>_a]:inline-flex [&_>_a]:h-5.5 [&_>_a]:max-w-full [&_>_a]:items-center [&_>_a]:gap-1 [&_>_a]:rounded-[6px] [&_>_a]:border [&_>_a]:border-border [&_>_a]:px-1.5 [&_>_a]:text-[12px] [&_>_a]:text-foreground [&_>_a:hover]:bg-accent [&_>_a_svg]:shrink-0";
++
++/**
++ * A row lists at most this many apps as chips, as the compact rows mock does; past that it shows
++ * the first app and "+N more", which lists the rest, so a widely used sign-in stays one line tall.
++ */
++const usedByChips = 2;
++
+ /** Saved account metadata is shared across app references, without exposing credential values. */
++
+ export function AccountsPage<E>({
+   query,
+   Failure,
+@@ -237,6 +248,17 @@ function AccountsList({
+               const app = apps.find((item) => item.id === id);
+               return app === undefined ? "an app" : appDisplayName(app, brand);
+             };
++            const appChip = (app: (typeof apps)[number]) => (
++              <AppLink app={app.id} view="accounts" key={app.id}>
++                {row.bindings
++                  .filter((binding) => binding.app === app.id)
++                  .map((binding) => (
++                    <AccountCheckDot key={binding.id} health={binding.check} />
++                  ))}
++                <span className="truncate">{appDisplayName(app, brand)}</span>
++                <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={12} />
++              </AppLink>
++            );
+ 
+             return (
+               <AccountRowProvider key={account.id}>
+@@ -280,26 +302,37 @@ function AccountsList({
+                     }
+                     usersLabel="Used by"
+                     users={
+-                      <span className="app-references flex min-w-0 flex-wrap gap-1 [&_>_a]:inline-flex [&_>_a]:h-5.5 [&_>_a]:max-w-full [&_>_a]:items-center [&_>_a]:gap-1 [&_>_a]:rounded-[6px] [&_>_a]:border [&_>_a]:border-border [&_>_a]:px-1.5 [&_>_a]:text-[12px] [&_>_a]:text-foreground [&_>_a:hover]:bg-accent [&_>_a_svg]:shrink-0">
++                      <span className={cn(appReferences, "flex-wrap")}>
+                         {apps.length === 0 ? (
+                           <span className="muted text-muted-foreground">No apps</span>
+                         ) : (
+-                          apps.map((app) => (
+-                            <AppLink app={app.id} view="accounts" key={app.id}>
+-                              {row.bindings
+-                                .filter((binding) => binding.app === app.id)
+-                                .map((binding) => (
+-                                  <AccountCheckDot key={binding.id} health={binding.check} />
+-                                ))}
+-                              <span className="truncate">{appDisplayName(app, brand)}</span>
+-                              <HugeiconsIcon
+-                                icon={ArrowUpRight01Icon}
+-                                strokeWidth={2}
+-                                aria-hidden
+-                                size={12}
+-                              />
+-                            </AppLink>
+-                          ))
++                          <>
++                            {(apps.length > usedByChips ? apps.slice(0, 1) : apps).map(appChip)}
++                            {apps.length > usedByChips && (
++                              <OutsideAccountRow>
++                                <Popover>
++                                  <PopoverTrigger asChild>
++                                    <button
++                                      type="button"
++                                      data-used-by-more
++                                      className="inline-flex h-5.5 shrink-0 items-center rounded-[6px] border border-border px-1.5 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"
++                                      aria-label={`Used by ${apps.length - 1} more ${apps.length - 1 === 1 ? "app" : "apps"}`}
++                                    >
++                                      +{apps.length - 1} more
++                                    </button>
++                                  </PopoverTrigger>
++                                  <PopoverContent align="start" className="w-64 p-2">
++                                    <span
++                                      className={cn(appReferences, "flex-col items-start")}
++                                      data-used-by-list
++                                    >
++                                      {apps.slice(1).map(appChip)}
++                                    </span>
++                                  </PopoverContent>
++                                </Popover>
++                              </OutsideAccountRow>
++                            )}
++                          </>
+                         )}
+                       </span>
+                     }
