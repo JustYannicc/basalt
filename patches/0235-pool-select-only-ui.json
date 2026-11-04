@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-select-only-ui",
   "file": "0235-pool-select-only-ui.patch",
-  "content_sha256": "8394880d75677f8c6343140afcf0c22b49a9f8bd4a81dceb79c62514d117a013",
+  "content_sha256": "8b9f0a324f6115eb787d7ec91305d0853dce99a192c0e6ba3e9d4e6bc96b299a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -1165,10 +1165,9 @@ index 6e703cb..129a404 100644
      legacyStorage: true,
 diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
 new file mode 100644
-index 0000000..96a1b84
 --- /dev/null
 +++ b/e2e/tests/pool-select-only-ui.spec.ts
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,221 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -1246,6 +1245,7 @@ index 0000000..96a1b84
 +            const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
 +              entry: "provider-openai",
 +              name,
++              newInstance: true,
 +            });
 +            expect(installed.status, JSON.stringify(installed.body)).toBe(200);
 +            const app = (yield* body(Resource, installed)).id;

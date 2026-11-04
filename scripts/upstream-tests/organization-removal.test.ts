@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Option, Redacted, Schema } from "effect";
@@ -98,7 +99,7 @@ test("an app finishing after organization removal was accepted cannot recreate s
         assert.equal(removed.apps, 1);
         assert.deepEqual(yield* f.sql`select id from executor_apps where owner = ${f.owner}`, []);
         assert.deepEqual(yield* f.sql`select id from hosted_app_access`, []);
-      }).pipe(Effect.provide(pgliteLayer())),
+      }).pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeCrypto.layer)),
     ),
   );
 });
@@ -122,7 +123,7 @@ test("deployment persistence refuses tombstoned and deleted organizations", asyn
         assert.equal(deleted.failure._tag, "StorageError");
         const replay = yield* f.removals.begin(f.organization, "different-instance");
         assert.equal(replay.instance, f.organization);
-      }).pipe(Effect.provide(pgliteLayer())),
+      }).pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeCrypto.layer)),
     ),
   );
 });
@@ -162,7 +163,11 @@ test("signed organization cleanup fails on a plain API and completes through the
           assert.deepEqual(events, [
             { path: "/pool/v1/access", action: "pool-deleted", refused: false },
           ]);
-        }).pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeServices.layer)),
+        }).pipe(
+          Effect.provide(pgliteLayer()),
+          Effect.provide(NodeCrypto.layer),
+          Effect.provide(NodeServices.layer),
+        ),
       ),
     );
   } finally {
