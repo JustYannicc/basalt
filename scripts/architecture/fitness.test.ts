@@ -10,17 +10,27 @@ import { discoverStackInventory } from "./native-stack.ts";
 import { readGeneratedInventory } from "./generated-inventory.ts";
 import { serviceArchitecture } from "../../src/router.ts";
 import { pipelineDependencies } from "./pipeline.ts";
+import { SourceWorkspace } from "./source-workspace.ts";
 
 const routerId: $ElementId = "basalt.router";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 let workspace: LikeC4;
 let model: Awaited<ReturnType<LikeC4["computedModel"]>>;
 let resources: ReturnType<typeof discoverStackInventory>;
+let source: ReturnType<typeof sourceDependencies>;
+let imports: ReturnType<typeof sourceDependencies>;
+let pipeline: ReturnType<typeof pipelineDependencies>;
+let ownershipErrors: ReturnType<typeof moduleErrors>;
 beforeAll(async () => {
   workspace = await LikeC4.fromWorkspace(`${root}/architecture`, { logger: false });
   expect(workspace.getErrors()).toEqual([]);
   model = await workspace.computedModel();
   resources = readGeneratedInventory(root) ?? discoverStackInventory(root);
+  const sources = new SourceWorkspace();
+  source = sourceDependencies(root, modules(), services(), sources);
+  imports = sourceDependencies(root, modules(), [], sources);
+  pipeline = pipelineDependencies(root, modules(), services());
+  ownershipErrors = moduleErrors(root, modules());
 }, 30_000);
 afterAll(() => workspace?.dispose());
 
@@ -62,22 +72,22 @@ test("deployed resources and deployment instances correspond in both directions"
   );
 });
 
-test("outside hosts, SDKs and service bindings have caller relationships", () => {
-  const services = [...model.elements()]
+const services = () =>
+  [...model.elements()]
     .filter((e) => e.isTagged("external") || values(e.metadata.endpointHosts).length)
     .map((element) => ({
       id: element.id,
       hosts: [...values(element.metadata.hosts), ...values(element.metadata.endpointHosts)],
       sdks: values(element.metadata.sdks),
     }));
+
+test("outside hosts, SDKs and service bindings have caller relationships", () => {
   const router = modules().find((module) => module.id === routerId);
   expect(router?.bindings.sort()).toEqual(
     Object.entries(serviceArchitecture)
       .map(([binding, id]) => `${binding}=${id}`)
       .sort(),
   );
-  const source = sourceDependencies(root, modules(), services);
-  const pipeline = pipelineDependencies(root, modules(), services);
   expect([...source.errors, ...pipeline.errors]).toEqual([]);
   const dependencies = [...source.dependencies, ...pipeline.dependencies];
   const relationships = new Set(
@@ -94,8 +104,8 @@ test("outside hosts, SDKs and service bindings have caller relationships", () =>
 });
 
 test("every owned package and module has code and all cross-module imports have relationships", () => {
-  expect(moduleErrors(root, modules())).toEqual([]);
-  const { dependencies } = sourceDependencies(root, modules(), []);
+  expect(ownershipErrors).toEqual([]);
+  const { dependencies } = imports;
   const relationships = new Set(
     [...model.relationships()].map((r) => `${r.source.id}->${r.target.id}`),
   );
