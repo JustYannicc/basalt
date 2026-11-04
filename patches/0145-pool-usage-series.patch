@@ -1,0 +1,754 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+new file mode 100644
+index 0000000..7fdb4ca
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -0,0 +1,164 @@
++import { AccountId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++
++const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++const decimal = Schema.String.check(Schema.isPattern(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/u));
++const nullableAt = Schema.NullOr(Schema.NonEmptyString);
++const unavailable = Schema.Struct({ status: Schema.Literal("unavailable"), reason: Schema.String });
++const bounds = Schema.Struct({ from: Schema.NonEmptyString, to: Schema.NonEmptyString });
++const token = Schema.Struct({ sum: Schema.NullOr(decimal), known: count, missing: count });
++const cost = Schema.Struct({
++  amount: Schema.NullOr(decimal),
++  currency: Schema.NullOr(Schema.String),
++  priced: count,
++  unpriced: count,
++});
++const dimensions = Schema.Literals([
++  "account",
++  "person",
++  "model",
++  "provider",
++  "app",
++  "attribution",
++  "source",
++]);
++export const PoolUsageSeriesInput = Schema.Struct({
++  ...bounds.fields,
++  bucket: Schema.Literals(["hour", "day"]),
++  by: Schema.Array(dimensions).check(
++    Schema.isMaxLength(7),
++    Schema.makeFilter((keys) => new Set(keys).size === keys.length),
++  ),
++  accounts: Schema.optionalKey(Schema.Array(AccountId).check(Schema.isMaxLength(500))),
++  sources: Schema.optionalKey(
++      Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
++      Schema.isMaxLength(500),
++    ),
++  ),
++  window: Schema.optionalKey(bounds),
++  after: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8192))),
++});
++export type PoolUsageSeriesInput = typeof PoolUsageSeriesInput.Type;
++const key = Schema.Struct({
++  currency: Schema.NullOr(Schema.String),
++  account: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  person: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  model: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  provider: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  app: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  attribution: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  source: Schema.optionalKey(Schema.NullOr(Schema.String)),
++});
++const counts = Schema.Struct({
++  at: Schema.NonEmptyString,
++  partial: Schema.Boolean,
++  requests: count,
++  failed: count,
++  unassignedFailures: count,
++  successRate: Schema.NullOr(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
++});
++const bucket = Schema.Struct({
++  ...counts.fields,
++  lastSuccessAtInRange: nullableAt,
++  tokens: Schema.Struct({
++    input: token,
++    output: token,
++    cacheRead: token,
++    cacheWrite: token,
++    reasoning: token,
++    total: token,
++  }),
++  tokenQuality: Schema.Struct({
++    complete: count,
++    legacy: count,
++    unclassified: count,
++    inconsistent: count,
++  }),
++  cost: Schema.Struct({
++    homeCharge: cost,
++    importedApiPrice: cost,
++    apiEquivalent: unavailable,
++    unpricedRequests: count,
++  }),
++  attribution: Schema.Struct({
++    chargeSnapshot: count,
++    keyAtCapture: count,
++    importOwner: count,
++    unknown: count,
++  }),
++});
++const mapping = Schema.Struct({
++  current: Schema.Literal(true),
++  historicalGenerations: Schema.Literal("unknown"),
++  proof: Schema.Literals(["proven", "unavailable"]),
++});
++export const PoolUsageSeries = Schema.Struct({
++  ...bounds.fields,
++  bucket: Schema.Literals(["hour", "day"]),
++  window: Schema.optionalKey(bounds),
++  asOf: nullableAt,
++  coverage: Schema.Struct({
++    sources: Schema.Array(
++      Schema.Struct({
++        source: Schema.String,
++        kind: Schema.Literals(["home", "gateway", "import"]),
++        firstAt: nullableAt,
++        lastAt: nullableAt,
++        backfillComplete: Schema.NullOr(Schema.Boolean),
++        sweep: Schema.NullOr(Schema.Struct({ id: decimal, upper: decimal })),
++      }),
++    ),
++    firstAt: nullableAt,
++    lastAt: nullableAt,
++    capturedThrough: nullableAt,
++    mapping: Schema.Struct({
++      ...mapping.fields,
++      mapped: count,
++      unmapped: count,
++      otherAccounts: count,
++    }),
++    pricing: Schema.Struct({
++      homeCharge: count,
++      importedApiPrice: count,
++      unpriced: count,
++      missing: count,
++      missingSnapshot: count,
++      missingVersion: count,
++      apiEquivalent: unavailable,
++    }),
++    priceProjection: unavailable,
++    percentiles: unavailable,
++    seasonalTrainingRange: unavailable,
++  }),
++  groups: Schema.Array(
++    Schema.Union([
++      Schema.Struct({
++        key: key.check(Schema.makeFilter((key) => key.account !== "otherAccounts")),
++        buckets: Schema.Array(bucket),
++      }),
++      Schema.Struct({
++        key: Schema.Struct({
++          currency: Schema.Null,
++          account: Schema.Literals(["otherAccounts", "unmapped"]),
++          person: Schema.optionalKey(Schema.Null),
++          model: Schema.optionalKey(Schema.Null),
++          provider: Schema.optionalKey(Schema.Null),
++          app: Schema.optionalKey(Schema.Null),
++          attribution: Schema.optionalKey(Schema.Null),
++          source: Schema.optionalKey(Schema.Null),
++        }),
++        buckets: Schema.Array(counts),
++      }),
++    ]),
++  ),
++  next: Schema.NullOr(Schema.String),
++});
++export const LastSuccessAtInput = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMaxLength(500)),
++});
++export type LastSuccessAtInput = typeof LastSuccessAtInput.Type;
++export const LastSuccessAt = Schema.Struct({
++  asOf: nullableAt,
++  mapping,
++  accounts: Schema.Array(Schema.Struct({ account: AccountId, lastSuccessAt: nullableAt })),
++});
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+index 8c07d55..822c52c 100644
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -5,6 +5,12 @@ import type { Redacted } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+ import { Principal } from "./auth.ts";
+ import { RequiredAction } from "./authorization.ts";
++import {
++  LastSuccessAt,
++  LastSuccessAtInput,
++  PoolUsageSeries,
++  PoolUsageSeriesInput,
++} from "./pool-usage-series.ts";
+ import {
+   OrganizationForbidden,
+   OrganizationReference,
+@@ -100,6 +106,30 @@ export const PoolUsageBackend = Context.Reference<
+ 
+ const params = { organization: OrganizationReference, app: AppId };
+ export const HostedPoolUsage = HttpApiGroup.make("poolUsage")
++  .add(
++    HttpApiEndpoint.post(
++      "poolUsageSeries",
++      "/api/organizations/:organization/apps/:app/pool-usage/series",
++      {
++        params,
++        payload: PoolUsageSeriesInput,
++        success: Schema.NullOr(PoolUsageSeries),
++        error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++      },
++    ).annotate(RequiredAction, "read"),
++  )
++  .add(
++    HttpApiEndpoint.post(
++      "lastSuccessAt",
++      "/api/organizations/:organization/apps/:app/pool-usage/last-success",
++      {
++        params,
++        payload: LastSuccessAtInput,
++        success: Schema.NullOr(LastSuccessAt),
++        error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++      },
++    ).annotate(RequiredAction, "read"),
++  )
+   .add(
+     HttpApiEndpoint.get("get", "/api/organizations/:organization/apps/:app/pool-usage", {
+       params,
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+new file mode 100644
+index 0000000..693afd2
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -0,0 +1,83 @@
++import { AccountId, StorageError, type AppId } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { AccountTargets } from "../contracts/account-grants.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import { AccountGrants } from "./proofs/account-access.ts";
++import { nativePoolMembership } from "./pool-membership.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++const inspect = (account: AccountId) =>
++  AccountGrants.inspect.pipe(
++    Effect.provideService(AccountTargets.inspect, { account }),
++    Effect.as(true),
++    Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
++  );
++
++const digest = async (value: string) => {
++  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
++  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
++};
++
++/** Same opaque reference format as the private pool membership reader, bounded to 32 IDs. */
++const references = (reference: string) => {
++  const prefix = "sbhrefs1:";
++  const value: unknown = reference.startsWith(prefix)
++    ? JSON.parse(reference.slice(prefix.length))
++    : [reference];
++  if (
++    !Array.isArray(value) ||
++    value.length === 0 ||
++    value.length > 32 ||
++    !value.every(
++      (id): id is string =>
++        typeof id === "string" && id.length > 0 && id.length <= 256 && !id.startsWith(prefix),
++    ) ||
++    new Set(value).size !== value.length
++  )
++    throw new Error("Invalid host account reference");
++  return value;
++};
++
++/** Only after pool management and requested-account inspection; no raw reference leaves the host. */
++export const usageSeriesAccounts = (
++  pool: { readonly pool: AppId; readonly organization: string },
++  requested: readonly AccountId[] | undefined,
++) =>
++  Effect.gen(function* () {
++    for (const account of requested ?? []) {
++      if (!(yield* inspect(account))) return yield* new OrganizationForbidden();
++    }
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const sql = yield* policyDatabase;
++    // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
++    const membership = yield* nativePoolMembership(pool.organization, pool.pool, executor).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++    const accounts = [
++      ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
++    ];
++    if (accounts.length > 500) return yield* new StorageError();
++    if (requested?.some((id) => !accounts.some((account) => account.account === id)))
++      return yield* new OrganizationForbidden();
++    const source = yield* Effect.tryPromise(() => digest("home-local-v1")).pipe(
++      Effect.mapError(() => new StorageError()),
++    );
++    return yield* Effect.forEach(accounts, (account) =>
++      Effect.gen(function* () {
++        const allowed = yield* inspect(account.account);
++        const history =
++          account.homeReference === null
++            ? []
++            : yield* Effect.tryPromise(async () =>
++                Promise.all(
++                  references(account.homeReference!).map((id) =>
++                    digest(JSON.stringify([source, "account", id])),
++                  ),
++                ),
++              ).pipe(Effect.mapError(() => new StorageError()));
++        return { account: allowed ? account.account : null, history };
++      }),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index bff1d74..bbd1aac 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,4 +1,4 @@
+-import { AppId, StorageError } from "@executor-js/sdk/core";
++import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+ import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+ import { FetchHttpClient, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -14,6 +14,14 @@ import {
+ import { applicationAudiences } from "./application-audience.ts";
+ import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
+ import { signEnvelope } from "./pool-token.ts";
++import {
++  LastSuccessAt,
++  type LastSuccessAtInput,
++  PoolUsageSeries,
++  type PoolUsageSeriesInput,
++} from "../contracts/pool-usage-series.ts";
++import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
+ 
+ const Pool = Schema.Struct({
+   owner: Principal.fields.userId,
+@@ -36,7 +44,7 @@ const backend = Effect.gen(function* () {
+ }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+ const send = <A>(
+-  action: "managed-usage" | "managed-cap",
++  action: "managed-usage" | "managed-cap" | "poolUsageSeries" | "lastSuccessAt",
+   payload: Record<string, unknown>,
+   responseSchema: Schema.ConstraintDecoder<A, never>,
+ ) =>
+@@ -204,8 +212,64 @@ export const setPoolCap = (app: AppId, member: string, weekly: number | null) =>
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+ 
++const trackedUsageRead = <A, E, R>(read: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    return yield* executor[StorageHost].transaction(read);
++  });
++
++export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      const accounts = yield* usageSeriesAccounts(pool, input.accounts);
++      return yield* send(
++        "poolUsageSeries",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          user: pool.user,
++          input: { ...input, pool: pool.pool },
++          authority: { canManage: true, accounts },
++        },
++        PoolUsageSeries,
++      );
++    }),
++  ).pipe(
++    trackedUsageRead,
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
++
++export const lastSuccessAt = (app: AppId, input: LastSuccessAtInput) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      const accounts = yield* usageSeriesAccounts(pool, input.accounts);
++      return yield* send(
++        "lastSuccessAt",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          user: pool.user,
++          input: { ...input, pool: pool.pool },
++          authority: { canManage: true, accounts },
++        },
++        LastSuccessAt,
++      );
++    }),
++  ).pipe(
++    trackedUsageRead,
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
++
+ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+   handlers
++    .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
++    .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+     .handle("setCap", ({ params, payload }) =>
+       setPoolCap(params.app, params.member, payload.weekly),
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+new file mode 100644
+index 0000000..522174b
+--- /dev/null
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -0,0 +1,149 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Clock, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Assertion = Schema.Struct({
++  action: Schema.Literals(["poolUsageSeries", "lastSuccessAt"]),
++  pool: Schema.String,
++  organization: Schema.String,
++  user: Schema.String,
++  expiresAt: Schema.Number,
++  input: Schema.Unknown,
++  authority: Schema.Struct({
++    canManage: Schema.Literal(true),
++    accounts: Schema.Array(Schema.Unknown),
++  }),
++});
++
++/** The hosted server is real; this loopback peer implements only the external pool protocol. */
++export const poolUsageSeriesBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
++  const handler = Effect.gen(function* () {
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const body = yield* request.json.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const [prefix, encoded, signature, extra] = body.envelope.split(".");
++    if (
++      prefix !== "sbs1" ||
++      encoded === undefined ||
++      signature === undefined ||
++      extra !== undefined
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    const actual = Buffer.from(signature, "base64url");
++    const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++      .update(`${prefix}.${encoded}`)
++      .digest();
++    if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++      return HttpServerResponse.empty({ status: 401 });
++    const assertion = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(
++      Buffer.from(encoded, "base64url").toString(),
++    );
++    const now = yield* Clock.currentTimeMillis;
++    if (
++      assertion.expiresAt <= now ||
++      assertion.expiresAt > now + 30_000 ||
++      !request.url.endsWith(`/${assertion.action}`)
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    yield* Ref.update(calls, (values) => [...values, assertion]);
++    const mapping = { current: true, historicalGenerations: "unknown", proof: "unavailable" };
++    if (assertion.action === "lastSuccessAt")
++      return HttpServerResponse.jsonUnsafe({ asOf: "2026-01-02T00:00:00Z", mapping, accounts: [] });
++    const unavailable = {
++      status: "unavailable",
++      reason: "Synthetic source has no provider API valuation proof.",
++    };
++    const token = { sum: "9007199254740993", known: 1, missing: 1 };
++    const absent = { amount: null, currency: "USD", priced: 0, unpriced: 1 };
++    return HttpServerResponse.jsonUnsafe({
++      from: "2026-01-01T00:15:00Z",
++      to: "2026-01-01T01:15:00Z",
++      bucket: "hour",
++      asOf: "2026-01-02T00:00:00Z",
++      coverage: {
++        sources: [
++          {
++            source: "a".repeat(64),
++            kind: "import",
++            firstAt: "2026-01-01T00:45:00Z",
++            lastAt: "2026-01-01T00:45:00Z",
++            backfillComplete: null,
++            sweep: null,
++          },
++        ],
++        firstAt: "2026-01-01T00:45:00Z",
++        lastAt: "2026-01-01T00:45:00Z",
++        capturedThrough: null,
++        mapping: { ...mapping, mapped: 0, unmapped: 2, otherAccounts: 0 },
++        pricing: {
++          homeCharge: 0,
++          importedApiPrice: 1,
++          unpriced: 1,
++          missing: 0,
++          missingSnapshot: 1,
++          missingVersion: 1,
++          apiEquivalent: unavailable,
++        },
++        priceProjection: unavailable,
++        percentiles: unavailable,
++        seasonalTrainingRange: unavailable,
++      },
++      groups: [
++        {
++          key: { account: "unmapped", currency: "USD", model: null },
++          buckets: [
++            {
++              at: "2026-01-01T00:00:00Z",
++              partial: true,
++              requests: 2,
++              failed: 1,
++              unassignedFailures: 0,
++              successRate: 0.5,
++              lastSuccessAtInRange: "2026-01-01T00:45:00Z",
++              tokens: {
++                input: token,
++                output: token,
++                cacheRead: token,
++                cacheWrite: token,
++                reasoning: token,
++                total: token,
++              },
++              tokenQuality: { complete: 1, legacy: 0, unclassified: 1, inconsistent: 0 },
++              cost: {
++                homeCharge: absent,
++                importedApiPrice: {
++                  amount: "0.123456789012",
++                  currency: "USD",
++                  priced: 1,
++                  unpriced: 1,
++                },
++                apiEquivalent: unavailable,
++                unpricedRequests: 1,
++              },
++              attribution: { chargeSnapshot: 0, keyAtCapture: 0, importOwner: 2, unknown: 0 },
++              homeReference: "private-reference-sentinel",
++            },
++          ],
++        },
++      ],
++      next: null,
++      hostReference: "private-reference-sentinel",
++    });
++  });
++  const services = yield* Layer.build(
++    HttpRouter.serve(
++      Layer.mergeAll(
++        HttpRouter.add("POST", "/__setup/v1/poolUsageSeries", handler),
++        HttpRouter.add("POST", "/__setup/v1/lastSuccessAt", handler),
++      ),
++      { disableLogger: true, disableListenLog: true },
++    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Pool series fixture requires TCP");
++  return { origin: `http://127.0.0.1:${server.address.port}`, calls: Ref.get(calls) };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..948525b 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8504,6 +8504,17 @@ export const scenarios = plan({
+       cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
+     },
+   },
++  poolUsageSeries: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-usage-series.spec.ts",
++    title: "poolUsageSeries is manager-only and preserves one bounded decimal usage read",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses native hosted organization policies."),
++      cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
++    },
++  },
+   nativePoolAccountMirrors: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+new file mode 100644
+index 0000000..b30cd51
+--- /dev/null
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -0,0 +1,165 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import {defineApp,query,object,router} from "apps";
++export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++const Series = Schema.Struct({
++  from: Schema.String,
++  to: Schema.String,
++  asOf: Schema.String,
++  next: Schema.NullOr(Schema.String),
++  groups: Schema.Array(
++    Schema.Struct({
++      key: Schema.Unknown,
++      buckets: Schema.Array(
++        Schema.Struct({
++          partial: Schema.Boolean,
++          requests: Schema.Number,
++          successRate: Schema.Number,
++          tokens: Schema.Struct({
++            input: Schema.Struct({
++              sum: Schema.String,
++              known: Schema.Number,
++              missing: Schema.Number,
++            }),
++          }),
++          cost: Schema.Struct({ apiEquivalent: Schema.Struct({ status: Schema.String }) }),
++        }),
++      ),
++    }),
++  ),
++});
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
++  it.effect(scenarios.poolUsageSeries.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* poolUsageSeriesBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const viewer = yield* api
++          .request(actors.owner, "GET", "/api/viewer")
++          .pipe(
++            Effect.flatMap((response) => body(Schema.Struct({ userId: Schema.String }), response)),
++          );
++        const app = yield* api
++          .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Usage series pool",
++            files: [{ path: "index.ts", content: source }, appsManifest],
++          })
++          .pipe(Effect.flatMap((response) => body(App, response)));
++        const accessPath = `${prefix}/apps/${app.id}/access`;
++        const access = yield* api
++          .request(actors.owner, "GET", accessPath)
++          .pipe(
++            Effect.flatMap((response) =>
++              body(Schema.Struct({ revision: Schema.String }), response),
++            ),
++          );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accessPath, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        const memberAccess = yield* api
++          .request(actors.member, "GET", accessPath)
++          .pipe(
++            Effect.flatMap((response) =>
++              body(Schema.Struct({ canManage: Schema.Boolean, canUse: Schema.Boolean }), response),
++            ),
++          );
++        expect(memberAccess).toEqual({ canManage: false, canUse: true });
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
++            params: [
++              JSON.stringify({
++                [viewer.userId]: {
++                  app: app.id,
++                  version: "retained-version",
++                  authorization: "executor-app-v1",
++                  membership: "executor-links-v1",
++                },
++              }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        const path = `${prefix}/apps/${app.id}/pool-usage`;
++        const query = {
++          from: "2026-01-01T00:15:00Z",
++          to: "2026-01-01T01:15:00Z",
++          bucket: "hour",
++          by: ["account", "model"],
++        };
++        expect((yield* api.request(actors.member, "POST", `${path}/series`, query)).status).toBe(
++          403,
++        );
++        expect((yield* backend.calls).length).toBe(0);
++        const response = yield* api.request(actors.admin, "POST", `${path}/series`, query);
++        expect(response.status).toBe(200);
++        const result = yield* body(Series, response);
++        expect(result.from).toBe(query.from);
++        expect(result.to).toBe(query.to);
++        expect(result.next).toBeNull();
++        expect(result.asOf).toBe("2026-01-02T00:00:00Z");
++        expect(result.groups).toHaveLength(1);
++        expect(result.groups[0]?.buckets[0]).toMatchObject({
++          partial: true,
++          requests: 2,
++          successRate: 0.5,
++          tokens: { input: { sum: "9007199254740993", known: 1, missing: 1 } },
++          cost: { apiEquivalent: { status: "unavailable" } },
++        });
++        expect(JSON.stringify(response.body)).not.toContain("private-reference-sentinel");
++        const calls = yield* backend.calls;
++        expect(calls).toHaveLength(1);
++        expect(calls[0]?.input).toEqual({ ...query, pool: app.id });
++        expect(calls[0]?.authority).toEqual({ canManage: true, accounts: [] });
++        expect(
++          (yield* api.request(actors.member, "POST", `${path}/last-success`, { accounts: [] }))
++            .status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(1);
++        expect(
++          (yield* api.request(actors.admin, "POST", `${path}/last-success`, { accounts: [] }))
++            .status,
++        ).toBe(200);
++        const before = (yield* backend.calls).length;
++        expect(
++          (yield* api.request(actors.admin, "POST", `${path}/series`, {
++            ...query,
++            accounts: ["acc_11111111-1111-4111-8111-111111111111"],
++          })).status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(before);
++        expect(
++          (yield* api.request(actors.admin, "POST", `${path}/series`, {
++            ...query,
++            accounts: Array(501).fill("acc_11111111-1111-4111-8111-111111111111"),
++          })).status,
++        ).toBe(400);
++      }),
++    ),
++  );
++});

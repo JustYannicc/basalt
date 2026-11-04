@@ -2,6 +2,7 @@ import { catalog } from "./settings.ts";
 
 export interface FeedEntry {
   id: string;
+  service?: { id: string; mcp: readonly string[]; packages?: readonly string[] };
   package: string;
   name: string;
   description: string;
