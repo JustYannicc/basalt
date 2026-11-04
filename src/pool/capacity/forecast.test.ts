@@ -15,10 +15,14 @@ const WEEK = WEEK_HOURS * HOUR;
 const MONDAY = Date.UTC(2026, 10, 2);
 const WEEKLY_WINDOW = 7 * 24 * 60 * 60;
 const DAY_WEIGHT = [1, 1.25, 1.3, 1.3, 0.95, 0.25, 0.15];
-const hourWeight = (hour: number) => hour >= 8 && hour < 20 ? 1 : hour >= 6 && hour < 23 ? 0.35 : 0.05;
-const shape = Array.from({ length: WEEK_HOURS }, (_, index) => DAY_WEIGHT[Math.floor(index / 24)]! * hourWeight(index % 24));
+const hourWeight = (hour: number) =>
+  hour >= 8 && hour < 20 ? 1 : hour >= 6 && hour < 23 ? 0.35 : 0.05;
+const shape = Array.from(
+  { length: WEEK_HOURS },
+  (_, index) => DAY_WEIGHT[Math.floor(index / 24)]! * hourWeight(index % 24),
+);
 const weekAt = (total: number, hourlyShape: readonly number[] = shape) =>
-  hourlyShape.map((value) => total * value / hourlyShape.reduce((sum, next) => sum + next, 0));
+  hourlyShape.map((value) => (total * value) / hourlyShape.reduce((sum, next) => sum + next, 0));
 
 function accounts(now: number, capacities = [1, 1, 1]): ForecastAccount[] {
   return capacities.map((capacity, index) => ({
@@ -50,12 +54,17 @@ function inputFromHours(
   };
 }
 
-function inputForWeeks(weeks: readonly number[], overrides: Partial<CapacityForecastInput> = {}): CapacityForecastInput {
+function inputForWeeks(
+  weeks: readonly number[],
+  overrides: Partial<CapacityForecastInput> = {},
+): CapacityForecastInput {
   const historyFrom = MONDAY - weeks.length * WEEK;
-  const demand = weeks.flatMap((total) => weekAt(total)).map((value, index) => ({
-    at: historyFrom + index * HOUR,
-    demand: value,
-  }));
+  const demand = weeks
+    .flatMap((total) => weekAt(total))
+    .map((value, index) => ({
+      at: historyFrom + index * HOUR,
+      demand: value,
+    }));
   return {
     ...inputFromHours(MONDAY, historyFrom, demand),
     ...overrides,
@@ -66,10 +75,23 @@ function inputForWeeks(weeks: readonly number[], overrides: Partial<CapacityFore
   };
 }
 
-function addCurrentWeek(input: CapacityForecastInput, now: number, total: number): CapacityForecastInput {
+function addCurrentWeek(
+  input: CapacityForecastInput,
+  now: number,
+  total: number,
+): CapacityForecastInput {
   const elapsed = (now - MONDAY) / HOUR;
   const start = input.historyFrom + input.demand.length * HOUR;
-  return { ...input, now, demand: [...input.demand, ...weekAt(total).slice(0, elapsed).map((demand, index) => ({ at: start + index * HOUR, demand }))] };
+  return {
+    ...input,
+    now,
+    demand: [
+      ...input.demand,
+      ...weekAt(total)
+        .slice(0, elapsed)
+        .map((demand, index) => ({ at: start + index * HOUR, demand })),
+    ],
+  };
 }
 
 test("recurring peak caps a lone spike and preserves recurring crunch weeks", () => {
@@ -78,7 +100,9 @@ test("recurring peak caps a lone spike and preserves recurring crunch weeks", ()
 });
 
 test("seasonal basis reports measured weeks and ignores one exceptional completed week for sizing", () => {
-  const result = forecastCapacity(inputForWeeks([2.3, 2.4, 2.2, 2.45, 2.35, 3.6, 2.4, 2.3, 2.42, 2.38]));
+  const result = forecastCapacity(
+    inputForWeeks([2.3, 2.4, 2.2, 2.45, 2.35, 3.6, 2.4, 2.3, 2.42, 2.38]),
+  );
   assert.equal(result.status, "estimated");
   assert.equal(result.estimate?.label, "estimate");
   assert.equal(result.estimate?.basis, "seasonal-weekday-hour");
@@ -104,7 +128,10 @@ test("a heavy current week is classified as temporary and a three-week rise is c
 test("two completed weeks start a seasonal forecast without current-rate fallback", () => {
   const now = MONDAY;
   const historyFrom = now - 2 * WEEK;
-  const twoWeeks = Array.from({ length: 2 * WEEK_HOURS }, (_, index) => ({ at: historyFrom + index * HOUR, demand: 0.62 / WEEK_HOURS }));
+  const twoWeeks = Array.from({ length: 2 * WEEK_HOURS }, (_, index) => ({
+    at: historyFrom + index * HOUR,
+    demand: 0.62 / WEEK_HOURS,
+  }));
   const estimate = forecastCapacity(inputFromHours(now, historyFrom, twoWeeks));
   assert.equal(estimate.status, "estimated");
   assert.equal(estimate.estimate?.basis, "seasonal-weekday-hour");
@@ -113,7 +140,10 @@ test("two completed weeks start a seasonal forecast without current-rate fallbac
   assert.equal(estimate.accountAdvice, null);
 
   const shortFrom = now - 30 * HOUR;
-  const oneDay = Array.from({ length: 30 }, (_, index) => ({ at: shortFrom + index * HOUR, demand: 0.01 }));
+  const oneDay = Array.from({ length: 30 }, (_, index) => ({
+    at: shortFrom + index * HOUR,
+    demand: 0.01,
+  }));
   const unavailable = forecastCapacity(inputFromHours(now, shortFrom, oneDay));
   assert.equal(unavailable.status, "unavailable");
   assert.equal(unavailable.estimate, null);
@@ -133,24 +163,28 @@ test("fixed-window projection is unavailable when a usable account has no reset 
 });
 
 test("rolling projection stays unavailable when net quota changes lack an empty-window anchor", () => {
-  const unanchored = forecastCapacity(inputForWeeks([2.3, 2.4], {
-    mode: "rolling",
-    windowSeconds: 18_000,
-    accounts: [{
-      id: "private-unanchored",
-      capacity: 100,
-      knownWeight: true,
-      remaining: 45,
-      resetAt: null,
+  const unanchored = forecastCapacity(
+    inputForWeeks([2.3, 2.4], {
+      mode: "rolling",
       windowSeconds: 18_000,
-      usable: true,
-      share: 1,
-      // A five-unit net decrease from an unknown prior balance cannot seed expiry timing.
-      rollingUse: [{ at: MONDAY - HOUR, amount: 5 }],
-      rollingHistoryComplete: false,
-      weeklyUsabilityComplete: true,
-    }],
-  }));
+      accounts: [
+        {
+          id: "private-unanchored",
+          capacity: 100,
+          knownWeight: true,
+          remaining: 45,
+          resetAt: null,
+          windowSeconds: 18_000,
+          usable: true,
+          share: 1,
+          // A five-unit net decrease from an unknown prior balance cannot seed expiry timing.
+          rollingUse: [{ at: MONDAY - HOUR, amount: 5 }],
+          rollingHistoryComplete: false,
+          weeklyUsabilityComplete: true,
+        },
+      ],
+    }),
+  );
 
   assert.equal(unanchored.status, "estimated");
   assert.equal(unanchored.projection, null);
@@ -159,11 +193,16 @@ test("rolling projection stays unavailable when net quota changes lack an empty-
 
 test("four completed weeks with a passing held-out backtest enable a known-plan account count", () => {
   const historyFrom = MONDAY - 4 * WEEK;
-  const unusual = Array.from({ length: WEEK_HOURS }, (_, index) => index === 2 * 24 + 12 ? 1 : 0);
+  const unusual = Array.from({ length: WEEK_HOURS }, (_, index) => (index === 2 * 24 + 12 ? 1 : 0));
   const weekly = [weekAt(2.4), weekAt(2.4, unusual), weekAt(2.4), weekAt(2.4)];
-  const demand = weekly.flatMap((week) => week).map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
+  const demand = weekly
+    .flatMap((week) => week)
+    .map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
   const input = inputFromHours(MONDAY, historyFrom, demand, accounts(MONDAY, [0.5]));
-  const result = forecastCapacity({ ...input, candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" } });
+  const result = forecastCapacity({
+    ...input,
+    candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" },
+  });
   assert.equal(result.measuredWeeks.length, 4);
   assert.equal(result.backtest?.heldOutWeeks, 2);
   assert.equal(result.backtest?.beatsSeasonalNaive, true);
@@ -172,7 +211,9 @@ test("four completed weeks with a passing held-out backtest enable a known-plan 
 
 test("missing hourly observations break completed weeks and suppress account advice", () => {
   const base = inputForWeeks([2.3, 2.4, 2.2, 2.45, 2.35, 2.4, 2.3, 2.42]);
-  const demand = base.demand.map((point, index) => index === WEEK_HOURS + 4 ? { ...point, demand: null } : point);
+  const demand = base.demand.map((point, index) =>
+    index === WEEK_HOURS + 4 ? { ...point, demand: null } : point,
+  );
   const result = forecastCapacity({
     ...base,
     demand,
@@ -187,12 +228,24 @@ test("missing hourly observations break completed weeks and suppress account adv
 
 test("only a known candidate plus complete coverage and a passing seasonal backtest permits account counts", () => {
   const a = shape;
-  const b = Array.from({ length: WEEK_HOURS }, (_, index) => index === 2 * 24 + 12 ? 1 : 0);
+  const b = Array.from({ length: WEEK_HOURS }, (_, index) => (index === 2 * 24 + 12 ? 1 : 0));
   const historyFrom = MONDAY - 6 * WEEK;
-  const weeklyHours = [weekAt(2.4, a), weekAt(2.4, a), weekAt(2.4, a), weekAt(2.4, a), weekAt(2.4, b), weekAt(2.4, a)];
-  const demand = weeklyHours.flatMap((hourly) => hourly).map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
+  const weeklyHours = [
+    weekAt(2.4, a),
+    weekAt(2.4, a),
+    weekAt(2.4, a),
+    weekAt(2.4, a),
+    weekAt(2.4, b),
+    weekAt(2.4, a),
+  ];
+  const demand = weeklyHours
+    .flatMap((hourly) => hourly)
+    .map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
   const input = inputFromHours(MONDAY, historyFrom, demand, accounts(MONDAY, [0.5]));
-  const result = forecastCapacity({ ...input, candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" } });
+  const result = forecastCapacity({
+    ...input,
+    candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" },
+  });
   assert.equal(result.history.coverage, 1);
   assert.equal(result.estimate?.backtest.beatsSeasonalNaive, true);
   assert.equal(result.accountAdvice?.candidate.label, "Pro-eq");
@@ -206,7 +259,9 @@ test("only a known candidate plus complete coverage and a passing seasonal backt
 
   const unknownWeight = forecastCapacity({
     ...input,
-    accounts: input.accounts.map((account, index) => index === 0 ? { ...account, knownWeight: false } : account),
+    accounts: input.accounts.map((account, index) =>
+      index === 0 ? { ...account, knownWeight: false } : account,
+    ),
     candidateAccount: { label: "Pro-eq", capacity: 1, source: "unit" },
   });
   assert.equal(unknownWeight.accountAdvice, null);
@@ -215,12 +270,35 @@ test("only a known candidate plus complete coverage and a passing seasonal backt
 
 test("sticky allocation spills an exhausted share and scheduled refills recover a below-zero projection", () => {
   const now = MONDAY;
-  const weeks = Array.from({ length: 6 }, () => Array(WEEK_HOURS).fill(2.4 / WEEK_HOURS) as number[]);
+  const weeks = Array.from(
+    { length: 6 },
+    () => Array(WEEK_HOURS).fill(2.4 / WEEK_HOURS) as number[],
+  );
   const historyFrom = now - weeks.length * WEEK;
-  const demand = weeks.flatMap((week) => week).map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
+  const demand = weeks
+    .flatMap((week) => week)
+    .map((value, index) => ({ at: historyFrom + index * HOUR, demand: value }));
   const spillAccounts = [
-    { id: "private-a", capacity: 0.005, knownWeight: true, remaining: 0.005, resetAt: now + WEEK, windowSeconds: WEEKLY_WINDOW, usable: true, share: 0.9 },
-    { id: "private-b", capacity: 0.1, knownWeight: true, remaining: 0.1, resetAt: now + WEEK, windowSeconds: WEEKLY_WINDOW, usable: true, share: 0.1 },
+    {
+      id: "private-a",
+      capacity: 0.005,
+      knownWeight: true,
+      remaining: 0.005,
+      resetAt: now + WEEK,
+      windowSeconds: WEEKLY_WINDOW,
+      usable: true,
+      share: 0.9,
+    },
+    {
+      id: "private-b",
+      capacity: 0.1,
+      knownWeight: true,
+      remaining: 0.1,
+      resetAt: now + WEEK,
+      windowSeconds: WEEKLY_WINDOW,
+      usable: true,
+      share: 0.1,
+    },
   ];
   const spill = forecastCapacity(inputFromHours(now, historyFrom, demand, spillAccounts));
   const spillProjection = spill.projection;
@@ -249,7 +327,10 @@ test("sticky allocation spills an exhausted share and scheduled refills recover 
 
 test("unusable accounts keep their last reading out of routing and no account identifier is returned", () => {
   const historyFrom = MONDAY - 6 * WEEK;
-  const demand = Array.from({ length: 6 * WEEK_HOURS }, (_, index) => ({ at: historyFrom + index * HOUR, demand: 0.01 }));
+  const demand = Array.from({ length: 6 * WEEK_HOURS }, (_, index) => ({
+    at: historyFrom + index * HOUR,
+    demand: 0.01,
+  }));
   const accountList = accounts(MONDAY, [1]);
   accountList[0] = { ...accountList[0]!, usable: false, remaining: 0.8, resetAt: MONDAY + HOUR };
   const result = forecastCapacity(inputFromHours(MONDAY, historyFrom, demand, accountList));

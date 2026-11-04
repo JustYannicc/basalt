@@ -54,7 +54,11 @@ export function priceQuery(personScoped = false) {
     ) `;
 }
 
-export const percentileSql = (columns: string, groupBy: string, maxDimensionRows: number) => `SELECT ${columns},
+export const percentileSql = (
+  columns: string,
+  groupBy: string,
+  maxDimensionRows: number,
+) => `SELECT ${columns},
   count(*) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy'))::text AS known,
   count(*) FILTER (WHERE total_tokens IS NULL OR token_quality NOT IN ('complete','legacy'))::text AS missing,
   percentile_disc(0.5) WITHIN GROUP (ORDER BY total_tokens) FILTER (WHERE total_tokens IS NOT NULL AND token_quality IN ('complete','legacy')) AS p50,

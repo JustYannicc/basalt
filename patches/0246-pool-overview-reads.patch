@@ -31,7 +31,7 @@ index 3c7bf08e6..adb1d5f63 100644
        HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
        HttpRouter.add("GET", "/_executor/*", notFound),
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 501703c96..a6f385b75 100644
+index d1dec401bec2369d6dff410990c5b3fdfd94e4ea..0d00df5906c3eac1b2de695492088bcaffed3bd9 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,5 +1,7 @@
@@ -45,11 +45,11 @@ index 501703c96..a6f385b75 100644
 @@ -831,6 +833,10 @@ export const hostedAppUi = <R = never>(
      sessionAccess,
      telemetry,
-     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) },
+     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
 +    poolPersonalUsageOverview: {
 +      path: poolAppPersonalUsageOverviewPath,
 +      read: poolAppPersonalUsageOverview(authorize),
-+    },
++    } as const,
      poolUsageOverview: {
        path: poolAppUsageOverviewPath,
        read: poolAppUsageOverview(authorize),
@@ -267,7 +267,7 @@ index 0aced1f18..1d3ab53b7 100644
        ...input,
        pool: pool.pool,
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
-index 3007bdc13..a93b3c704 100644
+index 3007bdc13..1bb3c55ef 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
 @@ -22,7 +22,7 @@ import {
@@ -314,7 +314,7 @@ index 3007bdc13..a93b3c704 100644
      const response = yield* client.post(new URL(path, origin).href, {
        body: HttpBody.jsonUnsafe({ envelope }),
      });
-@@ -298,6 +308,51 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
+@@ -298,6 +308,50 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
      }),
    );
  
@@ -359,7 +359,6 @@ index 3007bdc13..a93b3c704 100644
 +    trackedUsageRead,
 +    Effect.catchTags({
 +      SqlError: () => new StorageError(),
-+      SchemaError: () => new PoolUsageUnavailable(),
 +    }),
 +  );
 +

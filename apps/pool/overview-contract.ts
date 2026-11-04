@@ -66,8 +66,16 @@ export interface OverviewMoneyMetric {
   readonly amount: string | null;
   readonly currency: "USD";
   readonly pricedRequests: number;
-  readonly excluded: { readonly unknownKind: number; readonly unknownKindValue: string | null; readonly unpriced: number };
-  readonly price: { readonly asOf: string; readonly source: string; readonly version: string } | null;
+  readonly excluded: {
+    readonly unknownKind: number;
+    readonly unknownKindValue: string | null;
+    readonly unpriced: number;
+  };
+  readonly price: {
+    readonly asOf: string;
+    readonly source: string;
+    readonly version: string;
+  } | null;
 }
 
 export interface OverviewPerPersonDailyValue {
@@ -131,7 +139,11 @@ export interface OverviewUsageSlice {
   readonly subscriptionUnpriced: number;
   readonly unknownKind: number;
   readonly unknownKindValue: string | null;
-  readonly price: { readonly asOf: string; readonly source: string; readonly version: string } | null;
+  readonly price: {
+    readonly asOf: string;
+    readonly source: string;
+    readonly version: string;
+  } | null;
 }
 
 export interface PoolOverviewInput {
@@ -179,7 +191,10 @@ export interface PoolOverviewResult {
   readonly asOf: string | null;
   readonly consistency: "consistent" | "changed";
   /** Complete UTC Home request hours, verified against source IDs in the same read snapshot. */
-  readonly homeCapture: { readonly capturedAt: string | null; readonly completeHours: readonly string[] };
+  readonly homeCapture: {
+    readonly capturedAt: string | null;
+    readonly completeHours: readonly string[];
+  };
   readonly directory: PoolOverviewDirectory;
   readonly people: PoolUsageSeriesResult;
   readonly models: PoolUsageSeriesResult;

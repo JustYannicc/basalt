@@ -28,7 +28,10 @@ export function App({ api }: { api: PoolApi }) {
     const source = view.reading?.source ?? "live";
     performance.mark(name, { detail: { source } });
     if (window.parent !== window)
-      window.parent.postMessage({ name, version: 2, snapshot: source === "snapshot" }, new URL(poolOrigin).origin);
+      window.parent.postMessage(
+        { name, version: 2, snapshot: source === "snapshot" },
+        new URL(poolOrigin).origin,
+      );
   }, [view, measurable]);
   const now = useNow();
   const [days, setDays] = useState<RangeDays>(7);
@@ -48,7 +51,10 @@ export function App({ api }: { api: PoolApi }) {
       });
     read();
     const timer = setInterval(read, 4 * 60_000);
-    return () => { live = false; clearInterval(timer); };
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
   }, [api]);
 
   const count = view?.accounts.length ?? 0;
@@ -61,14 +67,32 @@ export function App({ api }: { api: PoolApi }) {
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[540px]:w-full">
-          <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
+          <Segmented
+            label="Range"
+            value={days}
+            onChange={setDays}
+            options={[
+              { id: 7, label: "7 days" },
+              { id: 30, label: "30 days" },
+            ]}
+          />
           {accountsHref && (
-            <a href={accountsHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+            <a
+              href={accountsHref}
+              target="_blank"
+              rel="noopener"
+              className={buttonClass("outline", "sm")}
+            >
               Accounts <ExternalIcon />
             </a>
           )}
           {shareHref && (
-            <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+            <a
+              href={shareHref}
+              target="_blank"
+              rel="noopener"
+              className={buttonClass("outline", "sm")}
+            >
               Share <ExternalIcon />
             </a>
           )}
@@ -88,7 +112,12 @@ export function App({ api }: { api: PoolApi }) {
             </p>
           </div>
           {view !== undefined && (
-            <Freshness view={view} updating={updating} now={now} onRetry={error ? undefined : () => void reload()} />
+            <Freshness
+              view={view}
+              updating={updating}
+              now={now}
+              onRetry={error ? undefined : () => void reload()}
+            />
           )}
         </section>
 
@@ -108,17 +137,29 @@ export function App({ api }: { api: PoolApi }) {
             {overview.member ? (
               <>
                 <p className="text-sm text-muted-foreground text-pretty">
-                  Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them.
+                  Shared with you. You use its accounts without seeing their credentials; only the
+                  pool's owner can add or remove them.
                 </p>
-                <PersonalOverview data={overview.personal} days={days} providers={view.providers} onRetry={() => void overview.reload()} />
+                <PersonalOverview
+                  data={overview.personal}
+                  days={days}
+                  providers={view.providers}
+                  onRetry={() => void overview.reload()}
+                />
               </>
             ) : (
-              <ManagerOverview data={overview} days={days} providers={view.providers} view={view} accountsHref={accountsHref} onRetry={() => void overview.reload()} />
+              <ManagerOverview
+                data={overview}
+                days={days}
+                providers={view.providers}
+                view={view}
+                accountsHref={accountsHref}
+                onRetry={() => void overview.reload()}
+              />
             )}
           </>
         )}
       </main>
-
     </div>
   );
 }
@@ -126,7 +167,9 @@ export function App({ api }: { api: PoolApi }) {
 function Empty({ view }: { view: PoolView }) {
   const names = view.providers.map((provider) => provider.name);
   const offered =
-    names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ");
+    names.length > 3
+      ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`
+      : names.join(", ");
   return (
     <div className="grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
       <div className="grid max-w-[34rem] gap-1.5">
@@ -147,7 +190,10 @@ function Skeleton() {
   return (
     <div aria-hidden="true" className="grid">
       {[0, 1, 2].map((row) => (
-        <div key={row} className="grid gap-3 border-b border-border px-1 py-4 sm:grid-cols-[15rem_1fr] sm:gap-8">
+        <div
+          key={row}
+          className="grid gap-3 border-b border-border px-1 py-4 sm:grid-cols-[15rem_1fr] sm:gap-8"
+        >
           <div className="grid gap-1.5">
             <div className="h-4 w-40 animate-pulse rounded-sm bg-accent" />
             <div className="h-3 w-24 animate-pulse rounded-sm bg-accent" />

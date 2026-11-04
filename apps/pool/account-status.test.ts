@@ -103,3 +103,17 @@ test("pool refusals map to the host's check failures", () => {
   assert.equal(checkFailure("busy"), "rate_limited");
   assert.equal(checkFailure("backend_unavailable"), "unavailable");
 });
+
+test("an account whose label is only its id reports no identity, so its check is not refused", () => {
+  // Home rows without an email, label or name are labelled with their id, which is also the
+  // host's reference for the account. The host refuses a whole check that shows it, dropping the
+  // account's health and usage, banked resets included.
+  const unnamed = { ...account, id: "codex-a1b2c3d4e5f6.json", label: "codex-a1b2c3d4e5f6.json" };
+  const status = accountStatus(
+    { ...unnamed, bankedResets: { available: 2, nextExpiresAt: "2030-01-05T00:00:00Z" } },
+    sites,
+  );
+  assert.equal("accountInfo" in status, false);
+  assert.equal(JSON.stringify(status).includes(unnamed.id), false);
+  assert.ok(status.status.badges.length > 0, "the rest of the check still reports");
+});

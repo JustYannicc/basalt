@@ -5,7 +5,21 @@ import type { PoolApi } from "./api.ts";
 import { providerName } from "./accounts.tsx";
 import { Button, ExternalIcon, Problem, Segmented } from "./controls.tsx";
 import { exactTime, percent, resetsIn } from "./usage.ts";
-import { advice, columns, modelKey, cost, dayLabel, dayRange, format, rankModels, series, share, tokens, value, type Metric } from "./usage-format.ts";
+import {
+  advice,
+  columns,
+  modelKey,
+  cost,
+  dayLabel,
+  dayRange,
+  format,
+  rankModels,
+  series,
+  share,
+  tokens,
+  value,
+  type Metric,
+} from "./usage-format.ts";
 
 // Usage, the way the prototype splits it: tokens and API-equivalent cost as separate views, per model
 // over time. The owner sees the whole pool; anyone else sees only their own requests on it.
@@ -19,13 +33,16 @@ const otherShade = "bg-foreground/10";
 function useUsage(load: () => Promise<Result<UsageSummary>>, poll: Poll) {
   const [summary, setSummary] = useState<UsageSummary>();
   const [error, setError] = useState<string>();
-  const read = useCallback(async () => {
-    const result = await load();
-    if (result.ok) {
-      setSummary(result.value);
-      setError(undefined);
-    } else setError(result.message);
-  }, [load]);
+  const read = useCallback(
+    async () =>
+      load().then((result) => {
+        if (result.ok) {
+          setSummary(result.value);
+          setError(undefined);
+        } else setError(result.message);
+      }),
+    [load],
+  );
   useEffect(() => {
     void read();
     return poll(() => void read(), 5 * 60_000);
@@ -86,8 +103,10 @@ export function Usage({
           <Headline summary={summary} metric={metric} />
           {summary.total.requests === 0 ? (
             <p className="rounded-lg border border-dashed border-input px-6 py-8 text-sm text-muted-foreground text-pretty">
-              {mine ? "You haven't sent a request through this pool yet." : "No requests through this pool yet."} Set up a
-              computer below and its requests show here within a few minutes.
+              {mine
+                ? "You haven't sent a request through this pool yet."
+                : "No requests through this pool yet."}{" "}
+              Set up a computer below and its requests show here within a few minutes.
             </p>
           ) : (
             <>
@@ -97,10 +116,15 @@ export function Usage({
           )}
           {summary.scope === "pool" && summary.members && (
             <p className="text-sm text-muted-foreground text-pretty">
-              {summary.members.filter((member) => member.requests > 0).length} of {summary.members.length}{" "}
-              {summary.members.length === 1 ? "person" : "people"} used it.{" "}
+              {summary.members.filter((member) => member.requests > 0).length} of{" "}
+              {summary.members.length} {summary.members.length === 1 ? "person" : "people"} used it.{" "}
               {shareHref && (
-                <a href={shareHref} target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground">
+                <a
+                  href={shareHref}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex items-center gap-1 text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                >
                   Manage pool access <ExternalIcon />
                 </a>
               )}
@@ -112,7 +136,13 @@ export function Usage({
   );
 }
 
-export function MetricSwitch({ metric, onChange }: { metric: Metric; onChange: (metric: Metric) => void }) {
+export function MetricSwitch({
+  metric,
+  onChange,
+}: {
+  metric: Metric;
+  onChange: (metric: Metric) => void;
+}) {
   const options: { id: Metric; label: string }[] = [
     { id: "tokens", label: "Tokens" },
     { id: "cost", label: "Cost" },
@@ -122,7 +152,10 @@ export function MetricSwitch({ metric, onChange }: { metric: Metric; onChange: (
 
 function Headline({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
   const { total } = summary;
-  const other = metric === "tokens" ? `${cost(total.cost)} at API prices` : `${tokens(total.tokens.total)} tokens`;
+  const other =
+    metric === "tokens"
+      ? `${cost(total.cost)} at API prices`
+      : `${tokens(total.tokens.total)} tokens`;
   return (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
       <span className="text-3xl font-semibold tracking-[-0.03em] tabular-nums">
@@ -131,12 +164,14 @@ function Headline({ summary, metric }: { summary: UsageSummary; metric: Metric }
       <span className="text-sm text-muted-foreground tabular-nums">
         {metric === "tokens" ? "tokens · " : ""}
         {other} · {total.requests.toLocaleString()} {total.requests === 1 ? "request" : "requests"}
-        {total.unpriced > 0 && metric === "cost" && <> · {total.unpriced.toLocaleString()} without a price</>}
+        {total.unpriced > 0 && metric === "cost" && (
+          <> · {total.unpriced.toLocaleString()} without a price</>
+        )}
       </span>
       {metric === "tokens" && total.tokens.total > 0 && (
         <span className="basis-full text-xs text-muted-foreground tabular-nums">
-          {tokens(total.tokens.input)} input · {tokens(total.tokens.cacheRead)} cached · {tokens(total.tokens.cacheWrite)} cache
-          writes · {tokens(total.tokens.output)} output
+          {tokens(total.tokens.input)} input · {tokens(total.tokens.cacheRead)} cached ·{" "}
+          {tokens(total.tokens.cacheWrite)} cache writes · {tokens(total.tokens.output)} output
         </span>
       )}
     </div>
@@ -151,10 +186,15 @@ export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric 
   const { keys, other } = series(summary.models, metric);
   const data = columns(summary.days, range, keys, metric);
   const peak = Math.max(...data.map((column) => column.total), 0);
-  if (peak === 0) return <p className="text-sm text-muted-foreground">Nothing priced yet in these 30 days.</p>;
+  if (peak === 0)
+    return <p className="text-sm text-muted-foreground">Nothing priced yet in these 30 days.</p>;
   return (
     <figure className="m-0 grid gap-3">
-      <div aria-hidden="true" className="grid h-36 grid-flow-col items-end gap-[3px] border-b border-border" style={{ gridAutoColumns: "minmax(0, 1fr)" }}>
+      <div
+        aria-hidden="true"
+        className="grid h-36 grid-flow-col items-end gap-[3px] border-b border-border"
+        style={{ gridAutoColumns: "minmax(0, 1fr)" }}
+      >
         {data.map((column) => (
           <div
             key={column.day}
@@ -171,7 +211,10 @@ export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric 
           </div>
         ))}
       </div>
-      <div className="flex justify-between text-xs text-muted-foreground tabular-nums" aria-hidden="true">
+      <div
+        className="flex justify-between text-xs text-muted-foreground tabular-nums"
+        aria-hidden="true"
+      >
         <span>{range[0] && dayLabel(range[0])}</span>
         <span>Today</span>
       </div>
@@ -200,19 +243,29 @@ export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric 
           </tr>
         </thead>
         <tbody>
-          {data.filter((column) => column.total > 0).map((column) => (
-            <tr key={column.day}>
-              <th scope="row">{dayLabel(column.day)}</th>
-              <td>{format(column.total, metric)}</td>
-            </tr>
-          ))}
+          {data
+            .filter((column) => column.total > 0)
+            .map((column) => (
+              <tr key={column.day}>
+                <th scope="row">{dayLabel(column.day)}</th>
+                <td>{format(column.total, metric)}</td>
+              </tr>
+            ))}
         </tbody>
       </table>
     </figure>
   );
 }
 
-export function Models({ summary, metric, providers }: { summary: Breakdown; metric: Metric; providers: readonly Provider[] }) {
+export function Models({
+  summary,
+  metric,
+  providers,
+}: {
+  summary: Breakdown;
+  metric: Metric;
+  providers: readonly Provider[];
+}) {
   const total = value(summary.total, metric);
   return (
     <div className="grid gap-1">
@@ -229,10 +282,18 @@ export function Models({ summary, metric, providers }: { summary: Breakdown; met
                 <span className="block truncate font-medium" title={model.model}>
                   {model.model}
                 </span>
-                <span className="block text-xs text-muted-foreground">{providerName(providers, model.provider)}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {providerName(providers, model.provider)}
+                </span>
               </div>
-              <div className="order-last col-span-2 h-1.5 rounded-full bg-accent sm:order-none sm:col-span-1" aria-hidden="true">
-                <div className="h-full rounded-full bg-foreground/80" style={{ width: percent(share(amount, total)) }} />
+              <div
+                className="order-last col-span-2 h-1.5 rounded-full bg-accent sm:order-none sm:col-span-1"
+                aria-hidden="true"
+              >
+                <div
+                  className="h-full rounded-full bg-foreground/80"
+                  style={{ width: percent(share(amount, total)) }}
+                />
               </div>
               <span className="text-right text-xs tabular-nums text-muted-foreground">
                 <span className="font-medium text-foreground">{format(amount, metric)}</span>
@@ -255,21 +316,36 @@ function CapLine({ cap, now }: { cap: Cap; now: number }) {
   const reset = resetsIn(cap, now);
   const out = cap.remaining <= 0;
   return (
-    <div className="grid gap-2 rounded-md border border-border px-4 py-3" title={Number.isNaN(resetAt) ? undefined : `Resets ${exactTime(cap.resetAt)}`}>
+    <div
+      className="grid gap-2 rounded-md border border-border px-4 py-3"
+      title={Number.isNaN(resetAt) ? undefined : `Resets ${exactTime(cap.resetAt)}`}
+    >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 text-sm">
         <span className="font-medium">Your weekly cap</span>
         <span className="text-xs text-muted-foreground tabular-nums">
-          <span className={out ? "font-medium text-destructive" : "font-medium text-foreground"}>{cost(cap.remaining)}</span> of{" "}
-          {cost(cap.weekly)} left{reset && <> · {reset}</>}
+          <span className={out ? "font-medium text-destructive" : "font-medium text-foreground"}>
+            {cost(cap.remaining)}
+          </span>{" "}
+          of {cost(cap.weekly)} left{reset && <> · {reset}</>}
         </span>
       </div>
-      <div role="meter" aria-label="Weekly cap left" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(left * 100)} className="h-1.5 rounded-full bg-accent">
-        <div className={`h-full rounded-full ${left < 0.15 ? "bg-destructive" : "bg-foreground/80"}`} style={{ width: percent(left) }} />
+      <div
+        role="meter"
+        aria-label="Weekly cap left"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(left * 100)}
+        className="h-1.5 rounded-full bg-accent"
+      >
+        <div
+          className={`h-full rounded-full ${left < 0.15 ? "bg-destructive" : "bg-foreground/80"}`}
+          style={{ width: percent(left) }}
+        />
       </div>
       {out && (
         <p className="text-xs text-muted-foreground text-pretty">
-          This pool's owner set this cap. Your requests through it stop until it resets; ask them to raise it, or switch a
-          computer to another pool.
+          This pool's owner set this cap. Your requests through it stop until it resets; ask them to
+          raise it, or switch a computer to another pool.
         </p>
       )}
     </div>
@@ -277,7 +353,13 @@ function CapLine({ cap, now }: { cap: Cap; now: number }) {
 }
 
 /** One line per provider: add an account, remove one, or leave it. */
-function Needed({ entries, providers }: { entries: readonly AccountsNeeded[]; providers: readonly Provider[] }) {
+function Needed({
+  entries,
+  providers,
+}: {
+  entries: readonly AccountsNeeded[];
+  providers: readonly Provider[];
+}) {
   return (
     <ul aria-label="Accounts needed" className="m-0 grid list-none gap-1.5 p-0">
       {entries.map((entry) => (
@@ -285,7 +367,11 @@ function Needed({ entries, providers }: { entries: readonly AccountsNeeded[]; pr
           <span
             aria-hidden="true"
             className={`size-1.5 shrink-0 translate-y-[-1px] rounded-full ${
-              entry.advice === "add" ? "bg-warning" : entry.advice === "unknown" ? "bg-input" : "bg-foreground/60"
+              entry.advice === "add"
+                ? "bg-warning"
+                : entry.advice === "unknown"
+                  ? "bg-input"
+                  : "bg-foreground/60"
             }`}
           />
           <span className={entry.advice === "add" ? "text-foreground" : "text-muted-foreground"}>
