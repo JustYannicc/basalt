@@ -71,6 +71,13 @@ class SupervisorTests(unittest.TestCase):
                 killed = True
 
             def wait(timeout):
+                if (
+                    replacement_startup_exit
+                    and name == "home"
+                    and number > 0
+                    and replacement_drain_failure == "deadline"
+                ):
+                    clock.now += timeout
                 if actual_cleanup and not killed and (name == "node" or number > 0):
                     clock.now += timeout
                     raise subprocess.TimeoutExpired(name, timeout)
@@ -90,12 +97,6 @@ class SupervisorTests(unittest.TestCase):
             if name == "home":
 
                 def drain(timeout):
-                    if (
-                        replacement_startup_exit
-                        and number > 0
-                        and replacement_drain_failure == "deadline"
-                    ):
-                        clock.now += timeout
                     if buffered_fuse:
                         callbacks[0]()
 
@@ -382,3 +383,24 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual([row["exit_code"] for row in exits], [1, 1, 1])
         self.assertEqual([row["category"] for row in exits], [5, 2, 2])
         self.assertFalse(ready.snapshot()[0])
+
+    def test_deadline_expiring_in_first_startup_drain_retains_receipt(self):
+        result, children, ready, records, *_ = self.run_supervisor(
+            replacement_startup_exit=True,
+            replacement_drain_failure="deadline",
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual([child.name for child in children], ["home", "node", "home"])
+        self.assertFalse(ready.snapshot()[0])
+        self.assertEqual(
+            [row for marker, row in records if marker == "POOL_CHILD_EXIT"],
+            [
+                {"child": "home", "exit_code": 1, "category": 5},
+                {"child": "home", "exit_code": 1, "category": 2},
+            ],
+        )
+        self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
+        self.assertEqual(
+            [row["state"] for marker, row in records if marker == "POOL_HOME_RECOVERY"],
+            ["attempt", "exhausted"],
+        )
