@@ -110,7 +110,7 @@ model {
       metadata { code "src/catalog"; libraries "apps"; bindings "context=basalt.router" }
 
       providerApps = part "Model provider apps" {
-        description "Installable model-provider packages carry the same provider declarations as pools. People connect reusable host-owned accounts through each app; removing an app leaves saved accounts and other links intact. Installing these packages does not migrate existing accounts or activate native pool membership."
+        description "Installable model-provider packages carry the same provider declarations as pools. People connect reusable host-owned accounts through each app; removing an app leaves saved accounts and other links intact. Installing these packages does not migrate existing accounts or activate native pool membership. The shared Accounts view renders connection and reconnect controls only where the host connection policy allows them, and none while that policy is unread; elsewhere, such as in a pool, it only selects saved accounts and links to the provider apps the host names. Login-file import is offered only where the host lists import methods. Provider packages ship no screen, so the host draws their App tab from the visible inventory."
       }
     }
 
