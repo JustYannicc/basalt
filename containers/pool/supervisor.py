@@ -17,6 +17,10 @@ from .child_signals import (
     NativePolicyProbeParser,
     safe_child_output_line,
 )
+from .child_signals import (
+    privacy_audit_line as privacy_audit_line,
+)
+from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
     ROOT,
@@ -64,6 +68,7 @@ class Child:
         on_policy_probe: Callable[[str], None] | None = None,
     ) -> None:
         self.name = name
+        self.diagnostics = HomeCrashTail() if name == "home" else None
         self._on_policy_fused = on_policy_fused
         self._on_policy_probe = on_policy_probe
         self._fuse_parser = NativePolicyFuseParser()
@@ -77,6 +82,7 @@ class Child:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",
             bufsize=1,
         )
         self._reader = threading.Thread(target=self._read_output, daemon=True)
@@ -86,7 +92,13 @@ class Child:
         stream = self.process.stdout
         if stream is None:
             return
-        while line := stream.readline(8192):
+        oversized = False
+        while line := stream.readline(MAX_INPUT_CHARS):
+            if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+                oversized = not line.endswith("\n")
+                continue
+            if self.diagnostics is not None:
+                self.diagnostics.append(line)
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
             fused = self._fuse_parser.feed(self.name, line)
@@ -106,6 +118,19 @@ class Child:
                 print(safe, flush=True)
 
 
+def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
+    reader = getattr(child, "_reader", None)
+    if reader is not None:
+        # Reap the final pipe bytes before taking the crash snapshot, with a bounded wait.
+        deadline = current_deadline()
+        reader.join(
+            timeout=0.2 if deadline is None else deadline.cleanup_remaining(0.2)
+        )
+    report_child_exit(
+        child.name, exit_code, category, getattr(child, "diagnostics", None)
+    )
+
+
 def wait_for_home(
     child: Child,
     management_key: str,
@@ -115,10 +140,14 @@ def wait_for_home(
     while not stop.is_set() and time.monotonic() < deadline:
         exit_code = child.process.poll()
         if exit_code is not None:
-            drain_exited_home(child)
+            try:
+                drain_exited_home(child)
+            except Exception:
+                report_exit(child, exit_code, FailureCategory.HOME_STARTUP)
+                raise
             if home_boot_requires_import(exit_code, child.config_empty.is_set()):
                 return "empty"
-            report_child_exit(child.name, exit_code, FailureCategory.HOME_STARTUP)
+            report_exit(child, exit_code, FailureCategory.HOME_STARTUP)
             raise HomeExited(exit_code)
         operation_timeout(STARTUP_TIMEOUT_SECONDS)
         if management_ready(management_key):
@@ -255,9 +284,7 @@ def main(stop: threading.Event | None = None) -> int:
             if home_state == "stop":
                 raise RecoveryCancelled()
             if home_state == "empty" and recovering:
-                report_child_exit(
-                    home_child.name, home_child.process.returncode, category
-                )
+                report_exit(home_child, home_child.process.returncode, category)
                 raise StartupError("Home config became empty during recovery")
             if home_state == "empty":
                 with startup_phase(
@@ -318,7 +345,7 @@ def main(stop: threading.Event | None = None) -> int:
                     ]
                     if failed:
                         for child, exit_code in failed:
-                            report_child_exit(child.name, exit_code, category)
+                            report_exit(child, exit_code, category)
                         if len(failed) == 1 and failed[0][0].name == "home":
                             raise HomeExited(failed[0][1])
                         raise StartupError("Pool child exited before initial health")
@@ -348,7 +375,7 @@ def main(stop: threading.Event | None = None) -> int:
             if failed:
                 readiness.set_ready(False)
                 for child, exit_code in failed:
-                    report_child_exit(child.name, exit_code, category)
+                    report_exit(child, exit_code, category)
                 if len(failed) != 1 or failed[0][0].name != "home" or failed[0][1] != 1:
                     raise StartupError("Pool child exited unexpectedly")
 
