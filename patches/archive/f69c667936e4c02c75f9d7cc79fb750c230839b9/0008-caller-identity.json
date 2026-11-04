@@ -1,0 +1,9 @@
+{
+  "identity": "executor-caller-identity",
+  "file": "0008-caller-identity.patch",
+  "content_sha256": "58d73a63da2ca4496e38c12b59719aa1510f3f89579ea85a496433f72ac4fb2c",
+  "kind": "upstream",
+  "upstream_pull_request": 2346,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

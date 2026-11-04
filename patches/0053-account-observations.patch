@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 04a87a384..4b5e84185 100644
+index 04a87a38..4b5e8418 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -13,6 +13,7 @@
@@ -12,7 +12,7 @@ index 04a87a384..4b5e84185 100644
      "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
 diff --git a/apps/hosted/server/src/contracts/account-observations.ts b/apps/hosted/server/src/contracts/account-observations.ts
 new file mode 100644
-index 000000000..8185385c4
+index 00000000..8185385c
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/account-observations.ts
 @@ -0,0 +1,20 @@
@@ -37,7 +37,7 @@ index 000000000..8185385c4
 +  canRefresh: Schema.Boolean,
 +});
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 0c66a6077..2e237dcd8 100644
+index 0c66a607..2e237dcd 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
 @@ -1,3 +1,5 @@
@@ -88,7 +88,7 @@ index 0c66a6077..2e237dcd8 100644
        params: { ...params, account: AccountId },
 diff --git a/apps/hosted/server/src/implementation/account-observation-policy.ts b/apps/hosted/server/src/implementation/account-observation-policy.ts
 new file mode 100644
-index 000000000..be5882b82
+index 00000000..be5882b8
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-observation-policy.ts
 @@ -0,0 +1,152 @@
@@ -246,7 +246,7 @@ index 000000000..be5882b82
 +  });
 diff --git a/apps/hosted/server/src/implementation/account-observation-schema.ts b/apps/hosted/server/src/implementation/account-observation-schema.ts
 new file mode 100644
-index 000000000..d392698ec
+index 00000000..d392698e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-observation-schema.ts
 @@ -0,0 +1,14 @@
@@ -266,7 +266,7 @@ index 000000000..d392698ec
 +});
 diff --git a/apps/hosted/server/src/implementation/account-observations.ts b/apps/hosted/server/src/implementation/account-observations.ts
 new file mode 100644
-index 000000000..1c33a1aad
+index 00000000..1c33a1aa
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-observations.ts
 @@ -0,0 +1,34 @@
@@ -305,7 +305,7 @@ index 000000000..1c33a1aad
 +  return { ...view, canInspect: true, canRefresh: true };
 +});
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index 42f44c537..b35393ff0 100644
+index 8e90a665..43294e72 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,3 +1,6 @@
@@ -315,7 +315,7 @@ index 42f44c537..b35393ff0 100644
  import {
    startInteractive,
    interactiveStatus,
-@@ -59,7 +62,7 @@ import { AccountLinkedToApp } from "../contracts/accounts.ts";
+@@ -60,7 +63,7 @@ import { visibleAccountRefusal } from "./webhooks.ts";
  import { RequirementMismatch } from "../contracts/app-accounts.ts";
  
  /** The apps the caller can use and linked this account to, or that link it for everyone. */
@@ -324,7 +324,7 @@ index 42f44c537..b35393ff0 100644
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
      const policy = yield* CurrentAuthorization;
-@@ -100,7 +103,7 @@ export const getAccount = Effect.gen(function* () {
+@@ -101,7 +104,7 @@ export const getAccount = Effect.gen(function* () {
      account: metadata,
      provider,
      apps,
@@ -333,7 +333,7 @@ index 42f44c537..b35393ff0 100644
      revocation,
      canManage: access.canManage,
      canReconnect: provider.definition.auth[metadata.method]?.type !== "interactive",
-@@ -134,7 +137,7 @@ export const checkAccount = Effect.gen(function* () {
+@@ -135,7 +138,7 @@ export const checkAccount = Effect.gen(function* () {
      account,
      apps: apps.map((app) => app.id),
    });
@@ -342,7 +342,7 @@ index 42f44c537..b35393ff0 100644
  });
  /**
   * Check only providers reachable through the caller's app or account access. Lists the registered
-@@ -364,6 +367,16 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+@@ -372,6 +375,16 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
      const redirectUri = accountOAuthRedirectUri(auth);
      return handlers
        .handle("get", () => getAccount)
@@ -360,7 +360,7 @@ index 42f44c537..b35393ff0 100644
          Effect.flatMap(currentOwner, (owner) =>
            checkCredentials(owner, { app: params.app, ...payload }),
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index a789e0f95..4bf2dc251 100644
+index a789e0f9..4bf2dc25 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -1,3 +1,4 @@
@@ -388,7 +388,7 @@ index a789e0f95..4bf2dc251 100644
      const views = yield* Effect.forEach(
        present,
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index f04325945..570ed6fa6 100644
+index 4f310ca5..cb0c99d4 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,3 +1,4 @@
@@ -396,7 +396,7 @@ index f04325945..570ed6fa6 100644
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
  import { fullAuthority } from "@executor-js/authorization";
-@@ -677,11 +678,17 @@ export const hostedAppUi = <R = never>(
+@@ -680,11 +681,17 @@ export const hostedAppUi = <R = never>(
        const found = yield* Effect.forEach(used, (account) =>
          Effect.all({
            account: executor.accounts.get({ owner: current.access.owner, account }),
@@ -420,7 +420,7 @@ index f04325945..570ed6fa6 100644
            Effect.map((entry) => [[account, entry] as const]),
            Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index ba83cb8fd..85a8acfab 100644
+index ba83cb8f..85a8acfa 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
 @@ -14,6 +14,7 @@ import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
@@ -440,7 +440,7 @@ index ba83cb8fd..85a8acfab 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index 15cc0293c..6dd82c2b7 100644
+index 984320e3..28b2e981 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
 @@ -52,6 +52,7 @@ import {
@@ -451,7 +451,7 @@ index 15cc0293c..6dd82c2b7 100644
  
  /** Read current membership once after native session verification; never retain roles between requests. */
  export const lookupMembership = (
-@@ -246,9 +247,12 @@ export const inventory = (owner: OwnerId) =>
+@@ -251,9 +252,12 @@ export const inventory = (owner: OwnerId) =>
      ];
      // Checks are reported for the apps the caller linked each account to.
      const health = new Map(
@@ -468,7 +468,7 @@ index 15cc0293c..6dd82c2b7 100644
      const withHealth = (listedAccounts: typeof accounts) =>
        listedAccounts.map((account) => {
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 8ad7b27e7..f70dd9350 100644
+index 8ad7b27e..f70dd935 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -1,3 +1,4 @@
@@ -486,7 +486,7 @@ index 8ad7b27e7..f70dd9350 100644
        }),
      );
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 67ce6cb08..dad25672e 100644
+index 35bafda2..028dda55 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -494,7 +494,7 @@ index 67ce6cb08..dad25672e 100644
  import { AccountProvisioned } from "@executor-js/sdk/core";
  import {
    InteractiveRetirementBusy,
-@@ -797,6 +798,24 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -798,6 +799,24 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          ],
        }),
      )
@@ -520,7 +520,7 @@ index 67ce6cb08..dad25672e 100644
        HttpApiEndpoint.get("account", "/dashboard/api/accounts/:account", {
          params: { account: AccountId },
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 6d8566e5a..bebb75b10 100644
+index 29bde54c..c3cf1302 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
 @@ -643,6 +643,24 @@ export const dashboard = (
@@ -550,7 +550,7 @@ index 6d8566e5a..bebb75b10 100644
            Effect.flatMap((apps) =>
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
 new file mode 100644
-index 000000000..a6e47b5c9
+index 00000000..a6e47b5c
 --- /dev/null
 +++ b/e2e/support/account-observation-fixture.ts
 @@ -0,0 +1,218 @@
@@ -773,7 +773,7 @@ index 000000000..a6e47b5c9
 +  ),
 +});
 diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
-index f27305ee3..4be568401 100644
+index f27305ee..4be56840 100644
 --- a/e2e/support/app-package.ts
 +++ b/e2e/support/app-package.ts
 @@ -161,3 +161,29 @@ export const publishedRelease = (version: Release) =>
@@ -807,7 +807,7 @@ index f27305ee3..4be568401 100644
 +export const protocol17Framework = retainedObservationFramework(17);
 +export const protocol18Framework = retainedObservationFramework(18);
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
-index d7b399630..e05ef6f83 100644
+index d7b39963..e05ef6f8 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
 @@ -47,7 +47,7 @@ export const profileAppCopiesPending = (
@@ -828,10 +828,10 @@ index d7b399630..e05ef6f83 100644
    { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
    { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index e889f4b30..2130cb0b2 100644
+index c2633c01..27924fc0 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7647,6 +7647,110 @@ export const scenarios = plan({
+@@ -8680,6 +8680,110 @@ export const scenarios = plan({
        local: na("Uses hosted HTTP endpoints."),
      },
    },
@@ -944,7 +944,7 @@ index e889f4b30..2130cb0b2 100644
      legacyStorage: true,
 diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-observation-access.spec.ts
 new file mode 100644
-index 000000000..d060bea39
+index 00000000..d060bea3
 --- /dev/null
 +++ b/e2e/tests/account-observation-access.spec.ts
 @@ -0,0 +1,199 @@
@@ -1149,7 +1149,7 @@ index 000000000..d060bea39
 +});
 diff --git a/e2e/tests/account-observation-legacy.spec.ts b/e2e/tests/account-observation-legacy.spec.ts
 new file mode 100644
-index 000000000..7b2234dab
+index 00000000..7b2234da
 --- /dev/null
 +++ b/e2e/tests/account-observation-legacy.spec.ts
 @@ -0,0 +1,81 @@
@@ -1236,7 +1236,7 @@ index 000000000..7b2234dab
 +});
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
 new file mode 100644
-index 000000000..7871f1b34
+index 00000000..7871f1b3
 --- /dev/null
 +++ b/e2e/tests/account-observation-migration.spec.ts
 @@ -0,0 +1,51 @@
@@ -1293,7 +1293,7 @@ index 000000000..7871f1b34
 +});
 diff --git a/e2e/tests/account-observation-protocol.spec.ts b/e2e/tests/account-observation-protocol.spec.ts
 new file mode 100644
-index 000000000..08204f8fa
+index 00000000..08204f8f
 --- /dev/null
 +++ b/e2e/tests/account-observation-protocol.spec.ts
 @@ -0,0 +1,40 @@
@@ -1339,7 +1339,7 @@ index 000000000..08204f8fa
 +});
 diff --git a/e2e/tests/account-observations-local.spec.ts b/e2e/tests/account-observations-local.spec.ts
 new file mode 100644
-index 000000000..ada601b49
+index 00000000..ada601b4
 --- /dev/null
 +++ b/e2e/tests/account-observations-local.spec.ts
 @@ -0,0 +1,120 @@
@@ -1465,7 +1465,7 @@ index 000000000..ada601b49
 +});
 diff --git a/e2e/tests/account-observations.spec.ts b/e2e/tests/account-observations.spec.ts
 new file mode 100644
-index 000000000..b5d738768
+index 00000000..b5d73876
 --- /dev/null
 +++ b/e2e/tests/account-observations.spec.ts
 @@ -0,0 +1,202 @@
@@ -1672,7 +1672,7 @@ index 000000000..b5d738768
 +  );
 +});
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index 1ca4e8359..ea1cd28bd 100644
+index 1ca4e835..ea1cd28b 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -1,4 +1,4 @@
@@ -1704,7 +1704,7 @@ index 1ca4e8359..ea1cd28bd 100644
          yield* serverControl("start");
        }),
 diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
-index 434c397bc..e1a72b6e0 100644
+index 434c397b..e1a72b6e 100644
 --- a/e2e/tests/app-accounts-upgrade.spec.ts
 +++ b/e2e/tests/app-accounts-upgrade.spec.ts
 @@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
@@ -1717,7 +1717,7 @@ index 434c397bc..e1a72b6e0 100644
      // The member's user link as it was, and the app link without a subject.
      expect(linksAfter).toEqual([
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index 9080f8702..952b15e57 100644
+index 9080f870..952b15e5 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -1730,7 +1730,7 @@ index 9080f8702..952b15e57 100644
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
 diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
-index 908cac99f..b9f683aa7 100644
+index 908cac99..b9f683aa 100644
 --- a/e2e/tests/legacy-profile-links.spec.ts
 +++ b/e2e/tests/legacy-profile-links.spec.ts
 @@ -6,7 +6,7 @@
@@ -1774,7 +1774,7 @@ index 908cac99f..b9f683aa7 100644
          yield* serverControl("start");
  
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
-index 8f0e461e6..61fef9904 100644
+index 8f0e461e..61fef990 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
 +++ b/e2e/tests/legacy-profile-schedules.spec.ts
 @@ -312,6 +312,8 @@ const upgradeFixture = (
@@ -1796,7 +1796,7 @@ index 8f0e461e6..61fef9904 100644
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
          );
 diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
-index cd00deab5..3457c78c4 100644
+index cd00deab..3457c78c 100644
 --- a/e2e/tests/legacy-targetless-connections.spec.ts
 +++ b/e2e/tests/legacy-targetless-connections.spec.ts
 @@ -132,7 +132,7 @@ const expectUpgraded = (
@@ -1818,7 +1818,7 @@ index cd00deab5..3457c78c4 100644
            // Before step 8 no client had an audience, whose rows name stored clients.
            { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
 diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
-index 042f9309e..5f74feeda 100644
+index 042f9309..5f74feed 100644
 --- a/e2e/tests/oauth-client-issuer-migration.spec.ts
 +++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
 @@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
@@ -1832,7 +1832,7 @@ index 042f9309e..5f74feeda 100644
            { client: ids.a },
 diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
 new file mode 100644
-index 000000000..6426ad5d0
+index 00000000..6426ad5d
 --- /dev/null
 +++ b/packages/apps/protocols/19.json
 @@ -0,0 +1,3379 @@
@@ -5217,7 +5217,7 @@ index 000000000..6426ad5d0
 +}
 diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
 new file mode 100644
-index 000000000..dbe0c61e2
+index 00000000..dbe0c61e
 --- /dev/null
 +++ b/packages/apps/src/contracts/account-observation.ts
 @@ -0,0 +1,107 @@
@@ -5329,7 +5329,7 @@ index 000000000..dbe0c61e2
 +  ): import("effect").Effect.Effect<AccountObservationResult | void, unknown>;
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 25b4053b8..b9e970629 100644
+index 25b4053b..b9e97062 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -1,3 +1,4 @@
@@ -5350,7 +5350,7 @@ index 25b4053b8..b9e970629 100644
    CredentialHost,
    MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 3172054f8..31485cb50 100644
+index 3172054f..31485cb5 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -5360,7 +5360,7 @@ index 3172054f8..31485cb50 100644
 -export const frameworkProtocol = 18;
 +export const frameworkProtocol = 19;
 diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
-index e763586ea..1840ebd6f 100644
+index e763586e..1840ebd6 100644
 --- a/packages/apps/src/contracts/protocols/17.ts
 +++ b/packages/apps/src/contracts/protocols/17.ts
 @@ -31,8 +31,12 @@ import {
@@ -5379,7 +5379,7 @@ index e763586ea..1840ebd6f 100644
  import { AppIcons } from "../icons.ts";
 diff --git a/packages/apps/src/contracts/protocols/18.ts b/packages/apps/src/contracts/protocols/18.ts
 new file mode 100644
-index 000000000..ee490bd87
+index 00000000..ee490bd8
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/18.ts
 @@ -0,0 +1,678 @@
@@ -6062,7 +6062,7 @@ index 000000000..ee490bd87
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index f6983c3dc..68c579644 100644
+index fcb21e88..efae74fe 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -1,3 +1,4 @@
@@ -6070,7 +6070,7 @@ index f6983c3dc..68c579644 100644
  /**
   * The host protocol this framework speaks: every message that crosses between a host and an app
   * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
-@@ -408,6 +409,10 @@ export const AccountCheckCommand = Schema.Struct({
+@@ -412,6 +413,10 @@ export const AccountCheckCommand = Schema.Struct({
    requirement: Schema.NonEmptyString,
  });
  export type AccountCheckCommand = typeof AccountCheckCommand.Type;
@@ -6081,7 +6081,7 @@ index f6983c3dc..68c579644 100644
  
  /** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
  export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
-@@ -488,6 +493,7 @@ export const HostRequest = Schema.Union([
+@@ -492,6 +497,7 @@ export const HostRequest = Schema.Union([
      arguments: JsonValue,
    }),
    AccountCheckCommand,
@@ -6089,7 +6089,7 @@ index f6983c3dc..68c579644 100644
    MigrateCommand,
  ]);
  /** Parsed portable dispatch request. */
-@@ -639,6 +645,7 @@ export const messageDirections = {
+@@ -643,6 +649,7 @@ export const messageDirections = {
    workflowControl: "bundle",
    cacheCommand: "bundle",
    accountCheck: "bundle",
@@ -6097,7 +6097,7 @@ index f6983c3dc..68c579644 100644
    migrate: "bundle",
  } as const satisfies Record<string, "host" | "bundle">;
  /** A message name every protocol so far has used. */
-@@ -664,6 +671,7 @@ export const current = {
+@@ -668,6 +675,7 @@ export const current = {
      cacheCommand: CacheCommand,
      cacheReply: CacheReply,
      accountCheck: AccountCheckResult,
@@ -6106,7 +6106,7 @@ index f6983c3dc..68c579644 100644
      migrate: MigrateResult,
    },
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index b3e8d5416..e775eed99 100644
+index b3e8d541..e775eed9 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -23,6 +23,7 @@ import { protocol15 } from "./15.ts";
@@ -6124,7 +6124,7 @@ index b3e8d5416..e775eed99 100644
 +  protocol18,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index e55625b48..b4f8c6805 100644
+index e55625b4..b4f8c680 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -1,3 +1,4 @@
@@ -6151,7 +6151,7 @@ index e55625b48..b4f8c6805 100644
    many(): ManyAccounts<Auth> {
 diff --git a/packages/apps/src/implementation/account-observation-output.ts b/packages/apps/src/implementation/account-observation-output.ts
 new file mode 100644
-index 000000000..c8962c6a5
+index 00000000..c8962c6a
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-observation-output.ts
 @@ -0,0 +1,32 @@
@@ -6188,7 +6188,7 @@ index 000000000..c8962c6a5
 +  return { health, observation };
 +};
 diff --git a/packages/apps/src/implementation/account-status-output.ts b/packages/apps/src/implementation/account-status-output.ts
-index 48cfe4b0e..9feece7a6 100644
+index 48cfe4b0..9feece7a 100644
 --- a/packages/apps/src/implementation/account-status-output.ts
 +++ b/packages/apps/src/implementation/account-status-output.ts
 @@ -1,3 +1,7 @@
@@ -6217,7 +6217,7 @@ index 48cfe4b0e..9feece7a6 100644
      );
    });
 diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
-index 21fe55999..1156d3407 100644
+index 21fe5599..1156d340 100644
 --- a/packages/apps/src/implementation/connect.ts
 +++ b/packages/apps/src/implementation/connect.ts
 @@ -1,5 +1,7 @@
@@ -6275,7 +6275,7 @@ index 21fe55999..1156d3407 100644
        Effect.flatMap(Schema.decodeUnknownEffect(JsonValue)),
        Effect.mapError(() => new HostOutputInvalid()),
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 1db128734..0ef41ab2b 100644
+index 1db12873..0ef41ab2 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -1,3 +1,4 @@
@@ -6360,7 +6360,7 @@ index 1db128734..0ef41ab2b 100644
        () =>
          accountCheckOutput(result ?? {}, context).pipe(
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
-index 4f8069065..4e62ba87a 100644
+index 4f806906..4e62ba87 100644
 --- a/packages/apps/src/implementation/provider.ts
 +++ b/packages/apps/src/implementation/provider.ts
 @@ -1,3 +1,4 @@
@@ -6415,7 +6415,7 @@ index 4f8069065..4e62ba87a 100644
 +  });
  };
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index cf3e37114..9c3008b13 100644
+index cf3e3711..9c3008b1 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
 @@ -1,3 +1,4 @@
@@ -6424,7 +6424,7 @@ index cf3e37114..9c3008b13 100644
  export { FetchOptionUnsupported, NetworkRefused } from "./contracts/network.ts";
  export type { AppCache, CacheLoadContext, CacheGetOptions } from "./contracts/cache.ts";
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
-index babb8d08d..0b378f8b7 100644
+index babb8d08..0b378f8b 100644
 --- a/packages/mcp/src/implementation/app-asset-paths.ts
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
 @@ -1,7 +1,7 @@
@@ -6437,7 +6437,7 @@ index babb8d08d..0b378f8b7 100644
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
-index e28a2e7d0..378a35500 100644
+index e28a2e7d..378a3550 100644
 --- a/packages/mcp/src/implementation/app-assets.ts
 +++ b/packages/mcp/src/implementation/app-assets.ts
 @@ -1,5 +1,5 @@
@@ -6449,7 +6449,7 @@ index e28a2e7d0..378a35500 100644
  };
 diff --git a/packages/sdk/src/contracts/account-observation-driver.ts b/packages/sdk/src/contracts/account-observation-driver.ts
 new file mode 100644
-index 000000000..b37646702
+index 00000000..b3764670
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-observation-driver.ts
 @@ -0,0 +1,10 @@
@@ -6465,7 +6465,7 @@ index 000000000..b37646702
 +}
 diff --git a/packages/sdk/src/contracts/account-observation.ts b/packages/sdk/src/contracts/account-observation.ts
 new file mode 100644
-index 000000000..51ca17fbe
+index 00000000..51ca17fb
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-observation.ts
 @@ -0,0 +1,46 @@
@@ -6516,7 +6516,7 @@ index 000000000..51ca17fbe
 +  lastAttempt: Schema.NullOr(AccountObservationAttempt),
 +});
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 1bf73ae8b..a3b2c7ee1 100644
+index 6d428049..e9e23d2c 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,5 @@
@@ -6533,7 +6533,7 @@ index 1bf73ae8b..a3b2c7ee1 100644
        checkedAt: Schema.Date,
        /** Public display data from this check only; outdated results remain marked outdated. */
        displayStatus: Schema.optionalKey(AccountStatus),
-@@ -305,6 +308,23 @@ export const AccountSignIn = Schema.Union([
+@@ -371,6 +374,23 @@ export const AccountSignIn = Schema.Union([
  export type AccountSignIn = typeof AccountSignIn.Type;
  
  export const AccountsGroup = HttpApiGroup.make("accounts")
@@ -6558,7 +6558,7 @@ index 1bf73ae8b..a3b2c7ee1 100644
      HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
        params: accountParams,
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 36fe1bb5d..561ef1bd4 100644
+index 7c7598b9..3b6a93ef 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -1,3 +1,5 @@
@@ -6568,10 +6568,10 @@ index 36fe1bb5d..561ef1bd4 100644
  export * from "./shared.ts";
  export * from "./provider.ts";
 diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
-index 9d791b508..32e40f1f7 100644
+index ecc91984..20066f5d 100644
 --- a/packages/sdk/src/contracts/runtime.ts
 +++ b/packages/sdk/src/contracts/runtime.ts
-@@ -520,6 +520,17 @@ export interface Runtime<Requirements = never> {
+@@ -562,6 +562,17 @@ export interface Runtime<Requirements = never> {
      RuntimeLoadError | typeof HostAccountCheckError.Type,
      Requirements
    >;
@@ -6590,12 +6590,12 @@ index 9d791b508..32e40f1f7 100644
     * Apply a build's pending SQL migrations to its app's database, before the build is activated.
     * Send only to builds whose requirements declare `sql`.
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 16d4da929..a3d85ce0e 100644
+index 8a141fa4..7f669532 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -144,6 +144,9 @@ export const makeAccountHealth = (
-   sitePolicy: UrlPolicy,
+@@ -147,6 +147,9 @@ export const makeAccountHealth = (
    listApps: ListApps,
+   hostApi: HostApi | undefined,
    lifecycle?: ResourceLifecycle,
 +  recordObservation?: ReturnType<
 +    typeof import("./account-observations.ts").makeAccountObservations
@@ -6603,7 +6603,7 @@ index 16d4da929..a3d85ce0e 100644
  ) => {
    /** One account's health from the apps that use it and its recorded checks. */
    const project = (
-@@ -179,6 +182,12 @@ export const makeAccountHealth = (
+@@ -182,6 +185,12 @@ export const makeAccountHealth = (
                      ),
                      checkedAt: row.checkedAt,
                      ...(displayStatus === undefined ? {} : { displayStatus }),
@@ -6616,7 +6616,7 @@ index 16d4da929..a3d85ce0e 100644
                      current:
                        row.deployment === app.activeVersion &&
                        row.credentialGeneration === account.credentialGeneration,
-@@ -352,6 +361,10 @@ export const makeAccountHealth = (
+@@ -364,6 +373,10 @@ export const makeAccountHealth = (
          status,
          checkedAt,
          ...record,
@@ -6627,7 +6627,7 @@ index 16d4da929..a3d85ce0e 100644
          message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
        };
        yield* query(() =>
-@@ -361,6 +374,14 @@ export const makeAccountHealth = (
+@@ -373,6 +386,14 @@ export const makeAccountHealth = (
            update: state,
          }),
        );
@@ -6644,7 +6644,7 @@ index 16d4da929..a3d85ce0e 100644
        });
 diff --git a/packages/sdk/src/implementation/account-observation-read.ts b/packages/sdk/src/implementation/account-observation-read.ts
 new file mode 100644
-index 000000000..1e748916c
+index 00000000..1e748916
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-observation-read.ts
 @@ -0,0 +1,104 @@
@@ -6754,7 +6754,7 @@ index 000000000..1e748916c
 +    }).pipe(Effect.timeout(15_000));
 diff --git a/packages/sdk/src/implementation/account-observation-schema.ts b/packages/sdk/src/implementation/account-observation-schema.ts
 new file mode 100644
-index 000000000..c3977b46c
+index 00000000..c3977b46
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-observation-schema.ts
 @@ -0,0 +1,17 @@
@@ -6777,7 +6777,7 @@ index 000000000..c3977b46c
 +}).unique("executor_account_observations_source_generation", ["account", "source", "generation"]);
 diff --git a/packages/sdk/src/implementation/account-observation-store.ts b/packages/sdk/src/implementation/account-observation-store.ts
 new file mode 100644
-index 000000000..4b11e0e17
+index 00000000..4b11e0e1
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-observation-store.ts
 @@ -0,0 +1,290 @@
@@ -7073,7 +7073,7 @@ index 000000000..4b11e0e17
 +};
 diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
 new file mode 100644
-index 000000000..03bbf8ebb
+index 00000000..03bbf8eb
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-observations.ts
 @@ -0,0 +1,103 @@
@@ -7181,7 +7181,7 @@ index 000000000..03bbf8ebb
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
-index 69645ca38..2cb3a6b8a 100644
+index 69645ca3..2cb3a6b8 100644
 --- a/packages/sdk/src/implementation/account-status-output.ts
 +++ b/packages/sdk/src/implementation/account-status-output.ts
 @@ -1,13 +1,24 @@
@@ -7215,10 +7215,10 @@ index 69645ca38..2cb3a6b8a 100644
      );
    });
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index b78ca1739..97afb348a 100644
+index 6ec053eb..f37fcf6a 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -269,6 +269,11 @@ export const makeAccounts = (
+@@ -337,6 +337,11 @@ export const makeAccounts = (
              yield* query(() =>
                tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
              );
@@ -7231,7 +7231,7 @@ index b78ca1739..97afb348a 100644
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index ec39e0fd5..a6feadecb 100644
+index ec39e0fd..a6feadec 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -59,6 +59,20 @@ export interface AppProtocol {
@@ -7344,7 +7344,7 @@ index ec39e0fd5..a6feadecb 100644
  export const interactiveProtocolAdditions = [
    {
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index 5198b8ef6..a47c0c034 100644
+index e9c5106d..064f932f 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
 @@ -9,6 +9,7 @@ import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-
@@ -7355,22 +7355,22 @@ index 5198b8ef6..a47c0c034 100644
    HostAccountCheckError,
    HostCallError,
    HostDataError,
-@@ -421,6 +422,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
+@@ -457,6 +458,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
            AccountCheckResult,
            HostAccountCheckError,
-         ).pipe(Effect.withSpan(span("checkAccount"))),
+         ).pipe(traced("checkAccount", app(input))),
 +      observeAccount: ({ requirement, ...input }) =>
 +        dispatch(
 +          { ...input, database: false },
 +          { operation: "account-observe", requirement },
 +          Schema.NullOr(AccountObservationResult),
 +          HostAccountCheckError,
-+        ).pipe(Effect.withSpan(span("observeAccount"))),
++        ).pipe(traced("observeAccount", app(input))),
        migrate: (input) =>
          dispatch(
-           { ...input, database: true, accounts: Redacted.make({ app: {} }) },
+           // Migrations run the build's SQL files only, so they read no cache or API.
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 7ef341050..c6e46dbdf 100644
+index 3abe478c..94b91212 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,5 @@
@@ -7379,7 +7379,7 @@ index 7ef341050..c6e46dbdf 100644
  import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
  import { transaction } from "./database.ts";
  import { makeInteractiveRetirement } from "./interactive-retirement.ts";
-@@ -203,6 +205,12 @@ export const createExecutor = (
+@@ -210,6 +212,12 @@ export const createExecutor = (
        options.hooks,
      );
      const ownerOperations = makeOwners(db);
@@ -7392,15 +7392,15 @@ index 7ef341050..c6e46dbdf 100644
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
        runtime,
-@@ -211,6 +219,7 @@ export const createExecutor = (
-       sitePolicy,
+@@ -219,6 +227,7 @@ export const createExecutor = (
        apps.list,
+       options.hostApi,
        options.hooks,
 +      fromHealth,
      );
      const schedules = makeSchedules(
        options.database,
-@@ -304,6 +313,7 @@ export const createExecutor = (
+@@ -322,6 +331,7 @@ export const createExecutor = (
              );
            }),
          ...accountHealth,
@@ -7409,10 +7409,10 @@ index 7ef341050..c6e46dbdf 100644
            storedAccount(db, input.account, input.owner).pipe(
              Effect.flatMap((account) => oauth.revocation(account.id)),
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index c0dfd91ad..010d194c5 100644
+index f9476bcb..cc9a267b 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
+@@ -8,7 +8,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
@@ -7420,9 +7420,9 @@ index c0dfd91ad..010d194c5 100644
 +export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
-index b3bd20643..e95b5ffa1 100644
+index b3bd2064..e95b5ffa 100644
 --- a/packages/sdk/src/implementation/handlers.ts
 +++ b/packages/sdk/src/implementation/handlers.ts
 @@ -40,6 +40,12 @@ export const executorHandlers = (executor: Executor) =>
@@ -7439,7 +7439,7 @@ index b3bd20643..e95b5ffa1 100644
            executor.accounts.update({ ...params, ...query, ...payload }),
          )
 diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
-index bdebb7782..aa4024939 100644
+index bdebb778..aa402493 100644
 --- a/packages/sdk/src/implementation/owners.ts
 +++ b/packages/sdk/src/implementation/owners.ts
 @@ -161,6 +161,9 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
@@ -7453,7 +7453,7 @@ index bdebb7782..aa4024939 100644
              tx.deleteMany("oauthGrants", { where: (b) => b("id", "in", accountIds) }),
            );
 diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
-index 0df1eb7f7..c46844efe 100644
+index 0df1eb7f..c46844ef 100644
 --- a/packages/sdk/src/implementation/promise.ts
 +++ b/packages/sdk/src/implementation/promise.ts
 @@ -21,6 +21,7 @@ import {
@@ -7475,7 +7475,7 @@ index 0df1eb7f7..c46844efe 100644
      accountConnections: {
        oauthSetup: (input) => run(CheckOAuthSetup, input, executor.accountConnections.oauthSetup),
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
-index 1ae4cc34c..b3abf1b00 100644
+index 3687e59c..16558674 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
 @@ -2,6 +2,7 @@
@@ -7486,7 +7486,7 @@ index 1ae4cc34c..b3abf1b00 100644
    ResolvedAccounts,
    type HostContext,
    type HostedCatalog,
-@@ -239,6 +240,10 @@ export const toEffectRuntime = (
+@@ -240,6 +241,10 @@ export const toEffectRuntime = (
      mcpApp: (input) => runtime.mcpApp(input).pipe(provide),
      connect: (input) => runtime.connect(input).pipe(provide),
      checkAccount: (input) => runtime.checkAccount(input).pipe(provide),
@@ -7498,7 +7498,7 @@ index 1ae4cc34c..b3abf1b00 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index db1bc6f35..e2d3b8046 100644
+index 753b10c4..2ec69620 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,4 @@
@@ -7506,7 +7506,7 @@ index db1bc6f35..e2d3b8046 100644
  /** Current baseline and the upgrades required by existing version 4 databases. */
  import { fumadb } from "fumadb-effect";
  import { Effect, Schema } from "effect";
-@@ -684,6 +685,18 @@ export const storageSchemas = [
+@@ -689,6 +690,18 @@ export const storageSchemas = [
        }),
      },
    }),
@@ -7526,10 +7526,10 @@ index db1bc6f35..e2d3b8046 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index decbfc09b..57d682ba8 100644
+index a3720e6c..db0d8d93 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -25,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -7538,16 +7538,7 @@ index decbfc09b..57d682ba8 100644
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -47,7 +47,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.18")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -77,7 +77,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -80,7 +80,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -7557,7 +7548,7 @@ index decbfc09b..57d682ba8 100644
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
-index b0266758b..1bd68eed2 100644
+index b0266758..1bd68eed 100644
 --- a/packages/utils/src/account-display-privacy.ts
 +++ b/packages/utils/src/account-display-privacy.ts
 @@ -168,6 +168,29 @@ export interface AccountDisplay {
@@ -7591,7 +7582,7 @@ index b0266758b..1bd68eed2 100644
   * The display with every item that collides with a short credential removed, or undefined when
   * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps
 diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
-index 591f09e20..550f464c2 100644
+index 591f09e2..550f464c 100644
 --- a/playground/sdk/storage.ts
 +++ b/playground/sdk/storage.ts
 @@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
@@ -7604,7 +7595,7 @@ index 591f09e20..550f464c2 100644
          const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
            id: "dpl_example",
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
-index 4e3699a6d..441c80760 100644
+index 4e3699a6..441c8076 100644
 --- a/scripts/check-app-protocols.ts
 +++ b/scripts/check-app-protocols.ts
 @@ -38,6 +38,7 @@ import {

@@ -1,9 +1,11 @@
 {
   "identity": "basalt-generic-catalog-instances",
   "file": "0122-generic-catalog-instances.patch",
-  "content_sha256": "92aa2ccf8dc10e9a3253a72dbe825f2f44de7fe2b35a74ccb21e9c5937a9c019",
+  "content_sha256": "eed5c161327c17415bdfb456d2b5bcbb576c547d6cddba4fa7da7d9c89c5514d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "92aa2ccf8dc10e9a3253a72dbe825f2f44de7fe2b35a74ccb21e9c5937a9c019",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

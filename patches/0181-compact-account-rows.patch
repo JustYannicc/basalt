@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
-index 4ee1a68..ef50bd1 100644
+index 4ee1a680..ef50bd15 100644
 --- a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 @@ -36,13 +36,11 @@ export function HostedAccountObservations({
@@ -25,10 +25,10 @@ index 4ee1a68..ef50bd1 100644
      />
    );
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-index 10c8bac..d925f28 100644
+index b0612cd2..4e1b8602 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-@@ -21,6 +21,8 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+@@ -22,6 +22,8 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
  import { OAuthClientsDialog } from "./oauth-clients.tsx";
  import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
  import { inventoryAtom } from "../../contracts/organization.ts";
@@ -37,7 +37,7 @@ index 10c8bac..d925f28 100644
  
  import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
  
-@@ -40,6 +42,8 @@ export function AccountsPage({
+@@ -41,6 +43,8 @@ export function AccountsPage({
    const directory = useQuery(resourceDirectoryAtom(organization));
    const inventory = useQuery(resourceInventoryAtom(organization));
    const setup = useQuery(inventoryAtom(organization));
@@ -46,7 +46,7 @@ index 10c8bac..d925f28 100644
  
    const [dialog, setDialog] = useState<{
      account: AccountId;
-@@ -127,16 +131,20 @@ export function AccountsPage({
+@@ -128,16 +132,20 @@ export function AccountsPage({
              ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
              : undefined;
            return (
@@ -76,7 +76,7 @@ index 10c8bac..d925f28 100644
            <HostedAccountObservations
              account={account}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index a43d790..5146b1a 100644
+index 92ea0468..a872a5d9 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -32,6 +32,8 @@ import {
@@ -133,7 +133,7 @@ index a43d790..5146b1a 100644
    return (
      <>
 diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
-index b12eaeb..870fdb4 100644
+index b12eaeba..870fdb49 100644
 --- a/apps/local/web/src/implementation/pages/account-observations-client.tsx
 +++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 @@ -23,13 +23,11 @@ export function LocalAccountObservations({
@@ -159,7 +159,7 @@ index b12eaeb..870fdb4 100644
      />
    );
 diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
-index a62e138..d940efb 100644
+index a62e1382..d940efbf 100644
 --- a/apps/local/web/src/implementation/pages/accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/accounts.tsx
 @@ -75,7 +75,7 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
@@ -172,10 +172,10 @@ index a62e138..d940efb 100644
            <LocalAccountObservations
              account={account}
 diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
-index 392d568..93ec966 100644
+index 6158ee14..afa17c55 100644
 --- a/apps/local/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
-@@ -17,7 +17,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
+@@ -18,7 +18,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
  import { AppAccountForm } from "./account-form.tsx";
  import { ReplaceCredentials } from "./account-credentials.tsx";
  import { LocalAccountDialog } from "./account-actions.tsx";
@@ -184,7 +184,7 @@ index 392d568..93ec966 100644
  import { Button } from "@executor-js/ui/components/button";
  import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
  import { QueryView } from "@executor-js/ui/dashboard/context";
-@@ -100,7 +100,8 @@ export function AppAccounts({
+@@ -105,7 +105,8 @@ export function AppAccounts({
    ): ScopeAccounts<DashboardError> => ({
      links,
      revalidate,
@@ -195,7 +195,7 @@ index 392d568..93ec966 100644
        choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
        link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
-index fbd54a3..46f37ef 100644
+index fbd54a38..46f37ef0 100644
 --- a/e2e/support/account-observation-fixture.ts
 +++ b/e2e/support/account-observation-fixture.ts
 @@ -100,7 +100,7 @@ export const observationBackend = Effect.gen(function* () {
@@ -227,7 +227,7 @@ index fbd54a3..46f37ef 100644
      health: true,
 diff --git a/e2e/support/account-rows.ts b/e2e/support/account-rows.ts
 new file mode 100644
-index 0000000..9e6303a
+index 00000000..9e6303a6
 --- /dev/null
 +++ b/e2e/support/account-rows.ts
 @@ -0,0 +1,31 @@
@@ -263,10 +263,10 @@ index 0000000..9e6303a
 +    menu.getByRole("menuitem", { name: "Refresh usage", exact: true }).click(),
 +  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0d7653b..e42403a 100644
+index 9615b695..579bb196 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9017,6 +9017,17 @@ export const scenarios = plan({
+@@ -10070,6 +10070,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows."),
      },
    },
@@ -286,7 +286,7 @@ index 0d7653b..e42403a 100644
      file: "account-usage-home-reporter.spec.ts",
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
 new file mode 100644
-index 0000000..e7bf9de
+index 00000000..e7bf9dec
 --- /dev/null
 +++ b/e2e/tests/account-compact-rows.spec.ts
 @@ -0,0 +1,482 @@
@@ -773,7 +773,7 @@ index 0000000..e7bf9de
 +  );
 +});
 diff --git a/e2e/tests/account-directory-health.spec.ts b/e2e/tests/account-directory-health.spec.ts
-index 8f37220..a2bc093 100644
+index 8f37220d..a2bc093a 100644
 --- a/e2e/tests/account-directory-health.spec.ts
 +++ b/e2e/tests/account-directory-health.spec.ts
 @@ -7,6 +7,7 @@ import { Browser } from "../support/browser.ts";
@@ -796,7 +796,7 @@ index 8f37220..a2bc093 100644
                page
                  .getByRole("group", { name: "Usage and health of App-scoped account", exact: true })
 diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
-index b080476..b081f74 100644
+index b080476c..b081f740 100644
 --- a/e2e/tests/account-observation-rows.spec.ts
 +++ b/e2e/tests/account-observation-rows.spec.ts
 @@ -9,6 +9,7 @@ import { Evidence } from "../support/evidence.ts";
@@ -913,7 +913,7 @@ index b080476..b081f74 100644
          expect(
            yield* browser.use("Refresh stays with the account managers", (page) =>
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index d0a0365..f8a317b 100644
+index d0a0365b..f8a317bc 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
 @@ -7,6 +7,12 @@ import { Evidence } from "../support/evidence.ts";
@@ -1063,7 +1063,7 @@ index d0a0365..f8a317b 100644
            expect(
              yield* browser.use(`Read ${label} details`, (page) =>
 diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
-index feaa234..404453f 100644
+index feaa2344..404453f5 100644
 --- a/e2e/tests/account-usage-home-reporter.spec.ts
 +++ b/e2e/tests/account-usage-home-reporter.spec.ts
 @@ -10,6 +10,7 @@ import { Resource } from "../support/contracts.ts";
@@ -1145,7 +1145,7 @@ index feaa234..404453f 100644
        }),
      ),
 diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
-index 82c8632..5251260 100644
+index 82c8632f..5251260e 100644
 --- a/e2e/tests/native-subscription-health.spec.ts
 +++ b/e2e/tests/native-subscription-health.spec.ts
 @@ -13,6 +13,7 @@ import { legacyStorage } from "../support/legacy-storage.ts";
@@ -1191,7 +1191,7 @@ index 82c8632..5251260 100644
          yield* capture("unavailable");
          const unavailable = yield* readRow("Read the unavailable subscription row");
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
-index 2fb00ba..5038abb 100644
+index 2fb00bab..5038abb8 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
 @@ -22,6 +22,7 @@ import {
@@ -1219,10 +1219,10 @@ index 2fb00ba..5038abb 100644
        </DropdownMenuContent>
      </DropdownMenu>
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 217ba58..03414f2 100644
+index 5c1b94a0..63854211 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -115,8 +115,8 @@ export function AccountAvatar({
+@@ -119,8 +119,8 @@ export function AccountAvatar({
  
  /**
   * The photo an account's last check reported, on a light tile so dark logos stay visible in
@@ -1233,7 +1233,7 @@ index 217ba58..03414f2 100644
   */
  export function AccountLogo({
    account,
-@@ -131,7 +131,6 @@ export function AccountLogo({
+@@ -135,7 +135,6 @@ export function AccountLogo({
        name={account.providerName ?? "Account"}
        url={account.providerUrl}
        medium={compact}
@@ -1241,13 +1241,16 @@ index 217ba58..03414f2 100644
      />
    );
    return url ? (
-@@ -282,9 +281,11 @@ export function AccountCheckResult({
-   part = "all",
+@@ -294,13 +293,14 @@ export function AccountCheckResult({
+   checking = false,
+   retry,
  }: {
-   readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
 -  readonly part?: "all" | "header" | "details";
-+  /** `notes` is what a compact row shows under its line: status badges and the reason given. */
 +  readonly part?: "all" | "header" | "details" | "notes";
+   readonly health: Pick<AccountAppHealth | AccountDriverHealth, "checkable" | "check"> | undefined;
+   readonly checking?: boolean;
+   /** Offered when checking again could not run, while the result is still missing or outdated. */
+   readonly retry?: (() => void) | undefined;
  }) {
 -  if (part === "details" && (health === undefined || health.check === null)) return null;
 +  if ((part === "details" || part === "notes") && (health === undefined || health.check === null))
@@ -1255,7 +1258,7 @@ index 217ba58..03414f2 100644
    if (health === undefined || (!health.checkable && health.check === null))
      return <span className="text-[12px] text-muted-foreground">No check</span>;
    if (health.check === null && part === "details") return null;
-@@ -333,6 +334,19 @@ export function AccountCheckResult({
+@@ -374,6 +374,19 @@ export function AccountCheckResult({
      );
    if (part === "details")
      return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
@@ -1276,7 +1279,7 @@ index 217ba58..03414f2 100644
      <span className="inline-flex w-full min-w-0 flex-col items-start gap-1 text-[12px] text-foreground/80">
        <span className="inline-flex items-center gap-2">
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index a711e92..7f0bed0 100644
+index a711e92d..7f0bed06 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -2,7 +2,7 @@ import type { AccountObservationRecord, App } from "@executor-js/sdk";
@@ -1610,7 +1613,7 @@ index a711e92..7f0bed0 100644
        )}
 diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 new file mode 100644
-index 0000000..cf5248d
+index 00000000..cf5248d3
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
 @@ -0,0 +1,318 @@
@@ -1934,7 +1937,7 @@ index 0000000..cf5248d
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
 new file mode 100644
-index 0000000..8eec5e8
+index 00000000..8eec5e85
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
 @@ -0,0 +1,436 @@
@@ -2375,7 +2378,7 @@ index 0000000..8eec5e8
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 3405cfe..d59e3fa 100644
+index 3405cfed..d59e3fae 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -1,19 +1,36 @@
@@ -2772,10 +2775,10 @@ index 3405cfe..d59e3fa 100644
            })}
          </div>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 3d4ccc1..5a22555 100644
+index da061e99..69dd2412 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -6,14 +6,7 @@ import { Exit, Option, type Cause } from "effect";
+@@ -16,14 +16,7 @@ import { Exit, Option, type Cause } from "effect";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { Add01Icon, ArrowDown01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
  import { RadioGroup } from "radix-ui";
@@ -2791,7 +2794,7 @@ index 3d4ccc1..5a22555 100644
  import {
    requirementMethods,
    type RequirementChoice,
-@@ -23,7 +16,6 @@ import {
+@@ -33,7 +26,6 @@ import {
  import {
    providerDisplayUrl,
    accountNeedsSignIn,
@@ -2799,7 +2802,7 @@ index 3d4ccc1..5a22555 100644
    type AccountDetail,
    type AccountSummary,
    type FailureProps,
-@@ -31,7 +23,24 @@ import {
+@@ -41,7 +33,24 @@ import {
  } from "../../contracts/dashboard.ts";
  import { accountMethodKindLabel } from "../../contracts/account-identities.ts";
  import { AppProviderIcon, ProviderIcon } from "./common.tsx";
@@ -2825,7 +2828,7 @@ index 3d4ccc1..5a22555 100644
  import { EmptyState } from "./empty-state.tsx";
  import { Button } from "../components/button.tsx";
  import { Checkbox } from "../components/checkbox.tsx";
-@@ -133,6 +142,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -143,6 +152,7 @@ export function LinkedAccountMenu<A, E>({
    if (children === undefined && unlink === undefined) return null;
    return (
      <>
@@ -2833,7 +2836,7 @@ index 3d4ccc1..5a22555 100644
        <DropdownMenu>
          <DropdownMenuTrigger asChild>
            <Button
-@@ -146,6 +156,7 @@ export function LinkedAccountMenu<A, E>({
+@@ -156,6 +166,7 @@ export function LinkedAccountMenu<A, E>({
            </Button>
          </DropdownMenuTrigger>
          <DropdownMenuContent align="end" className="min-w-44">
@@ -2841,8 +2844,8 @@ index 3d4ccc1..5a22555 100644
            {children}
            {children && unlink && <DropdownMenuSeparator />}
            {unlink && bound && (
-@@ -482,6 +493,10 @@ export interface ScopeAccounts<E> {
-   readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+@@ -539,6 +550,10 @@ export interface ScopeAccounts<E> {
+   readonly revalidate?: Revalidate | undefined;
    /** A block under each account the caller can use, such as its reported usage. */
    readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
 +  /** The Plan column of each account the caller can use, such as the plan its usage reports. */
@@ -2852,7 +2855,7 @@ index 3d4ccc1..5a22555 100644
  }
  
  /**
-@@ -773,7 +788,11 @@ function RequirementView<E>({
+@@ -837,7 +852,11 @@ function RequirementView<E>({
              {...props}
              // A requirement the caller cannot change offers no account actions, as a read-only
              // scope never did, even beside a contributed one.
@@ -2865,7 +2868,7 @@ index 3d4ccc1..5a22555 100644
              slot={slot}
              requirement={requirement}
              linked={linked}
-@@ -792,78 +811,57 @@ function RequirementView<E>({
+@@ -856,78 +875,57 @@ function RequirementView<E>({
    );
  }
  
@@ -2979,7 +2982,7 @@ index 3d4ccc1..5a22555 100644
    );
  }
  
-@@ -914,12 +912,9 @@ function ReadOnlyChoices<E>({
+@@ -978,12 +976,9 @@ function ReadOnlyChoices<E>({
    const rows = shown.map((account) => {
      const provisioned = provisionedMethod(requirement, account);
      return (
@@ -2995,7 +2998,7 @@ index 3d4ccc1..5a22555 100644
              {plain ? (
                <RadioGroup.Item
                  value={account.id}
-@@ -933,28 +928,34 @@ function ReadOnlyChoices<E>({
+@@ -997,28 +992,34 @@ function ReadOnlyChoices<E>({
              )}
              <AccountRowIdentity
                account={account}
@@ -3049,7 +3052,7 @@ index 3d4ccc1..5a22555 100644
      );
    });
    const list = (
-@@ -962,7 +963,7 @@ function ReadOnlyChoices<E>({
+@@ -1026,7 +1027,7 @@ function ReadOnlyChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -3058,7 +3061,7 @@ index 3d4ccc1..5a22555 100644
      >
        {rows}
      </ul>
-@@ -1125,7 +1126,7 @@ function EditableChoices<E>({
+@@ -1189,7 +1190,7 @@ function EditableChoices<E>({
        {...(requirement.definition.name.trim() === ""
          ? {}
          : { "aria-label": `${requirement.definition.name} accounts` })}
@@ -3067,7 +3070,7 @@ index 3d4ccc1..5a22555 100644
      >
        {rows}
      </ul>
-@@ -1233,6 +1234,7 @@ function ChoiceRow<E>({
+@@ -1297,6 +1298,7 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -3075,7 +3078,7 @@ index 3d4ccc1..5a22555 100644
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
    // Another person's contribution stays linked unless the host says the caller may remove it.
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
-@@ -1249,22 +1251,22 @@ function ChoiceRow<E>({
+@@ -1313,22 +1315,22 @@ function ChoiceRow<E>({
      return exit;
    };
    return (
@@ -3113,7 +3116,7 @@ index 3d4ccc1..5a22555 100644
            {plain ? (
              <RadioGroup.Item
                id={id}
-@@ -1294,50 +1296,57 @@ function ChoiceRow<E>({
+@@ -1358,50 +1360,57 @@ function ChoiceRow<E>({
            <AccountRowIdentity
              account={account}
              labelFor={id}
@@ -3211,14 +3214,12 @@ index 3d4ccc1..5a22555 100644
    );
  }
  
-@@ -1421,49 +1430,64 @@ function RemoveAppBoundAccount({
+@@ -1485,59 +1494,73 @@ function RemoveAppBoundAccount({
    );
  }
  
 +/** This app's binding of the account, as the compact row reads it. */
- /**
-- * An account's sign-in state, or this app's check of it. A current rejection offers the same
-- * reconnect as an expired sign-in; other failed checks say nothing about the credentials.
++/**
 + * This app's binding of the account, as the compact row reads it: the host's saved-account row
 + * when it has one, else the link's own account. Only this app's binding counts here.
 + */
@@ -3240,7 +3241,9 @@ index 3d4ccc1..5a22555 100644
 +  };
 +};
 +
-+/**
+ /**
+- * An account's sign-in state, or this app's check of it. A current rejection offers the same
+- * reconnect as an expired sign-in; other failed checks say nothing about the credentials.
 + * An account's sign-in state, or its check for this app or its own sign-in. A current rejection
 + * offers the same reconnect as an expired sign-in; other failed checks say nothing about the
 + * credentials.
@@ -3258,6 +3261,8 @@ index 3d4ccc1..5a22555 100644
 +  readonly row: AccountRowInput;
    readonly reconnect?: ReactNode;
  }) {
++  const brand = useProductBrand();
+   const rechecks = useContext(Checking);
 -  if (accountNeedsSignIn(account) && part === "details") return null;
 -  if (accountNeedsSignIn(account))
 -    return (
@@ -3268,20 +3273,31 @@ index 3d4ccc1..5a22555 100644
 -  if (account.signIn?.state === "unavailable" && part === "details") return null;
 -  if (account.signIn?.state === "unavailable")
 -    return <span className="text-xs text-sign-in-warning">Unavailable</span>;
-+  const brand = useProductBrand();
-   return (
+-  return (
 -    <>
--      <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
--      {part === "header" &&
--        currentAccountCheck(account, app.id)?.status === "credentials_rejected" &&
--        reconnect}
--    </>
+-    <AppCheck
+-      health={account.health?.apps.find((entry) => entry.app === app.id)}
+-      part={part}
++  const account = row.account;
++  const health = account.health?.apps.find((entry) => entry.app === app.id);
++  if (!accountNeedsSignIn(account) && account.signIn?.state !== "unavailable" &&
++      health?.checkable === true && health.check?.current !== true &&
++      (rechecks.running.has(account.id) || rechecks.failed.has(account.id)))
++    return <AccountCheckResult health={health} part="header"
+       checking={rechecks.running.has(account.id)}
+-      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
++      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined} />;
++  return (
 +    <AccountHealthCell
 +      health={appRowHealth(row, row.bindings[0]!)}
 +      appName={() => appDisplayName(app, brand)}
 +      recover={reconnect}
 +      unavailableLabel="Unavailable"
-+    />
+     />
+-      {part === "header" &&
+-        currentAccountCheck(account, app.id)?.status === "credentials_rejected" &&
+-        reconnect}
+-    </>
    );
  }
  
@@ -3289,37 +3305,42 @@ index 3d4ccc1..5a22555 100644
 -function AppCheck({
 -  health,
 -  part,
+-  checking,
+-  retry,
 +/** This app's status badges and the reason its latest check gave, under the row's line. */
 +function AccountStatusNotes({
 +  app,
 +  account,
  }: {
--  readonly health: AccountAppHealth | undefined;
 -  readonly part: "header" | "details";
+-  readonly health: AccountAppHealth | undefined;
+-  readonly checking: boolean;
+-  readonly retry: (() => void) | undefined;
 +  readonly app: App;
 +  readonly account: AccountSummary;
  }) {
+-  if (health === undefined || !health.checkable) return null;
+-  return <AccountCheckResult health={health} part={part} checking={checking} retry={retry} />;
 +  if (accountNeedsSignIn(account) || account.signIn?.state === "unavailable") return null;
 +  const health = account.health?.apps.find((entry) => entry.app === app.id);
-   if (health === undefined || (!health.checkable && health.check === null)) return null;
--  return <AccountCheckResult health={health} part={part} />;
++  if (health === undefined || (!health.checkable && health.check === null)) return null;
 +  return <AccountCheckResult health={health} part="notes" />;
  }
 diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
-index 2d32b68..803cdcc 100644
+index 98bbd809..6cb51df4 100644
 --- a/packages/ui/src/implementation/dashboard/common.tsx
 +++ b/packages/ui/src/implementation/dashboard/common.tsx
-@@ -108,7 +108,7 @@ export function ProviderIcon({
-         "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
-         large &&
-           "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
--        medium && "[&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+@@ -109,7 +109,7 @@ export function ProviderIcon({
+         // The mark scales with the tile, which keeps the padding even wherever a page resizes it.
+         "provider-icon inline-flex size-8.5 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-border bg-background [&_img]:size-[70%] [&_img]:object-contain [&_>_svg]:size-1/2 max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+         large && "provider-icon-large size-11 rounded-[10px]",
+-        medium && "[&_img]:size-6 [&_>_svg]:size-6",
 +        medium && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
        )}
        data-provider={brand?.key}
        aria-hidden
 diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
-index 6d4f767..7064afb 100644
+index 6d4f767f..7064afbc 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 @@ -43,7 +43,7 @@ export function RequestedAccess({

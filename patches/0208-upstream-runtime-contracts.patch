@@ -1,0 +1,186 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+index 5d5bbb5d..26da73b8 100644
+--- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
++++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+@@ -482,10 +482,10 @@ export const cloudV1ImportSettings = Effect.gen(function* () {
+     billing:
+       access.source === "live"
+         ? Option.none()
+-        : Option.some(
++        : Option.map(billing, (configured) =>
+             Effect.all({
+-              options: Effect.all({ serverUrl: billing.serverUrl, secretKey: billing.secretKey }),
+-              catalog: billing.catalog,
++              options: Effect.all({ serverUrl: configured.serverUrl, secretKey: configured.secretKey }),
++              catalog: configured.catalog,
+             }),
+           ),
+   });
+diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
+index 2f00b30d..df0698f5 100644
+--- a/apps/hosted/cloud/src/infrastructure/product.ts
++++ b/apps/hosted/cloud/src/infrastructure/product.ts
+@@ -86,7 +86,7 @@ export const cloudProduct = Effect.fn(function* (
+                 url: feedUrl.value,
+                 egress: {
+                   ...egress,
+-                  client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
++                  client: yield* cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
+                 },
+               },
+         ).pipe(Effect.provideService(PoolAppSource, poolSource)),
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+index 0a2b3820..4ff8512a 100644
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -285,6 +285,7 @@ export const dispatchProvisioning = <R>(
+               reason: dispatchFailureReason(cause),
+             }),
+           ),
++          Effect.mapError(() => new ProvisioningFailed()),
+           Effect.result,
+         ),
+       { concurrency: 4 },
+diff --git a/apps/hosted/cloud/src/infrastructure/welcome-email.ts b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
+index 30462b67..8a1cc2eb 100644
+--- a/apps/hosted/cloud/src/infrastructure/welcome-email.ts
++++ b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
+@@ -6,7 +6,7 @@ import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
+ import type { SendWelcomeEmail } from "../contracts/email.ts";
+ import { cloudHosts } from "./stage.ts";
+ import { cloudSecrets } from "./secrets.ts";
+-import { jobFailed } from "../contracts/job-outcome.ts";
++import { jobCompleted, jobFailed } from "../contracts/job-outcome.ts";
+ import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
+ import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
+ 
+@@ -39,7 +39,7 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
+               user,
+             ).pipe(Effect.provide(database)),
+           )
+-        : Effect.void;
++        : Effect.succeed(jobCompleted);
+     return {
+       deliver: deliverUser().pipe(
+         Effect.catch((error) =>
+diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+index 84cd8a03..404c94d2 100644
+--- a/packages/sdk/src/implementation/app-runtime.ts
++++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -166,7 +166,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
+       input: {
+         readonly app: string;
+         readonly build: BuildId;
+-        readonly hostApi: HostApiCheck | undefined;
++        readonly hostApi?: HostApiCheck | undefined;
+         readonly database: boolean;
+         readonly observeRevision?: (revision: number) => void;
+       } & HostContext,
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 65709082..1bd30917 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -108,7 +108,7 @@ import {
+   selfBinding,
+   type BackgroundJob,
+ } from "./infrastructure/background-jobs.ts";
+-import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
++import { handledJob, jobCompleted, jobFailed, type JobOutcome } from "./contracts/job-outcome.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
+ import { withBatchExecution } from "./infrastructure/batch-execution.ts";
+ import { cloudEmulators } from "./infrastructure/emulators.ts";
+@@ -344,7 +344,8 @@ export default Api.make(
+       Effect.provide(executor),
+       reportErrors,
+       Effect.scoped,
+-      Effect.catch(() => Effect.logWarning("Contributed departure outbox unavailable")),
++      Effect.as(jobCompleted),
++      handledJob(Effect.logWarning("Contributed departure outbox unavailable")),
+     );
+     const startJobs = Effect.all([dispatchWith(installTeam), contributedDepartures], {
+       concurrency: 2,
+@@ -462,7 +463,8 @@ export default Api.make(
+       Effect.provide(executor),
+       reportErrors,
+       Effect.scoped,
+-      Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
++      Effect.as(jobCompleted),
++      handledJob(Effect.logWarning("Personal-data reporting failed")),
+     );
+     const jobs = yield* cloudBackgroundJobs;
+     yield* jobs.schedule(
+@@ -515,7 +517,7 @@ export default Api.make(
+       "agent-grant-expiry": agentGrantExpiry,
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+       "personal-data-reporting": personalDataReporting,
+-    } satisfies Record<BackgroundJob, unknown>;
++    } satisfies Record<BackgroundJob, Effect.Effect<JobOutcome, unknown, unknown>>;
+ 
+     const egress = yield* cloudEgress;
+     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+index 041775b1..640a1c7c 100644
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -1,3 +1,4 @@
++import { jobCompleted, jobFailedWith } from "../contracts/job-outcome.ts";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { Console, Effect, Schema } from "effect";
+ import { createHash, randomUUID } from "node:crypto";
+@@ -97,7 +98,7 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+     );
+   }).pipe(
+     Effect.map((report) => ({ ok: true as const, report })),
+-    Effect.catchCause(() => Effect.succeed({ ok: false as const })),
++    Effect.catchCause((cause) => Effect.succeed({ ok: false as const, outcome: jobFailedWith(cause) })),
+   );
+   if (!report.ok) {
+     yield* Console.info(
+@@ -110,7 +111,7 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+         migrationGo: false,
+       }),
+     );
+-    return;
++    return report.outcome;
+   }
+   const json = JSON.stringify(report.report);
+   const sha256 = createHash("sha256").update(json).digest("hex");
+@@ -140,4 +141,5 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+       migrationGo: false,
+     }),
+   );
++  return jobCompleted;
+ }).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+index 4d30ed59..16148198 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+@@ -59,7 +59,7 @@ export const cloudAppDomains = Effect.gen(function* () {
+       status: (_team: typeof Team.Type) => Effect.succeed("ready" as const),
+       control: (_operation: "resume" | "drain") =>
+         Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+-      heartbeat: Effect.void,
++      heartbeat: Effect.succeed(jobCompleted),
+     };
+   const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
+   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
+index 5886933d..35315475 100644
+--- a/packages/ui/src/implementation/dashboard/custom-app.tsx
++++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
+@@ -15,12 +15,12 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+  * Add a remote MCP server by URL. Executor confirms whether it needs no sign-in or supports
+  * OAuth; anything else is set up with the user's agent.
+  */
+-export function CustomAppForm<E>({
++export function CustomAppForm<E, A extends AppSummary>({
+   mutation,
+   Failure,
+   onInstalled,
+-}: MutationProps<CustomAppInput, AppSummary, E> & {
+-  readonly onInstalled: (app: AppSummary) => void | Promise<void>;
++}: MutationProps<CustomAppInput, A, E> & {
++  readonly onInstalled: (app: A) => void | Promise<void>;
+ }) {
+   const brand = useProductBrand();
+   const result = useAtomValue(mutation);

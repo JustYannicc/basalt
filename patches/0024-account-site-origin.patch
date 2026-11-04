@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 5c74283..b7831c1 100644
+index 5c742836..b7831c18 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
 @@ -71,6 +71,8 @@ const app = { ...params, app: AppId };
@@ -42,7 +42,7 @@ index 5c74283..b7831c1 100644
      HttpApiEndpoint.get("connection", `${prefix}/connections/:connection`, {
        params: connection,
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index 9fed5ba..ddd4cb3 100644
+index 9fed5ba7..ddd4cb31 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
 @@ -10,6 +10,7 @@ import {
@@ -76,10 +76,10 @@ index 9fed5ba..ddd4cb3 100644
  /** The `/:scope` routes of one scope, named `appAccounts.<scope><Action>` for tools, such as `appAccounts.appList`. */
  const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index 9ef6b66..a3dcc6d 100644
+index 71b30666..c920c8e2 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -134,25 +134,42 @@ export const checkAccount = Effect.gen(function* () {
+@@ -135,25 +135,42 @@ export const checkAccount = Effect.gen(function* () {
   */
  export const oauthSetup = (
    owner: OwnerId,
@@ -131,7 +131,7 @@ index 9ef6b66..a3dcc6d 100644
      )
        return yield* new OrganizationForbidden();
      const setup = yield* executor.accountConnections.oauthSetup({ ...input, owner });
-@@ -201,6 +218,7 @@ export const connectAccount = (
+@@ -209,6 +226,7 @@ export const connectAccount = (
      readonly requirement: string;
      readonly scope: AccountScope;
      readonly destination?: typeof ConnectionDestination.Type | undefined;
@@ -139,7 +139,7 @@ index 9ef6b66..a3dcc6d 100644
      readonly account?: AccountId | undefined;
    },
  ) =>
-@@ -235,7 +253,12 @@ export const connectAccount = (
+@@ -243,7 +261,12 @@ export const connectAccount = (
      return yield* executor.accountConnections
        .create({
          owner,
@@ -153,7 +153,7 @@ index 9ef6b66..a3dcc6d 100644
          ...(input.account === undefined ? {} : { account: input.account }),
        })
        .pipe(Effect.flatMap((connection) => recordConnection(connection, destination, input.scope)));
-@@ -345,6 +368,15 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
+@@ -353,6 +376,15 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
            oauthSetup(owner, { provider: params.provider, method: params.method, redirectUri }),
          ),
        )
@@ -170,7 +170,7 @@ index 9ef6b66..a3dcc6d 100644
          Effect.gen(function* () {
            const owner = yield* currentOwner;
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index 83f0a16..a97fd86 100644
+index 83f0a169..a97fd866 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -224,6 +224,7 @@ const connect = (
@@ -182,10 +182,10 @@ index 83f0a16..a97fd86 100644
    },
  ) =>
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index 49ca692..2973c5d 100644
+index 4dccf749..78ae3c2f 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
-@@ -63,6 +63,11 @@ class ConnectionKey extends Data.Class<{
+@@ -64,6 +64,11 @@ class ConnectionKey extends Data.Class<{
    readonly organization: OrganizationReference;
    readonly connection: AccountConnectionId;
  }> {}
@@ -197,7 +197,7 @@ index 49ca692..2973c5d 100644
  
  class OAuthSetupKey extends Data.Class<{
    readonly organization: OrganizationReference;
-@@ -141,6 +146,16 @@ const connectionQuery = Atom.family((key: ConnectionKey) =>
+@@ -142,6 +147,16 @@ const connectionQuery = Atom.family((key: ConnectionKey) =>
        !Option.exists(Cause.findErrorOption(cause), Schema.is(AccountConnectionTargetChanged)),
    ),
  );
@@ -214,7 +214,7 @@ index 49ca692..2973c5d 100644
  /** A write that reports a changed app reads the request again, so the change replaces its form. */
  const reloadConnection = (get: Atom.FnContext, key: ConnectionKey) =>
    Effect.sync(() => get.refresh(connectionQuery(key)));
-@@ -212,6 +227,8 @@ export function appConnectionAtoms(key: {
+@@ -213,6 +228,8 @@ export function appConnectionAtoms(key: {
    readonly scope: AccountScope;
    readonly requirement: string;
    readonly provider: ProviderId;
@@ -223,7 +223,7 @@ index 49ca692..2973c5d 100644
    /** Replace this account's credentials instead of adding an account. */
    readonly account?: AccountId | undefined;
  }) {
-@@ -222,7 +239,10 @@ export function appConnectionAtoms(key: {
+@@ -223,7 +240,10 @@ export function appConnectionAtoms(key: {
        const client = yield* HostedClient;
        const args = {
          params: { organization: key.organization, app: key.app, requirement: key.requirement },
@@ -235,7 +235,7 @@ index 49ca692..2973c5d 100644
        };
        const saved =
          current ??
-@@ -241,6 +261,19 @@ export function appConnectionAtoms(key: {
+@@ -242,6 +262,19 @@ export function appConnectionAtoms(key: {
        }
        return saved;
      });
@@ -255,7 +255,7 @@ index 49ca692..2973c5d 100644
    const saved = (get: Atom.FnContext, connection: AccountConnectionId, account: Account) => {
      connectionSaved(
        get,
-@@ -252,6 +285,7 @@ export function appConnectionAtoms(key: {
+@@ -253,6 +286,7 @@ export function appConnectionAtoms(key: {
    };
    return {
      request,
@@ -264,10 +264,10 @@ index 49ca692..2973c5d 100644
        (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
          Effect.gen(function* () {
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 62c58d4..ce5cf7f 100644
+index 74d5e3c9..1fe30e06 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -94,6 +94,7 @@ const errorMessage = Match.type<HostedError>().pipe(
+@@ -95,6 +95,7 @@ const errorMessage = Match.type<HostedError>().pipe(
        "This sign-in method is no longer available. Start account setup again.",
      AccountConnectionNotFound: () =>
        "This connection is no longer available. Start account setup again.",
@@ -276,7 +276,7 @@ index 62c58d4..ce5cf7f 100644
      AccountConnectionTargetChanged: () =>
        "The app’s account setup changed. Close this form and try again.",
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index bb75f68..002a311 100644
+index e1739be3..e026b4cb 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -1,5 +1,5 @@
@@ -448,7 +448,7 @@ index bb75f68..002a311 100644
        initialMethod={form.method}
        submit={submit}
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 4009d39..8e3d16d 100644
+index 257f7724..ccdbe257 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -1,3 +1,4 @@
@@ -456,15 +456,15 @@ index 4009d39..8e3d16d 100644
  import type { HostedError } from "../../contracts/errors.ts";
  import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
  import { RegistryContext, useAtomSet } from "@effect/atom-react";
-@@ -5,6 +6,7 @@ import {
-   OAuthClientInput,
+@@ -6,6 +7,7 @@ import {
+   OAuthClientNotFound,
    oauthClientEntryReasons,
    type Account,
 +  type OAuthConnectOptions,
    type AppId,
    type HttpUrl,
-   type Provider,
-@@ -24,6 +26,7 @@ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+   type OAuthClientId,
+@@ -28,6 +30,7 @@ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
  import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
  import {
    oauthSetupAtom,
@@ -472,7 +472,7 @@ index 4009d39..8e3d16d 100644
    startOAuthAtom,
    submitConnectionAtom,
    PendingOAuth,
-@@ -84,11 +87,15 @@ export function ConnectionFields({
+@@ -94,12 +97,16 @@ export function ConnectionFields({
    return (
      <HostedAccountForm
        provider={connection.provider}
@@ -482,13 +482,14 @@ index 4009d39..8e3d16d 100644
        redirectUri={connection.redirectUri}
        initialMethod={initialMethod}
        manualClient={manualClient}
+       editClient={editClient}
 +      setupQuery={(method) =>
 +        connectionOAuthSetupAtom({ organization, connection: connection.id, method })
 +      }
        submit={submit}
        start={startOAuth}
        onSaved={onSaved}
-@@ -113,8 +120,10 @@ export function ConnectionFields({
+@@ -125,8 +132,10 @@ export function ConnectionFields({
  
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
@@ -499,7 +500,7 @@ index 4009d39..8e3d16d 100644
    redirectUri,
    initialMethod,
    manualClient,
-@@ -126,12 +135,16 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -139,6 +148,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    app,
  }: {
    readonly provider: Provider;
@@ -508,23 +509,24 @@ index 4009d39..8e3d16d 100644
    /** The app that will use the account; its check confirms entered credentials. */
    readonly app?: AppId | null | undefined;
    readonly account?: Account;
-   readonly redirectUri: string;
-   readonly initialMethod?: string | undefined;
+@@ -147,6 +158,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    readonly manualClient?: boolean | undefined;
+   /** A registered client whose details reopen to be corrected before signing in again. */
+   readonly editClient?: OAuthClientId | undefined;
 +  /** Connection forms preflight against their saved target instead of a caller-supplied provider site. */
 +  readonly setupQuery?: ((method: string) => Query<OAuthConnectOptions, HostedError>) | undefined;
    readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<Account, HostedError>>;
-   readonly start: (
-     input: OAuthSubmission & { readonly method: string },
-@@ -180,6 +193,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   readonly start: (input: {
+     readonly method: string;
+@@ -235,6 +248,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    return (
      <AccountForm
        provider={provider}
 +      site={site}
        {...(account ? { account } : {})}
-       initialMethod={method}
+       initialMethod={initialMethod}
        Failure={HostedFailure}
-@@ -194,12 +208,18 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -249,12 +263,18 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
        oauth={({ method, disabled, onPendingChange, access }) => (
@@ -546,10 +548,10 @@ index 4009d39..8e3d16d 100644
                access={access}
                disabled={disabled}
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index cd15dfd..50536fb 100644
+index 1bfedb37..dddf4fcc 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
-@@ -7,12 +7,12 @@ import {
+@@ -8,12 +8,12 @@ import {
    AccountConnectionId,
    AccountConnectionTarget,
    Account,
@@ -563,7 +565,7 @@ index cd15dfd..50536fb 100644
    AccountConnectionRefused,
    AccountNotFound,
    ProviderNotFound,
-@@ -91,6 +91,7 @@ const errors = [
+@@ -92,6 +92,7 @@ const errors = [
    AccountConnectionNotFound,
    AccountConnectionClosed,
    AccountConnectionTargetChanged,
@@ -571,7 +573,7 @@ index cd15dfd..50536fb 100644
    AccountNotFound,
    ProviderNotFound,
  ] as const;
-@@ -109,6 +110,8 @@ const scopeConnect = <const S extends AccountScope>(scope: S) =>
+@@ -110,6 +111,8 @@ const scopeConnect = <const S extends AccountScope>(scope: S) =>
        payload: Schema.Struct({
          /** Replace this account's credentials instead of adding an account. */
          account: Schema.optional(AccountId),
@@ -580,7 +582,7 @@ index cd15dfd..50536fb 100644
        }),
        success: AccountConnectionLink,
        error: [...issueErrors, RequirementMismatch],
-@@ -129,10 +132,14 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
+@@ -130,10 +133,14 @@ const accountConnectApi = HttpApi.make("account-connect").add(
        HttpApiEndpoint.post("issue", "/account-connect/api/requests", {
          // The account takes the target app's owner; a caller's owner is ignored. The connection
          // keeps the requirement's scope when it is issued.
@@ -600,10 +602,10 @@ index cd15dfd..50536fb 100644
          error: issueErrors,
        }).annotate(
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index ae67e66..43e8e08 100644
+index ad7a6050..66d7972b 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -19,9 +19,12 @@ import { AppWebhooksActive } from "@executor-js/sdk/core";
+@@ -20,9 +20,12 @@ import { AppWebhooksActive } from "@executor-js/sdk/core";
  /** Browser-safe read contracts for inspecting the local Executor instance. */
  import {
    AccountConnectionTargetChanged,
@@ -616,7 +618,7 @@ index ae67e66..43e8e08 100644
    AccountConnectionClosed,
    Account,
    AccountHealth,
-@@ -253,9 +256,12 @@ const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
+@@ -254,9 +257,12 @@ const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
   * credentials instead of adding one; the app page is the only place credentials are entered.
   */
  export const AppAccountTarget = Schema.Struct({
@@ -629,7 +631,7 @@ index ae67e66..43e8e08 100644
    StorageError,
    CredentialsError,
    ProviderNotFound,
-@@ -320,6 +326,12 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+@@ -321,6 +327,12 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
          ? "Stop this app using an account for one of its own requirements. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
          : "Stop using an account for one of this app's user requirements. The account stays saved.",
      ),
@@ -642,7 +644,7 @@ index ae67e66..43e8e08 100644
      HttpApiEndpoint.post(`${scope}Connect`, `${path}/:requirement/connections`, {
        params: requirement,
        payload: Schema.Struct({
-@@ -355,9 +367,17 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+@@ -356,9 +368,17 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
      ),
    ] as const;
  };
@@ -663,7 +665,7 @@ index ae67e66..43e8e08 100644
  
  /** Local session authentication, with explicit failures carried through AtomHttpApi. */
  export class DashboardAccess extends HttpApiMiddleware.Service<DashboardAccess>()(
-@@ -555,12 +575,14 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -556,12 +576,14 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
      .add(appGet)
      .add(appLink)
      .add(appUnlink)
@@ -678,7 +680,7 @@ index ae67e66..43e8e08 100644
      .add(userConnect)
      .add(userConnectOAuth)
      .add(
-@@ -791,9 +813,16 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -792,9 +814,16 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
      )
      .add(
        HttpApiEndpoint.post("oauthSetup", "/dashboard/api/accounts/oauth/setup", {
@@ -697,7 +699,7 @@ index ae67e66..43e8e08 100644
            CredentialsError,
            ProviderNotFound,
 diff --git a/apps/local/server/src/implementation/account-connections.ts b/apps/local/server/src/implementation/account-connections.ts
-index 76d16dd..ae3459e 100644
+index 41afa11c..9967b8e9 100644
 --- a/apps/local/server/src/implementation/account-connections.ts
 +++ b/apps/local/server/src/implementation/account-connections.ts
 @@ -120,12 +120,20 @@ export const accountConnectHandlers = (
@@ -733,7 +735,7 @@ index 76d16dd..ae3459e 100644
                  redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
                });
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 4da7c9d..2126ea7 100644
+index ecbd3125..e90da3d7 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
 @@ -15,6 +15,7 @@ import { appOrigin } from "../contracts/app-ui.ts";
@@ -795,7 +797,7 @@ index 4da7c9d..2126ea7 100644
        .handle("userConnectOAuth", ({ params, payload }) =>
          connectWithOAuth(params, "user", payload),
 diff --git a/apps/local/web/src/contracts/app-connections.ts b/apps/local/web/src/contracts/app-connections.ts
-index f4a6b39..edca075 100644
+index f4a6b390..edca0759 100644
 --- a/apps/local/web/src/contracts/app-connections.ts
 +++ b/apps/local/web/src/contracts/app-connections.ts
 @@ -3,9 +3,10 @@
@@ -876,10 +878,10 @@ index f4a6b39..edca075 100644
              ? client.dashboard.appConnectOAuth(request)
              : client.dashboard.userConnectOAuth(request);
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
-index e4b9f8b..7fa5ad1 100644
+index ea92c572..dc041a5b 100644
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
-@@ -85,6 +85,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
+@@ -87,6 +87,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
          "This app’s setup changed",
          "No credentials were saved. Ask your agent for a new connection link.",
        ),
@@ -891,7 +893,7 @@ index e4b9f8b..7fa5ad1 100644
        message("This connection has ended", "Ask your agent for a new connection link."),
      AccountConnectionRefused: () =>
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index 8e717cb..a5c9889 100644
+index 8e717cb1..a5c9889d 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
 @@ -1,5 +1,7 @@
@@ -1043,10 +1045,10 @@ index 8e717cb..a5c9889 100644
        Failure={Failure}
        submitLabel={account ? "Save credentials" : "Add account"}
 diff --git a/apps/local/web/src/implementation/pages/connect-account.tsx b/apps/local/web/src/implementation/pages/connect-account.tsx
-index 0116d5b..edf4eff 100644
+index 95a8c860..6c54c09a 100644
 --- a/apps/local/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/local/web/src/implementation/pages/connect-account.tsx
-@@ -106,6 +106,9 @@ function ConnectionForm({
+@@ -104,6 +104,9 @@ function ConnectionForm({
                : "No credentials were saved."}
          </p>
          {state.status === "completed" && <p>Connected to {connection.target.name}.</p>}
@@ -1056,7 +1058,7 @@ index 0116d5b..edf4eff 100644
          <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
            You can return to your agent.
          </p>
-@@ -119,10 +122,16 @@ function ConnectionForm({
+@@ -121,10 +124,16 @@ function ConnectionForm({
            Connect {connection.provider.definition.name}
          </h1>
          <p className="text-[13px] text-muted-foreground">For {connection.target.name}</p>
@@ -1074,7 +1076,7 @@ index 0116d5b..edf4eff 100644
          Failure={ConnectionLinkFailure}
          submitLabel="Connect account"
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-index efe8698..eb70d87 100644
+index efe86989..eb70d879 100644
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
 @@ -17,7 +17,6 @@ import {
@@ -1112,7 +1114,7 @@ index efe8698..eb70d87 100644
            disabled={disabled}
 diff --git a/packages/apps/protocols/15.json b/packages/apps/protocols/15.json
 new file mode 100644
-index 0000000..ca9fecc
+index 00000000..ca9fecc5
 --- /dev/null
 +++ b/packages/apps/protocols/15.json
 @@ -0,0 +1,2583 @@
@@ -3700,7 +3702,7 @@ index 0000000..ca9fecc
 +  }
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 6356909..9cc1e7b 100644
+index 63569098..9cc1e7b8 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -88,14 +88,15 @@ export { protocol10 } from "./protocols/10.ts";
@@ -3722,7 +3724,7 @@ index 6356909..9cc1e7b 100644
    HostAccountsInvalid,
    HostDeclarationInvalid,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 095656f..74740a3 100644
+index 095656f4..74740a3e 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -3733,7 +3735,7 @@ index 095656f..74740a3 100644
 +export const frameworkProtocol = 15;
 diff --git a/packages/apps/src/contracts/protocols/14.ts b/packages/apps/src/contracts/protocols/14.ts
 new file mode 100644
-index 0000000..b760eca
+index 00000000..b760ecab
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/14.ts
 @@ -0,0 +1,87 @@
@@ -3825,7 +3827,7 @@ index 0000000..b760eca
 +  },
 +} as const;
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 294dcb0..8b9fe02 100644
+index 22ea9e1b..b048b09e 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -13,6 +13,7 @@
@@ -3853,7 +3855,7 @@ index 294dcb0..8b9fe02 100644
    method: Schema.NonEmptyString,
    /**
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index 0c5187a..b505d6a 100644
+index 0c5187ac..b505d6a1 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -16,6 +16,7 @@ import { protocol10 } from "./10.ts";
@@ -3871,7 +3873,7 @@ index 0c5187a..b505d6a 100644
 +  protocol14,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index bc3feab..5befcec 100644
+index bc3feabf..5befcec0 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -2,6 +2,10 @@
@@ -3921,7 +3923,7 @@ index bc3feab..5befcec 100644
      readonly fields: AuthMethodData<Auth[Method]>;
      /** See `AccountRequest`. */
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 4a5b39e..f9902ec 100644
+index 4a5b39e7..f9902ec9 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -194,6 +194,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
@@ -3952,7 +3954,7 @@ index 4a5b39e..f9902ec 100644
        if (many) bound.set(slot, values);
        else {
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
-index af3b07b..c584d78 100644
+index af3b07b6..c584d78d 100644
 --- a/packages/apps/src/implementation/provider.ts
 +++ b/packages/apps/src/implementation/provider.ts
 @@ -8,6 +8,7 @@ import {
@@ -3973,7 +3975,7 @@ index af3b07b..c584d78 100644
     * Hosts the credentials may be sent to: `api.example.com`, `api.example.com:8443`, or
     * `*.example.com` for one level of subdomain. Secret fields then reach app code as handles
 diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
-index 39ee657..603681c 100644
+index 39ee657e..603681c3 100644
 --- a/packages/sdk/src/contracts/account-connection.ts
 +++ b/packages/sdk/src/contracts/account-connection.ts
 @@ -2,6 +2,7 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
@@ -4052,12 +4054,12 @@ index 39ee657..603681c 100644
    )
    .add(
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index aee18a0..7beaff2 100644
+index 95b280bb..a491cf28 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -9,6 +9,7 @@ import type { UiAccountProblem } from "apps/ui/contracts";
  import type { App, AppAccounts } from "./apps.ts";
- import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
  import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
 +import { SiteOrigin } from "@executor-js/utils/account-site";
  
@@ -4081,18 +4083,18 @@ index aee18a0..7beaff2 100644
    }),
    /** Replace every field of a secrets-method account, keeping its ID and selections. */
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 56b4494..ed94d15 100644
+index b9664148..46fa552f 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -15,6 +15,7 @@ import {
+@@ -20,6 +20,7 @@ import {
    PlacementHeaderName,
  } from "apps/contracts";
- import { Account } from "./account.ts";
+ import { Account, type AccountFieldsInvalid } from "./account.ts";
 +import { SiteOrigin } from "@executor-js/utils/account-site";
  export { OAuthClientAuth } from "apps/contracts";
  import type { HttpClient } from "effect/http";
  import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
-@@ -78,13 +79,21 @@ export const OAuthClientSetup = Schema.Union([
+@@ -122,13 +123,21 @@ export const OAuthClientSetup = Schema.Union([
    }),
  ]);
  export type OAuthClientSetup = typeof OAuthClientSetup.Type;
@@ -4121,7 +4123,7 @@ index 56b4494..ed94d15 100644
  
  /** No client was named and none can be created automatically for this provider method. */
  export const OAuthClientUnavailable = ApiError.define({
-@@ -399,6 +408,8 @@ export const FirstPartyOAuthClient = Schema.Struct({
+@@ -446,6 +455,8 @@ export const FirstPartyOAuthClient = Schema.Struct({
    /** Shown when signing in, such as "Executor for Google". */
    label: Schema.NonEmptyString,
    server: FirstPartyOAuthServer,
@@ -4130,7 +4132,7 @@ index 56b4494..ed94d15 100644
    clientId: Schema.NonEmptyString,
    clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
    tokenEndpointAuthMethod: OAuthClientAuth,
-@@ -501,6 +512,7 @@ export const OAuthSetupFailed = UserFacingError.define({
+@@ -548,6 +559,7 @@ export const OAuthSetupFailed = UserFacingError.define({
        "client_registration_required",
        "client_metadata_rejected",
        "registration_rejected",
@@ -4138,7 +4140,7 @@ index 56b4494..ed94d15 100644
        "incompatible_response",
        "invalid_client",
        "invalid_redirect",
-@@ -623,6 +635,18 @@ export const OAuthSetupFailed = UserFacingError.define({
+@@ -670,6 +682,18 @@ export const OAuthSetupFailed = UserFacingError.define({
                  callback,
              },
            },
@@ -4157,7 +4159,7 @@ index 56b4494..ed94d15 100644
            incompatible_response: incompatibleResponse,
            invalid_client: {
              title: "OAuth client not accepted",
-@@ -677,6 +701,7 @@ export const oauthClientEntryReasons: ReadonlySet<OAuthSetupFailed["reason"]> =
+@@ -724,6 +748,7 @@ export const oauthClientEntryReasons: ReadonlySet<OAuthSetupFailed["reason"]> =
    "client_registration_required",
    "client_metadata_rejected",
    "registration_rejected",
@@ -4165,7 +4167,7 @@ index 56b4494..ed94d15 100644
  ]);
  /** Parsed OAuthSetupFailed failure. */
  export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
-@@ -1313,6 +1338,8 @@ const attemptFields = {
+@@ -1456,6 +1481,8 @@ const attemptFields = {
    state: Schema.NonEmptyString,
    verifier: Schema.NonEmptyString,
    response: JsonObject,
@@ -4174,7 +4176,7 @@ index 56b4494..ed94d15 100644
  };
  /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
  export const OAuthAttempt = Schema.Struct({
-@@ -1348,6 +1375,8 @@ export const isFirstPartyAttempt = (
+@@ -1493,6 +1520,8 @@ export const isFirstPartyAttempt = (
  export type OAuthAttempt = typeof OAuthAttempt.Type;
  /** Private refresh context. Access-token projections are stored separately on the account. */
  const grantFields = {
@@ -4183,7 +4185,7 @@ index 56b4494..ed94d15 100644
    resource: Schema.optional(HttpUrl),
    /**
     * Token request encoding frozen at sign-in, so renewal sends what the service accepted. Grants
-@@ -1406,6 +1435,7 @@ export const OAuthGrant = Schema.Union([
+@@ -1555,6 +1584,7 @@ export const OAuthGrant = Schema.Union([
    Schema.Struct({
      grant: Schema.Literal("authorization_code"),
      firstParty: FirstPartyOAuthClientId,
@@ -4192,7 +4194,7 @@ index 56b4494..ed94d15 100644
      expiresAt: Schema.optional(Schema.Number),
      fields: JsonObject,
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
-index 4500186..ead5982 100644
+index 45001860..ead5982c 100644
 --- a/packages/sdk/src/contracts/provider.ts
 +++ b/packages/sdk/src/contracts/provider.ts
 @@ -2,7 +2,7 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
@@ -4213,7 +4215,7 @@ index 4500186..ead5982 100644
    hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
  });
 diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
-index b058c18..a156587 100644
+index b058c180..a1565872 100644
 --- a/packages/sdk/src/contracts/storage.ts
 +++ b/packages/sdk/src/contracts/storage.ts
 @@ -16,6 +16,7 @@ import {
@@ -4240,7 +4242,7 @@ index b058c18..a156587 100644
    credentialGeneration: Schema.Int,
    /** Hosts the account was connected for, or null when it was connected without hosts. */
 diff --git a/packages/sdk/src/implementation/account-connections.ts b/packages/sdk/src/implementation/account-connections.ts
-index fad3d98..ef23be1 100644
+index fad3d98f..ef23be10 100644
 --- a/packages/sdk/src/implementation/account-connections.ts
 +++ b/packages/sdk/src/implementation/account-connections.ts
 @@ -1,5 +1,6 @@
@@ -4319,26 +4321,26 @@ index fad3d98..ef23be1 100644
            if (lifecycle)
              yield* lifecycle.connectionCompleting({
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 9dc00da..81a80cf 100644
+index 14a130aa..364d6620 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -30,6 +30,7 @@ import { storedAccount } from "./accounts.ts";
- import { query, type Query } from "./database.ts";
+@@ -32,6 +32,7 @@ import { storedAccount } from "./accounts.ts";
+ import { inOrder, query, type Query } from "./database.ts";
  import type { makeOAuth } from "./oauth.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 +import type { UrlPolicy } from "@executor-js/utils/url-policy";
  
  /** The one account an account check binds, in its requirement's scope. */
  const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
-@@ -123,6 +124,7 @@ export const makeAccountHealth = (
+@@ -125,6 +126,7 @@ export const makeAccountHealth = (
    runtime: Runtime,
    oauth: OAuth,
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
 +  sitePolicy: UrlPolicy,
    listApps: ListApps,
+   hostApi: HostApi | undefined,
  ) => {
-   /** One account's health from the apps that use it and its recorded checks. */
-@@ -230,7 +232,7 @@ export const makeAccountHealth = (
+@@ -242,7 +244,7 @@ export const makeAccountHealth = (
              checkedAccounts(
                target.required.scope,
                target.slot,
@@ -4348,19 +4350,19 @@ index 9dc00da..81a80cf 100644
            ),
          });
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index f7ea88f..7f7f44b 100644
+index 56d4995d..b9bbb104 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -12,7 +12,7 @@ import { OAuthGrant } from "../contracts/oauth.ts";
- import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
- import { Provider, ProviderNotFound } from "../contracts/provider.ts";
- import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+@@ -18,7 +18,7 @@ import {
+   type OwnerId,
+   type ProviderId,
+ } from "../contracts/shared.ts";
 -import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 +import { StoredAccount, StoredAccountMetadata, type Credentials } from "../contracts/storage.ts";
  import { query, transaction, type Query } from "./database.ts";
- import { validateFields } from "./provider.ts";
+ import { canonical, validateFields } from "./provider.ts";
  
-@@ -67,6 +67,36 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
+@@ -127,6 +127,36 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
  export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
    storedAccount(db, input.account, input.owner);
  
@@ -4397,7 +4399,7 @@ index f7ea88f..7f7f44b 100644
  /** An encrypted OAuth grant whose account deletion has committed. */
  export interface RemovedGrant {
    readonly account: AccountId;
-@@ -112,6 +142,7 @@ export const makeAccounts = (
+@@ -172,6 +202,7 @@ export const makeAccounts = (
          provider: provider.id,
          method: input.method,
          createdAt: new Date(yield* Clock.currentTimeMillis),
@@ -4405,7 +4407,7 @@ index f7ea88f..7f7f44b 100644
        };
        const encryptedCredentials = yield* credentials.encrypt(identity.id, fields);
        return yield* transaction(db, (tx) =>
-@@ -121,7 +152,13 @@ export const makeAccounts = (
+@@ -181,7 +212,13 @@ export const makeAccounts = (
              label: input.label ?? (yield* defaultLabel(tx, input.owner, provider.id)),
              description: input.description ?? null,
            };
@@ -4420,7 +4422,7 @@ index f7ea88f..7f7f44b 100644
            if (lifecycle) yield* lifecycle.accountCreated(account);
            return account;
          }),
-@@ -130,9 +167,7 @@ export const makeAccounts = (
+@@ -190,9 +227,7 @@ export const makeAccounts = (
    get: (input: Parameters<Executor["accounts"]["get"]>[0]) =>
      Effect.gen(function* () {
        const row = yield* ownedAccount(db, input);
@@ -4431,7 +4433,7 @@ index f7ea88f..7f7f44b 100644
      }).pipe(Effect.withSpan("sdk.accounts.get")),
    provider: (input: Parameters<Executor["accounts"]["provider"]>[0]) =>
      Effect.gen(function* () {
-@@ -156,9 +191,7 @@ export const makeAccounts = (
+@@ -216,9 +251,7 @@ export const makeAccounts = (
          yield* query(() =>
            tx.updateMany("accounts", { where: (b) => b("id", "=", account.id), set }),
          );
@@ -4442,10 +4444,10 @@ index f7ea88f..7f7f44b 100644
        }),
      ).pipe(Effect.withSpan("sdk.accounts.update")),
    replaceCredentials: (input: typeof ManagedAccountInputs.replaceCredentials.Type) =>
-@@ -185,9 +218,7 @@ export const makeAccounts = (
-             set: { encryptedCredentials, credentialGeneration: account.credentialGeneration + 1 },
+@@ -246,9 +279,7 @@ export const makeAccounts = (
            }),
          );
+         yield* resumeWaitingSources(tx, account.id);
 -        return yield* Schema.decodeUnknownEffect(Account)(account).pipe(
 -          Effect.mapError(() => new StorageError()),
 -        );
@@ -4453,7 +4455,7 @@ index f7ea88f..7f7f44b 100644
        }),
      ).pipe(Effect.withSpan("sdk.accounts.replaceCredentials")),
    remove: (input: Parameters<Executor["accounts"]["remove"]>[0]) =>
-@@ -219,9 +250,10 @@ export const makeAccounts = (
+@@ -283,9 +314,10 @@ export const makeAccounts = (
              );
              if (workflow !== null) return yield* new AccountWorkflowsActive({ account: row.id });
              if (lifecycle) {
@@ -4464,8 +4466,8 @@ index f7ea88f..7f7f44b 100644
 +              const account = yield* publicAccount(stored);
                yield* lifecycle.accountRemoving(account);
              }
-             // A source whose subscriptions have all stopped goes with its account.
-@@ -256,7 +288,16 @@ export const makeAccounts = (
+             // A source whose subscriptions have all stopped goes with its account, as do the
+@@ -324,7 +356,16 @@ export const makeAccounts = (
      Effect.gen(function* () {
        const rows = yield* query(() =>
          db.findMany("accounts", {
@@ -4483,7 +4485,7 @@ index f7ea88f..7f7f44b 100644
            where: (b) =>
              b.and(
                b("owner", "=", input.owner),
-@@ -265,9 +306,10 @@ export const makeAccounts = (
+@@ -333,9 +374,10 @@ export const makeAccounts = (
            orderBy: ["id", "asc"],
          }),
        );
@@ -4498,7 +4500,7 @@ index f7ea88f..7f7f44b 100644
    providers: (input: Parameters<Executor["accounts"]["providers"]>[0]) =>
      Effect.gen(function* () {
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 8d5f264..ee2126e 100644
+index 8d5f264c..ee2126e6 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -11,6 +11,8 @@ import {
@@ -4626,7 +4628,7 @@ index 8d5f264..ee2126e 100644
 +  { message: "invocation", protocols: [14], adapter: "protocol14.invocation" },
 +];
 diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
-index e2ccfcd..b04d909 100644
+index e2ccfcd6..b04d9093 100644
 --- a/packages/sdk/src/implementation/connection-target.ts
 +++ b/packages/sdk/src/implementation/connection-target.ts
 @@ -1,6 +1,9 @@
@@ -4724,10 +4726,10 @@ index e2ccfcd..b04d909 100644
      );
      if (lifecycle !== undefined)
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index c27fb4e..d2e8115 100644
+index fdbbac97..636ca6cc 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -40,6 +40,7 @@ import { makeListings } from "./listings.ts";
+@@ -46,6 +46,7 @@ import { makeListings } from "./listings.ts";
  import { makeToolSearch } from "./tool-search.ts";
  import { makeEvents } from "./events.ts";
  import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
@@ -4735,7 +4737,7 @@ index c27fb4e..d2e8115 100644
  
  /** Capture host cryptography; caller owns database and platform resource lifetimes. */
  export const createExecutor = (
-@@ -60,6 +61,7 @@ export const createExecutor = (
+@@ -66,6 +67,7 @@ export const createExecutor = (
        options.blobs,
      );
      const toolListings = { ...defaultToolListingPolicy, ...options.cache?.toolListings };
@@ -4743,7 +4745,7 @@ index c27fb4e..d2e8115 100644
      const cache = options.cache?.memory ?? makeDeclarationCache();
      const events = makeEvents({
        db,
-@@ -144,6 +146,7 @@ export const createExecutor = (
+@@ -151,6 +153,7 @@ export const createExecutor = (
        options.database,
        oauth,
        firstPartyClients,
@@ -4751,7 +4753,7 @@ index c27fb4e..d2e8115 100644
        runtime,
        credentials,
        crypto,
-@@ -158,7 +161,7 @@ export const createExecutor = (
+@@ -165,7 +168,7 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
      );
@@ -4760,32 +4762,19 @@ index c27fb4e..d2e8115 100644
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
        db,
        credentials,
-@@ -171,6 +174,7 @@ export const createExecutor = (
+@@ -178,6 +181,7 @@ export const createExecutor = (
        runtime,
        oauth,
        firstPartyClients,
 +      sitePolicy,
        apps.list,
+       options.hostApi,
      );
-     const schedules = makeSchedules(
-diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 9379bce..9acfebb 100644
---- a/packages/sdk/src/implementation/database.ts
-+++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
- /** Bound query handle sharing the host connection and reactive transaction context. */
- export type Query = ReturnType<typeof database>;
- /** Select the latest migrated storage schema. */
--export const database = (storage: ExecutorDatabase) => storage.orm("4.0.15");
-+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.16");
- /**
-  * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/oauth-protocol.ts b/packages/sdk/src/implementation/oauth-protocol.ts
-index 7f537d9..2aa2448 100644
+index 3b36839d..51a8ccb3 100644
 --- a/packages/sdk/src/implementation/oauth-protocol.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol.ts
-@@ -1452,25 +1452,40 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1508,20 +1508,34 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      discover: (method: OAuthMethod) =>
        Effect.gen(function* () {
          const resolved = yield* Effect.gen(function* () {
@@ -4833,13 +4822,15 @@ index 7f537d9..2aa2448 100644
                scopes: [...method.scopes],
                // Undeclared means the client decides: with nothing advertised, a secret uses Basic.
                tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
-               ...(method.resource == null ? {} : { resource: method.resource }),
+@@ -1529,6 +1543,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+               resourceSource:
+                 method.resource === undefined ? ("none" as const) : ("declared" as const),
              };
 +          }
            const resource = yield* secureUrl(method.discover);
            const read = yield* discoverResource(resource);
            return (yield* fromResource(method, resource, read)).settings;
-@@ -1607,6 +1622,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1665,6 +1680,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
            },
            { sent: [] },
          );
@@ -4857,7 +4848,7 @@ index 7f537d9..2aa2448 100644
            return yield* decode(OAuthRegistration, {
 diff --git a/packages/sdk/src/implementation/oauth-site.ts b/packages/sdk/src/implementation/oauth-site.ts
 new file mode 100644
-index 0000000..15b92e0
+index 00000000..15b92e0b
 --- /dev/null
 +++ b/packages/sdk/src/implementation/oauth-site.ts
 @@ -0,0 +1,79 @@
@@ -4941,7 +4932,7 @@ index 0000000..15b92e0
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index d4168d1..70e842e 100644
+index c5119b54..d26b59fb 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,7 +1,12 @@
@@ -4966,17 +4957,17 @@ index d4168d1..70e842e 100644
    Schema,
    SchemaRepresentation,
    Struct,
-@@ -114,7 +120,8 @@ import {
+@@ -117,7 +123,8 @@ import {
    registrationGrantTypes,
    type OAuthProtocolFailed,
  } from "./oauth-protocol.ts";
--import { defaultLabel, ownedAccount } from "./accounts.ts";
-+import { accountMetadata, defaultLabel, ownedAccount } from "./accounts.ts";
+-import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
++import { accountMetadata, defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 +import { firstPartyClientAtSite, oauthMethodAtSite } from "./oauth-site.ts";
  import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
  
  /**
-@@ -432,25 +439,28 @@ const renewalOutcome = (error: OAuthProtocolFailed): "reconnect" | OAuthRenewalF
+@@ -438,25 +445,28 @@ const renewalOutcome = (error: OAuthProtocolFailed): "reconnect" | OAuthRenewalF
    );
  
  const registrationFailed = (error: OAuthProtocolFailed, callbackUrl: typeof HttpUrl.Type) => {
@@ -5024,7 +5015,7 @@ index d4168d1..70e842e 100644
    return new OAuthSetupFailed({
      cause: causeOf("register", error),
      ...serviceErrorOf(error),
-@@ -574,6 +584,7 @@ export const makeOAuth = (
+@@ -618,6 +628,7 @@ export const makeOAuth = (
      );
    const nextId = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
    const protocol = options === undefined ? undefined : makeOAuthProtocol(options);
@@ -5032,7 +5023,7 @@ index d4168d1..70e842e 100644
    const firstPartyClients = new Map(
      (options?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
    );
-@@ -604,9 +615,11 @@ export const makeOAuth = (
+@@ -648,9 +659,11 @@ export const makeOAuth = (
     * secret or a user's tokens goes where the operator says now, and a rotated secret applies to
     * every account.
     */
@@ -5046,7 +5037,7 @@ index d4168d1..70e842e 100644
        if (client === undefined) return undefined;
        const { server } = client;
        const registration: OAuthRegistration =
-@@ -644,7 +657,7 @@ export const makeOAuth = (
+@@ -688,7 +701,7 @@ export const makeOAuth = (
    const operatingGrant = (grant: OAuthGrant) =>
      Effect.gen(function* () {
        if (!isFirstPartyGrant(grant)) return grant;
@@ -5055,7 +5046,7 @@ index d4168d1..70e842e 100644
        if (operator === undefined) return undefined;
        const { firstParty: _firstParty, generation: _generation, ...rest } = grant;
        return { ...rest, ...operator };
-@@ -685,12 +698,15 @@ export const makeOAuth = (
+@@ -729,12 +742,15 @@ export const makeOAuth = (
        readonly scopesAdvertised?: true | undefined;
      },
      reconnecting?: FirstPartyOAuthClientId,
@@ -5072,7 +5063,7 @@ index d4168d1..70e842e 100644
        if (client.unlisted === true && client.id !== reconnecting) continue;
        if (
          !same(server.authorization_endpoint, client.server.authorizationUrl) ||
-@@ -747,11 +763,21 @@ export const makeOAuth = (
+@@ -791,15 +807,25 @@ export const makeOAuth = (
      });
    };
  
@@ -5099,9 +5090,25 @@ index d4168d1..70e842e 100644
      Effect.gen(function* () {
        if (protocol === undefined || options === undefined)
          return yield* new OAuthSetupFailed({ reason: "unsupported" });
-@@ -761,11 +787,13 @@ export const makeOAuth = (
-       if (row === null) return yield* new ProviderNotFound({ provider: input.provider });
-       const provider = yield* decode(Provider, row);
+-      return yield* setupOf(yield* storedProvider(input.provider), input);
++      return yield* setupOf(yield* storedProvider(input.provider), input, { skipOptionalMetadata, definition: targetDefinition });
+     });
+ 
+   const storedProvider = (id: ProviderId) =>
+@@ -812,17 +838,23 @@ export const makeOAuth = (
+   /** `resolveSetup` for a provider already read, or one an undeployed app declares. */
+   const setupOf = (
+     provider: Provider,
+-    input: { readonly method: string; readonly redirectUri?: string | undefined },
++    input: { readonly method: string; readonly redirectUri?: string | undefined; readonly site?: string | undefined },
++    { skipOptionalMetadata = false, definition: targetDefinition }: {
++      readonly skipOptionalMetadata?: boolean;
++      readonly definition?: ProviderDefinition | undefined;
++    } = {},
+   ) =>
+     Effect.gen(function* () {
+       if (protocol === undefined || options === undefined)
+         return yield* new OAuthSetupFailed({ reason: "unsupported" });
        yield* Effect.annotateCurrentSpan("oauth.provider.id", provider.id);
 -      const method = Object.hasOwn(provider.definition.auth, input.method)
 -        ? provider.definition.auth[input.method]
@@ -5111,12 +5118,12 @@ index d4168d1..70e842e 100644
          : undefined;
 -      if (method === undefined || method.type !== "oauth2")
 +      if (declared === undefined || declared.type !== "oauth2")
-         return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+         return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
 +      const method = oauthMethodAtSite(declared, definition.site, input.site);
        const redirect =
          method.grant === "client_credentials" || input.redirectUri === undefined
            ? undefined
-@@ -778,7 +806,13 @@ export const makeOAuth = (
+@@ -835,7 +867,13 @@ export const makeOAuth = (
            ))
        )
          return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
@@ -5131,7 +5138,7 @@ index d4168d1..70e842e 100644
        // Import checks report the same choice for the providers they generate.
        const registration =
          discovered.grant === "authorization_code"
-@@ -799,7 +833,7 @@ export const makeOAuth = (
+@@ -856,7 +894,7 @@ export const makeOAuth = (
              });
        // Stored clients belong to the server the sign-in discovered, not to the provider.
        const issuer = oauthClientIssuer(discovered.server);
@@ -5140,7 +5147,7 @@ index d4168d1..70e842e 100644
      });
    type Resolved = Effect.Success<ReturnType<typeof resolveSetup>>;
  
-@@ -838,6 +872,7 @@ export const makeOAuth = (
+@@ -895,6 +933,7 @@ export const makeOAuth = (
    const enteredClient = (
      entered: { readonly clientId: string; readonly clientSecret?: string | undefined },
      discovered: Resolved["discovered"],
@@ -5148,7 +5155,7 @@ index d4168d1..70e842e 100644
    ) =>
      Effect.gen(function* () {
        if (discovered.tokenEndpointAuthMethod === "none" && entered.clientSecret !== undefined)
-@@ -848,7 +883,10 @@ export const makeOAuth = (
+@@ -905,7 +944,10 @@ export const makeOAuth = (
            discovered.tokenEndpointAuthMethod ??
            (entered.clientSecret === undefined
              ? "none"
@@ -5160,7 +5167,7 @@ index d4168d1..70e842e 100644
          ...(entered.clientSecret === undefined ? {} : { client_secret: entered.clientSecret }),
        }).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
      });
-@@ -1011,6 +1049,7 @@ export const makeOAuth = (
+@@ -1068,6 +1110,7 @@ export const makeOAuth = (
              ...(secret.client_secret === undefined ? {} : { clientSecret: secret.client_secret }),
            },
            resolved.discovered,
@@ -5168,7 +5175,7 @@ index d4168d1..70e842e 100644
          ));
        const use: OAuthClientUse = {
          id: row.id,
-@@ -1084,14 +1123,61 @@ export const makeOAuth = (
+@@ -1141,14 +1184,61 @@ export const makeOAuth = (
     * fits, or the service accepts the host's metadata document or registers clients. Reading
     * setup never registers a client.
     */
@@ -5233,7 +5240,7 @@ index d4168d1..70e842e 100644
        const mode =
          existing === undefined && firstParty === undefined && registration === "manual"
            ? ("client-required" as const)
-@@ -1354,7 +1440,7 @@ export const makeOAuth = (
+@@ -1426,7 +1516,7 @@ export const makeOAuth = (
            kind: "stored" as const,
            ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
          };
@@ -5242,7 +5249,7 @@ index d4168d1..70e842e 100644
        if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
        if (registration === "client_id_metadata_document") {
          const url =
-@@ -1520,6 +1606,7 @@ export const makeOAuth = (
+@@ -1592,6 +1682,7 @@ export const makeOAuth = (
              : { clientSecret: Redacted.value(choice.clientSecret) }),
          },
          discovered,
@@ -5250,7 +5257,7 @@ index d4168d1..70e842e 100644
        );
        // Entered credentials a stored client holds or held are that client, authorized as it and
        // used with its current details; saving them again would only duplicate it. Those of a
-@@ -1545,13 +1632,20 @@ export const makeOAuth = (
+@@ -1617,13 +1708,20 @@ export const makeOAuth = (
      input: typeof StartConnectionOAuth.Type & {
        readonly owner: OwnerId;
        readonly provider: ProviderId;
@@ -5273,7 +5280,7 @@ index d4168d1..70e842e 100644
        const { method, discovered } = resolved;
        const chosen = yield* chooseClient(input, resolved, existing);
        if (chosen.kind === "firstParty")
-@@ -1588,11 +1682,13 @@ export const makeOAuth = (
+@@ -1660,11 +1758,13 @@ export const makeOAuth = (
            owner: input.owner,
            provider: input.provider,
            method: input.method,
@@ -5287,7 +5294,7 @@ index d4168d1..70e842e 100644
            fields,
            response: method.response,
            ...expiry(completedAt, tokens.expires_in),
-@@ -1609,13 +1705,18 @@ export const makeOAuth = (
+@@ -1681,13 +1781,18 @@ export const makeOAuth = (
                existing === undefined
                  ? undefined
                  : yield* ownedAccount(tx, { account: account.id, owner: input.owner });
@@ -5310,9 +5317,9 @@ index d4168d1..70e842e 100644
 +                tx.create("accounts", { ...saved, site: saved.site ?? null, encryptedCredentials }),
 +              );
                if (lifecycle) yield* lifecycle.accountCreated(saved);
-             } else
+             } else {
                // Connecting an existing account again starts a new credential generation.
-@@ -1717,6 +1818,7 @@ export const makeOAuth = (
+@@ -1791,6 +1896,7 @@ export const makeOAuth = (
      input: typeof StartConnectionOAuth.Type & {
        readonly owner: OwnerId;
        readonly provider: ProviderId;
@@ -5320,7 +5327,7 @@ index d4168d1..70e842e 100644
      },
      existing: Account | undefined,
      firstParty: { readonly client: FirstPartyOAuthClient; readonly scopes: readonly string[] },
-@@ -1727,7 +1829,7 @@ export const makeOAuth = (
+@@ -1801,7 +1907,7 @@ export const makeOAuth = (
        if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
        if (redirect === undefined)
          return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
@@ -5329,7 +5336,7 @@ index d4168d1..70e842e 100644
        if (operator === undefined) return yield* new OAuthClientUnavailable(input);
        const { scopeSeparator, authorizationParams, resource } = firstParty.client.server;
        const authorization = yield* protocol
-@@ -1749,6 +1851,7 @@ export const makeOAuth = (
+@@ -1823,6 +1929,7 @@ export const makeOAuth = (
          account: existing?.id ?? AccountId.make(`acc_${yield* nextId}`),
          ...(existing === undefined ? {} : { reconnect: true }),
          firstParty: firstParty.client.id,
@@ -5337,7 +5344,7 @@ index d4168d1..70e842e 100644
          response,
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
-@@ -1761,7 +1864,7 @@ export const makeOAuth = (
+@@ -1835,7 +1942,7 @@ export const makeOAuth = (
          return { status: "completed" as const, account: saved.state.account };
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
@@ -5346,7 +5353,7 @@ index d4168d1..70e842e 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -1772,6 +1875,7 @@ export const makeOAuth = (
+@@ -1846,6 +1953,7 @@ export const makeOAuth = (
        if (existing !== undefined && existing.method !== input.method)
          return yield* new AuthMethodInvalid({
            provider: connection.provider,
@@ -5354,7 +5361,7 @@ index d4168d1..70e842e 100644
            method: input.method,
          });
        const { label: requested, ...rest } = input;
-@@ -1781,10 +1885,12 @@ export const makeOAuth = (
+@@ -1855,10 +1963,12 @@ export const makeOAuth = (
            ...rest,
            owner: connection.owner,
            provider: connection.provider,
@@ -5368,7 +5375,7 @@ index d4168d1..70e842e 100644
        ).pipe(
          // Agents reading the request learn what the person connecting was shown.
          Effect.tapError((error) =>
-@@ -1808,7 +1914,19 @@ export const makeOAuth = (
+@@ -1882,7 +1992,19 @@ export const makeOAuth = (
        ) {
          return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
        }
@@ -5389,7 +5396,7 @@ index d4168d1..70e842e 100644
      });
  
    const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
-@@ -1951,7 +2069,7 @@ export const makeOAuth = (
+@@ -2025,7 +2147,7 @@ export const makeOAuth = (
        if (attempt.reconnect) yield* reconnectTarget(db, attempt);
        // An attempt with the operator's client signs in with its current configuration only.
        const operating = isFirstPartyAttempt(attempt)
@@ -5398,7 +5405,7 @@ index d4168d1..70e842e 100644
              Effect.map((operator) =>
                operator === undefined ? undefined : { ...attempt, ...operator },
              ),
-@@ -2067,7 +2185,7 @@ export const makeOAuth = (
+@@ -2145,7 +2267,7 @@ export const makeOAuth = (
        );
        // The operator's client keeps no grant holding a scope it does not allow.
        if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
@@ -5407,7 +5414,7 @@ index d4168d1..70e842e 100644
            refreshToken: tokens.refresh_token,
            accessToken: tokens.access_token,
          });
-@@ -2087,6 +2205,7 @@ export const makeOAuth = (
+@@ -2170,6 +2292,7 @@ export const makeOAuth = (
        );
        const completedAt = yield* Clock.currentTimeMillis;
        const issued = {
@@ -5415,7 +5422,7 @@ index d4168d1..70e842e 100644
          response: attempt.response,
          fields,
          redirectUri: attempt.redirectUri,
-@@ -2173,28 +2292,40 @@ export const makeOAuth = (
+@@ -2256,29 +2379,41 @@ export const makeOAuth = (
            // Read again after the remote exchange: deletion must win, and a concurrent rename must survive.
            const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
            const saved =
@@ -5456,6 +5463,7 @@ index d4168d1..70e842e 100644
 +                },
                }),
              );
+             yield* resumeWaitingSources(tx, target.id);
            } else {
              yield* query(() =>
 -              tx.create("accounts", { ...saved, encryptedCredentials, credentialGeneration: 0 }),
@@ -5468,7 +5476,7 @@ index d4168d1..70e842e 100644
              );
              if (lifecycle) yield* lifecycle.accountCreated(saved);
            }
-@@ -2414,6 +2545,7 @@ export const makeOAuth = (
+@@ -2498,6 +2633,7 @@ export const makeOAuth = (
                // reconnect, is never touched.
                yield* revokeRefused(
                  grant.firstParty,
@@ -5476,7 +5484,7 @@ index d4168d1..70e842e 100644
                  settled
                    ? { ...exceeded, refreshToken: exceeded.refreshToken ?? grant.refreshToken }
                    : exceeded,
-@@ -2740,7 +2872,7 @@ export const makeOAuth = (
+@@ -2849,7 +2985,7 @@ export const makeOAuth = (
    const authorized = (accounts: readonly StoredAccount[]) =>
      lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
        ? Effect.succeed(undefined)
@@ -5485,16 +5493,16 @@ index d4168d1..70e842e 100644
    /** Fail unless the product still authorizes every one of `accounts` in `current`. */
    const enforced = (
      current: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError>,
-@@ -2868,7 +3000,7 @@ export const makeOAuth = (
+@@ -2985,7 +3121,7 @@ export const makeOAuth = (
            );
            /** The account as one slot's invocation sends it, under that slot's definition. */
            return (definition: ProviderDefinition) =>
 -            invocationAccount(account, definition, credential, firstPartyClients);
 +            invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
          }),
-       );
+       ).pipe(Effect.provideService(GrantReadAhead, readAhead));
      });
-@@ -2976,11 +3108,12 @@ export const makeOAuth = (
+@@ -3115,11 +3251,12 @@ export const makeOAuth = (
     */
    const revokeRefused = (
      id: FirstPartyOAuthClientId,
@@ -5509,7 +5517,7 @@ index d4168d1..70e842e 100644
              operator === undefined
                ? Effect.succeed("unsupported" as const)
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 5527dbf..2bb75d2 100644
+index 70e6f1b4..3871cf35 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
 @@ -10,6 +10,9 @@ import type {
@@ -5522,7 +5530,7 @@ index 5527dbf..2bb75d2 100644
  import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts";
  import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
  import { JsonObject } from "../contracts/shared.ts";
-@@ -27,16 +30,16 @@ function canonical(value: Json): string {
+@@ -28,16 +31,16 @@ export function canonical(value: Json): string {
  
  /**
   * Equal JSON definitions, regardless of object key order, share a content-derived ID. Declared
@@ -5542,7 +5550,7 @@ index 5527dbf..2bb75d2 100644
      const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
        Effect.mapError(() => new StorageError()),
      );
-@@ -66,9 +69,11 @@ export const grantedHosts = (
+@@ -67,9 +70,11 @@ export const grantedHosts = (
  export const grantedDefinition = (
    definition: ProviderDefinition,
    account: readonly string[] | null,
@@ -5555,7 +5563,7 @@ index 5527dbf..2bb75d2 100644
    return hosts === undefined ? shared : { ...shared, hosts };
  };
  
-@@ -101,11 +106,11 @@ export const managedPlacement = (placement: ManagedPlacement) => {
+@@ -102,11 +107,11 @@ export const managedPlacement = (placement: ManagedPlacement) => {
   */
  export const managedDefinition = (
    definition: ProviderDefinition,
@@ -5569,7 +5577,7 @@ index 5527dbf..2bb75d2 100644
    const connected =
      account.allowedHosts === null ? app : intersectCredentialHosts(account.allowedHosts, app);
    const hosts = intersectCredentialHosts(connected, client?.placement.hosts ?? []);
-@@ -136,22 +141,34 @@ export interface AccountCredential {
+@@ -137,22 +142,34 @@ export interface AccountCredential {
   * mark that has the runner seal all of it.
   */
  export const invocationAccount = (
@@ -5608,7 +5616,7 @@ index 5527dbf..2bb75d2 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index c486a1a..b0b94bb 100644
+index 7e18df19..bd69cd3f 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -15,6 +15,7 @@ import {
@@ -5619,10 +5627,12 @@ index c486a1a..b0b94bb 100644
    appScheduleIndex,
    scopedRunKeyIndex,
    version402Tables,
-@@ -645,6 +646,18 @@ export const storageSchemas = [
-       }),
-     },
-   }),
+@@ -650,8 +651,18 @@ export const storageSchemas = [
+   // Additive for the running server: a source it writes keeps the default count, which only
+   // shortens that source's next retry delay.
+   version4015Schema,
+-  // Additive: three indexes; the running server's queries are unchanged.
+-  indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
 +  schema({
 +    version: "4.0.16",
 +    tables: version4016Tables,
@@ -5639,14 +5649,14 @@ index c486a1a..b0b94bb 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index 53c7435..e275627 100644
+index e3e2d69e..634b5fdf 100644
 --- a/packages/sdk/src/implementation/storage-schema.ts
 +++ b/packages/sdk/src/implementation/storage-schema.ts
 @@ -837,12 +837,21 @@ const retriedWebhookSources = table("executor_webhook_sources", {
    retries: column("retries", Schema.Int).default(0),
  }).unique("executor_webhook_sources_app_account", ["app", "account"]);
  
--/** Tables of the 4.0.15 layout, the current one. */
+-/** Tables of the 4.0.15 layout, the current one; 4.0.16 only adds indexes. */
 +/** Tables of the 4.0.15 layout. */
  export const version4015Tables = {
    ...version4014Tables,
@@ -5665,30 +5675,8 @@ index 53c7435..e275627 100644
  /**
   * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
   * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
-diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index c2c6391..025cc66 100644
---- a/packages/sdk/src/implementation/storage.ts
-+++ b/packages/sdk/src/implementation/storage.ts
-@@ -20,7 +20,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-     const sql = yield* SqlClient.SqlClient;
-     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
-     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
--    const db = bindOrm(client.orm("4.0.15"), sql, reactivity);
-+    const db = bindOrm(client.orm("4.0.16"), sql, reactivity);
-     const checkMigration = Effect.gen(function* () {
-       const migrator = yield* client.createMigrator;
-       const version = yield* migrator.version;
-@@ -71,7 +71,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-       Effect.mapError(() => new StorageError()),
-     );
-     return {
--      orm: (_version: "4.0.15") => db,
-+      orm: (_version: "4.0.16") => db,
-       reactivity,
-       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
-       toolSearch: makeToolSearchStore(sql),
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 962fa95..68ec5bb 100644
+index 260f9d25..11060367 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -2,6 +2,7 @@ import { ProviderError } from "apps/contracts";
@@ -5699,7 +5687,7 @@ index 962fa95..68ec5bb 100644
  /** Snapshot the configured app, then execute with the named accounts' credentials. */
  import {
    Cause,
-@@ -500,6 +501,7 @@ const sameFields = Schema.toEquivalence(JsonObject);
+@@ -536,6 +537,7 @@ const sameFields = Schema.toEquivalence(JsonObject);
  const renewRefused = (
    oauth: Pick<ReturnType<typeof makeOAuth>, "renewRejected">,
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
@@ -5707,7 +5695,7 @@ index 962fa95..68ec5bb 100644
    state: InvocationSnapshot,
    context: InvocationContext,
    error: unknown,
-@@ -544,7 +546,7 @@ const renewRefused = (
+@@ -580,7 +582,7 @@ const renewRefused = (
        (account: HostAccount): HostAccount => {
          const definition = definitions.get(slot);
          return account.id === accountId && definition !== undefined
@@ -5716,15 +5704,15 @@ index 962fa95..68ec5bb 100644
            : account;
        };
      const replaceScope = (slots: HostAccountSlots) =>
-@@ -758,6 +760,7 @@ export const makeTools = (
+@@ -854,6 +856,7 @@ export const makeTools = (
    storage: ExecutorDatabase,
-   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
 +  sitePolicy: UrlPolicy,
    runtime: Runtime,
    credentials: Credentials,
    crypto: Crypto.Crypto,
-@@ -770,7 +773,7 @@ export const makeTools = (
+@@ -866,7 +869,7 @@ export const makeTools = (
    const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
    /** Renew an account the service refused without repeating what it refused; undefined when none was. */
    const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
@@ -5733,10 +5721,10 @@ index 962fa95..68ec5bb 100644
        Effect.result,
        Effect.map((renewed): Renewal | undefined =>
          Result.isFailure(renewed)
-@@ -807,7 +810,14 @@ export const makeTools = (
+@@ -912,7 +915,14 @@ export const makeTools = (
        const result = yield* execute(context);
        if (Result.isSuccess(result)) return { result };
-       if (kind === "query") {
+       if (yield* read) {
 -        const renewed = yield* renewRefused(oauth, clients, state, context, result.failure);
 +        const renewed = yield* renewRefused(
 +          oauth,
@@ -5749,7 +5737,7 @@ index 962fa95..68ec5bb 100644
          if (renewed === undefined) return { result };
          yield* Effect.annotateCurrentSpan("executor.tool.retry", "credentials_renewed");
          return { result: yield* execute(renewed) };
-@@ -843,7 +853,7 @@ export const makeTools = (
+@@ -949,7 +959,7 @@ export const makeTools = (
    ) =>
      inspect(context).pipe(
        Effect.catch((error) =>
@@ -5757,9 +5745,9 @@ index 962fa95..68ec5bb 100644
 +        renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
            Effect.flatMap((renewed) =>
              renewed === undefined
-               ? Effect.fail(catalogFailure(state, error))
+               ? failCatalog(state, error)
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 5345ce2..54cf913 100644
+index 5345ce2c..54cf9131 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
 @@ -27,11 +27,13 @@ import {
@@ -5830,10 +5818,10 @@ index 5345ce2..54cf913 100644
              onChange={changeValues}
              pending={pending}
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index d641be9..1e5b036 100644
+index 2e2b59aa..dc0144ec 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -19,7 +19,7 @@ import {
+@@ -18,7 +18,7 @@ import {
  import { Skeleton } from "../components/skeleton.tsx";
  import { CopyButton } from "./code.tsx";
  import { AsyncResult } from "effect/reactivity";
@@ -5842,7 +5830,7 @@ index d641be9..1e5b036 100644
  import { undeclaredError } from "@executor-js/utils/connection-failure";
  import { ErrorNotice } from "./error-notice.tsx";
  import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
-@@ -27,7 +27,7 @@ import { useQuery } from "./context.tsx";
+@@ -26,7 +26,7 @@ import { useQuery } from "./context.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
@@ -5851,7 +5839,7 @@ index d641be9..1e5b036 100644
    query,
    children,
  }: {
-@@ -36,15 +36,18 @@ export function OAuthSetup<E extends UserFacingError>({
+@@ -35,15 +35,18 @@ export function OAuthSetup<E extends UserFacingError>({
      readonly setup: OAuthConnectOptions | "unresolved";
      readonly action: ReactNode;
      readonly refresh: () => void;
@@ -5873,7 +5861,7 @@ index d641be9..1e5b036 100644
        )}
        context="While preparing account sign-in."
        retry={refresh}
-@@ -63,6 +66,8 @@ export function OAuthSetup<E extends UserFacingError>({
+@@ -62,6 +65,8 @@ export function OAuthSetup<E extends UserFacingError>({
          setup: Option.isSome(data) ? data.value : "unresolved",
          action,
          refresh,
@@ -5882,15 +5870,15 @@ index d641be9..1e5b036 100644
        })}
      </div>
    );
-@@ -111,6 +116,8 @@ export function OAuthFields<A, E>({
+@@ -110,6 +115,8 @@ export function OAuthFields<A, E>({
    onPendingChange,
    manualClient = false,
    setup: options,
 +  setupLoading = options === "unresolved",
 +  setupFailed = false,
    setupAction,
-   missingClient,
-   disabled = false,
+   registerClient = false,
+   editClient,
 @@ -130,6 +137,10 @@ export function OAuthFields<A, E>({
    readonly manualClient?: boolean | undefined;
    /** Hosts with a preflight check supply its result; unresolved checks never guess a sign-in method. */
@@ -5902,8 +5890,8 @@ index d641be9..1e5b036 100644
    /** Setup progress covers the Connect action and collapsed Advanced options. */
    readonly setupAction?: ReactNode;
    /**
-@@ -139,7 +150,12 @@ export function OAuthFields<A, E>({
-   readonly missingClient?: ReactNode;
+@@ -142,7 +153,12 @@ export function OAuthFields<A, E>({
+   readonly editClient?: OAuthClientId | undefined;
  }) {
    const brand = useProductBrand();
 -  const choices = clientChoices(options, account !== undefined);
@@ -5913,10 +5901,10 @@ index d641be9..1e5b036 100644
 +        ? ([{ kind: "manual" }] satisfies ReadonlyArray<ClientChoice>)
 +        : []
 +      : clientChoices(options, account !== undefined);
-   const [picked, setPicked] = useState<ClientChoice | undefined>(
-     manualClient ? { kind: "manual" } : undefined,
-   );
-@@ -160,7 +176,7 @@ export function OAuthFields<A, E>({
+   const editing =
+     editClient === undefined || options === "unresolved"
+       ? undefined
+@@ -169,7 +185,7 @@ export function OAuthFields<A, E>({
    const userScopes =
      setup !== "unresolved" && setup.grant === "authorization_code" ? (setup.userScopes ?? []) : [];
    const requested = setup === "unresolved" ? 0 : setup.scopes.length + userScopes.length;
@@ -5925,16 +5913,16 @@ index d641be9..1e5b036 100644
    // An undeclared method accepts either a public client or one with a secret.
    const acceptsSecret = method !== "none";
    const needsSecret = method !== undefined && method !== "none";
-@@ -181,7 +197,7 @@ export function OAuthFields<A, E>({
+@@ -193,7 +209,7 @@ export function OAuthFields<A, E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const blocked =
      disabled ||
 -    setupAction !== undefined ||
 +    setupLoading ||
      choice === undefined ||
-     (missing && !manual) ||
      pending ||
-@@ -306,6 +322,7 @@ export function OAuthFields<A, E>({
+     (manual && (!clientId.trim() || (needsSecret && !updating && !clientSecret.trim())));
+@@ -305,6 +321,7 @@ export function OAuthFields<A, E>({
    return (
      <>
        {prominent && clientSelect}
@@ -5942,17 +5930,17 @@ index d641be9..1e5b036 100644
        {error ? (
          <Failure cause={error} layout="compact" />
        ) : (
-@@ -367,7 +384,7 @@ export function OAuthFields<A, E>({
+@@ -391,7 +408,7 @@ export function OAuthFields<A, E>({
          {access}
          <div role="group" aria-label="Connection options" className="relative flex flex-col gap-4">
            <div className="flex min-h-9 flex-col max-[740px]:min-h-11">
--            {setupAction ??
-+            {(setupLoading ? setupAction : undefined) ??
-               (missing && !manual ? (
-                 missingClient
-               ) : (
+-            {setupAction ?? (
++            {(setupLoading ? setupAction : undefined) ?? (
+               <Button type="button" className="w-full" disabled={blocked} onClick={connect}>
+                 {pending
+                   ? machine
 diff --git a/packages/utils/package.json b/packages/utils/package.json
-index f77f3e8..4bd3285 100644
+index f77f3e86..4bd3285e 100644
 --- a/packages/utils/package.json
 +++ b/packages/utils/package.json
 @@ -5,6 +5,7 @@
@@ -5965,7 +5953,7 @@ index f77f3e8..4bd3285 100644
      "./api-error": "./src/api-error.ts",
 diff --git a/packages/utils/src/account-site.ts b/packages/utils/src/account-site.ts
 new file mode 100644
-index 0000000..322036b
+index 00000000..322036b5
 --- /dev/null
 +++ b/packages/utils/src/account-site.ts
 @@ -0,0 +1,129 @@
@@ -6098,21 +6086,8 @@ index 0000000..322036b
 +  result.push(selected.host.toLowerCase());
 +  return [...new Set(result)].sort();
 +};
-diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
-index a2d7f74..fbb182d 100644
---- a/playground/sdk/storage.ts
-+++ b/playground/sdk/storage.ts
-@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
-       Effect.gen(function* () {
-         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-         yield* storage.migrate;
--        const orm = storage.orm("4.0.15");
-+        const orm = storage.orm("4.0.16");
-         const createdAt = new Date("2026-01-01T00:00:00.000Z");
-         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
-           id: "dpl_example",
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
-index 90517d4..a25fc57 100644
+index 90517d40..a25fc57d 100644
 --- a/scripts/check-app-protocols.ts
 +++ b/scripts/check-app-protocols.ts
 @@ -34,7 +34,10 @@ import { Array as Arr, Schema, SchemaRepresentation } from "effect";

@@ -1,7 +1,8 @@
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 7233e735..9d17e059 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8265,6 +8265,26 @@
+@@ -9298,6 +9298,26 @@ export const scenarios = plan({
        cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
      },
    },
@@ -28,27 +29,28 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    accountDirectoryHealth: {
      fixtures: "actors",
      file: "account-directory-health.spec.ts",
-@@ -8463,6 +8483,18 @@
-     file: "account-status-storage.spec.ts",
-     title:
-       "account status preserves selected sites and retained identity through a reporting upgrade and restarts",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: na("Uses isolated PGlite metadata."),
-+      local: na("Uses hosted HTTP endpoints."),
-+    },
-+  },
+@@ -9502,6 +9522,18 @@ export const scenarios = plan({
+       local: na("Uses hosted HTTP endpoints."),
+     },
+   },
 +  accountStatusRecoveryStorage: {
 +    fixtures: "actors",
 +    legacyStorage: true,
 +    file: "account-status-storage.spec.ts",
 +    title:
 +      "account status preserves identity and clears failed check metadata after restart and recovery",
-     targets: {
-       "self-host": scheduled,
-       cloud: na("Uses isolated PGlite metadata."),
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated PGlite metadata."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
+   accountStatusPrivacy: {
+     fixtures: "actors",
+     legacyStorage: true,
 diff --git a/e2e/tests/account-health-failures.spec.ts b/e2e/tests/account-health-failures.spec.ts
 new file mode 100644
+index 00000000..91ffc2c1
 --- /dev/null
 +++ b/e2e/tests/account-health-failures.spec.ts
 @@ -0,0 +1,247 @@
@@ -300,6 +302,7 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 41f32c1d..6b2a9562 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -1,6 +1,7 @@
@@ -311,7 +314,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
  import { HostedLive, withHostedCase } from "../support/case.ts";
  import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
  import { legacyStorage } from "../support/legacy-storage.ts";
-@@ -13,6 +14,14 @@
+@@ -13,6 +14,14 @@ import {
    beforeAccountAcquisition,
    beforeAccountIdentities,
  } from "../support/profile-removal-rollback.ts";
@@ -326,7 +329,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
  layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
    it.effect(scenarios.accountStatusStorage.title, (context) =>
      withHostedCase(
-@@ -38,18 +47,20 @@
+@@ -38,18 +47,20 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
            { sql: "UPDATE private_executor_settings SET value = '4.0.21' WHERE key = 'version'" },
          ]);
          yield* serverControl("start");
@@ -354,7 +357,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          yield* serverControl("start");
          expect((yield* fixture.read()).status).toBe(200);
          const inherited = yield* reportingUpgradeFixture;
-@@ -95,6 +106,18 @@
+@@ -95,6 +106,18 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
              apps: [{ check: { displayStatus: displayedStatus } }],
            },
          });
@@ -373,7 +376,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          yield* fixture.statusBackend.answer({
            status: 200,
            body: { status: { ...displayedStatus, stats: [{ label: "Requests", value: "43" }] } },
-@@ -106,14 +129,18 @@
+@@ -106,14 +129,18 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
              apps: [{ check: { displayStatus: { stats: [{ label: "Requests", value: "43" }] } } }],
            },
          });
@@ -398,7 +401,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          });
          const persisted = yield* legacyStorage([
            {
-@@ -124,12 +151,46 @@
+@@ -124,12 +151,46 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
          expect(persisted).toEqual([
            [
              {
@@ -408,11 +411,10 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
 +                checkReason: "unavailable",
 +                checkFailure: { phase: "vendor", tag: "ProviderError" },
 +              },
-             },
-           ],
-         ]);
-         yield* serverControl("start");
--      }).pipe(Effect.provide(McpClient.layer)),
++            },
++          ],
++        ]);
++        yield* serverControl("start");
 +        const restarted = yield* body(AccountHealth, yield* fixture.read());
 +        expect(restarted.health).toEqual(failed.health);
 +        yield* fixture.statusBackend.answer({ status: 200, body: { status: displayedStatus } });
@@ -436,10 +438,11 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
 +                displayName: "Checked fixture identity",
 +                displayStatus: displayedStatus,
 +              },
-+            },
-+          ],
-+        ]);
-+        yield* serverControl("start");
+             },
+           ],
+         ]);
+         yield* serverControl("start");
+-      }).pipe(Effect.provide(McpClient.layer)),
 +        expect((yield* body(AccountHealth, yield* fixture.read())).health).toEqual(
 +          recovered.health,
 +        );
@@ -448,6 +451,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
    );
  });
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
+index f00a511d..b543d103 100644
 --- a/packages/mcp/src/implementation/app-asset-paths.ts
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
 @@ -1,7 +1,7 @@
@@ -460,6 +464,7 @@ diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/s
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
+index a876f596..a39688c6 100644
 --- a/packages/mcp/src/implementation/app-assets.ts
 +++ b/packages/mcp/src/implementation/app-assets.ts
 @@ -1,5 +1,5 @@
@@ -471,6 +476,7 @@ diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/im
  };
 diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
 new file mode 100644
+index 00000000..3da9149d
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-check-failure.ts
 @@ -0,0 +1,26 @@
@@ -501,6 +507,7 @@ new file mode 100644
 +});
 +export type AccountCheckFailure = typeof AccountCheckFailure.Type;
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index 219f8512..f891d4e4 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,5 @@
@@ -509,7 +516,7 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
  import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
  import { AccountObservationView, AccountObservationInput } from "./account-observation.ts";
  import { ProviderError } from "apps/contracts";
-@@ -68,6 +70,7 @@
+@@ -68,6 +70,7 @@ export const AccountAppHealth = Schema.Struct({
      Schema.Struct({
        status: AccountCheckStatus,
        reason: Schema.optionalKey(ProviderError.fields.reason),
@@ -517,7 +524,7 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
        checkedAt: Schema.Date,
        /** Public display data from this check only; outdated results remain marked outdated. */
        displayStatus: Schema.optionalKey(AccountStatus),
-@@ -97,6 +100,7 @@
+@@ -97,6 +100,7 @@ export const AccountDriverHealth = Schema.Struct({
      Schema.Struct({
        status: AccountCheckStatus,
        reason: Schema.optionalKey(ProviderError.fields.reason),
@@ -525,7 +532,7 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
        checkedAt: Schema.Date,
        current: Schema.Boolean,
        message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
-@@ -157,6 +161,7 @@
+@@ -157,6 +161,7 @@ export const accountProblems = (
  /** A check of credentials before they are saved; nothing is recorded. */
  export const CredentialCheck = Schema.Struct({
    status: AccountCheckStatus,
@@ -535,6 +542,7 @@ diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/
     * The message of an error the app's check threw, bounded and with the checked credentials
 diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages/sdk/src/implementation/account-check-failure.ts
 new file mode 100644
+index 00000000..54647b35
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-check-failure.ts
 @@ -0,0 +1,67 @@
@@ -606,6 +614,7 @@ new file mode 100644
 +    ),
 +  );
 diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
+index 63b3bb8d..7c76fc0c 100644
 --- a/packages/sdk/src/implementation/account-check-record.ts
 +++ b/packages/sdk/src/implementation/account-check-record.ts
 @@ -1,9 +1,19 @@
@@ -614,7 +623,7 @@ diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/
  import { Effect, Option, Schema } from "effect";
  import { AccountInfo, AccountStatus } from "apps/contracts";
  import { StorageError } from "../contracts/shared.ts";
-
+ 
 -const Record = Schema.Struct({ displayStatus: Schema.optionalKey(AccountStatus) });
 +const Record = Schema.Struct({
 +  displayStatus: Schema.optionalKey(AccountStatus),
@@ -630,6 +639,7 @@ diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/
    Schema.decodeUnknownOption(Record)(info).pipe(
      Option.flatMap((record) => Option.fromNullishOr(record.displayStatus)),
 diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+index 7d2841af..acfb6f9a 100644
 --- a/packages/sdk/src/implementation/account-driver-health.ts
 +++ b/packages/sdk/src/implementation/account-driver-health.ts
 @@ -1,3 +1,4 @@
@@ -637,7 +647,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
  import { Clock, Effect, Option, Result, Schema } from "effect";
  import { AccountInfo, AccountCheckResult, HostOutputInvalid, ProviderError } from "apps/contracts";
  import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
-@@ -9,7 +10,7 @@
+@@ -9,7 +10,7 @@ import type {
  import type { StoredAccount } from "../contracts/storage.ts";
  import { StorageError } from "../contracts/shared.ts";
  import { query, transaction, type Query } from "./database.ts";
@@ -646,7 +656,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
  import {
    driverSourceCurrent,
    retainedDriverBinding,
-@@ -62,6 +63,7 @@
+@@ -62,6 +63,7 @@ export const makeDriverAccountHealth = (
          saved.bindingRevision === binding.revision;
        const info =
          saved === undefined ? Option.none() : Schema.decodeUnknownOption(AccountInfo)(saved.info);
@@ -654,7 +664,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
        return {
          driver: {
            source: {
-@@ -78,6 +80,7 @@
+@@ -78,6 +80,7 @@ export const makeDriverAccountHealth = (
                    checkedAt: saved.checkedAt,
                    current,
                    ...(saved.reason === null ? {} : { reason: saved.reason }),
@@ -662,7 +672,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
                    ...(saved.message === null ? {} : { message: saved.message }),
                  },
          } satisfies AccountDriverHealth,
-@@ -148,6 +151,8 @@
+@@ -148,6 +151,8 @@ export const makeDriverAccountHealth = (
        if (Result.isFailure(outcome) && Schema.is(AccountAcquisitionUnavailable)(outcome.failure))
          return yield* outcome.failure;
        const late = (yield* Clock.currentTimeMillis) >= startedAt + 14_000;
@@ -671,7 +681,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
        yield* transaction(db, () =>
          Effect.gen(function* () {
            if (!(yield* driverSourceCurrent(source, account))) return;
-@@ -181,6 +186,7 @@
+@@ -181,6 +186,7 @@ export const makeDriverAccountHealth = (
                  : null,
              checkedAt,
              ...identity,
@@ -679,7 +689,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
              message: Result.isSuccess(outcome)
                ? null
                : (failure.message(outcome.failure, late)?.slice(0, 500) ?? null),
-@@ -197,7 +203,11 @@
+@@ -197,7 +203,11 @@ export const makeDriverAccountHealth = (
              yield* recordObservation({ account, source, result: success, startedAt });
          }),
        );
@@ -691,8 +701,9 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
 +    );
    return { report, list, check };
  };
-
+ 
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index a7fd4f88..8ff1e971 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -700,8 +711,8 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
  import type { AccountDriverResolver } from "./account-driver-source.ts";
  import { makeDriverAccountHealth, withDriverHealth } from "./account-driver-health.ts";
  import { privateAccountCheck } from "./account-status-output.ts";
-@@ -32,7 +33,11 @@
- import { storedAccount } from "./accounts.ts";
+@@ -35,7 +36,11 @@ import { storedAccount } from "./accounts.ts";
+ import { inOrder, query, type Query } from "./database.ts";
  import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
  import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
 -import { accountCheckRecord, recordedDisplayStatus } from "./account-check-record.ts";
@@ -711,9 +722,9 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
 +  recordedDisplayStatus,
 +} from "./account-check-record.ts";
  import { checkInteractiveAccount } from "./interactive-check.ts";
- import { query, type Query } from "./database.ts";
  import type { makeOAuth } from "./oauth.ts";
-@@ -188,6 +193,7 @@
+ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+@@ -191,6 +196,7 @@ export const makeAccountHealth = (
            Effect.gen(function* () {
              const row = rows.find((item) => item.app === app.id);
              const displayStatus = row === undefined ? undefined : recordedDisplayStatus(row.info);
@@ -721,7 +732,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
              const check =
                row === undefined
                  ? null
-@@ -197,6 +203,7 @@
+@@ -200,6 +206,7 @@ export const makeAccountHealth = (
                      ),
                      checkedAt: row.checkedAt,
                      ...(displayStatus === undefined ? {} : { displayStatus }),
@@ -729,7 +740,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
                      ...(row.info !== null &&
                      typeof row.info === "object" &&
                      "checkReason" in row.info &&
-@@ -367,6 +374,8 @@
+@@ -379,6 +386,8 @@ export const makeAccountHealth = (
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome) && outcome.success === undefined) return;
        const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
@@ -738,7 +749,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
        const existing = yield* query(() =>
          db.findFirst("accountChecks", {
            where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
-@@ -388,9 +397,15 @@
+@@ -400,9 +409,15 @@ export const makeAccountHealth = (
          checkedAt,
          ...record,
          info:
@@ -757,7 +768,7 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
          message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
        };
        yield* query(() =>
-@@ -477,9 +492,12 @@
+@@ -490,9 +505,12 @@ export const makeAccountHealth = (
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome))
          return { status: "healthy" as const, info: outcome.success.accountInfo ?? null };

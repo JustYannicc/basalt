@@ -1,15 +1,16 @@
 diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+index e08a93de..07d64259 100644
 --- a/e2e/tests/account-health.spec.ts
 +++ b/e2e/tests/account-health.spec.ts
-@@ -9,6 +9,7 @@
- import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+@@ -10,6 +10,7 @@ import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
  import { acceptedToken, accountCheckUpstream } from "../support/account-check-upstream.ts";
  import { appsManifest } from "../support/apps-release.ts";
 +import { accountRow, openRowDetails, openRowMenu } from "../support/account-rows.ts";
  import { scenarios } from "../test-plan.ts";
  
  const Health = Schema.Struct({
-@@ -235,13 +236,16 @@
+@@ -236,7 +237,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
          yield* browser.use("Open the accounts with a failed check", (page) =>
            page
              .goto(`/org/${actors.organization.slug}/accounts`)
@@ -18,16 +19,17 @@ diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
          );
          yield* browser.use("Open the failed account's health", (page) =>
            page
-             .getByRole("button", { name: "Manage Default" })
+@@ -244,6 +245,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
              .click()
              .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
-+        );
+         );
 +        yield* browser.use("The reported identity remains visible in account health", (page) =>
 +          page.getByRole("dialog").getByText("Synthetic Person").waitFor(),
-         );
++        );
          expect(
            yield* browser.use("The reason is shown with the failed check", (page) =>
-@@ -321,20 +325,29 @@
+             page.getByRole("dialog").locator("[data-check-message]").first().innerText(),
+@@ -322,20 +326,29 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
            current: false,
          });
  
@@ -62,19 +64,18 @@ diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
          // Opening the account's health rechecks it and lists each app's result.
          yield* browser.use("Open account health", (page) =>
            page
-@@ -359,22 +372,23 @@
+@@ -360,22 +373,23 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
            page.getByRole("button", { name: "Close", exact: true }).first().click(),
          );
          yield* browser.use("The list shows the new result", (page) =>
 -          page.locator('[data-check-status="healthy"][data-check-current="true"]').nth(1).waitFor(),
--        );
--        // The reported photo stands beside the identity in the list.
 +          accountRow(page, "Default")
 +            .locator(
 +              '[data-account-health-cell][data-check-status="healthy"][data-check-current="true"]',
 +            )
 +            .waitFor(),
-+        );
+         );
+-        // The reported photo stands beside the identity in the list.
 +        // The compact row keeps the reported photo as its logo.
          expect(
            yield* browser.use("The list shows the reported photo", (page) => {
@@ -95,7 +96,7 @@ diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
              return page
                .emulateMedia({ colorScheme: scheme })
                .then(() => image.waitFor())
-@@ -399,10 +413,8 @@
+@@ -400,10 +414,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
              yield* held.requested;
              const providerVisible = () =>
                browser.use("Read the row's provider fallback", (page) =>
@@ -108,7 +109,7 @@ diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
                    .isVisible(),
                );
              const loading = yield* providerVisible();
-@@ -418,7 +430,9 @@
+@@ -419,7 +431,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
          yield* browser.use("Load the reported photo after it recovers", (page) =>
            page
              .reload()
@@ -120,9 +121,10 @@ diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
  
          // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
 diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
+index e537ca81..4496e9d2 100644
 --- a/e2e/tests/account-status.spec.ts
 +++ b/e2e/tests/account-status.spec.ts
-@@ -447,9 +447,7 @@
+@@ -447,9 +447,7 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it)
          yield* openListAt(account);
          for (const scheme of ["dark", "light"] as const) {
            const listed = yield* browser.use(`Read the listed logo in ${scheme} mode`, (page) => {
@@ -134,9 +136,10 @@ diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
                .emulateMedia({ colorScheme: scheme })
                .then(() => image.waitFor())
 diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index dc33ef49..9aa53274 100644
 --- a/e2e/tests/account-observation-row-polling.spec.ts
 +++ b/e2e/tests/account-observation-row-polling.spec.ts
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,7 @@ import { Browser } from "../support/browser.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
  import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
  import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
@@ -144,7 +147,7 @@ diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/accou
  import { scenarios } from "../test-plan.ts";
  
  const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
-@@ -44,6 +45,10 @@
+@@ -44,6 +45,10 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
              .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
          });
  
@@ -156,9 +159,10 @@ diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/accou
          expect((yield* f.refresh()).status).toBe(200);
          const observedAt = (yield* body(Retained, yield* f.read())).reports[0]?.result.observedAt;
 diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
+index b8e95e03..20cccd33 100644
 --- a/e2e/tests/account-usage-home-reporter.spec.ts
 +++ b/e2e/tests/account-usage-home-reporter.spec.ts
-@@ -108,6 +108,9 @@
+@@ -108,6 +108,9 @@ layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) =>
              .then((disabled) => page.keyboard.press("Escape").then(() => disabled !== "true"));
          const browser = yield* Browser;
          yield* browser.login(actors.owner);
@@ -169,9 +173,10 @@ diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-u
            // The connector's own observations read must have answered before its empty row counts.
            const connectorLoaded = page.waitForResponse(
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+index 46f37ef0..4b63badf 100644
 --- a/e2e/support/account-observation-fixture.ts
 +++ b/e2e/support/account-observation-fixture.ts
-@@ -100,7 +100,7 @@
+@@ -100,7 +100,7 @@ export const observationBackend = Effect.gen(function* () {
  /** Hook changes intentionally leave the provider's declaration identical. */
  export const observationSource = (
    origin: string,
@@ -180,7 +185,7 @@ diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-ob
  ) => `import { defineApp, defineProvider, secrets, object, string, router, query, ProviderError } from "apps";
  const read = async (context, path) => {
    const response = await context.fetch(${JSON.stringify(origin)} + path, {
-@@ -109,7 +109,7 @@
+@@ -109,7 +109,7 @@ const read = async (context, path) => {
    if (!response.ok) throw new ProviderError({ reason: response.status === 401 ? "unauthorized" : response.status === 429 ? "rate_limited" : "unavailable", status: response.status });
    return await response.json();
  };
@@ -189,7 +194,7 @@ diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-ob
  ${options.health ? 'health: context => read(context, "/health"),' : ""}
  ${options.observe ? 'observeAccount: context => read(context, "/observation"),' : ""}
  });
-@@ -123,6 +123,8 @@
+@@ -123,6 +123,8 @@ export const observationFixture = (
      framework?: string;
      /** App names are unique per owner, so a case with several fixtures names each one. */
      name?: string;
@@ -199,9 +204,10 @@ diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-ob
      family?: object;
    } = {
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index 0846df59..a583531f 100644
 --- a/e2e/tests/account-compact-rows.spec.ts
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -109,6 +109,7 @@
+@@ -109,6 +109,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
          // Declared as an API key, so its Type names it.
          const plain = yield* observationFixture({
            name: "Plain fixture",
@@ -209,7 +215,7 @@ diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-
            observe: false,
            health: true,
            family: {
-@@ -138,6 +139,7 @@
+@@ -138,6 +139,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
          // Declared as a subscription, so its Type names it.
          const usage = yield* observationFixture({
            name: "Usage fixture",
@@ -217,7 +223,7 @@ diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-
            observe: true,
            health: true,
            family: {
-@@ -294,6 +296,7 @@
+@@ -294,6 +296,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
                    ),
                  ),
                  accountRow(page, "Rejected mail")

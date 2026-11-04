@@ -1,9 +1,11 @@
 {
   "identity": "basalt-resource-directory-prefetch",
   "file": "0106-resource-directory-prefetch.patch",
-  "content_sha256": "53c2e0df93dc75675923c0ff83e8bee2665139558b9c420469882f8c2ae0d394",
+  "content_sha256": "9b0e038587ead8935073c6ebd8a72e7029daf0c29dbbca288eaa2d78201069d7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "53c2e0df93dc75675923c0ff83e8bee2665139558b9c420469882f8c2ae0d394",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

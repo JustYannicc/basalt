@@ -1,9 +1,11 @@
 {
   "identity": "executor-product-brand-surfaces",
   "file": "0007-product-brand-surfaces.patch",
-  "content_sha256": "fafde0526d218daa01ef0a8cba697b53578ea9f37c27158d6986e6ad225933a3",
+  "content_sha256": "f4dcb2e710275763845cc14bc64dc5613acaab275bc740ae8c3ac697c8718ae0",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "fafde0526d218daa01ef0a8cba697b53578ea9f37c27158d6986e6ad225933a3",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

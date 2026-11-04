@@ -65,7 +65,20 @@ function content(root: string, ref: string, path: string) {
 
 export function carryTargets(patch: string) {
   const diffs = patch.split("\n").filter((line) => line.startsWith("diff --git "));
-  if (!diffs.length) throw new Error("Changed carry has no target files");
+  if (!diffs.length) {
+    const headers = [
+      ...patch.matchAll(/^--- (a\/[^\n]+|\/dev\/null)\n\+\+\+ (b\/[^\n]+|\/dev\/null)$/gm),
+    ];
+    if (!headers.length) throw new Error("Changed carry has no target files");
+    return headers.flatMap(([, before, after]) => {
+      const targets = [before!, after!]
+        .filter((path) => path !== "/dev/null")
+        .map((path) => path.slice(2));
+      if (!targets.length || targets.some((path) => !validPath(path) || /\s/.test(path)))
+        throw new Error("Unsupported carry target path");
+      return [...new Set(targets)].map((target) => ".upstream/" + target);
+    });
+  }
   return diffs.flatMap((line) => {
     const match = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
     if (!match || !validPath(match[1]!) || !validPath(match[2]!))

@@ -1,5 +1,5 @@
 diff --git a/apps/docs/content/concepts/tools-and-approvals.md b/apps/docs/content/concepts/tools-and-approvals.md
-index be7ee4f..0b0b602 100644
+index be7ee4fb..0b0b6026 100644
 --- a/apps/docs/content/concepts/tools-and-approvals.md
 +++ b/apps/docs/content/concepts/tools-and-approvals.md
 @@ -106,6 +106,18 @@ mechanism is the same.
@@ -22,7 +22,7 @@ index be7ee4f..0b0b602 100644
  
  The app's own setup has already run, with its credentials, before any tool
 diff --git a/apps/hosted/cloud/package.json b/apps/hosted/cloud/package.json
-index c63ae5b..d397197 100644
+index c63ae5bc..d3971975 100644
 --- a/apps/hosted/cloud/package.json
 +++ b/apps/hosted/cloud/package.json
 @@ -15,6 +15,7 @@
@@ -35,7 +35,7 @@ index c63ae5b..d397197 100644
      "@cloudflare/worker-bundler": "0.2.4",
 diff --git a/apps/hosted/cloud/src/contracts/workflow-display.ts b/apps/hosted/cloud/src/contracts/workflow-display.ts
 new file mode 100644
-index 0000000..e9551dd
+index 00000000..e9551dd8
 --- /dev/null
 +++ b/apps/hosted/cloud/src/contracts/workflow-display.ts
 @@ -0,0 +1,52 @@
@@ -92,7 +92,7 @@ index 0000000..e9551dd
 +  ) => Effect.Effect<DisplayReply<Effect.Success<ReturnType<DisplayMethods[K]>>>, RpcCallError>;
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/app-sessions.ts b/apps/hosted/cloud/src/infrastructure/app-sessions.ts
-index 7c69281..9f10a31 100644
+index 7c692814..9f10a31f 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-sessions.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-sessions.ts
 @@ -4,7 +4,6 @@ import { createLogger } from "@better-auth/core/env";
@@ -113,7 +113,7 @@ index 7c69281..9f10a31 100644
        adapter,
        internalAdapter: createInternalAdapter(adapter, {
 diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-index 904d54e..e068aa6 100644
+index 904d54e4..e068aa6c 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
 @@ -1,3 +1,4 @@
@@ -244,10 +244,10 @@ index 904d54e..e068aa6 100644
        bind: bind(false),
        bindTransaction: bind(true),
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 899ad2a..b4b3d82 100644
+index 216b6397..adb9f6e3 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -35,7 +35,7 @@ import {
+@@ -36,7 +36,7 @@ import {
    authEndpointTemplates,
  } from "@executor-js/hosted-server";
  import { routeTemplates } from "@executor-js/telemetry";
@@ -257,10 +257,10 @@ index 899ad2a..b4b3d82 100644
  import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
  import { RuntimeContext } from "alchemy";
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
-index 12a118e..f3657e9 100644
+index 23765309..f004ccd0 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
-@@ -10,7 +10,7 @@ import {
+@@ -11,7 +11,7 @@ import {
  } from "@executor-js/hosted-server";
  import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
  import { RuntimeContext } from "alchemy";
@@ -270,7 +270,7 @@ index 12a118e..f3657e9 100644
  import type { SqlClient } from "effect/sql";
  import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-server-worker.ts b/apps/hosted/cloud/src/infrastructure/mcp-server-worker.ts
-index 6b36529..6a88de6 100644
+index 6b36529b..6a88de6d 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-server-worker.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-server-worker.ts
 @@ -1,9 +1,12 @@
@@ -289,7 +289,7 @@ index 6b36529..6a88de6 100644
 +) {}
 diff --git a/apps/hosted/cloud/src/infrastructure/workflow-display-server.ts b/apps/hosted/cloud/src/infrastructure/workflow-display-server.ts
 new file mode 100644
-index 0000000..53442d2
+index 00000000..53442d21
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/workflow-display-server.ts
 @@ -0,0 +1,94 @@
@@ -389,7 +389,7 @@ index 0000000..53442d2
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/workflow-display.ts b/apps/hosted/cloud/src/infrastructure/workflow-display.ts
 new file mode 100644
-index 0000000..fea2fde
+index 00000000..fea2fdeb
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/workflow-display.ts
 @@ -0,0 +1,60 @@
@@ -454,7 +454,7 @@ index 0000000..fea2fde
 +  );
 +});
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8006e25..16ccf52 100644
+index 4cf46043..7799822a 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,6 @@
@@ -464,7 +464,7 @@ index 8006e25..16ccf52 100644
  import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
  import {
    Provisioning,
-@@ -364,10 +367,11 @@ export default Api.make(
+@@ -381,10 +384,11 @@ export default Api.make(
        documentation: new URL("/docs/", auth.hosts.site).href,
        billingEnabled: (yield* Billing.pipe(Effect.provide(billing))).enabled,
      });
@@ -477,7 +477,7 @@ index 8006e25..16ccf52 100644
          yield* appUiAddressScheme.pipe(Effect.orDie),
          yield* appUiEmbedded.pipe(Effect.orDie),
        ),
-@@ -479,6 +483,8 @@ export default Api.make(
+@@ -499,6 +503,8 @@ export default Api.make(
      // Only framework lookups and the published skills read the large authoring reference.
      const authoring = yield* cloudAuthoringReference;
      const api = cloudApi(document).pipe(
@@ -487,7 +487,7 @@ index 8006e25..16ccf52 100644
        HttpRouter.provideRequest(yield* cloudSourceFormatter),
        Layer.provide(appUi.dashboard),
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
-index 90c8016..c2df1f7 100644
+index 11aba1b1..0fb5269c 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
 @@ -1,3 +1,4 @@
@@ -495,7 +495,7 @@ index 90c8016..c2df1f7 100644
  /**
   * Private entry point for MCP session objects. An object that wakes in a fresh isolate loads and
   * initializes only this Worker: the executor, the MCP grant checks and the protocol servers, not
-@@ -76,10 +77,12 @@ export default McpServer.make(
+@@ -83,10 +84,12 @@ export default McpServer.make(
        },
      };
    }),
@@ -511,12 +511,12 @@ index 90c8016..c2df1f7 100644
      ),
    ),
 diff --git a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
-index 29e51ed..ddea19f 100644
+index e84e5191..0deb15c1 100644
 --- a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
 +++ b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
-@@ -47,6 +47,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+@@ -47,6 +47,7 @@ import { Route as OrgOrganizationSlugSetupAssistantRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/org.$organizationSlug.apps.$appId_.setup'
  import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
- import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
  import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
 +import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
  
@@ -536,7 +536,7 @@ index 29e51ed..ddea19f 100644
  export interface FileRoutesByFullPath {
    '/': typeof IndexRoute
 @@ -299,6 +306,7 @@ export interface FileRoutesByFullPath {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -544,7 +544,7 @@ index 29e51ed..ddea19f 100644
  export interface FileRoutesByTo {
    '/': typeof IndexRoute
 @@ -336,6 +344,7 @@ export interface FileRoutesByTo {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -552,7 +552,7 @@ index 29e51ed..ddea19f 100644
  export interface FileRoutesById {
    __root__: typeof rootRouteImport
 @@ -377,6 +386,7 @@ export interface FileRoutesById {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -560,7 +560,7 @@ index 29e51ed..ddea19f 100644
  export interface FileRouteTypes {
    fileRoutesByFullPath: FileRoutesByFullPath
 @@ -419,6 +429,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add/'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -568,7 +568,7 @@ index 29e51ed..ddea19f 100644
    to:
      | '/'
 @@ -456,6 +467,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -576,7 +576,7 @@ index 29e51ed..ddea19f 100644
      | '__root__'
      | '/'
 @@ -496,6 +508,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId_/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add/'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -598,14 +598,14 @@ index 29e51ed..ddea19f 100644
  }
  
 @@ -821,6 +841,7 @@ interface OrgOrganizationSlugRouteChildren {
-   OrgOrganizationSlugAppsAddCustomRoute: typeof OrgOrganizationSlugAppsAddCustomRoute
+   OrgOrganizationSlugAppsAppIdSetupRoute: typeof OrgOrganizationSlugAppsAppIdSetupRoute
    OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute: typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    OrgOrganizationSlugAppsAddIndexRoute: typeof OrgOrganizationSlugAppsAddIndexRoute
 +  OrgOrganizationSlugApprovalsWorkflowAppInputRoute: typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
  
  const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
-@@ -846,6 +867,8 @@ const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
+@@ -847,6 +868,8 @@ const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
    OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute:
      OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute,
    OrgOrganizationSlugAppsAddIndexRoute: OrgOrganizationSlugAppsAddIndexRoute,
@@ -616,7 +616,7 @@ index 29e51ed..ddea19f 100644
  const OrgOrganizationSlugRouteWithChildren =
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx
 new file mode 100644
-index 0000000..f1250be
+index 00000000..f1250beb
 --- /dev/null
 +++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx
 @@ -0,0 +1,9 @@
@@ -630,7 +630,7 @@ index 0000000..f1250be
 +  return <WorkflowInputPage app={app} id={input} />;
 +}
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index d55b5ad..ba7c68b 100644
+index d55b5add..ba7c68bb 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -1,3 +1,5 @@
@@ -648,12 +648,12 @@ index d55b5ad..ba7c68b 100644
        ),
      );
 diff --git a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
-index a01ee1a..ad9a86d 100644
+index 1e0e8286..cc41a748 100644
 --- a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
 +++ b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
-@@ -42,6 +42,7 @@ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/
+@@ -42,6 +42,7 @@ import { Route as OrgOrganizationSlugSetupAssistantRouteImport } from './routes/
+ import { Route as OrgOrganizationSlugAppsAppIdSetupRouteImport } from './routes/org.$organizationSlug.apps.$appId_.setup'
  import { Route as OrgOrganizationSlugAppsAddIndexRouteImport } from './routes/org.$organizationSlug.apps.add.index'
- import { Route as OrgOrganizationSlugAppsAddCustomRouteImport } from './routes/org.$organizationSlug.apps.add.custom'
  import { Route as OrgOrganizationSlugWebhooksAppIdSubscriptionIdRouteImport } from './routes/org.$organizationSlug.webhooks.$appId.$subscriptionId'
 +import { Route as OrgOrganizationSlugApprovalsWorkflowAppInputRouteImport } from './routes/org.$organizationSlug.approvals.workflow.$app.$input'
  
@@ -673,7 +673,7 @@ index a01ee1a..ad9a86d 100644
  export interface FileRoutesByFullPath {
    '/': typeof IndexRoute
 @@ -262,6 +269,7 @@ export interface FileRoutesByFullPath {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -681,7 +681,7 @@ index a01ee1a..ad9a86d 100644
  export interface FileRoutesByTo {
    '/': typeof IndexRoute
 @@ -295,6 +303,7 @@ export interface FileRoutesByTo {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -689,7 +689,7 @@ index a01ee1a..ad9a86d 100644
  export interface FileRoutesById {
    __root__: typeof rootRouteImport
 @@ -331,6 +340,7 @@ export interface FileRoutesById {
-   '/org/$organizationSlug/apps/add/custom': typeof OrgOrganizationSlugAppsAddCustomRoute
+   '/org/$organizationSlug/apps/$appId_/setup': typeof OrgOrganizationSlugAppsAppIdSetupRoute
    '/org/$organizationSlug/webhooks/$appId/$subscriptionId': typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    '/org/$organizationSlug/apps/add/': typeof OrgOrganizationSlugAppsAddIndexRoute
 +  '/org/$organizationSlug/approvals/workflow/$app/$input': typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
@@ -697,7 +697,7 @@ index a01ee1a..ad9a86d 100644
  export interface FileRouteTypes {
    fileRoutesByFullPath: FileRoutesByFullPath
 @@ -368,6 +378,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add/'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -705,7 +705,7 @@ index a01ee1a..ad9a86d 100644
    to:
      | '/'
 @@ -401,6 +412,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -713,7 +713,7 @@ index a01ee1a..ad9a86d 100644
      | '__root__'
      | '/'
 @@ -436,6 +448,7 @@ export interface FileRouteTypes {
-     | '/org/$organizationSlug/apps/add/custom'
+     | '/org/$organizationSlug/apps/$appId_/setup'
      | '/org/$organizationSlug/webhooks/$appId/$subscriptionId'
      | '/org/$organizationSlug/apps/add/'
 +    | '/org/$organizationSlug/approvals/workflow/$app/$input'
@@ -735,14 +735,14 @@ index a01ee1a..ad9a86d 100644
  }
  
 @@ -722,6 +742,7 @@ interface OrgOrganizationSlugRouteChildren {
-   OrgOrganizationSlugAppsAddCustomRoute: typeof OrgOrganizationSlugAppsAddCustomRoute
+   OrgOrganizationSlugAppsAppIdSetupRoute: typeof OrgOrganizationSlugAppsAppIdSetupRoute
    OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute: typeof OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute
    OrgOrganizationSlugAppsAddIndexRoute: typeof OrgOrganizationSlugAppsAddIndexRoute
 +  OrgOrganizationSlugApprovalsWorkflowAppInputRoute: typeof OrgOrganizationSlugApprovalsWorkflowAppInputRoute
  }
  
  const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
-@@ -746,6 +767,8 @@ const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
+@@ -747,6 +768,8 @@ const OrgOrganizationSlugRouteChildren: OrgOrganizationSlugRouteChildren = {
    OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute:
      OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute,
    OrgOrganizationSlugAppsAddIndexRoute: OrgOrganizationSlugAppsAddIndexRoute,
@@ -753,7 +753,7 @@ index a01ee1a..ad9a86d 100644
  const OrgOrganizationSlugRouteWithChildren =
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx
 new file mode 100644
-index 0000000..f1250be
+index 00000000..f1250beb
 --- /dev/null
 +++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.workflow.$app.$input.tsx
 @@ -0,0 +1,9 @@
@@ -767,7 +767,7 @@ index 0000000..f1250be
 +  return <WorkflowInputPage app={app} id={input} />;
 +}
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 4b5e841..7af47af 100644
+index 1f45bc91..6cd51ea0 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -9,6 +9,9 @@
@@ -782,7 +782,7 @@ index 4b5e841..7af47af 100644
      "./groups": "./src/contracts/groups.ts",
 diff --git a/apps/hosted/server/src/contracts/workflow-display.ts b/apps/hosted/server/src/contracts/workflow-display.ts
 new file mode 100644
-index 0000000..6cbf7dd
+index 00000000..6cbf7ddb
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/workflow-display.ts
 @@ -0,0 +1,37 @@
@@ -824,7 +824,7 @@ index 0000000..6cbf7dd
 +  }
 +>()("hosted/WorkflowInputDisplays") {}
 diff --git a/apps/hosted/server/src/contracts/workflow-inputs.ts b/apps/hosted/server/src/contracts/workflow-inputs.ts
-index 4797ba0..d32fb3d 100644
+index 4797ba02..d32fb3d4 100644
 --- a/apps/hosted/server/src/contracts/workflow-inputs.ts
 +++ b/apps/hosted/server/src/contracts/workflow-inputs.ts
 @@ -1,3 +1,14 @@
@@ -896,7 +896,7 @@ index 4797ba0..d32fb3d 100644
    .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/implementation/workflow-display-direct.ts b/apps/hosted/server/src/implementation/workflow-display-direct.ts
 new file mode 100644
-index 0000000..05b58a4
+index 00000000..05b58a4b
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/workflow-display-direct.ts
 @@ -0,0 +1,13 @@
@@ -915,7 +915,7 @@ index 0000000..05b58a4
 +});
 diff --git a/apps/hosted/server/src/implementation/workflow-input-displays.ts b/apps/hosted/server/src/implementation/workflow-input-displays.ts
 new file mode 100644
-index 0000000..f43d464
+index 00000000..f43d464b
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/workflow-input-displays.ts
 @@ -0,0 +1,42 @@
@@ -962,7 +962,7 @@ index 0000000..f43d464
 +  });
 +export { workflowDisplayResult };
 diff --git a/apps/hosted/server/src/implementation/workflow-inputs.ts b/apps/hosted/server/src/implementation/workflow-inputs.ts
-index 9e0601f..8e71fbd 100644
+index 9e0601fa..8e71fbd1 100644
 --- a/apps/hosted/server/src/implementation/workflow-inputs.ts
 +++ b/apps/hosted/server/src/implementation/workflow-inputs.ts
 @@ -1,3 +1,4 @@
@@ -1022,7 +1022,7 @@ index 9e0601f..8e71fbd 100644
        ),
  );
 diff --git a/apps/hosted/web/src/contracts/protected-query.ts b/apps/hosted/web/src/contracts/protected-query.ts
-index dbebf32..603e68e 100644
+index dbebf32c..603e68e6 100644
 --- a/apps/hosted/web/src/contracts/protected-query.ts
 +++ b/apps/hosted/web/src/contracts/protected-query.ts
 @@ -12,6 +12,7 @@ const denied = Match.type<HostedError>().pipe(
@@ -1035,7 +1035,7 @@ index dbebf32..603e68e 100644
  );
 diff --git a/apps/hosted/web/src/contracts/workflow-input-review.ts b/apps/hosted/web/src/contracts/workflow-input-review.ts
 new file mode 100644
-index 0000000..160534c
+index 00000000..160534ca
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/workflow-input-review.ts
 @@ -0,0 +1,107 @@
@@ -1148,7 +1148,7 @@ index 0000000..160534c
 +  );
 diff --git a/apps/hosted/web/src/contracts/workflow-inputs.ts b/apps/hosted/web/src/contracts/workflow-inputs.ts
 new file mode 100644
-index 0000000..b6902fd
+index 00000000..b6902fd7
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/workflow-inputs.ts
 @@ -0,0 +1,43 @@
@@ -1197,7 +1197,7 @@ index 0000000..b6902fd
 +);
 diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
 new file mode 100644
-index 0000000..a48cea8
+index 00000000..a48cea8f
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
 @@ -0,0 +1,31 @@
@@ -1233,7 +1233,7 @@ index 0000000..a48cea8
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
-index 0dc8705..f3dfce9 100644
+index c0c8762c..f3dfce9c 100644
 --- a/apps/hosted/web/src/implementation/pages/approvals.tsx
 +++ b/apps/hosted/web/src/implementation/pages/approvals.tsx
 @@ -1,33 +1,20 @@
@@ -1247,10 +1247,11 @@ index 0dc8705..f3dfce9 100644
  import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
  import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
  
- /** Runs waiting for a decision. */
+-/** The pending runs, keyed by the URL. */
 -export const approvalsPageReads: OrganizationPageReads = (organization) => [
 -  pendingApprovalsAtom(organization),
 -];
++/** Runs waiting for a decision. */
 +export const approvalsPageReads: OrganizationPageReads = () => [];
  
  /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
@@ -1301,7 +1302,7 @@ index 0dc8705..f3dfce9 100644
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/workflow-input-client.tsx b/apps/hosted/web/src/implementation/pages/workflow-input-client.tsx
 new file mode 100644
-index 0000000..7000ee9
+index 00000000..7000ee96
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/workflow-input-client.tsx
 @@ -0,0 +1,28 @@
@@ -1334,7 +1335,7 @@ index 0000000..7000ee9
 +  );
 +}
 diff --git a/apps/local/server/src/contracts/workflow-inputs.ts b/apps/local/server/src/contracts/workflow-inputs.ts
-index 5cfa862..b146e1b 100644
+index 5cfa8629..b146e1bc 100644
 --- a/apps/local/server/src/contracts/workflow-inputs.ts
 +++ b/apps/local/server/src/contracts/workflow-inputs.ts
 @@ -1,3 +1,14 @@
@@ -1405,7 +1406,7 @@ index 5cfa862..b146e1b 100644
    );
 diff --git a/apps/local/server/src/implementation/workflow-input-displays.ts b/apps/local/server/src/implementation/workflow-input-displays.ts
 new file mode 100644
-index 0000000..2732bf4
+index 00000000..2732bf4c
 --- /dev/null
 +++ b/apps/local/server/src/implementation/workflow-input-displays.ts
 @@ -0,0 +1,43 @@
@@ -1453,7 +1454,7 @@ index 0000000..2732bf4
 +    });
 +export { workflowDisplayResult };
 diff --git a/apps/local/server/src/implementation/workflow-inputs.ts b/apps/local/server/src/implementation/workflow-inputs.ts
-index fbeb3cd..713e05c 100644
+index fbeb3cdf..713e05ce 100644
 --- a/apps/local/server/src/implementation/workflow-inputs.ts
 +++ b/apps/local/server/src/implementation/workflow-inputs.ts
 @@ -1,3 +1,4 @@
@@ -1515,7 +1516,7 @@ index fbeb3cd..713e05c 100644
    );
 diff --git a/apps/local/web/src/contracts/workflow-input-review.ts b/apps/local/web/src/contracts/workflow-input-review.ts
 new file mode 100644
-index 0000000..0c163dc
+index 00000000..0c163dc6
 --- /dev/null
 +++ b/apps/local/web/src/contracts/workflow-input-review.ts
 @@ -0,0 +1,79 @@
@@ -1600,7 +1601,7 @@ index 0000000..0c163dc
 +  displays(new InputKey({ app: AppId.make(key.app), id: WorkflowInputId.make(key.id) }));
 diff --git a/apps/local/web/src/contracts/workflow-inputs.ts b/apps/local/web/src/contracts/workflow-inputs.ts
 new file mode 100644
-index 0000000..7e9a413
+index 00000000..7e9a413d
 --- /dev/null
 +++ b/apps/local/web/src/contracts/workflow-inputs.ts
 @@ -0,0 +1,29 @@
@@ -1635,7 +1636,7 @@ index 0000000..7e9a413
 +);
 diff --git a/apps/local/web/src/implementation/pages/approvals-list-client.tsx b/apps/local/web/src/implementation/pages/approvals-list-client.tsx
 new file mode 100644
-index 0000000..c78857c
+index 00000000..c78857cb
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/approvals-list-client.tsx
 @@ -0,0 +1,26 @@
@@ -1666,7 +1667,7 @@ index 0000000..c78857c
 +  );
 +}
 diff --git a/apps/local/web/src/implementation/pages/approvals.tsx b/apps/local/web/src/implementation/pages/approvals.tsx
-index e8649a8..ff528a4 100644
+index e8649a8c..ff528a4d 100644
 --- a/apps/local/web/src/implementation/pages/approvals.tsx
 +++ b/apps/local/web/src/implementation/pages/approvals.tsx
 @@ -1,22 +1,16 @@
@@ -1724,7 +1725,7 @@ index e8649a8..ff528a4 100644
 +}
 diff --git a/apps/local/web/src/implementation/pages/workflow-input-client.tsx b/apps/local/web/src/implementation/pages/workflow-input-client.tsx
 new file mode 100644
-index 0000000..323e878
+index 00000000..323e878f
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/workflow-input-client.tsx
 @@ -0,0 +1,25 @@
@@ -1754,19 +1755,19 @@ index 0000000..323e878
 +  );
 +}
 diff --git a/apps/local/web/src/implementation/routeTree.gen.ts b/apps/local/web/src/implementation/routeTree.gen.ts
-index a41f790..dac4f9b 100644
+index 1fd357b7..58939d58 100644
 --- a/apps/local/web/src/implementation/routeTree.gen.ts
 +++ b/apps/local/web/src/implementation/routeTree.gen.ts
-@@ -29,6 +29,7 @@ import { Route as DashboardInventoryApiOauthCallbackRouteImport } from './routes
+@@ -29,6 +29,7 @@ import { Route as DashboardWebhooksAppIdSubscriptionIdRouteImport } from './rout
+ import { Route as DashboardInventoryApiOauthCallbackRouteImport } from './routes/_dashboard._inventory.api.oauth.callback'
  import { Route as DashboardInventoryAppsAppIdDeleteRouteImport } from './routes/_dashboard._inventory.apps.$appId_.delete'
  import { Route as DashboardInventoryAppsAppIdSetupRouteImport } from './routes/_dashboard._inventory.apps.$appId_.setup'
- import { Route as DashboardInventoryAppsAddCustomRouteImport } from './routes/_dashboard._inventory.apps.add_.custom'
 +import { Route as DashboardApprovalsWorkflowAppInputRouteImport } from './routes/_dashboard.approvals.workflow.$app.$input'
  
  const DashboardRoute = DashboardRouteImport.update({
    id: '/_dashboard',
-@@ -138,6 +139,12 @@ const DashboardInventoryAppsAddCustomRoute =
-     path: '/apps/add/custom',
+@@ -138,6 +139,12 @@ const DashboardInventoryAppsAppIdSetupRoute =
+     path: '/apps/$appId/setup',
      getParentRoute: () => DashboardInventoryRoute,
    } as any)
 +const DashboardApprovalsWorkflowAppInputRoute =
@@ -1779,55 +1780,55 @@ index a41f790..dac4f9b 100644
  export interface FileRoutesByFullPath {
    '/': typeof DashboardInventoryIndexRoute
 @@ -158,6 +165,7 @@ export interface FileRoutesByFullPath {
+   '/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
    '/apps/$appId/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
    '/apps/$appId/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-   '/apps/add/custom': typeof DashboardInventoryAppsAddCustomRoute
 +  '/approvals/workflow/$app/$input': typeof DashboardApprovalsWorkflowAppInputRoute
  }
  export interface FileRoutesByTo {
    '/': typeof DashboardInventoryIndexRoute
 @@ -178,6 +186,7 @@ export interface FileRoutesByTo {
+   '/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
    '/apps/$appId/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
    '/apps/$appId/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-   '/apps/add/custom': typeof DashboardInventoryAppsAddCustomRoute
 +  '/approvals/workflow/$app/$input': typeof DashboardApprovalsWorkflowAppInputRoute
  }
  export interface FileRoutesById {
    __root__: typeof rootRouteImport
 @@ -201,6 +210,7 @@ export interface FileRoutesById {
+   '/_dashboard/_inventory/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
    '/_dashboard/_inventory/apps/$appId_/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
    '/_dashboard/_inventory/apps/$appId_/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-   '/_dashboard/_inventory/apps/add_/custom': typeof DashboardInventoryAppsAddCustomRoute
 +  '/_dashboard/approvals/workflow/$app/$input': typeof DashboardApprovalsWorkflowAppInputRoute
  }
  export interface FileRouteTypes {
    fileRoutesByFullPath: FileRoutesByFullPath
 @@ -223,6 +233,7 @@ export interface FileRouteTypes {
+     | '/api/oauth/callback'
      | '/apps/$appId/delete'
      | '/apps/$appId/setup'
-     | '/apps/add/custom'
 +    | '/approvals/workflow/$app/$input'
    fileRoutesByTo: FileRoutesByTo
    to:
      | '/'
 @@ -243,6 +254,7 @@ export interface FileRouteTypes {
+     | '/api/oauth/callback'
      | '/apps/$appId/delete'
      | '/apps/$appId/setup'
-     | '/apps/add/custom'
 +    | '/approvals/workflow/$app/$input'
    id:
      | '__root__'
      | '/_dashboard'
 @@ -265,6 +277,7 @@ export interface FileRouteTypes {
+     | '/_dashboard/_inventory/api/oauth/callback'
      | '/_dashboard/_inventory/apps/$appId_/delete'
      | '/_dashboard/_inventory/apps/$appId_/setup'
-     | '/_dashboard/_inventory/apps/add_/custom'
 +    | '/_dashboard/approvals/workflow/$app/$input'
    fileRoutesById: FileRoutesById
  }
  export interface RootRouteChildren {
 @@ -417,6 +430,13 @@ declare module '@tanstack/react-router' {
-       preLoaderRoute: typeof DashboardInventoryAppsAddCustomRouteImport
+       preLoaderRoute: typeof DashboardInventoryAppsAppIdSetupRouteImport
        parentRoute: typeof DashboardInventoryRoute
      }
 +    '/_dashboard/approvals/workflow/$app/$input': {
@@ -1840,8 +1841,8 @@ index a41f790..dac4f9b 100644
    }
  }
  
-@@ -457,6 +477,7 @@ interface DashboardRouteChildren {
-   DashboardApprovalsRunIdRoute: typeof DashboardApprovalsRunIdRoute
+@@ -456,6 +476,7 @@ interface DashboardRouteChildren {
+   DashboardConnectionsConnectionIdRoute: typeof DashboardConnectionsConnectionIdRoute
    DashboardApprovalsIndexRoute: typeof DashboardApprovalsIndexRoute
    DashboardWebhooksAppIdSubscriptionIdRoute: typeof DashboardWebhooksAppIdSubscriptionIdRoute
 +  DashboardApprovalsWorkflowAppInputRoute: typeof DashboardApprovalsWorkflowAppInputRoute
@@ -1859,7 +1860,7 @@ index a41f790..dac4f9b 100644
  const DashboardRouteWithChildren = DashboardRoute._addFileChildren(
 diff --git a/apps/local/web/src/implementation/routes/_dashboard.approvals.workflow.$app.$input.tsx b/apps/local/web/src/implementation/routes/_dashboard.approvals.workflow.$app.$input.tsx
 new file mode 100644
-index 0000000..d836bf6
+index 00000000..d836bf6b
 --- /dev/null
 +++ b/apps/local/web/src/implementation/routes/_dashboard.approvals.workflow.$app.$input.tsx
 @@ -0,0 +1,9 @@
@@ -1873,7 +1874,7 @@ index 0000000..d836bf6
 +  return <WorkflowInputPage app={app} id={input} />;
 +}
 diff --git a/bun.lock b/bun.lock
-index 6163bb0..dfe9d5e 100644
+index d253c013..84985067 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -61,6 +61,7 @@
@@ -1884,7 +1885,7 @@ index 6163bb0..dfe9d5e 100644
          "@better-auth/passkey": "1.7.5",
          "@better-auth/sso": "1.7.5",
          "@cloudflare/worker-bundler": "0.2.4",
-@@ -900,6 +901,8 @@
+@@ -901,6 +902,8 @@
  
      "@astrojs/astro2tsx": ["@astrojs/astro2tsx@0.1.0", "", { "dependencies": { "@emnapi/core": "1.11.3", "@napi-rs/wasm-runtime": "1.2.4" } }, "sha512-tgprkax8mcF+BiHJQBdoQ+REqtvvnLlYzV0yCeLMdcv3pJIutdlinWNHUzN1jMOT5VRlYTtMmDdaoPrtd3cBAQ=="],
  
@@ -1893,7 +1894,7 @@ index 6163bb0..dfe9d5e 100644
      "@astrojs/compiler-binding": ["@astrojs/compiler-binding@0.4.1", "", { "optionalDependencies": { "@astrojs/compiler-binding-android-arm64": "0.4.1", "@astrojs/compiler-binding-darwin-arm64": "0.4.1", "@astrojs/compiler-binding-darwin-x64": "0.4.1", "@astrojs/compiler-binding-linux-arm64-gnu": "0.4.1", "@astrojs/compiler-binding-linux-arm64-musl": "0.4.1", "@astrojs/compiler-binding-linux-x64-gnu": "0.4.1", "@astrojs/compiler-binding-linux-x64-musl": "0.4.1", "@astrojs/compiler-binding-wasm32-wasi": "0.4.1", "@astrojs/compiler-binding-win32-arm64-msvc": "0.4.1", "@astrojs/compiler-binding-win32-x64-msvc": "0.4.1" } }, "sha512-ZYVDW1P58OXyxqZbOMp+/2U9KA7y2esIx9r4pWdpZ/l6fCZhaw4ul+D7EgpRVxYLkyTWqzANbTTUFGPFP8zDHA=="],
  
      "@astrojs/compiler-binding-android-arm64": ["@astrojs/compiler-binding-android-arm64@0.4.1", "", { "os": "android", "cpu": "arm64" }, "sha512-Wtx2DZORuNTLASLLZ8hlrjFaJe1LUloatcCn9EPq7knBhRpjMGXeJANIJMeBZG4igvz7x+3nyAJM2iwCSW9xog=="],
-@@ -1292,6 +1295,10 @@
+@@ -1293,6 +1296,10 @@
  
      "@electric-sql/pglite": ["@electric-sql/pglite@0.5.8", "", {}, "sha512-n9tsbUOhwx2epK1V0ZG9Ar4SHWUju04dhmzZXiSBXwBoleOvIfals33NAaWgagQVAL4Rbvx/Ptsu3P+pA09f6Q=="],
  
@@ -1904,7 +1905,7 @@ index 6163bb0..dfe9d5e 100644
      "@electron-internal/extract-zip": ["@electron-internal/extract-zip@1.0.5", "", {}, "sha512-+bqFCP98pLI0Tt0XQo1TmlXtwjWchISndDOxCkEcIuUgXWpBnLyRI+2DU+mesvnMMX6L1XDqYNA0lXNDHd/yiA=="],
  
      "@electron/asar": ["@electron/asar@3.4.1", "", { "dependencies": { "commander": "^5.0.0", "glob": "^7.1.6", "minimatch": "^3.0.4" }, "bin": { "asar": "bin/asar.js" } }, "sha512-i4/rNPRS84t0vSRa2HorerGRXWyF4vThfHesw0dmcWHp+cspK743UanA0suA5Q5y8kzY2y6YKrvbIUn69BCAiA=="],
-@@ -5092,6 +5099,10 @@
+@@ -5093,6 +5100,10 @@
  
      "@astrojs/astro2tsx/@emnapi/core": ["@emnapi/core@1.11.3", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.3", "tslib": "^2.4.0" } }, "sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg=="],
  
@@ -1915,7 +1916,7 @@ index 6163bb0..dfe9d5e 100644
      "@astrojs/internal-helpers/js-yaml": ["js-yaml@4.3.2", "", { "dependencies": { "argparse": "^2.0.1" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA=="],
  
      "@astrojs/internal-helpers/shiki": ["shiki@4.4.3", "", { "dependencies": { "@shikijs/core": "4.4.3", "@shikijs/engine-javascript": "4.4.3", "@shikijs/engine-oniguruma": "4.4.3", "@shikijs/langs": "4.4.3", "@shikijs/themes": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5" } }, "sha512-Mb/GvXPHBAXdgGIcnfU5L3ldpn1XcxrGkPHwqgRx17/I2XRfqlFKk2vGkHWINn1kdXvzJZeuO3is6I9KLPFm0g=="],
-@@ -5224,10 +5235,6 @@
+@@ -5225,10 +5236,6 @@
  
      "@prisma/dev/@electric-sql/pglite": ["@electric-sql/pglite@0.3.15", "", {}, "sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ=="],
  
@@ -1926,7 +1927,7 @@ index 6163bb0..dfe9d5e 100644
      "@prisma/dev/@hono/node-server": ["@hono/node-server@1.19.9", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw=="],
  
      "@prisma/dev/hono": ["hono@4.11.4", "", {}, "sha512-U7tt8JsyrxSRKspfhtLET79pU8K+tInj5QZXs1jSugO1Vq5dFj3kmZsRldo29mTBfcjDRVRXrEZ6LS63Cog9ZA=="],
-@@ -5410,8 +5417,6 @@
+@@ -5411,8 +5418,6 @@
  
      "better-call/rou3": ["rou3@0.9.2", "", {}, "sha512-3SOzvaAg8rkHrXtRjpCvCvbyO5to9oOO27Z/XqHEYXfMRVSw/qMIVdmaOk9W2lcRLtR6dlqTjo9hDeJk70QBYQ=="],
  
@@ -1935,7 +1936,7 @@ index 6163bb0..dfe9d5e 100644
      "blume/es-module-lexer": ["es-module-lexer@3.0.2", "", {}, "sha512-BuIB67FngDSyQ/dpQNOZybwdEBDUGJQvOqwWr4ha/ufYiqzuEwPkKO2zLhRAgay28tStRIHUeWmszZAJo3GCOg=="],
  
      "blume/graphql": ["graphql@17.0.2", "", {}, "sha512-FRWbddMxfkjiB7z+aQDWIR+E34xo9I8c9mtK2RPv8PmMzKRvrdsreHL/Ui/TmwHJfhHChEtsFPyMHKI+xuarQQ=="],
-@@ -5420,8 +5425,6 @@
+@@ -5421,8 +5426,6 @@
  
      "blume/shiki": ["shiki@4.4.3", "", { "dependencies": { "@shikijs/core": "4.4.3", "@shikijs/engine-javascript": "4.4.3", "@shikijs/engine-oniguruma": "4.4.3", "@shikijs/langs": "4.4.3", "@shikijs/themes": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5" } }, "sha512-Mb/GvXPHBAXdgGIcnfU5L3ldpn1XcxrGkPHwqgRx17/I2XRfqlFKk2vGkHWINn1kdXvzJZeuO3is6I9KLPFm0g=="],
  
@@ -1944,7 +1945,7 @@ index 6163bb0..dfe9d5e 100644
      "blume/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
  
      "blume/undici": ["undici@8.10.2", "", {}, "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ=="],
-@@ -5614,10 +5617,6 @@
+@@ -5615,10 +5618,6 @@
  
      "vite-plus/@oxlint/plugins": ["@oxlint/plugins@1.79.0", "", {}, "sha512-S0uyoxakDINJ4DPgqxGlEEvrdSMeQb7Z2lKVjxoY2gwsbZbfg2Xr8Klfeo5ZeraHmmdBCELFUHkSe6KEmBpMvg=="],
  
@@ -1955,7 +1956,7 @@ index 6163bb0..dfe9d5e 100644
      "vite-plus/@vitest/mocker": ["@vitest/mocker@4.1.11", "", { "dependencies": { "@vitest/spy": "4.1.11", "estree-walker": "^3.0.3", "magic-string": "^0.30.21" }, "peerDependencies": { "msw": "^2.4.9", "vite": "^6.0.0 || ^7.0.0 || ^8.0.0" }, "optionalPeers": ["msw", "vite"] }, "sha512-2XJVD55d1o5AZous5CCGKS74g/riOj9odEt2bQpCVZeblHyHdnMeFl4jl0XjU21stf4mbjUkew2eXQZt65g5CQ=="],
  
      "vite-plus/@vitest/utils": ["@vitest/utils@4.1.11", "", { "dependencies": { "@vitest/pretty-format": "4.1.11", "convert-source-map": "^2.0.0", "tinyrainbow": "^3.1.0" } }, "sha512-zTCVGpyFsGWBhllOyKlTw/vnr6D9qxsfSDyfbyZmTyjHw5N/VuvzHpHoQjm2ZJzn4RJgx5w4r7V0er69CmLgPQ=="],
-@@ -5654,6 +5653,10 @@
+@@ -5655,6 +5654,10 @@
  
      "@astrojs/astro2tsx/@emnapi/core/@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g=="],
  
@@ -1966,7 +1967,7 @@ index 6163bb0..dfe9d5e 100644
      "@astrojs/internal-helpers/shiki/@shikijs/core": ["@shikijs/core@4.4.3", "", { "dependencies": { "@shikijs/primitive": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5", "hast-util-to-html": "^9.0.5" } }, "sha512-QCR4q2ZO/ILJEuwiBMel4wdcTDb1JGwfjKTxPDF6x8ixOaluPrVqIn06C99AcRPhmYlBR56d/Fb+GN58GzExpg=="],
  
      "@astrojs/internal-helpers/shiki/@shikijs/engine-javascript": ["@shikijs/engine-javascript@4.4.3", "", { "dependencies": { "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "oniguruma-to-es": "^4.3.6" } }, "sha512-FbOjFJp9VLdo1Wevs10BBtVxiTWwNLqZh5Gkhjgda/ioL15YOgeSl9n+6XMa3qRlPQzfhFNe641SrynFHYG0nQ=="],
-@@ -5822,10 +5825,6 @@
+@@ -5823,10 +5826,6 @@
  
      "axios/https-proxy-agent/agent-base": ["agent-base@6.0.2", "", { "dependencies": { "debug": "4" } }, "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ=="],
  
@@ -1977,7 +1978,7 @@ index 6163bb0..dfe9d5e 100644
      "blume/shiki/@shikijs/core": ["@shikijs/core@4.4.3", "", { "dependencies": { "@shikijs/primitive": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5", "hast-util-to-html": "^9.0.5" } }, "sha512-QCR4q2ZO/ILJEuwiBMel4wdcTDb1JGwfjKTxPDF6x8ixOaluPrVqIn06C99AcRPhmYlBR56d/Fb+GN58GzExpg=="],
  
      "blume/shiki/@shikijs/engine-javascript": ["@shikijs/engine-javascript@4.4.3", "", { "dependencies": { "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "oniguruma-to-es": "^4.3.6" } }, "sha512-FbOjFJp9VLdo1Wevs10BBtVxiTWwNLqZh5Gkhjgda/ioL15YOgeSl9n+6XMa3qRlPQzfhFNe641SrynFHYG0nQ=="],
-@@ -5986,8 +5985,6 @@
+@@ -5987,8 +5986,6 @@
  
      "unzipper/fs-extra/universalify": ["universalify@2.0.1", "", {}, "sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw=="],
  
@@ -1986,7 +1987,7 @@ index 6163bb0..dfe9d5e 100644
      "vite-plus/@vitest/mocker/vite": ["vite@7.3.6", "", { "dependencies": { "esbuild": "^0.27.0 || ^0.28.0", "fdir": "^6.5.0", "picomatch": "^4.0.3", "postcss": "^8.5.6", "rollup": "^4.43.0", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "jiti": ">=1.21.0", "less": "^4.0.0", "lightningcss": "^1.21.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg=="],
  
      "vite-plus/vitest/tinybench": ["tinybench@2.9.0", "", {}, "sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg=="],
-@@ -5998,6 +5995,12 @@
+@@ -5999,6 +5996,12 @@
  
      "vscode-languageserver/vscode-languageserver-protocol/vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
  
@@ -1999,7 +2000,7 @@ index 6163bb0..dfe9d5e 100644
      "@astrojs/react/vite/rolldown/@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.9", "", { "os": "android", "cpu": "arm" }, "sha512-tNISae1QEf/vkb3xkRcjV5SEdzPE97We5IVaa2Z8jSszQPZ8U60B/YCYpw4QI7VidYsBtKavczXf+DyDs9WGxw=="],
  
      "@astrojs/react/vite/rolldown/@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.2.9", "", { "os": "android", "cpu": "arm64" }, "sha512-YC8YsI30o606GTZi0VyzYlsDKFP8W61i/QzayHDkLbNEz/IShqAmTa+hsJRj13xTHA0H+6fk4b2UmGn+Q/cMlg=="],
-@@ -6136,10 +6139,6 @@
+@@ -6137,10 +6140,6 @@
  
      "astro/vite/rolldown/@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Ip2mXoU0hM0boq3Rf+ekuT653OROSo6aSYcPT1VHE4q52KvyxgFkQgrgb/IEsxOuvQ2fZZbs8khJAyCEPM24/g=="],
  
@@ -2010,7 +2011,7 @@ index 6163bb0..dfe9d5e 100644
      "css-select/domutils/dom-serializer/entities": ["entities@4.5.0", "", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
  
      "dir-compare/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
-@@ -6188,6 +6187,12 @@
+@@ -6189,6 +6188,12 @@
  
      "vitest/vite/rolldown/@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Ip2mXoU0hM0boq3Rf+ekuT653OROSo6aSYcPT1VHE4q52KvyxgFkQgrgb/IEsxOuvQ2fZZbs8khJAyCEPM24/g=="],
  
@@ -2023,7 +2024,7 @@ index 6163bb0..dfe9d5e 100644
      "@manypkg/find-root/find-up/locate-path/p-locate/p-limit": ["p-limit@2.3.0", "", { "dependencies": { "p-try": "^2.0.0" } }, "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w=="],
  
      "@puppeteer/browsers/yargs/cliui/string-width/emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
-@@ -6196,12 +6201,6 @@
+@@ -6197,12 +6202,6 @@
  
      "@puppeteer/browsers/yargs/cliui/wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
  
@@ -2036,7 +2037,7 @@ index 6163bb0..dfe9d5e 100644
      "miniflare/sharp/@img/sharp-freebsd-wasm32/@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
  
      "miniflare/sharp/@img/sharp-webcontainers-wasm32/@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
-@@ -6209,11 +6208,5 @@
+@@ -6210,11 +6209,5 @@
      "node-html-parser/css-select/domutils/dom-serializer/entities": ["entities@4.5.0", "", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
  
      "rimraf/glob/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
@@ -2049,21 +2050,21 @@ index 6163bb0..dfe9d5e 100644
    }
  }
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 18008a0..7f0c740 100644
+index 293f395b..ce3d85b9 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@ const jobs = {
+@@ -105,7 +105,7 @@ const jobs = {
      runner: 3,
  
      pattern:
--      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+-      "scheduled personal-data reports refresh identity|personal-data reports use each organization|Cloud pool migration inventory|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Cloud's gateway names an authenticated MCP request's organization",
++      "Approvals (?:answers|renders)|workflow displays recheck|scheduled personal-data reports refresh identity|personal-data reports use each organization|Cloud pool migration inventory|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Cloud's gateway names an authenticated MCP request's organization",
    },
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/support/workflow-display-app.ts b/e2e/support/workflow-display-app.ts
 new file mode 100644
-index 0000000..5bb115f
+index 00000000..5bb115f9
 --- /dev/null
 +++ b/e2e/support/workflow-display-app.ts
 @@ -0,0 +1,44 @@
@@ -2112,7 +2113,7 @@ index 0000000..5bb115f
 +  { path: "migrations/0001_receipts.sql", content: "CREATE TABLE receipts(answer TEXT NOT NULL);" },
 +];
 diff --git a/e2e/support/workflow-input-fixture.ts b/e2e/support/workflow-input-fixture.ts
-index 266cea4..339f1b9 100644
+index 266cea4d..339f1b9d 100644
 --- a/e2e/support/workflow-input-fixture.ts
 +++ b/e2e/support/workflow-input-fixture.ts
 @@ -18,90 +18,97 @@ export const Run = Schema.Struct({
@@ -2299,10 +2300,10 @@ index 266cea4..339f1b9 100644
 +
 +export const workflowInputFixture = workflowInputFixtureFor(workflowInputFiles);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 12c2899..6f8f902 100644
+index 2506610a..c3c5b3dd 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8384,6 +8384,46 @@ export const scenarios = plan({
+@@ -9428,6 +9428,46 @@ export const scenarios = plan({
        local: na("Hosted routes have a separate local counterpart."),
      },
    },
@@ -2350,7 +2351,7 @@ index 12c2899..6f8f902 100644
      fixtures: "actors",
      file: "workflow-input-defaults.spec.ts",
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index a360128..12d2d12 100644
+index a3601283..12d2d12b 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -2363,7 +2364,7 @@ index a360128..12d2d12 100644
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
 diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
-index 193a3b1..8935b05 100644
+index 193a3b19..8935b051 100644
 --- a/e2e/tests/local-workflow-inputs.spec.ts
 +++ b/e2e/tests/local-workflow-inputs.spec.ts
 @@ -1,6 +1,8 @@
@@ -2485,7 +2486,7 @@ index 193a3b1..8935b05 100644
 +  );
  });
 diff --git a/e2e/tests/pool-setup-atomic.spec.ts b/e2e/tests/pool-setup-atomic.spec.ts
-index 5a148cb..3a8720a 100644
+index 5a148cb5..3a8720ae 100644
 --- a/e2e/tests/pool-setup-atomic.spec.ts
 +++ b/e2e/tests/pool-setup-atomic.spec.ts
 @@ -32,6 +32,14 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup publication", (it)
@@ -2527,7 +2528,7 @@ index 5a148cb..3a8720a 100644
              yield* database.release;
 diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
 new file mode 100644
-index 0000000..f874f1b
+index 00000000..f874f1b8
 --- /dev/null
 +++ b/e2e/tests/workflow-input-browser.spec.ts
 @@ -0,0 +1,396 @@
@@ -2929,7 +2930,7 @@ index 0000000..f874f1b
 +});
 diff --git a/packages/apps/protocols/24.json b/packages/apps/protocols/24.json
 new file mode 100644
-index 0000000..bba27d6
+index 00000000..bba27d63
 --- /dev/null
 +++ b/packages/apps/protocols/24.json
 @@ -0,0 +1,1047 @@
@@ -3981,7 +3982,7 @@ index 0000000..bba27d6
 +  "shared": {}
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 231ceb5..c6aeaaf 100644
+index 231ceb5a..c6aeaafa 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -97,10 +97,11 @@ export { protocol17 } from "./protocols/17.ts";
@@ -3998,7 +3999,7 @@ index 231ceb5..c6aeaaf 100644
    CredentialHost,
    MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 3089e59..6ae284e 100644
+index 3089e595..6ae284ec 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -4008,7 +4009,7 @@ index 3089e59..6ae284e 100644
 -export const frameworkProtocol = 23;
 +export const frameworkProtocol = 24;
 diff --git a/packages/apps/src/contracts/protocols/21.ts b/packages/apps/src/contracts/protocols/21.ts
-index ac0624d..f5c3d0e 100644
+index ac0624d1..f5c3d0e5 100644
 --- a/packages/apps/src/contracts/protocols/21.ts
 +++ b/packages/apps/src/contracts/protocols/21.ts
 @@ -49,10 +49,10 @@ import {
@@ -4025,7 +4026,7 @@ index ac0624d..f5c3d0e 100644
  export class McpError extends Schema.TaggedError<McpError>()("McpError", {
 diff --git a/packages/apps/src/contracts/protocols/23.ts b/packages/apps/src/contracts/protocols/23.ts
 new file mode 100644
-index 0000000..712626f
+index 00000000..712626fe
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/23.ts
 @@ -0,0 +1,682 @@
@@ -4712,7 +4713,7 @@ index 0000000..712626f
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index 4565cd5..9b8fc0f 100644
+index 4565cd54..9b8fc0f6 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -28,6 +28,7 @@ import { protocol19 } from "./19.ts";
@@ -4731,7 +4732,7 @@ index 4565cd5..9b8fc0f 100644
  ] as const;
 diff --git a/packages/apps/src/contracts/protocols/workflow-input-21.ts b/packages/apps/src/contracts/protocols/workflow-input-21.ts
 new file mode 100644
-index 0000000..9941418
+index 00000000..9941418a
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/workflow-input-21.ts
 @@ -0,0 +1,133 @@
@@ -4869,7 +4870,7 @@ index 0000000..9941418
 +  }),
 +]);
 diff --git a/packages/apps/src/contracts/workflow-input.ts b/packages/apps/src/contracts/workflow-input.ts
-index 4315479..0ceb45b 100644
+index 43154799..0ceb45b0 100644
 --- a/packages/apps/src/contracts/workflow-input.ts
 +++ b/packages/apps/src/contracts/workflow-input.ts
 @@ -1,5 +1,6 @@
@@ -4899,7 +4900,7 @@ index 4315479..0ceb45b 100644
  export type WorkflowInputDisplay = typeof WorkflowInputDisplay.Type;
  
 diff --git a/packages/mcp/package.json b/packages/mcp/package.json
-index 9c79a5b..cb3640a 100644
+index 9c79a5b1..cb3640af 100644
 --- a/packages/mcp/package.json
 +++ b/packages/mcp/package.json
 @@ -7,7 +7,9 @@
@@ -4915,7 +4916,7 @@ index 9c79a5b..cb3640a 100644
      "@executor-js/sdk": "workspace:*",
 diff --git a/packages/mcp/src/contracts/workflow-display.ts b/packages/mcp/src/contracts/workflow-display.ts
 new file mode 100644
-index 0000000..8f8d76b
+index 00000000..8f8d76b6
 --- /dev/null
 +++ b/packages/mcp/src/contracts/workflow-display.ts
 @@ -0,0 +1,31 @@
@@ -4951,6 +4952,7 @@ index 0000000..8f8d76b
 +  response: ApprovalResponse,
 +});
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
+index 9f2a9f0f..6b617d58 100644
 --- a/packages/mcp/src/implementation/app-asset-paths.ts
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
 @@ -1,7 +1,7 @@
@@ -4963,6 +4965,7 @@ diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/s
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
+index 869d1ceb..228f7adc 100644
 --- a/packages/mcp/src/implementation/app-assets.ts
 +++ b/packages/mcp/src/implementation/app-assets.ts
 @@ -1,5 +1,5 @@
@@ -4974,7 +4977,7 @@ diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/im
  };
 diff --git a/packages/mcp/src/implementation/workflow-display.ts b/packages/mcp/src/implementation/workflow-display.ts
 new file mode 100644
-index 0000000..6e5271a
+index 00000000..6e5271a7
 --- /dev/null
 +++ b/packages/mcp/src/implementation/workflow-display.ts
 @@ -0,0 +1,36 @@
@@ -5015,10 +5018,10 @@ index 0000000..6e5271a
 +    Effect.mapError(() => new WorkflowFailure({ reason: "unavailable", retryable: false })),
 +  );
 diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
-index b768e0f..a54b485 100644
+index 3c3987cb..daf21751 100644
 --- a/packages/mcp/src/index.ts
 +++ b/packages/mcp/src/index.ts
-@@ -24,3 +24,8 @@ export {
+@@ -25,3 +25,8 @@ export {
  } from "./implementation/app-sandbox.ts";
  export { deferredMcpAppViews } from "./implementation/deferred-app-views.ts";
  export type { AppSandboxAddress } from "./contracts/app-sandbox.ts";
@@ -5029,7 +5032,7 @@ index b768e0f..a54b485 100644
 +} from "./implementation/workflow-display.ts";
 diff --git a/packages/mcp/src/ui/app-frame.ts b/packages/mcp/src/ui/app-frame.ts
 new file mode 100644
-index 0000000..5403f56
+index 00000000..5403f562
 --- /dev/null
 +++ b/packages/mcp/src/ui/app-frame.ts
 @@ -0,0 +1,139 @@
@@ -5173,10 +5176,10 @@ index 0000000..5403f56
 +  };
 +};
 diff --git a/packages/sdk/src/contracts/workflow-runtime.ts b/packages/sdk/src/contracts/workflow-runtime.ts
-index a759c56..fe00ddf 100644
+index 3625c571..7cb4a75d 100644
 --- a/packages/sdk/src/contracts/workflow-runtime.ts
 +++ b/packages/sdk/src/contracts/workflow-runtime.ts
-@@ -83,6 +83,10 @@ export interface WorkflowHost {
+@@ -89,6 +89,10 @@ export interface WorkflowHost {
            readonly detail?: WorkflowRunFailure;
          },
    ) => Effect.Effect<void, WorkflowFailure>;
@@ -5188,7 +5191,7 @@ index a759c56..fe00ddf 100644
      run: WorkflowRunId,
      command: import("apps/contracts").WorkflowInputCommand,
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 9d11a12..f2c57b0 100644
+index 9d11a12e..f2c57b0b 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -303,6 +303,7 @@ const protocol13: AppProtocol = {
@@ -5208,10 +5211,10 @@ index 9d11a12..f2c57b0 100644
  );
  
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index a186d8d..2b699fe 100644
+index 10873088..a7502a61 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -568,7 +568,7 @@ const renewRefused = (
+@@ -604,7 +604,7 @@ const renewRefused = (
      return { ...context, accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
    });
  
@@ -5221,10 +5224,10 @@ index a186d8d..2b699fe 100644
    tool: ToolName,
    kind: ToolKind | undefined,
 diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
-index a19a641..f712b5f 100644
+index c888d033..1f852adc 100644
 --- a/packages/sdk/src/implementation/workflows.ts
 +++ b/packages/sdk/src/implementation/workflows.ts
-@@ -22,7 +22,14 @@ import {
+@@ -24,7 +24,14 @@ import {
    WorkflowApp,
  } from "../contracts/workflows.ts";
  import { AccountScope, SelectedAccounts } from "../contracts/apps.ts";
@@ -5240,7 +5243,7 @@ index a19a641..f712b5f 100644
  import type { Credentials } from "../contracts/storage.ts";
  import type { Runtime } from "../contracts/runtime.ts";
  import type { ExecutorDatabase } from "./storage.ts";
-@@ -31,7 +38,7 @@ import type { makeOAuth } from "./oauth.ts";
+@@ -33,7 +40,7 @@ import type { makeOAuth } from "./oauth.ts";
  import { database, query, transaction } from "./database.ts";
  import { storedAccount } from "./accounts.ts";
  import { storedApp, storedVersion } from "./apps.ts";
@@ -5249,7 +5252,7 @@ index a19a641..f712b5f 100644
  import { invocationScope, scopedSelection } from "./selection.ts";
  import type { Declarations } from "./declarations.ts";
  import { ownsDatabase } from "../contracts/apps.ts";
-@@ -704,6 +711,34 @@ export const makeWorkflowRuns = (
+@@ -805,6 +812,34 @@ export const makeWorkflowRuns = (
        seed,
        context,
        invoke,
@@ -5286,7 +5289,7 @@ index a19a641..f712b5f 100644
        finish,
 diff --git a/packages/ui/src/contracts/workflow-inputs.ts b/packages/ui/src/contracts/workflow-inputs.ts
 new file mode 100644
-index 0000000..44c687a
+index 00000000..44c687a1
 --- /dev/null
 +++ b/packages/ui/src/contracts/workflow-inputs.ts
 @@ -0,0 +1,90 @@
@@ -5381,7 +5384,7 @@ index 0000000..44c687a
 +  readonly close: Atom.AtomResultFn<AppViewId, void, E>;
 +}
 diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/ui/src/implementation/dashboard/approvals.tsx
-index 40b72a9..1dc06b8 100644
+index 40b72a9a..1dc06b86 100644
 --- a/packages/ui/src/implementation/dashboard/approvals.tsx
 +++ b/packages/ui/src/implementation/dashboard/approvals.tsx
 @@ -4,21 +4,21 @@ import { PageFrame, PageHeader } from "./page.tsx";
@@ -5472,7 +5475,7 @@ index 40b72a9..1dc06b8 100644
          }
 diff --git a/packages/ui/src/implementation/dashboard/browser-approval-client.tsx b/packages/ui/src/implementation/dashboard/browser-approval-client.tsx
 new file mode 100644
-index 0000000..6d1f70e
+index 00000000..6d1f70e3
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/browser-approval-client.tsx
 @@ -0,0 +1,266 @@
@@ -5743,7 +5746,7 @@ index 0000000..6d1f70e
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/browser-approval.tsx b/packages/ui/src/implementation/dashboard/browser-approval.tsx
-index aec4b91..3d1e5e2 100644
+index aec4b91b..3d1e5e29 100644
 --- a/packages/ui/src/implementation/dashboard/browser-approval.tsx
 +++ b/packages/ui/src/implementation/dashboard/browser-approval.tsx
 @@ -1,74 +1,20 @@
@@ -6223,7 +6226,7 @@ index aec4b91..3d1e5e2 100644
 -}
 diff --git a/packages/ui/src/implementation/dashboard/elicitation-fields.tsx b/packages/ui/src/implementation/dashboard/elicitation-fields.tsx
 new file mode 100644
-index 0000000..a4d9dae
+index 00000000..a4d9dae9
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/elicitation-fields.tsx
 @@ -0,0 +1,229 @@
@@ -6457,10 +6460,10 @@ index 0000000..a4d9dae
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/loading.tsx b/packages/ui/src/implementation/dashboard/loading.tsx
-index 6774f5a..482bd26 100644
+index c7f01597..6ed757ee 100644
 --- a/packages/ui/src/implementation/dashboard/loading.tsx
 +++ b/packages/ui/src/implementation/dashboard/loading.tsx
-@@ -152,7 +152,7 @@ export function InventoryPageSkeleton({
+@@ -243,7 +243,7 @@ export function CatalogPageSkeleton({ back }: { readonly back: ReactNode }) {
  }
  
  export const approvalsTitle = "Approvals";
@@ -6471,7 +6474,7 @@ index 6774f5a..482bd26 100644
  export function ApprovalsPending() {
 diff --git a/packages/ui/src/implementation/dashboard/review-lazy.tsx b/packages/ui/src/implementation/dashboard/review-lazy.tsx
 new file mode 100644
-index 0000000..7fdab4b
+index 00000000..7fdab4bf
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/review-lazy.tsx
 @@ -0,0 +1,58 @@
@@ -6535,7 +6538,7 @@ index 0000000..7fdab4b
 +}
 diff --git a/packages/ui/src/implementation/dashboard/workflow-display-review.tsx b/packages/ui/src/implementation/dashboard/workflow-display-review.tsx
 new file mode 100644
-index 0000000..64379e3
+index 00000000..64379e36
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/workflow-display-review.tsx
 @@ -0,0 +1,98 @@
@@ -6639,7 +6642,7 @@ index 0000000..64379e3
 +};
 diff --git a/packages/ui/src/implementation/dashboard/workflow-display.tsx b/packages/ui/src/implementation/dashboard/workflow-display.tsx
 new file mode 100644
-index 0000000..b6630c9
+index 00000000..b6630c9a
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/workflow-display.tsx
 @@ -0,0 +1,247 @@
@@ -6892,7 +6895,7 @@ index 0000000..b6630c9
 +}
 diff --git a/packages/ui/src/implementation/dashboard/workflow-input.tsx b/packages/ui/src/implementation/dashboard/workflow-input.tsx
 new file mode 100644
-index 0000000..bb71df7
+index 00000000..bb71df7f
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/workflow-input.tsx
 @@ -0,0 +1,234 @@

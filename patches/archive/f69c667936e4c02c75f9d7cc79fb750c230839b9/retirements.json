@@ -1,0 +1,30 @@
+[
+  {
+    "identity": "executor-dashboard-batch-authentication",
+    "file": "0035-dashboard-batch-authentication.patch",
+    "content_sha256": "198807d457e3f14605ec13ce09adeecc79afaae2642106fca76508cb4989da59",
+    "upstream_commit": "2070377d09bcf943ee41851391c9c4faa8a7884d",
+    "reason": "Request-scoped authentication, organization, membership and tombstone caching; upstream retries incomplete reads instead of caching failures. All transport hooks and the batch scenario remain."
+  },
+  {
+    "identity": "executor-redacted-worker-logs",
+    "file": "0036-redacted-worker-logs.patch",
+    "content_sha256": "a76d1c62982f4005dd29f0f1719ed0dd003d93ae928fe0e88fcaab19c44190e7",
+    "upstream_commit": "2070377d09bcf943ee41851391c9c4faa8a7884d",
+    "reason": "Upstream platformObservability covers Edge, AppOutbound and InvocationTelemetry; redactQueryString remains true. Direct Sentry keeps native logs through the reconciled 0014 branch."
+  },
+  {
+    "identity": "executor-app-query-authorization",
+    "file": "0039-app-query-authorization.patch",
+    "content_sha256": "c1905c1fd28109cbbcf8b7e807ec3078a5e18a18260ca5cb72fa0d8a9844b86f",
+    "upstream_commit": "2070377d09bcf943ee41851391c9c4faa8a7884d",
+    "reason": "Upstream app-session auth disables verification cleanup and retains the Cloud query authorization scenario and CI selection."
+  },
+  {
+    "identity": "executor-auth-security-hardening",
+    "file": "0138-auth-security-hardening.patch",
+    "content_sha256": "362f340ba842ea16cc10a2b0dff9c2999e670effa9eeed1d1a3455bec00fd13a",
+    "upstream_commit": "2070377d09bcf943ee41851391c9c4faa8a7884d",
+    "reason": "Both entire Better Auth 1.7.5 dependency patches match upstream byte-for-byte. The stronger fork regression controls are retained separately in sync carry 0206."
+  }
+]

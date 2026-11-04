@@ -1,9 +1,11 @@
 {
   "identity": "basalt-provider-apps-ui",
   "file": "0082-provider-apps-ui.patch",
-  "content_sha256": "7f93a463cece6c532975ac03f3626e93b6a14f7d7dd9b6d3dba5ce9eaafee749",
+  "content_sha256": "642c46154549c6164e43c291f3730a210ec9af7409cd91e3b26b6068e94db2dc",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "7f93a463cece6c532975ac03f3626e93b6a14f7d7dd9b6d3dba5ce9eaafee749",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

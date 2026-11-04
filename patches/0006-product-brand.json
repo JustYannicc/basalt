@@ -1,10 +1,12 @@
 {
   "identity": "executor-product-brand",
   "file": "0006-product-brand.patch",
-  "content_sha256": "aff71f50332dc425b286c49bcf70a3e611978e7097a7f9999ef1bce8d3c325ab",
+  "content_sha256": "4bd3b10dd378f0917bde793684a12d4d1323cc348081226a42aa592211f5aaae",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "upstream_issue": 2386
+  "upstream_issue": 2386,
+  "rebased_from": "aff71f50332dc425b286c49bcf70a3e611978e7097a7f9999ef1bce8d3c325ab",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

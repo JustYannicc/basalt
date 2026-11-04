@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+index cbd7c188..c31cbeb0 100644
 --- a/apps/hosted/web/src/implementation/components/organization.tsx
 +++ b/apps/hosted/web/src/implementation/components/organization.tsx
-@@ -8,13 +8,14 @@
+@@ -8,13 +8,14 @@ import {
    organizationSlugMaxLength,
  } from "@executor-js/hosted-server/organization";
  import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
@@ -18,7 +19,7 @@ diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/ap
  import { lastOrganizationAtom, sessionAtom } from "../../contracts/auth.ts";
  import { OrganizationResume } from "../../contracts/navigation.ts";
  import { rememberOrganization, forgetOrganization } from "../last-organization.ts";
-@@ -377,6 +378,19 @@
+@@ -377,6 +378,19 @@ export function OrganizationBoundary({
      Schema.decodeUnknownOption(OrganizationResume)(location.state.organizationResume),
    );
    const userId = Option.getOrUndefined(AsyncResult.value(session))?.user.id;
@@ -39,14 +40,13 @@ diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/ap
    const rejectedResume =
      unavailable &&
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index e14f9e1a..439e738e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -5195,6 +5195,16 @@
-       "self-host": scheduled,
-       cloud: scheduled,
+@@ -5936,6 +5936,16 @@ export const scenarios = plan({
        local: na("Local has no hosted organization membership."),
-+    },
-+  },
+     },
+   },
 +  resourcePrefetch: {
 +    fixtures: "actors",
 +    file: "resource-prefetch.spec.ts",
@@ -55,33 +55,36 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      cloud: scheduled,
 +      local: na("Local has no verified organization entry."),
-     },
-   },
++    },
++  },
    instantConsoleRevisit: {
+     fixtures: "actors",
+     file: "instant-console-navigation.spec.ts",
 diff --git a/e2e/tests/dashboard-loading.spec.ts b/e2e/tests/dashboard-loading.spec.ts
+index 25cc3191..b3f8a9c5 100644
 --- a/e2e/tests/dashboard-loading.spec.ts
 +++ b/e2e/tests/dashboard-loading.spec.ts
-@@ -43,14 +43,16 @@
+@@ -43,23 +43,24 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
            { name: "Mobile", width: 390, height: 844 },
          ]) {
            for (const section of ["apps", "accounts"] as const) {
 -            yield* browser.use("Open a page that reads neither section", (page) =>
--              page.goto(`/org/${actors.organization.slug}/connect`),
+-              page.goto(`/org/${actors.organization.slug}/organization`),
 -            );
              yield* Effect.scoped(
                Effect.gen(function* () {
                  const probe = yield* dashboardLoadingProbe;
                  yield* browser.use(`${viewport.name}: set the viewport`, (page) =>
                    page.setViewportSize({ width: viewport.width, height: viewport.height }),
-+                );
+                 );
 +                // Organization entry may prefetch the shared directory before either list opens.
 +                yield* browser.use(
 +                  "Open settings with the resource hold already installed",
 +                  (page) => page.goto(`/org/${actors.organization.slug}/organization`),
-                 );
++                );
                  // The document arrives with its data; the browser reads when it navigates itself.
                  yield* openInApp(`Open ${section}`, `/org/${actors.organization.slug}/${section}`);
-@@ -58,8 +60,7 @@
+                 yield* probe.resourcesRequested;
                  yield* browser.use("The destination heading is visible", (page) =>
                    page
                      .getByRole("heading", {
@@ -92,19 +95,26 @@ diff --git a/e2e/tests/dashboard-loading.spec.ts b/e2e/tests/dashboard-loading.s
                      .waitFor({ state: "visible" }),
                  );
 diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
+index 11e0f896..be291281 100644
 --- a/e2e/support/in-app-navigation.ts
 +++ b/e2e/support/in-app-navigation.ts
-@@ -17,7 +17,8 @@
+@@ -17,12 +17,9 @@ export const openInApp = (label: string, path: string) =>
    });
  
  /**
-- * A dashboard page that reads no app, account or resource data. Hosted pages start from their
-+ * A dashboard page that does not render the destination’s app or account list. Organization entry
-+ * may prefetch shared resources, so callers install request holds before opening it. Hosted pages start from their
-  * organization's Connect page; account pages name that organization in their `organization`
-  * search parameter, because only dashboard routes are served as dashboard documents (Cloud serves
-  * other paths as static assets). The local dashboard has no organizations and serves `/connect`.
-@@ -30,8 +31,8 @@
+- * A dashboard page that reads none of the destination's data. Hosted pages start from their
+- * organization's Settings page, which reads no app, account or resource data, and Settings starts
+- * from Connections, which reads no members. Account pages name that organization in their
+- * `organization` search parameter, because only dashboard routes are served as dashboard documents
+- * (Cloud serves other paths as static assets). The local dashboard has no organizations, and every
+- * local page reads the app inventory for its sidebar, so it starts from Connections.
++ * A dashboard page that does not render the destination list. Install request holds before
++ * opening it because organization entry may prefetch shared resources. Hosted pages start from
++ * Settings, or Connections when testing Settings. Local pages start from Connections.
+  */
+ const neutralPage = (destination: URL) => {
+   const organization =
+@@ -34,8 +31,8 @@ const neutralPage = (destination: URL) => {
  };
  
  /**
@@ -117,6 +127,7 @@ diff --git a/e2e/support/in-app-navigation.ts b/e2e/support/in-app-navigation.ts
    Effect.gen(function* () {
 diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.spec.ts
 new file mode 100644
+index 00000000..f799324c
 --- /dev/null
 +++ b/e2e/tests/resource-prefetch.spec.ts
 @@ -0,0 +1,118 @@

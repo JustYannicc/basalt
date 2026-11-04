@@ -1,0 +1,497 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 3509086..f787e13 100644
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -26,6 +26,7 @@ export const BackgroundJob = Schema.Literals([
+   "workflow-reconcile",
+   "billing-reconcile",
+   "agent-grant-expiry",
++  "pool-migration-inventory",
+ ]);
+ export type BackgroundJob = typeof BackgroundJob.Type;
+ 
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+new file mode 100644
+index 0000000..953decb
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -0,0 +1,143 @@
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { Console, Effect, Schema } from "effect";
++import { createHash, randomUUID } from "node:crypto";
++
++// No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
++const queries = {
++  accounts: "select id, owner, provider, method from executor_accounts order by id limit 1001",
++  accountAccess: `select account_id, organization_id, creator_id, personal_user_id, kind, audience, revision
++    from hosted_account_access order by account_id limit 1001`,
++  accountGroups: `select organization_id, account_id, group_id from hosted_account_groups
++    order by account_id, group_id limit 1001`,
++  appAccess: `select id, organization_id, creator_id, audience, revision
++    from hosted_app_access order by id limit 1001`,
++  appGroups: `select organization_id, app_id, group_id from hosted_app_groups
++    order by app_id, group_id limit 1001`,
++  groups: "select id, organization_id, revision from hosted_groups order by id limit 1001",
++  groupMembers:
++    "select group_id, member_id from hosted_group_members order by group_id, member_id limit 1001",
++  members: `select id, "organizationId", "userId", role from member order by id limit 1001`,
++  links: `select app, requirement, subject, account, linked_by from hosted_app_account_links
++    order by app, requirement, subject nulls first, account limit 1001`,
++  connections: `select id, owner, provider, reconnect_account, revision,
++    state ->> 'status' as status, state #>> '{account,id}' as account,
++    state #>> '{interactive,method}' as acquisition_method,
++    state #>> '{interactive,app}' as acquisition_app,
++    state #>> '{interactive,version}' as acquisition_version,
++    state #>> '{interactive,ref}' as acquisition_ref,
++    target ->> 'app' as target_app, target ->> 'requirement' as target_requirement,
++    target ->> 'scope' as target_scope
++    from executor_account_connections order by id limit 1001`,
++  connectionAccess: `select connection_id, organization_id, creator_id,
++    destination ->> 'kind' as kind, destination #>> '{audience,kind}' as audience,
++    target ->> 'app' as target_app, target ->> 'requirement' as target_requirement,
++    target ->> 'scope' as target_scope
++    from hosted_connection_access order by connection_id limit 1001`,
++  connectionGroups: `select c.connection_id, g.value as group_id
++    from hosted_connection_access c cross join lateral
++      jsonb_array_elements_text(coalesce(c.destination #> '{audience,groups}', '[]'::jsonb)) g
++    order by c.connection_id, g.value limit 1001`,
++  workflowAccounts:
++    "select id, account, run from executor_workflow_accounts order by id limit 1001",
++  webhookAccounts:
++    "select id, account, subscription from executor_webhook_accounts order by id limit 1001",
++  webhooks:
++    "select id, app, owner, source_account, revision from executor_webhooks order by id limit 1001",
++  defaults: `select o.id as organization, p.key as person, p.value #>> '{}' as account
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
++    order by o.id, p.key limit 1001`,
++  pools: `select o.id as organization, p.key as person, p.value ->> 'app' as app,
++    p.value ->> 'version' as version, p.value ->> 'account' as account
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
++    order by o.id, p.key limit 1001`,
++} as const;
++
++const Rows = Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String)));
++class InventoryUnavailable extends Schema.TaggedError<InventoryUnavailable>()(
++  "InventoryUnavailable",
++  {},
++) {}
++
++/** A separate internal job never initializes the SDK or enters mutating data steps. */
++export const reportHostPoolInventory = Effect.gen(function* () {
++  const run = randomUUID();
++  const report = yield* Effect.gen(function* () {
++    const sql = yield* Effect.flatten(GroupDatabase);
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '3s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
++        const identity =
++          yield* sql`select current_setting('transaction_read_only') as read_only, transaction_timestamp()::text as snapshot`;
++        if (identity[0]?.read_only !== "on" || typeof identity[0]?.snapshot !== "string") {
++          return yield* new InventoryUnavailable();
++        }
++        const sections: Record<string, typeof Rows.Type> = {};
++        for (const [section, query] of Object.entries(queries)) {
++          const rows = yield* sql
++            .unsafe(query)
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++          if (
++            rows.length > 1_000 ||
++            rows.some((row) =>
++              Object.values(row).some((value) => value !== null && value.length > 512),
++            )
++          ) {
++            return yield* new InventoryUnavailable();
++          }
++          sections[section] = rows;
++        }
++        const report = { snapshot: identity[0].snapshot, sections };
++        if (Buffer.byteLength(JSON.stringify(report)) > 120_000)
++          return yield* new InventoryUnavailable();
++        return report;
++      }),
++    );
++  }).pipe(
++    Effect.map((report) => ({ ok: true as const, report })),
++    Effect.catchCause(() => Effect.succeed({ ok: false as const })),
++  );
++  if (!report.ok) {
++    yield* Console.info(
++      JSON.stringify({
++        inventory: "host-v1",
++        run,
++        event: "end",
++        complete: false,
++        reason: "query_failed",
++        migrationGo: false,
++      }),
++    );
++    return;
++  }
++  const json = JSON.stringify(report.report);
++  const sha256 = createHash("sha256").update(json).digest("hex");
++  const chunks = Math.ceil(json.length / 8_000);
++  for (let index = 0; index < chunks; index++) {
++    yield* Console.info(
++      JSON.stringify({
++        inventory: "host-v1",
++        run,
++        event: "part",
++        index,
++        data: json.slice(index * 8_000, (index + 1) * 8_000),
++      }),
++    );
++  }
++  yield* Console.info(
++    JSON.stringify({
++      inventory: "host-v1",
++      run,
++      event: "end",
++      complete: true,
++      sha256,
++      chunks,
++      bytes: Buffer.byteLength(json),
++      coverage: Object.keys(queries),
++      excluded: ["home-state", "durable-object-state"],
++      migrationGo: false,
++    }),
++  );
++}).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index cda7ff0..94f0bef 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -17,6 +17,7 @@ import { cloudAppDomains } from "./infrastructure/app-domains.ts";
+ import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
++import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -416,6 +417,7 @@ export default Api.make(
+       "app-domain-heartbeat",
+     );
+     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
++    yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
+     const backgroundJobs = {
+       "organization-removal": organizationRemovals,
+       provisioning: dispatch,
+@@ -428,6 +430,7 @@ export default Api.make(
+       "workflow-reconcile": workflowReconcile,
+       "billing-reconcile": billingReconcile,
+       "agent-grant-expiry": agentGrantExpiry,
++      "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+     } satisfies Record<BackgroundJob, unknown>;
+ 
+     const egress = yield* cloudEgress;
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index e17b507..5b4069a 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@ const jobs = {
+     runner: 3,
+ 
+     pattern:
+-      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 96a575a..7c6ff5d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1913,6 +1913,17 @@ export const scenarios = plan({
+       local: na("Local runs its background jobs in its own server process."),
+     },
+   },
++  cloudPoolMigrationInventory: {
++    fixtures: "actors",
++    file: "pool-migration-inventory.spec.ts",
++    title:
++      "Cloud pool migration inventory stays private and read-only through the authenticated cron job",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The inventory is an internal Cloud job using the Cloud runtime database."),
++      local: na("The inventory is an internal Cloud job using the Cloud runtime database."),
++    },
++  },
+   cloudScheduleCoordinatorPlaced: {
+     fixtures: "actors",
+     file: "cloud-database-placement.spec.ts",
+diff --git a/e2e/tests/pool-migration-inventory.spec.ts b/e2e/tests/pool-migration-inventory.spec.ts
+new file mode 100644
+index 0000000..18617b0
+--- /dev/null
++++ b/e2e/tests/pool-migration-inventory.spec.ts
+@@ -0,0 +1,267 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Option, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { createHash, randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { provisionedSource } from "../support/provisioned-source.ts";
++import { logMessages } from "../support/data-steps.ts";
++import { writeRows } from "../support/cloud-rows.ts";
++
++const common = { inventory: Schema.Literal("host-v1"), run: Schema.String };
++const InventoryRecord = Schema.fromJsonString(
++  Schema.Union([
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("part"),
++      index: Schema.Int,
++      data: Schema.String,
++    }),
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("end"),
++      complete: Schema.Literal(true),
++      chunks: Schema.Int,
++      bytes: Schema.Int,
++      sha256: Schema.String,
++      coverage: Schema.Array(Schema.String),
++      migrationGo: Schema.Literal(false),
++    }),
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("end"),
++      complete: Schema.Literal(false),
++      reason: Schema.String,
++      migrationGo: Schema.Literal(false),
++    }),
++  ]),
++);
++const Snapshot = Schema.fromJsonString(
++  Schema.Struct({
++    snapshot: Schema.String,
++    sections: Schema.Record(
++      Schema.String,
++      Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
++    ),
++  }),
++);
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++
++class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {}) {}
++
++const records = (log: string) =>
++  logMessages(log).pipe(
++    Effect.map((messages) =>
++      messages.flatMap((line) => {
++        const start = line.indexOf('{"inventory":"host-v1"');
++        return start < 0
++          ? []
++          : Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(line.slice(start)));
++      }),
++    ),
++  );
++const nextReport = (log: string, seen: ReadonlySet<string>) =>
++  records(log).pipe(
++    Effect.flatMap((entries) => {
++      const end = entries.filter((entry) => entry.event === "end" && !seen.has(entry.run)).at(-1);
++      return end === undefined
++        ? Effect.fail(new ReportPending())
++        : Effect.succeed({ end, entries });
++    }),
++    Effect.retry({
++      while: (error) => Schema.is(ReportPending)(error),
++      schedule: Schedule.spaced("100 millis"),
++      times: 100,
++    }),
++  );
++
++layer(HostedLive, { excludeTestServices: true })("Pool migration inventory", (it) => {
++  it.effect(scenarios.cloudPoolMigrationInventory.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target,
++          evidence = yield* Evidence,
++          http = yield* HttpClient.HttpClient;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const log = `${target.directory}/cloud.log`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Inventory fixture",
++          files: [{ path: "index.ts", content: provisionedSource(false) }, appsManifest],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed),
++          appPath = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", appPath).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${appPath}/accounts/user/service/connections`,
++            {},
++          ),
++        );
++        const label = `inventory-label-${randomUUID()}`;
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          {
++            method: "key",
++            label,
++            fields: { token: "fixture-host-key" },
++          },
++        );
++        expect(saved.status).toBe(200);
++        const account = (yield* body(Resource, saved)).id;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
++        );
++
++        yield* evidence.step(
++          "The report route refuses anonymous callers and wrong dispatch keys",
++          Effect.gen(function* () {
++            const anonymous = yield* api.session();
++            for (const headers of [{}, { authorization: "Bearer synthetic-wrong-key" }]) {
++              const refused = yield* api.request(
++                anonymous,
++                "POST",
++                "/api/internal/jobs/pool-migration-inventory",
++                undefined,
++                headers,
++              );
++              expect(refused.status).toBe(404);
++            }
++          }),
++        );
++
++        const trigger = Effect.gen(function* () {
++          const seen = new Set((yield* records(log)).map((entry) => entry.run));
++          yield* Effect.scoped(
++            http
++              .get(
++                `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("13 * * * *")}`,
++              )
++              .pipe(
++                Effect.flatMap((response) => {
++                  expect(response.status).toBe(200);
++                  return response.text;
++                }),
++              ),
++          );
++          return yield* nextReport(log, seen);
++        });
++        const complete = Effect.gen(function* () {
++          const { end, entries } = yield* trigger;
++          expect(end.event).toBe("end");
++          if (end.event !== "end") return yield* Effect.die("Missing inventory terminal record");
++          expect(end.complete, "The real cron must produce a complete read-only snapshot").toBe(
++            true,
++          );
++          if (!end.complete) return yield* Effect.die("Inventory did not complete");
++          const parts = entries
++            .filter((entry) => entry.event === "part")
++            .filter((entry) => entry.run === end.run)
++            .sort((left, right) => left.index - right.index);
++          expect(parts.map((part) => part.index)).toEqual(
++            Array.from({ length: end.chunks }, (_, index) => index),
++          );
++          const json = parts.map((part) => part.data).join("");
++          expect(Buffer.byteLength(json)).toBe(end.bytes);
++          expect(createHash("sha256").update(json).digest("hex")).toBe(end.sha256);
++          expect(json).not.toContain("fixture-host-key");
++          expect(json).not.toContain(label);
++          const snapshot = yield* Schema.decodeUnknownEffect(Snapshot)(json);
++          expect(snapshot.sections.accounts).toContainEqual(
++            expect.objectContaining({
++              id: account,
++              provider: app.requirements.accounts.service.provider,
++              method: "key",
++            }),
++          );
++          expect(snapshot.sections.connections).toContainEqual(
++            expect.objectContaining({
++              id: connection.id,
++              status: "completed",
++              account,
++              target_app: app.id,
++            }),
++          );
++          expect(snapshot.sections.links).toContainEqual(
++            expect.objectContaining({ account, app: app.id, requirement: "service" }),
++          );
++          expect(end.coverage).toContain("connectionAccess");
++          expect(end.migrationGo).toBe(false);
++          yield* evidence.json("inventory-delivery.json", {
++            run: end.run,
++            chunks: end.chunks,
++            sha256: end.sha256,
++          });
++        });
++        yield* evidence.step(
++          "The authenticated cron delivers only identifiers and policies with an intact terminal hash",
++          complete,
++        );
++
++        const malformed = `synthetic-private-method-${"x".repeat(520)}`;
++        yield* evidence.step(
++          "Malformed stored metadata produces only a closed failure record",
++          writeRows("sso-database.json", [
++            {
++              sql: "update executor_accounts set method = $1 where id = $2",
++              params: [malformed, account],
++            },
++          ]).pipe(
++            Effect.andThen(
++              Effect.gen(function* () {
++                const { end, entries } = yield* trigger;
++                expect(end.event).toBe("end");
++                expect(end).toMatchObject({
++                  event: "end",
++                  complete: false,
++                  reason: "query_failed",
++                  migrationGo: false,
++                });
++                expect(
++                  entries.filter((entry) => entry.run === end.run && entry.event === "part"),
++                ).toEqual([]);
++                expect(JSON.stringify(end)).not.toContain(malformed);
++              }),
++            ),
++            Effect.ensuring(
++              writeRows("sso-database.json", [
++                {
++                  sql: "update executor_accounts set method = $1 where id = $2",
++                  params: ["key", account],
++                },
++              ]).pipe(Effect.orDie),
++            ),
++          ),
++        );
++        yield* evidence.step(
++          "Restoring the retained account permits another complete report",
++          complete,
++        );
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++      }),
++    ),
++  );
++});

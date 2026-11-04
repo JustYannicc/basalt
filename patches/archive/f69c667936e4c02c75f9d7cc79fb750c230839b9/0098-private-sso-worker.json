@@ -1,0 +1,9 @@
+{
+  "identity": "executor-private-sso-worker",
+  "file": "0098-private-sso-worker.patch",
+  "content_sha256": "568f52f2cfb1c10ad0c1ee1999cec5ea0fa32e2c7de6e68281b29a0359620956",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

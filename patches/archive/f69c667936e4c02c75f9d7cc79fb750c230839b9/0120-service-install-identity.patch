@@ -1,0 +1,1146 @@
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -1,3 +1,4 @@
++import { AppServiceIdentity } from "./service-install.ts";
+ import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "@executor-js/sdk/core";
+ import {
+   VersionDisplay,
+@@ -18,6 +19,7 @@
+   AccountNotFound,
+   AccountSelectionInvalid,
+   App,
++  AppFields,
+   DeployedApp,
+   AppNotDeployed,
+   AppId,
+@@ -48,8 +50,18 @@
+   AppScreenRecord,
+ } from "./organization.ts";
+ 
+-/** Catalog installation is create-only: it cannot overwrite another app by name. */
+-export const InstallApp = Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString });
++/** A second named instance is deliberate; changing the name alone reuses the default. */
++export const InstallApp = Schema.Struct({
++  ...CatalogImport.fields,
++  name: Schema.NonEmptyString,
++  newInstance: Schema.optionalKey(Schema.Boolean),
++});
++/** Flat app fields preserve existing API clients; every result states whether it created anything. */
++export const AppInstallResult = Schema.Struct({
++  ...AppFields.fields,
++  reused: Schema.Boolean,
++  service: AppServiceIdentity,
++}).pipe(withLegacyKeys({ activeVersion: "activeDeployment" }));
+ /** Deploying source directly uses the same runtime as generated catalog apps. */
+ export const DeployApp = Schema.Struct({ name: Schema.NonEmptyString, files: SourceFiles });
+ const params = { organization: OrganizationReference };
+@@ -113,26 +125,29 @@
+     HttpApiEndpoint.post("install", `${prefix}/install`, {
+       params,
+       payload: InstallApp,
+-      success: DeployedApp,
++      success: AppInstallResult,
+       error: [...deployErrors, CatalogImportFailed, CatalogUnavailable],
+     })
+       .annotate(RequiredAction, "manage")
+       .annotate(
+         OpenApi.Description,
+-        "Install a catalog entry as a new app. entry is the id of an entry organization.catalog lists. The app installs from its own published source; connect an account afterwards through its requirements (appAccounts.userConnect or appAccounts.appConnect). An entry the catalog does not list, or a server URL, is refused with entry_missing, and its recovery says what to call instead. To add a remote MCP server by its URL, use apps.importCustom.",
++        "Install a catalog entry, reusing the team’s existing service app by default. The result includes reused and service. Use newInstance=true and a separate name only when the user deliberately requests another instance. entry is the id of an entry organization.catalog lists. The app installs from its own published source; connect an account afterwards through its requirements (appAccounts.userConnect or appAccounts.appConnect). An entry the catalog does not list, or a server URL, is refused with entry_missing, and its recovery says what to call instead. To add a remote MCP server by its URL, use apps.importCustom.",
+       ),
+   )
+   .add(
+     HttpApiEndpoint.post("importCustom", `${prefix}/import`, {
+       params,
+-      payload: Schema.Struct({ source: CustomAppInput }),
+-      success: DeployedApp,
+-      error: [...deployErrors, CatalogImportFailed],
+-    })
+-      .annotate(RequiredAction, "manage")
+-      .annotate(
+-        OpenApi.Description,
+-        "Add a remote MCP server by its URL as a new app, as the dashboard's Connect a service form does. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
++      payload: Schema.Struct({
++        source: CustomAppInput,
++        newInstance: Schema.optionalKey(Schema.Boolean),
++      }),
++      success: AppInstallResult,
++      error: [...deployErrors, CatalogImportFailed, CatalogUnavailable],
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(
++        OpenApi.Description,
++        "Add a remote MCP server by its URL, as the dashboard's Connect a service form does. A trusted catalog endpoint alias reuses the team's existing service app without changing source or accounts. The result includes reused and service. Use newInstance=true and a separate name only for a deliberate second instance. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
+       ),
+   )
+   .add(
+diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
+--- a/apps/hosted/server/src/contracts/organization.ts
++++ b/apps/hosted/server/src/contracts/organization.ts
+@@ -1,3 +1,4 @@
++import { AppServiceIdentity } from "./service-install.ts";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { RequiredAction } from "./authorization.ts";
+@@ -56,6 +57,7 @@
+ export const AppScreenRecord = Schema.Struct({
+   ...AppFields.fields,
+   hasUi: Schema.optional(Schema.Boolean),
++  service: Schema.optionalKey(AppServiceIdentity),
+ });
+ export type AppScreenRecord = typeof AppScreenRecord.Type;
+ /** An icon is an HTTPS image, a private uploaded-image path, or null. */
+diff --git a/apps/hosted/server/src/contracts/service-install.ts b/apps/hosted/server/src/contracts/service-install.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/service-install.ts
+@@ -0,0 +1,8 @@
++import { Schema } from "effect";
++
++/** A named app instance belongs to one service, independently of its current source and name. */
++export const AppServiceIdentity = Schema.Struct({
++  id: Schema.NonEmptyString,
++  newInstance: Schema.Boolean,
++});
++export type AppServiceIdentity = typeof AppServiceIdentity.Type;
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -1,3 +1,6 @@
++import { catalogService, installService, mcpService } from "./service-installs.ts";
++import { projectAppServices } from "./service-install-records.ts";
++import { unknownEntryRecovery } from "@executor-js/catalog/contracts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
+ /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
+@@ -23,7 +26,7 @@
+ import { SqlClient } from "effect/sql";
+ 
+ /** Install a catalog entry as a new app without replacing an existing name. */
+-export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
++const createCatalogApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const catalog = yield* HostedCatalog;
+@@ -68,7 +71,7 @@
+  * Confirm a tenant-supplied MCP server and create an organization app without replacing a name.
+  * The URL is checked by the host, so it stays on public destinations.
+  */
+-export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
++const createCustomApp = (owner: OwnerId, input: CustomAppInput) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const catalog = yield* HostedCatalog;
+@@ -88,7 +91,38 @@
+     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
+     return app;
+   });
+-/** Deploying source directly uses the same create-only operation as a catalog install. */
++const missingEntry = (id: string) =>
++  new CatalogImportFailed({
++    code: "entry_missing",
++    reason: URL.canParse(id)
++      ? "This URL is not a catalog entry. Install takes the id of an entry the catalog lists; add a remote MCP server by its URL with the custom MCP import."
++      : "This entry is no longer in the catalog. Refresh and choose another app.",
++    recovery: unknownEntryRecovery,
++  });
++
++/** A normal add resolves the team’s default; only explicit instance intent creates another. */
++export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
++  Effect.gen(function* () {
++    if (URL.canParse(input.entry)) return yield* missingEntry(input.entry);
++    const catalog = yield* HostedCatalog;
++    const entry = (yield* catalog.list).find((entry) => entry.id === input.entry);
++    if (entry === undefined) return yield* missingEntry(input.entry);
++    return yield* installService(
++      owner,
++      catalogService(entry),
++      input.newInstance === true,
++      createCatalogApp(owner, input),
++    );
++  });
++
++export const importCustomApp = (owner: OwnerId, input: CustomAppInput, newInstance = false) =>
++  Effect.gen(function* () {
++    const catalog = yield* HostedCatalog;
++    const service = mcpService(yield* catalog.list, input.url);
++    return yield* installService(owner, service, newInstance, createCustomApp(owner, input));
++  });
++
++/** Deploying source directly is the deliberate app-authoring operation. */
+ export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+@@ -100,7 +134,8 @@
+     const executor = yield* Effect.flatten(HostedExecutor);
+     yield* requireAppAccess(input.app, "read");
+     const app = yield* executor.apps.get({ ...input, owner });
+-    return yield* appUiIndicator(app);
++    const [projected] = yield* projectAppServices(yield* policyDatabase, [app]);
++    return yield* appUiIndicator(projected ?? app);
+   });
+ /** Retained source is administrative data; versions from other owners stay private. */
+ export const appVersions = (owner: OwnerId, app: AppId) =>
+@@ -188,7 +223,9 @@
+       Effect.flatMap(currentOwner, (owner) => installApp(owner, payload)),
+     )
+     .handle("importCustom", ({ payload }) =>
+-      Effect.flatMap(currentOwner, (owner) => importCustomApp(owner, payload.source)),
++      Effect.flatMap(currentOwner, (owner) =>
++        importCustomApp(owner, payload.source, payload.newInstance === true),
++      ),
+     )
+     .handle("deploy", ({ payload }) =>
+       Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
+diff --git a/apps/hosted/server/src/implementation/catalog-service-search.ts b/apps/hosted/server/src/implementation/catalog-service-search.ts
+--- a/apps/hosted/server/src/implementation/catalog-service-search.ts
++++ b/apps/hosted/server/src/implementation/catalog-service-search.ts
+@@ -46,7 +46,7 @@
+   for (const entry of entries) {
+     if (!serviceIdPattern.test(entry.id)) continue;
+ 
+-    const aliases = [entry.id, entry.name, entry.package]
++    const aliases = [entry.id, entry.name, entry.package, ...(entry.service?.packages ?? [])]
+       .filter(
+         (value) =>
+           typeof value === "string" && value.length <= catalogServiceSearchLimits.queryLength,
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -8,6 +8,8 @@
+   observeProductOperation,
+   traceProductRead,
+ } from "../contracts/product-analytics.ts";
++import { projectAppServices } from "./service-install-records.ts";
++import { policyDatabase } from "./resource-policy.ts";
+ import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
+ import {
+   fullAuthority,
+@@ -233,7 +235,9 @@
+     // Membership is read once for both the app and the account policies.
+     const actor = yield* currentResourceAuthority;
+     const visibleApps = yield* visibleAppsAs(actor, listedApps);
+-    const apps = yield* appUiIndicators(visibleApps);
++    const apps = yield* appUiIndicators(
++      yield* projectAppServices(yield* policyDatabase, visibleApps),
++    );
+     const accounts = permitsAction(policy, "read")
+       ? yield* executor.accounts
+           .list({ owner })
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { GroupDatabase } from "../contracts/groups.ts";
+ import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
+@@ -487,6 +488,7 @@
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       appCreated: (app) =>
+         Effect.gen(function* () {
++          yield* commitServiceInstall(app, sql);
+           const organization = yield* organizationOf(app.owner);
+           const intent = yield* AppCreation;
+           if (intent.kind === "copy") {
+@@ -747,6 +749,7 @@
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       appRemoving: (app) =>
+         Effect.gen(function* () {
++          yield* removeServiceInstall(sql, app);
+           yield* (accessLifecycle.appAccountLinksChanged?.({ apps: [app] }) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
+           );
+diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/apps/hosted/server/src/implementation/service-install-records.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/service-install-records.ts
+@@ -0,0 +1,85 @@
++import { HostedCatalog } from "../contracts/catalog.ts";
++import { Context, Effect, Schema } from "effect";
++import { AppId, StorageError, type App } from "@executor-js/sdk/core";
++import { type SqlClient } from "effect/sql";
++import { AppServiceIdentity } from "../contracts/service-install.ts";
++
++export const serviceInstallsKey = "basaltServiceInstalls";
++export const poolServiceId = "@signalbox/pool";
++type InstallCommit = (app: App, sql: SqlClient.SqlClient) => Effect.Effect<void, StorageError>;
++const InstallCommit = Context.Reference<InstallCommit | undefined>("hosted/ServiceInstallCommit", {
++  defaultValue: () => undefined,
++});
++/** The SDK calls this inside the transaction that inserts the app, after compilation. */
++export const commitServiceInstall = (app: App, sql: SqlClient.SqlClient) =>
++  Effect.flatMap(InstallCommit, (commit) =>
++    commit === undefined ? Effect.void : commit(app, sql),
++  );
++export const withServiceInstallCommit =
++  (commit: InstallCommit) =>
++  <A, E, R>(operation: Effect.Effect<A, E, R>) =>
++    operation.pipe(Effect.provideService(InstallCommit, commit));
++
++const Recorded = Schema.Struct({ app: AppId, service: AppServiceIdentity });
++/** Only requested, already-visible app IDs leave the metadata projection. */
++export const recordedServiceInstalls = (sql: SqlClient.SqlClient, apps: readonly App[]) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return new Map<AppId, AppServiceIdentity>();
++    const rows = yield* sql`select app.id as app,
++      coalesce(o.metadata::jsonb -> ${serviceInstallsKey} -> app.id,
++        case when exists (
++          select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++          where pool.value ->> 'app' = app.id
++        ) then jsonb_build_object('id', ${poolServiceId}::text, 'newInstance', true) end) as service
++      from executor_apps app join organization o on app.owner = 'organization:' || o.id
++      where ${sql.in(
++        "app.id",
++        apps.map((app) => app.id),
++      )}`;
++    const recorded = yield* Schema.decodeUnknownEffect(Schema.Array(Recorded))(
++      rows.filter((row) => row.service !== null),
++    );
++    return new Map(recorded.map((row) => [row.app, row.service]));
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
++
++/** Removing an app frees its default claim while leaving the service's other instances intact. */
++export const removeServiceInstall = (sql: SqlClient.SqlClient, app: AppId) =>
++  sql`update organization o set metadata = jsonb_set(coalesce(o.metadata::jsonb, '{}'::jsonb),
++    array[${serviceInstallsKey}], coalesce(o.metadata::jsonb -> ${serviceInstallsKey}, '{}'::jsonb) - ${app})::text
++    from executor_apps a where a.id = ${app} and a.owner = 'organization:' || o.id
++      and (o.metadata::jsonb -> ${serviceInstallsKey}) ? ${app}`.pipe(
++    Effect.asVoid,
++    Effect.catchTag("SqlError", () => new StorageError()),
++  );
++
++/** Existing catalog copies keep their exact package identity until an explicit claim records one. */
++export const projectAppServices = (sql: SqlClient.SqlClient, apps: readonly App[]) =>
++  Effect.gen(function* () {
++    const recorded = yield* recordedServiceInstalls(sql, apps);
++    const needsLegacy = apps.some((app) => !recorded.has(app.id) && app.copiedFrom !== null);
++    const entries = needsLegacy
++      ? yield* Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
++          Effect.catch(() => Effect.succeed([])),
++        )
++      : [];
++    const packages = new Map(
++      entries.flatMap((entry) =>
++        [entry.package, ...(entry.service?.packages ?? [])].map(
++          (name) => [name, entry.service?.id ?? entry.package] as const,
++        ),
++      ),
++    );
++    return apps.map((app) => {
++      const service =
++        recorded.get(app.id) ??
++        (app.copiedFrom === null
++          ? undefined
++          : {
++              id: packages.get(app.copiedFrom.name) ?? app.copiedFrom.name,
++              newInstance: false,
++            });
++      return { ...app, ...(service === undefined ? {} : { service }) };
++    });
++  });
+diff --git a/apps/hosted/server/src/implementation/service-installs.ts b/apps/hosted/server/src/implementation/service-installs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/service-installs.ts
+@@ -0,0 +1,128 @@
++import { type CatalogEntry, type CatalogService } from "@executor-js/catalog/contracts";
++import { AppId, AppNameTaken, StorageError, type App, type OwnerId } from "@executor-js/sdk/core";
++import { Effect, Ref, Schema } from "effect";
++import { type SqlClient } from "effect/sql";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
++import {
++  poolServiceId,
++  serviceInstallsKey,
++  withServiceInstallCommit,
++} from "./service-install-records.ts";
++
++export const catalogService = (entry: CatalogEntry): CatalogService => ({
++  id: entry.service?.id ?? entry.package,
++  mcp: entry.service?.mcp ?? [],
++  packages: [...new Set([entry.package, ...(entry.service?.packages ?? [])])],
++});
++/** URL syntax is canonicalized; paths and products are never guessed from hosts or names. */
++export const mcpService = (entries: readonly CatalogEntry[], endpoint: string): CatalogService => {
++  const url = new URL(endpoint).href;
++  const entry = entries.find((entry) =>
++    entry.service?.mcp.some((alias) => new URL(alias).href === url),
++  );
++  return entry === undefined
++    ? { id: `mcp:${url}`, mcp: [url], packages: [] }
++    : catalogService(entry);
++};
++
++const existingApp = (
++  sql: SqlClient.SqlClient,
++  organization: string,
++  owner: OwnerId,
++  service: CatalogService,
++  exclude?: AppId,
++) =>
++  Effect.gen(function* () {
++    const rows = yield* sql`select app.id,
++      case when (o.metadata::jsonb -> ${serviceInstallsKey}) ? app.id
++        then o.metadata::jsonb -> ${serviceInstallsKey} -> app.id ->> 'newInstance' = 'true'
++        else ${service.id === poolServiceId}::boolean and exists (
++          select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++          where pool.value ->> 'app' = app.id
++        ) end as new_instance
++      from executor_apps app
++      join organization o on o.id = ${organization} and app.owner = 'organization:' || o.id
++      where app.owner = ${owner} and app.id <> ${exclude ?? ""}
++        and case when (o.metadata::jsonb -> ${serviceInstallsKey}) ? app.id
++          then o.metadata::jsonb -> ${serviceInstallsKey} -> app.id ->> 'id' = ${service.id}
++          else (${service.packages?.length ? sql`app.copied_from ->> 'name' in (select jsonb_array_elements_text(${JSON.stringify(service.packages)}::jsonb))` : sql`false`}
++            or (${service.id === poolServiceId}::boolean and exists (
++              select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++              where pool.value ->> 'app' = app.id
++            )))
++        end
++      order by new_instance, app.created_at, app.id limit 1`;
++    return (yield* Schema.decodeUnknownEffect(
++      Schema.Array(
++        Schema.Struct({
++          id: AppId,
++          new_instance: Schema.Boolean,
++        }),
++      ),
++    )(rows))[0];
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
++
++/** Compilation owns no SQL transaction. Only its app-create commit claims the default service. */
++export const installService = <E, R>(
++  owner: OwnerId,
++  service: CatalogService,
++  newInstance: boolean,
++  create: Effect.Effect<App, E, R>,
++) =>
++  Effect.gen(function* () {
++    const { organization } = yield* CurrentOrganization;
++    const sql = yield* policyDatabase;
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const reused = (existing: { readonly id: AppId; readonly new_instance: boolean }) =>
++      Effect.gen(function* () {
++        yield* requireAppAccess(existing.id, "read");
++        const app = yield* executor.apps.get({ owner, app: existing.id });
++        return {
++          ...app,
++          reused: true,
++          service: { id: service.id, newInstance: existing.new_instance },
++        };
++      });
++    if (!newInstance) {
++      const existing = yield* existingApp(sql, organization, owner, service);
++      if (existing !== undefined) return yield* reused(existing);
++    }
++    const conflict = yield* Ref.make<
++      { readonly id: AppId; readonly new_instance: boolean } | undefined
++    >(undefined);
++    const commit = (app: App, tx: SqlClient.SqlClient) =>
++      Effect.gen(function* () {
++        yield* tx`select pg_advisory_xact_lock(hashtextextended(${`service-install:${organization}:${service.id}`}, 0))`;
++        if (!newInstance) {
++          const existing = yield* existingApp(tx, organization, owner, service, app.id);
++          if (existing !== undefined) {
++            yield* Ref.set(conflict, existing);
++            return yield* new StorageError();
++          }
++        }
++        yield* tx`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++          array[${serviceInstallsKey}], coalesce(metadata::jsonb -> ${serviceInstallsKey}, '{}'::jsonb)
++            || jsonb_build_object(${app.id}::text, jsonb_build_object('id', ${service.id}::text, 'newInstance', ${newInstance}::boolean)))::text
++          where id = ${organization}`;
++      }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++    return yield* create.pipe(
++      withServiceInstallCommit(commit),
++      Effect.map((app) => ({ ...app, reused: false, service: { id: service.id, newInstance } })),
++      Effect.catch((error) =>
++        Effect.gen(function* () {
++          const conflicted = yield* Ref.get(conflict);
++          if (Schema.is(StorageError)(error) && conflicted !== undefined)
++            return yield* reused(conflicted);
++          if (!newInstance && Schema.is(AppNameTaken)(error)) {
++            const existing = yield* existingApp(sql, organization, owner, service);
++            if (existing !== undefined) return yield* reused(existing);
++          }
++          return yield* Effect.fail(error);
++        }),
++      ),
++    );
++  });
+diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
+--- a/e2e/support/public-catalogs.ts
++++ b/e2e/support/public-catalogs.ts
+@@ -10,6 +10,7 @@
+ import { Effect, Layer } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createServer } from "node:http";
++import { publicTemplateUpstream } from "./template-upstream.ts";
+ import { appsVersion } from "./apps-release.ts";
+ 
+ const icon = (fill: string) =>
+@@ -57,6 +58,7 @@
+     id: "synthetic-tracker",
+     package: "@executor.sh/synthetic-tracker",
+     name: "Synthetic Tracker",
++    service: { id: "@executor.sh/synthetic-tracker", mcp: ["https://tracker.example.test/mcp"] },
+     description: "Track synthetic issues.",
+     auth: [
+       { method: "oauth", kind: "oauth2" },
+@@ -148,6 +150,7 @@
+ 
+ /** Start the catalogs for the scope on loopback and return their origin. */
+ export const publicCatalogs = Effect.gen(function* () {
++  const mcpOrigin = yield* publicTemplateUpstream;
+   const services = yield* Layer.build(
+     HttpRouter.serve(
+       Layer.mergeAll(
+@@ -155,7 +158,28 @@
+           "GET",
+           "/catalog/index.json",
+           Effect.succeed(
+-            HttpServerResponse.jsonUnsafe({ version: 1, apps: Object.values(officialApps) }),
++            HttpServerResponse.jsonUnsafe({
++              version: 1,
++              apps: [
++                {
++                  ...officialApps.tracker,
++                  id: "synthetic-legacy-tracker",
++                  package: "@executor.sh/synthetic-legacy-tracker",
++                  name: "Legacy tracker",
++                },
++                ...Object.values(officialApps),
++              ].map((entry) =>
++                entry.id === officialApps.tracker.id
++                  ? {
++                      ...entry,
++                      service: {
++                        ...officialApps.tracker.service,
++                        mcp: [...officialApps.tracker.service.mcp, `${mcpOrigin}/mcp`],
++                      },
++                    }
++                  : entry,
++              ),
++            }),
+           ),
+         ),
+         HttpRouter.add(
+diff --git a/e2e/support/service-install-fixture.ts b/e2e/support/service-install-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/service-install-fixture.ts
+@@ -0,0 +1,58 @@
++/** Real MCP installs and old rows that predate service-identity claims. */
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { McpClient } from "./mcp-client.ts";
++import { managementApp } from "./management-app.ts";
++
++export const Installed = Schema.Struct({
++  id: Schema.String,
++  name: Schema.String,
++  activeVersion: Schema.NullOr(Schema.String),
++  reused: Schema.Boolean,
++  service: Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean }),
++});
++
++/** Native MCP runs the actual management app and returns its install result unchanged. */
++export const serviceInstallClient = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  yield* managementApp(actors.owner);
++  const key = yield* body(
++    Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
++    yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
++      name: "Service identity proof",
++    }),
++  );
++  yield* Effect.addFinalizer(() =>
++    api
++      .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
++      .pipe(Effect.orDie),
++  );
++  const client = yield* (yield* McpClient).connect(key.key, "service-install-identity", {
++    organization: actors.organization.id,
++    mode: "native",
++  });
++  return (entry: string, name: string) =>
++    Effect.gen(function* () {
++      const call = yield* client.use("Install a catalog service through MCP", (client, signal) =>
++        client.callTool(
++          {
++            name: "execute",
++            arguments: {
++              code: `return await tools.executor.apps.install({body:${JSON.stringify({ entry, name })}});`,
++            },
++          },
++          undefined,
++          { signal },
++        ),
++      );
++      const outcome = yield* Schema.decodeUnknownEffect(
++        Schema.Struct({
++          status: Schema.Literal("completed"),
++          execution: Schema.Struct({ ok: Schema.Literal(true), value: Installed }),
++        }),
++      )(call.structuredContent);
++      return outcome.execution.value;
++    });
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3325,6 +3325,20 @@
+       "self-host": scheduled,
+       cloud: na("Uses a runner-owned loopback catalog and subscription sign-in service."),
+       local: na("Uses hosted organization account policies."),
++    },
++  },
++  serviceInstallIdentity: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "service-install-identity.spec.ts",
++    title:
++      "Service installs reuse one team app across names and MCP transports while explicit instances stay separate",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "The shared hosted install transaction and catalog identity run through self-host.",
++      ),
++      local: na("Team install identity belongs to hosted products."),
+     },
+   },
+   catalogOfficialApps: {
+diff --git a/e2e/tests/app-package-metadata.spec.ts b/e2e/tests/app-package-metadata.spec.ts
+--- a/e2e/tests/app-package-metadata.spec.ts
++++ b/e2e/tests/app-package-metadata.spec.ts
+@@ -43,6 +43,7 @@
+         ] as const) {
+           const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+             source: { kind: "mcp", name: fixture.name, url: `${origin}/mcp` },
++            newInstance: true,
+           });
+           expect(imported.status, JSON.stringify(imported.body)).toBe(200);
+           const app = yield* body(App, imported);
+diff --git a/e2e/tests/mcp-auth-discovery.spec.ts b/e2e/tests/mcp-auth-discovery.spec.ts
+--- a/e2e/tests/mcp-auth-discovery.spec.ts
++++ b/e2e/tests/mcp-auth-discovery.spec.ts
+@@ -53,6 +53,7 @@
+         const add = (name: string, url: string) =>
+           api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+             source: { kind: "mcp", name, url },
++            newInstance: true,
+           });
+         const added = (response: { readonly status: number; readonly body: unknown }) =>
+           Effect.gen(function* () {
+diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/service-install-identity.spec.ts
+@@ -0,0 +1,298 @@
++/** Service identity belongs to the install, independently of its transport or display name. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Inventory } from "../support/contracts.ts";
++import { officialApps } from "../support/public-catalogs.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { Installed, serviceInstallClient } from "../support/service-install-fixture.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Service install identity", (it) => {
++  it.effect(scenarios.serviceInstallIdentity.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created = new Set<string>();
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach([...created], (app) =>
++            api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`).pipe(Effect.orDie),
++          ),
++        );
++        const install = (name: string, newInstance = false) =>
++          api
++            .request(actors.owner, "POST", `${prefix}/apps/install`, {
++              entry: officialApps.tracker.id,
++              name,
++              ...(newInstance ? { newInstance } : {}),
++            })
++            .pipe(
++              Effect.flatMap((response) => {
++                expect(response.status, JSON.stringify(response.body)).toBe(200);
++                return body(Installed, response).pipe(
++                  Effect.tap((app) => Effect.sync(() => created.add(app.id))),
++                );
++              }),
++            );
++        const first = yield* install("Tracker");
++        const again = yield* install("Tracker through another transport");
++        expect(
++          again.id,
++          "A different name is not permission to create another service install",
++        ).toBe(first.id);
++        expect(first.reused).toBe(false);
++        expect(again.reused).toBe(true);
++        expect(again.activeVersion).toBe(first.activeVersion);
++        yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${first.id}/name`, {
++          name: "Our tracker",
++        });
++        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
++          source: { kind: "mcp", name: "Tracker MCP", url: "https://tracker.example.test/mcp" },
++        });
++        expect(imported.status, JSON.stringify(imported.body)).toBe(200);
++        const reused = yield* body(Installed, imported);
++        expect(reused).toMatchObject({
++          id: first.id,
++          name: "Our tracker",
++          reused: true,
++          activeVersion: first.activeVersion,
++        });
++        const another = yield* install("Another tracker", true);
++        expect(another.id).not.toBe(first.id);
++        expect(another.reused).toBe(false);
++        const final = yield* install("Tracker once more");
++        expect(final).toMatchObject({ id: first.id, reused: true });
++        const get = yield* api.request(actors.owner, "GET", `${prefix}/apps/${first.id}`);
++        expect(get.body).toMatchObject({
++          service: { id: officialApps.tracker.package, newInstance: false },
++        });
++        const memberImport = yield* api.request(actors.member, "POST", `${prefix}/apps/import`, {
++          source: { kind: "mcp", name: "Private tracker", url: "https://tracker.example.test/mcp" },
++        });
++        expect(memberImport.status).toBe(403);
++        expect(JSON.stringify(memberImport.body)).not.toContain(first.id);
++        const collision = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: officialApps.tracker.id,
++          name: another.name,
++          newInstance: true,
++        });
++        expect(collision.status).not.toBe(200);
++        const inventory = yield* body(
++          Inventory,
++          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
++        expect(
++          inventory.apps
++            .filter((app) => created.has(app.id))
++            .map((app) => app.id)
++            .sort(),
++        ).toEqual([first.id, another.id].sort());
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${first.id}`)).status,
++        ).toBe(200);
++        created.delete(first.id);
++        const remaining = yield* install("Use the remaining instance");
++        expect(remaining).toMatchObject({
++          id: another.id,
++          reused: true,
++          service: { id: officialApps.tracker.package, newInstance: true },
++        });
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${another.id}`)).status,
++        ).toBe(200);
++        created.delete(another.id);
++
++        const catalog = yield* body(
++          Schema.Array(
++            Schema.Struct({
++              id: Schema.String,
++              service: Schema.optionalKey(Schema.Struct({ mcp: Schema.Array(Schema.String) })),
++            }),
++          ),
++          yield* api.request(actors.owner, "GET", `${prefix}/catalog`),
++        );
++        expect(catalog.filter((entry) => entry.id === "synthetic-legacy-tracker")).toEqual([]);
++        const aliasSearch = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/catalog?search=${encodeURIComponent("@executor.sh/synthetic-legacy-tracker")}`,
++        );
++        expect(aliasSearch.body).toEqual(
++          expect.arrayContaining([expect.objectContaining({ id: officialApps.tracker.id })]),
++        );
++        const endpoint = catalog
++          .find((entry) => entry.id === officialApps.tracker.id)
++          ?.service?.mcp.find((url) => url.startsWith("http://127.0.0.1:"));
++        if (endpoint === undefined)
++          return yield* Effect.die(
++            "The trusted catalog fixture must publish its real MCP endpoint",
++          );
++        const importMcp = (name: string) =>
++          api
++            .request(actors.owner, "POST", `${prefix}/apps/import`, {
++              source: { kind: "mcp", name, url: endpoint },
++            })
++            .pipe(
++              Effect.flatMap((response) => {
++                expect(response.status, JSON.stringify(response.body)).toBe(200);
++                return body(Installed, response).pipe(
++                  Effect.tap((app) => Effect.sync(() => created.add(app.id))),
++                );
++              }),
++            );
++        const mcpFirst = yield* importMcp("MCP first");
++        const nativeAfter = yield* install("Native after MCP");
++        expect(nativeAfter).toMatchObject({
++          id: mcpFirst.id,
++          reused: true,
++          activeVersion: mcpFirst.activeVersion,
++        });
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${mcpFirst.id}`)).status,
++        ).toBe(200);
++        created.delete(mcpFirst.id);
++        const concurrent = yield* Effect.all(
++          [
++            install("Concurrent native"),
++            importMcp("Concurrent MCP"),
++            install("Concurrent native second"),
++          ],
++          { concurrency: "unbounded" },
++        );
++        expect(new Set(concurrent.map((app) => app.id)).size).toBe(1);
++        expect(concurrent.filter((app) => app.reused === false)).toHaveLength(1);
++        const winner = concurrent[0]!;
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${winner.id}`)).status,
++        ).toBe(200);
++        created.delete(winner.id);
++        const mcpInstall = yield* serviceInstallClient;
++        const toolApp = yield* mcpInstall(officialApps.tracker.id, "MCP tool install");
++        created.add(toolApp.id);
++        const viaHttp = yield* install("After MCP tool");
++        expect(viaHttp.id).toBe(toolApp.id);
++        const toolReuse = yield* mcpInstall(officialApps.tracker.id, "MCP tool reuse");
++        expect(toolReuse).toMatchObject({ id: viaHttp.id, reused: true });
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${viaHttp.id}`)).status,
++        ).toBe(200);
++        created.delete(viaHttp.id);
++        const sameName = yield* Effect.all([install("Same name"), install("Same name")], {
++          concurrency: "unbounded",
++        });
++        expect(sameName[0]?.id).toBe(sameName[1]?.id);
++        expect(sameName.filter((app) => app.reused === false)).toHaveLength(1);
++        const legacyApp = sameName[0]!.id;
++        const pools: string[] = [];
++        for (const name of ["Legacy pool A", "Legacy pool B"]) {
++          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name,
++            files: [
++              {
++                path: "index.ts",
++                content:
++                  'import {defineApp,router} from "apps";export default defineApp({},{tools:router({})});',
++              },
++              appsManifest,
++            ],
++          });
++          expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++          const pool = yield* body(Schema.Struct({ id: Schema.String }), deployed);
++          pools.push(pool.id);
++          created.add(pool.id);
++        }
++        // Only an older server could leave these installs without the new service claims.
++        const prior = yield* legacyStorage([
++          {
++            sql: "select metadata from organization where id = $1",
++            params: [actors.organization.id],
++          },
++        ]);
++        const oldMetadata = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ metadata: Schema.NullOr(Schema.String) }),
++        )(prior[0]?.[0]);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* legacyStorage([
++              {
++                sql: "update organization set metadata = $2 where id = $1",
++                params: [actors.organization.id, oldMetadata.metadata],
++              },
++            ]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* legacyStorage([
++          {
++            sql: "update organization set metadata = jsonb_set((coalesce(metadata::jsonb, '{}'::jsonb) #- array['basaltServiceInstalls', $2]), '{basaltPools}', $3::jsonb)::text where id = $1",
++            params: [
++              actors.organization.id,
++              legacyApp,
++              JSON.stringify({ oldA: { app: pools[0] }, oldB: { app: pools[1] } }),
++            ],
++          },
++          {
++            sql: "update executor_apps set copied_from = jsonb_set(copied_from::jsonb, '{name}', to_jsonb($2::text)) where id = $1",
++            params: [legacyApp, "@executor.sh/synthetic-legacy-tracker"],
++          },
++        ]);
++        yield* serverControl("start");
++        const legacyResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: officialApps.tracker.id,
++          name: "Existing legacy catalog copy",
++        });
++        expect(legacyResponse.status).toBe(200);
++        const legacyReused = yield* body(Installed, legacyResponse);
++        expect(legacyReused).toMatchObject({
++          id: legacyApp,
++          reused: true,
++          service: { id: officialApps.tracker.package, newInstance: false },
++        });
++        const legacyInventory = yield* api.request(actors.owner, "GET", `${prefix}/inventory`);
++        const projection = yield* body(
++          Schema.Struct({
++            apps: Schema.Array(
++              Schema.Struct({
++                id: Schema.String,
++                service: Schema.optionalKey(
++                  Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean }),
++                ),
++              }),
++            ),
++          }),
++          legacyInventory,
++        );
++        for (const pool of pools)
++          expect(projection.apps.find((app) => app.id === pool)?.service).toEqual({
++            id: "@signalbox/pool",
++            newInstance: true,
++          });
++        expect(projection.apps.find((app) => app.id === legacyApp)?.service?.id).toBe(
++          officialApps.tracker.package,
++        );
++        const after = yield* legacyStorage([
++          {
++            sql: "select metadata from organization where id = $1",
++            params: [actors.organization.id],
++          },
++        ]);
++        const stored = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ metadata: Schema.String }),
++        )(after[0]?.[0]);
++        expect(JSON.parse(stored.metadata).basaltServiceInstalls[legacyApp]).toBeUndefined();
++        expect(JSON.parse(stored.metadata).basaltPools).toEqual({
++          oldA: { app: pools[0] },
++          oldB: { app: pools[1] },
++        });
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++});
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -5,6 +5,7 @@
+ import { AppCopyOrigin, SourceFiles } from "@executor-js/sdk";
+ import type { HostEgress } from "@executor-js/utils/url-policy";
+ import type { CustomAppInput } from "./imports.ts";
++import { CatalogService } from "./service.ts";
+ import { McpDetection } from "./detection.ts";
+ 
+ /** An image shown beside an app, light or dark. `src` is absolute once a catalog lists it. */
+@@ -36,6 +37,7 @@
+  */
+ export const CatalogEntry = Schema.Struct({
+   id: Schema.NonEmptyString,
++  service: Schema.optionalKey(CatalogService),
+   /** The app's package name, such as `@executor.sh/resend`. */
+   package: Schema.NonEmptyString,
+   name: Schema.NonEmptyString,
+@@ -79,7 +81,9 @@
+     text === undefined || text === ""
+       ? entries
+       : entries.filter((entry) =>
+-          [entry.id, entry.name, entry.package].some((value) => value.toLowerCase().includes(text)),
++          [entry.id, entry.name, entry.package, ...(entry.service?.packages ?? [])].some((value) =>
++            value.toLowerCase().includes(text),
++          ),
+         );
+   return filter.limit === undefined ? matched : matched.slice(0, filter.limit);
+ };
+diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
+--- a/packages/catalog/src/contracts/index.ts
++++ b/packages/catalog/src/contracts/index.ts
+@@ -1,3 +1,4 @@
++export { CatalogService } from "./service.ts";
+ /** Import descriptions and generated files; no product HTTP or installation policy. */
+ export {
+   CatalogAuth,
+diff --git a/packages/catalog/src/contracts/service.ts b/packages/catalog/src/contracts/service.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/catalog/src/contracts/service.ts
+@@ -0,0 +1,12 @@
++/** Publisher-owned service identity joins transports without guessing from names or domains. */
++import { Schema } from "effect";
++import { ImportUrl } from "./imports.ts";
++
++export const CatalogService = Schema.Struct({
++  id: Schema.NonEmptyString,
++  /** Exact endpoints whose MCP transport belongs to this service. */
++  mcp: Schema.Array(ImportUrl),
++  /** Packages represented by this service's one catalog entry. */
++  packages: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type CatalogService = typeof CatalogService.Type;
+diff --git a/packages/catalog/src/implementation/catalog.ts b/packages/catalog/src/implementation/catalog.ts
+--- a/packages/catalog/src/implementation/catalog.ts
++++ b/packages/catalog/src/implementation/catalog.ts
+@@ -1,4 +1,5 @@
+ /** Resolve catalog choices into ordinary app source; installation belongs to the caller. */
++import { catalogServices } from "./services.ts";
+ import { catalogStage } from "./diagnostics.ts";
+ import { Effect } from "effect";
+ import type { Catalog, CatalogHost, CatalogSource } from "../contracts/catalog.ts";
+@@ -15,7 +16,7 @@
+     ? emptySource
+     : catalogSource(host.egress.client, host.feedUrl),
+ ): Catalog => ({
+-  list: source.list.pipe(catalogStage("lookup")),
++  list: source.list.pipe(Effect.flatMap(catalogServices), catalogStage("lookup")),
+   prepare: (input) => source.prepare(input.entry).pipe(catalogStage("prepare")),
+   custom: (input) =>
+     Effect.promise(() => import("./custom.ts")).pipe(
+diff --git a/packages/catalog/src/implementation/services.ts b/packages/catalog/src/implementation/services.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/catalog/src/implementation/services.ts
+@@ -0,0 +1,39 @@
++import { Effect } from "effect";
++import { CatalogUnavailable, type CatalogEntry } from "../contracts/catalog.ts";
++
++/** A service lists once; endpoint and package aliases survive the merge. */
++export const catalogServices = (entries: readonly CatalogEntry[]) =>
++  Effect.gen(function* () {
++    const services = new Map<string, CatalogEntry>();
++    const endpoints = new Map<string, string>();
++    for (const entry of entries) {
++      const id = entry.service?.id ?? entry.package;
++      const earlier = services.get(id);
++      const mcp = [
++        ...new Set([
++          ...(earlier?.service?.mcp ?? []),
++          ...(entry.service?.mcp ?? []).map((url) => new URL(url).href),
++        ]),
++      ];
++      for (const url of mcp) {
++        const service = endpoints.get(url);
++        if (service !== undefined && service !== id) return yield* new CatalogUnavailable();
++        endpoints.set(url, id);
++      }
++      services.set(id, {
++        ...(earlier === undefined || entry.package === id ? entry : earlier),
++        service: {
++          id,
++          mcp,
++          packages: [
++            ...new Set([
++              ...(earlier?.service?.packages ?? []),
++              ...(entry.service?.packages ?? []),
++              entry.package,
++            ]),
++          ],
++        },
++      });
++    }
++    return [...services.values()];
++  });
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -59,9 +59,12 @@
+   readonly revocation: "automatic" | "manual";
+   readonly canManage: boolean;
+ }
++export interface AppSummary extends App {
++  readonly service?: { readonly id: string; readonly newInstance: boolean };
++}
+ /** The common inventory contains no product permission or organization fields. */
+ export interface Inventory {
+-  readonly apps: readonly App[];
++  readonly apps: readonly AppSummary[];
+   /** The caller's linked accounts for each listed app. */
+   readonly links: readonly AppAccountLink[];
+   /** The number of distinct app-scope accounts linked for everyone, when this inventory lists it. */
+@@ -106,6 +109,7 @@
+ /** Common command input; a host adapter supplies its own API route parameters. */
+ export interface InstallApp extends CatalogImport {
+   readonly name: string;
++  readonly newInstance?: boolean;
+ }
+ /** A typed command and its operation-specific failure renderer. */
+ export interface MutationProps<Input, A, E> {
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -2,9 +2,10 @@
+ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import { useContext, useState, type ReactNode } from "react";
+ import { Cause, Effect, Exit, Option, Predicate } from "effect";
+-import type { App, DeployedApp } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import type { CatalogEntry, CatalogConnectionNotice } from "@executor-js/catalog/contracts";
+ import type {
++  AppSummary,
+   QueryProps,
+   MutationProps,
+   InstallApp,
+@@ -42,7 +43,7 @@
+ 
+ /** Runs one catalog entry's install and resolves with that entry's own result. */
+ export function useCatalogInstall<IE>(
+-  mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"],
++  mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"],
+ ) {
+   const registry = useContext(RegistryContext);
+   return async (entry: CatalogEntry, input: InstallApp) => {
+@@ -78,8 +79,8 @@
+   open,
+ }: QueryProps<readonly CatalogEntry[], E> & {
+   /** The install command for one catalog entry; each row has its own. */
+-  readonly mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"];
+-  readonly InstallFailure: MutationProps<InstallApp, DeployedApp, IE>["Failure"];
++  readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
++  readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
+   readonly back: ReactNode;
+   readonly action?: ReactNode;
+   /** The apps already installed; a failed read just leaves every row on Add. */
+diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
+--- a/packages/ui/src/implementation/dashboard/custom-app.tsx
++++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
+@@ -1,7 +1,7 @@
+ import { AsyncResult } from "effect/reactivity";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { CustomAppInput, ImportUrl } from "@executor-js/catalog/contracts";
+-import type { DeployedApp } from "@executor-js/sdk";
++import type { AppSummary } from "../../contracts/dashboard.ts";
+ import { Exit, Option, Schema } from "effect";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Add01Icon } from "@hugeicons/core-free-icons";
+@@ -21,8 +21,8 @@
+   Failure,
+   onInstalled,
+   endpoint,
+-}: MutationProps<CustomAppInput, DeployedApp, E> & {
+-  readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
++}: MutationProps<CustomAppInput, AppSummary, E> & {
++  readonly onInstalled: (app: AppSummary) => void | Promise<void>;
+   /** This installation's MCP URL, included so an unconnected agent can connect first. */
+   readonly endpoint?: string;
+ }) {

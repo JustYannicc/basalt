@@ -1,10 +1,12 @@
 {
   "identity": "executor-slack-user-oauth",
   "file": "0023-slack-user-oauth.patch",
-  "content_sha256": "1397172efda54a084e9b37b86bb2ab72eb3112e4cb76d83e4dc06fa36a329e10",
+  "content_sha256": "b41ccb0c61a95ec6d22d0ca2da9f343fa13fdd35b203737f51c31ce6e1da8d64",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
-  "upstream_issue": 2368
+  "upstream_issue": 2368,
+  "rebased_from": "1397172efda54a084e9b37b86bb2ab72eb3112e4cb76d83e4dc06fa36a329e10",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

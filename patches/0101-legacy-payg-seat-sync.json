@@ -1,9 +1,11 @@
 {
   "identity": "executor-legacy-payg-seat-sync",
   "file": "0101-legacy-payg-seat-sync.patch",
-  "content_sha256": "5dcfa78908af154ef4da18f769cdbf62004792b4f93fee576d64edc9ec297386",
+  "content_sha256": "10920abd955f99a9a4977644bb85781e2010c65effd715fb3a32c0e84113732c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "5dcfa78908af154ef4da18f769cdbf62004792b4f93fee576d64edc9ec297386",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

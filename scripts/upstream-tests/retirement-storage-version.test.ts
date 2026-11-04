@@ -34,7 +34,7 @@ test("retirement accepts the migrated host schema and refuses other storage vers
           },
         );
         const current = yield* reader.identity;
-        assert.equal(current.version, "4.0.27");
+        assert.equal(current.version, "4.0.29");
         assert.ok(Number.isFinite(Date.parse(current.snapshot)));
         for (const version of ["4.0.25", "4.0.99"]) {
           yield* sql`update private_executor_settings set value = ${version} where key = 'version'`;

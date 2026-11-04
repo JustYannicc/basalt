@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/contracts/emulators.ts b/apps/hosted/cloud/src/contracts/emulators.ts
-index 2396e38..7b94062 100644
+index 2396e381..7b940628 100644
 --- a/apps/hosted/cloud/src/contracts/emulators.ts
 +++ b/apps/hosted/cloud/src/contracts/emulators.ts
 @@ -49,6 +49,29 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
@@ -34,7 +34,7 @@ index 2396e38..7b94062 100644
    mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
 diff --git a/apps/hosted/cloud/src/infrastructure/hosted-routes.ts b/apps/hosted/cloud/src/infrastructure/hosted-routes.ts
 new file mode 100644
-index 0000000..5e54db3
+index 00000000..5e54db3e
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/hosted-routes.ts
 @@ -0,0 +1,66 @@
@@ -106,7 +106,7 @@ index 0000000..5e54db3
 +}).pipe(Effect.provide(BrowserCrypto.layer));
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts
 new file mode 100644
-index 0000000..3e6b8a2
+index 00000000..3e6b8a2c
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/google.ts
 @@ -0,0 +1,101 @@
@@ -213,7 +213,7 @@ index 0000000..3e6b8a2
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
 new file mode 100644
-index 0000000..4e444d4
+index 00000000..4e444d47
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
 @@ -0,0 +1,229 @@
@@ -448,7 +448,7 @@ index 0000000..4e444d4
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts
 new file mode 100644
-index 0000000..760649a
+index 00000000..760649a2
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/request.ts
 @@ -0,0 +1,77 @@
@@ -531,7 +531,7 @@ index 0000000..760649a
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts
 new file mode 100644
-index 0000000..316711c
+index 00000000..316711c9
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/response.ts
 @@ -0,0 +1,39 @@
@@ -576,7 +576,7 @@ index 0000000..316711c
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts
 new file mode 100644
-index 0000000..545eece
+index 00000000..545eeceb
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/maps-routes/usage.ts
 @@ -0,0 +1,80 @@
@@ -661,7 +661,7 @@ index 0000000..545eece
 +      ),
 +    );
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
-index efaf0f5..67a3123 100644
+index efaf0f5c..67a3123c 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
 @@ -1,3 +1,5 @@
@@ -683,7 +683,7 @@ index efaf0f5..67a3123 100644
      Layer.succeed(AccessLifecycle, accessLifecycle),
      Layer.succeed(
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index f344ca4..5dfbb83 100644
+index d25506d5..78f03392 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -2,6 +2,8 @@ import { drainContributedDepartures } from "@executor-js/hosted-server/contribut
@@ -695,7 +695,7 @@ index f344ca4..5dfbb83 100644
  import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
  import {
    Provisioning,
-@@ -616,6 +618,7 @@ export default Api.make(
+@@ -635,6 +637,7 @@ export default Api.make(
        sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
      );
      // The site's first-party analytics proxy and error tunnel.
@@ -703,7 +703,7 @@ index f344ca4..5dfbb83 100644
      const siteTelemetryRoutes = Layer.mergeAll(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
-@@ -625,6 +628,12 @@ export default Api.make(
+@@ -644,6 +647,12 @@ export default Api.make(
        HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
          HttpRouter.provideRequest(executor),
        ),
@@ -717,7 +717,7 @@ index f344ca4..5dfbb83 100644
          HttpRouter.provideRequest(executor),
        ),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 4d4111d..fbb1a4f 100644
+index 4d4111db..fbb1a4fd 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -46,6 +46,9 @@
@@ -732,7 +732,7 @@ index 4d4111d..fbb1a4f 100644
    "dependencies": {
 diff --git a/apps/hosted/server/src/contracts/hosted-routes.ts b/apps/hosted/server/src/contracts/hosted-routes.ts
 new file mode 100644
-index 0000000..920b6e4
+index 00000000..920b6e41
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/hosted-routes.ts
 @@ -0,0 +1,80 @@
@@ -817,7 +817,7 @@ index 0000000..920b6e4
 +export const hostedRoutesCatalogReference = (origin: string) =>
 +  `${canonicalHostedRoutesOrigin(origin).origin}/catalog/apps/google-maps.json`;
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 01062bf..324ccae 100644
+index 09d1668f..84f3cc31 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,3 +1,6 @@
@@ -827,7 +827,7 @@ index 01062bf..324ccae 100644
  import { protectProvisionedLinks } from "./provisioned-links.ts";
  import { InteractiveRemovalDone } from "@executor-js/sdk/core";
  import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
-@@ -35,7 +38,7 @@ import type { SqlClient } from "effect/sql";
+@@ -39,7 +42,7 @@ import type { SqlClient } from "effect/sql";
  import { CurrentUserId } from "../contracts/auth.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { RequirementMismatch } from "../contracts/app-accounts.ts";
@@ -836,7 +836,7 @@ index 01062bf..324ccae 100644
  import {
    AppAccountReads,
    LinkedAccount,
-@@ -202,7 +205,26 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
+@@ -206,7 +209,26 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
  };
  /** The accounts an operation the caller starts runs with on the app's active version. */
  export const callerAccounts = (app: App, links?: CallerLinks) =>
@@ -866,7 +866,7 @@ index 01062bf..324ccae 100644
  export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
 diff --git a/apps/hosted/server/src/implementation/hosted-routes-accounts.ts b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
 new file mode 100644
-index 0000000..0c8b8ad
+index 00000000..0c8b8adc
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/hosted-routes-accounts.ts
 @@ -0,0 +1,305 @@
@@ -1177,7 +1177,7 @@ index 0000000..0c8b8ad
 +  }).pipe(Effect.catchTags(sqlFailures));
 diff --git a/apps/hosted/server/src/implementation/hosted-routes-schema.ts b/apps/hosted/server/src/implementation/hosted-routes-schema.ts
 new file mode 100644
-index 0000000..b0c8eab
+index 00000000..b0c8eab7
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/hosted-routes-schema.ts
 @@ -0,0 +1,27 @@
@@ -1210,7 +1210,7 @@ index 0000000..b0c8eab
 +});
 diff --git a/apps/hosted/server/src/implementation/hosted-routes-token.ts b/apps/hosted/server/src/implementation/hosted-routes-token.ts
 new file mode 100644
-index 0000000..98af5fe
+index 00000000..98af5fe7
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/hosted-routes-token.ts
 @@ -0,0 +1,72 @@
@@ -1287,10 +1287,10 @@ index 0000000..98af5fe
 +  }
 +};
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
-index 5143de3..7383086 100644
+index b43390ef..46bb5fa6 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
-@@ -323,6 +323,7 @@ export const dispatchHostedMcp = <E, R>(
+@@ -332,6 +332,7 @@ export const dispatchHostedMcp = <E, R>(
            !fold.result.value.access.canUse
              ? Effect.succeed(undefined)
              : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
@@ -1299,7 +1299,7 @@ index 5143de3..7383086 100644
                  Effect.provideService(CurrentUserId, access.userId),
                  Effect.provideContext(services),
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index 70eb890..7d41e42 100644
+index 70eb890a..7d41e423 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
 @@ -6,6 +6,7 @@ import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/co
@@ -1319,10 +1319,10 @@ index 70eb890..7d41e42 100644
  
  /**
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 3643ce7..06d8267 100644
+index 2573dbd5..8d05b02a 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -39,6 +39,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
+@@ -40,6 +40,7 @@ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.
  import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
@@ -1330,7 +1330,7 @@ index 3643ce7..06d8267 100644
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
-@@ -205,6 +206,40 @@ export const startCloudEnvironment = (input: {
+@@ -204,6 +205,40 @@ export const startCloudEnvironment = (input: {
                services: input.signInThrough.services,
              }),
            );
@@ -1371,8 +1371,8 @@ index 3643ce7..06d8267 100644
      const oauthProxy = {
        productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
        secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
-@@ -217,7 +252,7 @@ export const startCloudEnvironment = (input: {
-       ).pipe(Effect.asVoid, Effect.orDie),
+@@ -219,7 +254,7 @@ export const startCloudEnvironment = (input: {
+       ),
      );
      const emulators = `${directory}/emulators.json`;
 -    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
@@ -1380,7 +1380,7 @@ index 3643ce7..06d8267 100644
      yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
      const analyticsPort = yield* startAnalyticsCollector(directory);
      // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
-@@ -289,7 +324,7 @@ export const startCloudEnvironment = (input: {
+@@ -298,7 +333,7 @@ export const startCloudEnvironment = (input: {
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
        // Fresh test installs use the encrypted native journal, as production does.
        EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
@@ -1389,7 +1389,7 @@ index 3643ce7..06d8267 100644
          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
          : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
-@@ -337,6 +372,13 @@ export const startCloudEnvironment = (input: {
+@@ -348,6 +383,13 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
        CLOUD_DEV_EXTERNAL_DATABASE: "true",
        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
@@ -1403,7 +1403,7 @@ index 3643ce7..06d8267 100644
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
-@@ -685,6 +727,6 @@ export const startCloudEnvironment = (input: {
+@@ -693,6 +735,6 @@ export const startCloudEnvironment = (input: {
        emulators,
        fixtures: controls,
        origin: input.origin,
@@ -1412,7 +1412,7 @@ index 3643ce7..06d8267 100644
      };
    });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
-index ddd7b7e..a7b789b 100644
+index 53aef73f..1af610c6 100644
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
 @@ -56,6 +56,24 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
@@ -1440,7 +1440,7 @@ index ddd7b7e..a7b789b 100644
  
  /** The fields of v1 WorkOS listings that seeding reads back. */
  const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
-@@ -74,6 +92,7 @@ export const EmulatorFixture = Schema.Struct({
+@@ -106,6 +124,7 @@ export const EmulatorFixture = Schema.Struct({
    version: Schema.Literal(4),
    origin: Schema.String,
    services: Schema.Struct({
@@ -1448,7 +1448,7 @@ index ddd7b7e..a7b789b 100644
      google: GoogleProvider,
      github: Provider,
      mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-@@ -493,47 +512,51 @@ const make = Effect.gen(function* () {
+@@ -525,47 +544,51 @@ const make = Effect.gen(function* () {
        ),
      );
    return {
@@ -1536,7 +1536,7 @@ index ddd7b7e..a7b789b 100644
          yield* request(
 diff --git a/e2e/support/maps-routes-emulator.ts b/e2e/support/maps-routes-emulator.ts
 new file mode 100644
-index 0000000..5984ec5
+index 00000000..5984ec51
 --- /dev/null
 +++ b/e2e/support/maps-routes-emulator.ts
 @@ -0,0 +1,168 @@
@@ -1709,7 +1709,7 @@ index 0000000..5984ec5
 +    return { baseUrl: `http://127.0.0.1:${server.address.port}`, token };
 +  });
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
-index fdde97c..af8446c 100644
+index fdde97c4..af8446c3 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
 @@ -12,9 +12,17 @@ export const beforeAccountIdentities = () =>
@@ -1731,10 +1731,10 @@ index fdde97c..af8446c 100644
      { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
    ] as const;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 24aa102..82b1b94 100644
+index a2745cd2..ba6bc3e0 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8843,6 +8843,17 @@ export const scenarios = plan({
+@@ -10008,6 +10008,17 @@ export const scenarios = plan({
        local: na("The Cloud host owns automatic pool setup."),
      },
    },
@@ -1753,7 +1753,7 @@ index 24aa102..82b1b94 100644
      fixtures: "actors",
      managementApps: ["owner"],
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
-index bcf8d90..13b7038 100644
+index bcf8d90e..13b70386 100644
 --- a/e2e/tests/account-observation-migration.spec.ts
 +++ b/e2e/tests/account-observation-migration.spec.ts
 @@ -83,6 +83,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
@@ -1766,7 +1766,7 @@ index bcf8d90..13b7038 100644
          yield* evidence.json("upgraded-observation-and-departure-layout.json", {
 diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
 new file mode 100644
-index 0000000..f55b30e
+index 00000000..f55b30e4
 --- /dev/null
 +++ b/e2e/tests/hosted-routes.spec.ts
 @@ -0,0 +1,266 @@

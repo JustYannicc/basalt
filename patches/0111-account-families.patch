@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/contracts/oauth-wire.ts b/apps/hosted/cloud/src/contracts/oauth-wire.ts
-index 00466df..23a84aa 100644
+index 00466dfb..23a84aa2 100644
 --- a/apps/hosted/cloud/src/contracts/oauth-wire.ts
 +++ b/apps/hosted/cloud/src/contracts/oauth-wire.ts
 @@ -7,7 +7,7 @@ import type { OAuthOptions } from "@executor-js/sdk/core";
@@ -12,7 +12,7 @@ index 00466df..23a84aa 100644
  export type WireReply<A> =
    | { readonly ok: true; readonly value: A }
 diff --git a/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts b/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts
-index 8bf289d..06ab1c9 100644
+index 8bf289de..06ab1c97 100644
 --- a/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts
 +++ b/apps/hosted/cloud/src/infrastructure/oauth-protocol.ts
 @@ -2,7 +2,11 @@
@@ -61,7 +61,7 @@ index 8bf289d..06ab1c9 100644
        call((wire, headers) => wire.inspect(settings, [args[0].href, args[1]], headers)).pipe(
          Effect.catch(() =>
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index 41b0432..52e9fab 100644
+index 41b04320..52e9fabd 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
 @@ -197,7 +197,7 @@ const methods = HttpApiEndpoint.get("methods", `${prefix}/methods`, {
@@ -82,7 +82,7 @@ index 41b0432..52e9fab 100644
          CredentialsError,
          AccountSiteInvalid,
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 01062bf..09d1668 100644
+index 01062bfd..09d1668f 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -12,6 +12,10 @@ import { requireLinkRemovalAs, requireRequirementAccessAs } from "./contributed-
@@ -133,7 +133,7 @@ index 01062bf..09d1668 100644
      for (const { account } of replaced) {
        const bindings =
 diff --git a/apps/hosted/server/src/implementation/mcp-connections.ts b/apps/hosted/server/src/implementation/mcp-connections.ts
-index bd020a7..7839d5e 100644
+index bd020a73..7839d5e6 100644
 --- a/apps/hosted/server/src/implementation/mcp-connections.ts
 +++ b/apps/hosted/server/src/implementation/mcp-connections.ts
 @@ -95,6 +95,7 @@ const resolveApp = (
@@ -145,7 +145,7 @@ index bd020a7..7839d5e 100644
            }),
          );
 diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-index 3535f3b..261ef21 100644
+index 3535f3b5..261ef216 100644
 --- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
 @@ -124,6 +124,10 @@ export const poolAccountAcquisition = (
@@ -160,7 +160,7 @@ index 3535f3b..261ef21 100644
            exposeHostReference: true,
            driver,
 diff --git a/apps/hosted/server/src/implementation/provider-account-methods.ts b/apps/hosted/server/src/implementation/provider-account-methods.ts
-index f311100..ad5059b 100644
+index f311100e..ad5059b7 100644
 --- a/apps/hosted/server/src/implementation/provider-account-methods.ts
 +++ b/apps/hosted/server/src/implementation/provider-account-methods.ts
 @@ -1,62 +1,41 @@
@@ -250,7 +250,7 @@ index f311100..ad5059b 100644
  export const requireProviderAccountMethod = (app: App, requirement: string, method: string) =>
    Effect.gen(function* () {
 diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-index 02d846c..97f1a42 100644
+index 478e4df7..11abf703 100644
 --- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 +++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 @@ -15,7 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
@@ -298,7 +298,7 @@ index 02d846c..97f1a42 100644
          fixPrompt: Option.match(error, {
            onSome: (value) =>
              recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
-@@ -200,11 +193,9 @@ export function OAuthCallbackPage() {
+@@ -202,11 +195,9 @@ export function OAuthCallbackPage() {
        }
        detail={
          state.status === "failed" &&
@@ -312,7 +312,7 @@ index 02d846c..97f1a42 100644
            </div>
          )
        }
-@@ -214,7 +205,13 @@ export function OAuthCallbackPage() {
+@@ -216,7 +207,13 @@ export function OAuthCallbackPage() {
            pending={pending}
            recovery={state.status === "cancelled" ? "cancelled" : state.recovery}
            fixPrompt={state.status === "failed" ? state.fixPrompt : undefined}
@@ -327,7 +327,7 @@ index 02d846c..97f1a42 100644
          />
        )}
      </ConnectionStatusPage>
-@@ -227,12 +224,14 @@ function OAuthRecoveryActions({
+@@ -229,12 +226,14 @@ function OAuthRecoveryActions({
    recovery,
    fixPrompt,
    partial = false,
@@ -342,9 +342,9 @@ index 02d846c..97f1a42 100644
  }) {
    const brand = useProductBrand();
    if (Option.isNone(pending))
-@@ -244,7 +243,7 @@ function OAuthRecoveryActions({
-   const context = pending.value;
-   // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
+@@ -249,7 +248,7 @@ function OAuthRecoveryActions({
+   // their fields.
+   const registered = context.registeredClient;
    const retry =
 -    recovery === "restart" || recovery === "client"
 +    canRetry && (recovery === "restart" || recovery === "client")
@@ -352,7 +352,7 @@ index 02d846c..97f1a42 100644
            label:
              recovery === "client"
 diff --git a/apps/local/web/src/implementation/pages/oauth.tsx b/apps/local/web/src/implementation/pages/oauth.tsx
-index a1c9667..b818478 100644
+index a1c96670..b8184782 100644
 --- a/apps/local/web/src/implementation/pages/oauth.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth.tsx
 @@ -2,7 +2,7 @@ import { AsyncResult, type Atom } from "effect/reactivity";
@@ -400,7 +400,7 @@ index a1c9667..b818478 100644
  }
 diff --git a/e2e/support/account-family-product.ts b/e2e/support/account-family-product.ts
 new file mode 100644
-index 0000000..f417667
+index 00000000..f4176674
 --- /dev/null
 +++ b/e2e/support/account-family-product.ts
 @@ -0,0 +1,56 @@
@@ -462,7 +462,7 @@ index 0000000..f417667
 +  });
 diff --git a/e2e/support/account-family-provider-backend.ts b/e2e/support/account-family-provider-backend.ts
 new file mode 100644
-index 0000000..6ac2038
+index 00000000..6ac20386
 --- /dev/null
 +++ b/e2e/support/account-family-provider-backend.ts
 @@ -0,0 +1,71 @@
@@ -538,7 +538,7 @@ index 0000000..6ac2038
 +  return { origin: `http://127.0.0.1:${server.address.port}`, calls: Ref.get(calls) };
 +});
 diff --git a/e2e/support/account-identity-issuer.ts b/e2e/support/account-identity-issuer.ts
-index 6e0e2ce..60d905a 100644
+index 6e0e2cec..60d905ab 100644
 --- a/e2e/support/account-identity-issuer.ts
 +++ b/e2e/support/account-identity-issuer.ts
 @@ -17,6 +17,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
@@ -594,7 +594,7 @@ index 6e0e2ce..60d905a 100644
        }),
      metrics: Effect.sync(() => ({ authorizations, exchanges, refreshes, revocations })),
 diff --git a/e2e/support/account-identity-product.ts b/e2e/support/account-identity-product.ts
-index 100356e..65747f2 100644
+index 100356e4..65747f2f 100644
 --- a/e2e/support/account-identity-product.ts
 +++ b/e2e/support/account-identity-product.ts
 @@ -40,7 +40,7 @@ export const accountIdentityProduct = Effect.gen(function* () {
@@ -641,7 +641,7 @@ index 100356e..65747f2 100644
          ],
 diff --git a/e2e/support/google-oauth-product.ts b/e2e/support/google-oauth-product.ts
 new file mode 100644
-index 0000000..4d4c84f
+index 00000000..4d4c84fb
 --- /dev/null
 +++ b/e2e/support/google-oauth-product.ts
 @@ -0,0 +1,100 @@
@@ -746,7 +746,7 @@ index 0000000..4d4c84f
 +    };
 +  });
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 5156be2..9e5ebc6 100644
+index c727ba00..aef22fa7 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -86,6 +86,8 @@ export const OperatorSettings = Schema.Struct({
@@ -759,7 +759,7 @@ index 5156be2..9e5ebc6 100644
    EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
  });
 diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
-index 42722c5..dc125bc 100644
+index 42722c5a..dc125bc8 100644
 --- a/e2e/support/provider-apps-catalog.ts
 +++ b/e2e/support/provider-apps-catalog.ts
 @@ -36,7 +36,14 @@ export const providerAppsCatalog = Effect.gen(function* () {
@@ -779,10 +779,10 @@ index 42722c5..dc125bc 100644
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0f9d9b5..46fba55 100644
+index 5eba2655..b09e6869 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -223,6 +223,16 @@ export const scenarios = plan({
+@@ -229,6 +229,16 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -799,7 +799,7 @@ index 0f9d9b5..46fba55 100644
    accountIdentityPolicy: {
      fixtures: "actors",
      file: "account-identity-policy.spec.ts",
-@@ -245,6 +255,7 @@ export const scenarios = plan({
+@@ -251,6 +261,7 @@ export const scenarios = plan({
      },
    },
    accountIdentityRows: {
@@ -807,7 +807,7 @@ index 0f9d9b5..46fba55 100644
      file: "account-identity-screens.spec.ts",
      title: "Verified account rows retain five app bindings and add a covered app without consent",
      targets: {
-@@ -267,6 +278,58 @@ export const scenarios = plan({
+@@ -273,6 +284,58 @@ export const scenarios = plan({
        cloud: na("Synthetic OAuth issuer uses loopback."),
      },
    },
@@ -866,7 +866,7 @@ index 0f9d9b5..46fba55 100644
    accountConsentBatch: {
      file: "account-consent.spec.ts",
      title:
-@@ -287,6 +350,16 @@ export const scenarios = plan({
+@@ -293,6 +356,16 @@ export const scenarios = plan({
        cloud: na("The synthetic authorization server listens on loopback."),
      },
    },
@@ -884,7 +884,7 @@ index 0f9d9b5..46fba55 100644
      file: "account-consent.spec.ts",
      title: "Wrong identities denial and partial scopes preserve every working app during consent",
 diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
-index d778b74..685c02f 100644
+index d778b748..685c02f4 100644
 --- a/e2e/tests/account-consent.spec.ts
 +++ b/e2e/tests/account-consent.spec.ts
 @@ -1,9 +1,12 @@
@@ -986,7 +986,7 @@ index d778b74..685c02f 100644
          yield* issuer.configure({ omitScopes: true });
 diff --git a/e2e/tests/account-families.spec.ts b/e2e/tests/account-families.spec.ts
 new file mode 100644
-index 0000000..923a82e
+index 00000000..923a82ee
 --- /dev/null
 +++ b/e2e/tests/account-families.spec.ts
 @@ -0,0 +1,241 @@
@@ -1233,7 +1233,7 @@ index 0000000..923a82e
 +});
 diff --git a/e2e/tests/account-family-hosts.spec.ts b/e2e/tests/account-family-hosts.spec.ts
 new file mode 100644
-index 0000000..8bd2b80
+index 00000000..8bd2b806
 --- /dev/null
 +++ b/e2e/tests/account-family-hosts.spec.ts
 @@ -0,0 +1,71 @@
@@ -1310,7 +1310,7 @@ index 0000000..8bd2b80
 +});
 diff --git a/e2e/tests/account-family-pools.spec.ts b/e2e/tests/account-family-pools.spec.ts
 new file mode 100644
-index 0000000..425fed9
+index 00000000..425fed91
 --- /dev/null
 +++ b/e2e/tests/account-family-pools.spec.ts
 @@ -0,0 +1,205 @@
@@ -1520,7 +1520,7 @@ index 0000000..425fed9
 +  );
 +});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index d71a137..788ece8 100644
+index d71a1375..788ece83 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
 @@ -1,6 +1,7 @@
@@ -1756,7 +1756,7 @@ index d71a137..788ece8 100644
          yield* browser.use("Grant access again for the same identity and selected apps", (page) =>
            page
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index b11eedb..4764c42 100644
+index b11eedb8..4764c42a 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -1769,7 +1769,7 @@ index b11eedb..4764c42 100644
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
 diff --git a/e2e/tests/catalog-oauth-clients.spec.ts b/e2e/tests/catalog-oauth-clients.spec.ts
-index 0ccbca6..408e5bf 100644
+index 0ccbca60..408e5bf8 100644
 --- a/e2e/tests/catalog-oauth-clients.spec.ts
 +++ b/e2e/tests/catalog-oauth-clients.spec.ts
 @@ -11,10 +11,26 @@ import { connectionsPath } from "../support/app-accounts.ts";
@@ -1840,7 +1840,7 @@ index 0ccbca6..408e5bf 100644
            expect(JSON.stringify(shared.body)).not.toContain(`shared-secret-${client.id}`);
 diff --git a/e2e/tests/hosted-scope-refusal.spec.ts b/e2e/tests/hosted-scope-refusal.spec.ts
 new file mode 100644
-index 0000000..2ca4ea2
+index 00000000..2ca4ea29
 --- /dev/null
 +++ b/e2e/tests/hosted-scope-refusal.spec.ts
 @@ -0,0 +1,294 @@
@@ -2139,7 +2139,7 @@ index 0000000..2ca4ea2
 +  );
 +});
 diff --git a/packages/apps/package.json b/packages/apps/package.json
-index e51067d..5d80e1e 100644
+index e51067d6..5d80e1eb 100644
 --- a/packages/apps/package.json
 +++ b/packages/apps/package.json
 @@ -1,6 +1,6 @@
@@ -2152,7 +2152,7 @@ index e51067d..5d80e1e 100644
    "type": "module",
 diff --git a/packages/apps/protocols/27.json b/packages/apps/protocols/27.json
 new file mode 100644
-index 0000000..32c0dfe
+index 00000000..32c0dfe9
 --- /dev/null
 +++ b/packages/apps/protocols/27.json
 @@ -0,0 +1,3072 @@
@@ -5230,7 +5230,7 @@ index 0000000..32c0dfe
 +}
 diff --git a/packages/apps/src/contracts/account-family.ts b/packages/apps/src/contracts/account-family.ts
 new file mode 100644
-index 0000000..d9a6655
+index 00000000..d9a6655a
 --- /dev/null
 +++ b/packages/apps/src/contracts/account-family.ts
 @@ -0,0 +1,27 @@
@@ -5262,7 +5262,7 @@ index 0000000..d9a6655
 +/** Display and discovery metadata for several consumers of compatible saved accounts. */
 +export type AccountFamily = typeof AccountFamily.Type;
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 7f5f57b..8491283 100644
+index 7f5f57be..84912838 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -1,4 +1,5 @@
@@ -5285,7 +5285,7 @@ index 7f5f57b..8491283 100644
    CredentialHost,
    MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 837329d..a510f99 100644
+index 837329d1..a510f991 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -5296,7 +5296,7 @@ index 837329d..a510f99 100644
 +export const frameworkProtocol = 27;
 diff --git a/packages/apps/src/contracts/protocols/26.ts b/packages/apps/src/contracts/protocols/26.ts
 new file mode 100644
-index 0000000..74258fd
+index 00000000..74258fd9
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/26.ts
 @@ -0,0 +1,689 @@
@@ -5990,7 +5990,7 @@ index 0000000..74258fd
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index ff6bd5f..8477c24 100644
+index 854375ea..eb9b82a2 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -15,6 +15,7 @@ import { AccountObservationResult } from "../account-observation.ts";
@@ -6018,7 +6018,7 @@ index ff6bd5f..8477c24 100644
    contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
    /**
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index c329b7d..76e90a4 100644
+index c329b7d8..76e90a4a 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -33,6 +33,7 @@ import { protocol23 } from "./23.ts";
@@ -6036,7 +6036,7 @@ index c329b7d..76e90a4 100644
 +  protocol26,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index 3b5400d..de8e415 100644
+index 3b5400d3..de8e415e 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -292,6 +292,7 @@ export interface AccountCheck<Auth extends AuthMethods> {
@@ -6070,7 +6070,7 @@ index 3b5400d..de8e415 100644
  }
  
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index bba19eb..5bd51e7 100644
+index bba19eb5..5bd51e72 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -212,6 +212,7 @@ export function providerDeclaration(provider: Provider<AuthMethods>) {
@@ -6092,7 +6092,7 @@ index bba19eb..5bd51e7 100644
          ...(provider.health === undefined ? {} : { health: true }),
          ...(hostAcquisition.length === 0 ? {} : { hostAcquisition }),
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
-index 80f70c0..973b88a 100644
+index 80f70c00..973b88a9 100644
 --- a/packages/apps/src/implementation/provider.ts
 +++ b/packages/apps/src/implementation/provider.ts
 @@ -77,6 +77,7 @@ export const oauth2 = <Response extends Schema.Decoder<unknown>>(
@@ -6104,7 +6104,7 @@ index 80f70c0..973b88a 100644
    /** Ask for a per-account site and bind it before sign-in begins. */
    readonly site?: ProviderSite;
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index 44549ea..7a197e5 100644
+index 44549ea9..7a197e58 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
 @@ -107,6 +107,7 @@ export type {
@@ -6116,7 +6116,7 @@ index 44549ea..7a197e5 100644
    base64,
    basic,
 diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
-index 5498f30..41576c8 100644
+index 5498f303..41576c8e 100644
 --- a/packages/sdk/src/contracts/account-acquisition-driver.ts
 +++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
 @@ -93,6 +93,9 @@ export interface AccountAcquisitionDriver<
@@ -6131,7 +6131,7 @@ index 5498f30..41576c8 100644
    /** Let trusted product hosts read this driver's opaque stored reference through its source. */
 diff --git a/packages/sdk/src/contracts/account-consumers.ts b/packages/sdk/src/contracts/account-consumers.ts
 new file mode 100644
-index 0000000..373f9ba
+index 00000000..373f9ba1
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-consumers.ts
 @@ -0,0 +1,55 @@
@@ -6192,7 +6192,7 @@ index 0000000..373f9ba
 +};
 diff --git a/packages/sdk/src/contracts/account-family-recipes.ts b/packages/sdk/src/contracts/account-family-recipes.ts
 new file mode 100644
-index 0000000..5754252
+index 00000000..5754252d
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-family-recipes.ts
 @@ -0,0 +1,77 @@
@@ -6274,7 +6274,7 @@ index 0000000..5754252
 +  defaultValue: () => ({ recipes: defaultAccountFamilies }),
 +});
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 456fc2f..711dd6a 100644
+index bdb7445e..9b70f2ea 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -54,6 +54,8 @@ export const AccountRequirement = Schema.Struct({
@@ -6287,7 +6287,7 @@ index 456fc2f..711dd6a 100644
    contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
    /** This version's provider defines an account check for the slot. */
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 112c3e0..53e7229 100644
+index e6e521dd..9c68f6a9 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -2,6 +2,7 @@ export * from "./account-observation.ts";
@@ -6312,7 +6312,7 @@ index 112c3e0..53e7229 100644
  export * from "./account-connection.ts";
  export * from "./oauth.ts";
 diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
-index c5b6035..56fc3c8 100644
+index c5b60350..56fc3c81 100644
 --- a/packages/sdk/src/contracts/oauth-families.ts
 +++ b/packages/sdk/src/contracts/oauth-families.ts
 @@ -1,64 +1,59 @@
@@ -6425,10 +6425,10 @@ index c5b6035..56fc3c8 100644
 +  return requested.filter((scope) => !covered.has(key(scope)));
  };
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 3cda5ee..df3daf4 100644
+index 6b46fa35..38a22b5f 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -471,6 +471,8 @@ export const allowedScopes = (client: FirstPartyOAuthClient) =>
+@@ -519,6 +519,8 @@ export const allowedScopes = (client: FirstPartyOAuthClient) =>
  /** Network transport and client identity belong to the product hosting this SDK. */
  export interface OAuthOptions {
    readonly httpClient: HttpClient.HttpClient;
@@ -6437,7 +6437,7 @@ index 3cda5ee..df3daf4 100644
    readonly clientName: string;
    /** Host transport policy for callbacks, discovery and every token request. */
    readonly urlPolicy: UrlPolicy;
-@@ -780,14 +782,25 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -920,7 +922,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
    fields: {
      /** A consumed attempt always needs a new sign-in. */
      reason: OAuthCompletionReason,
@@ -6449,22 +6449,24 @@ index 3cda5ee..df3daf4 100644
      grantedScopesKnown: Schema.optional(Schema.Boolean),
      cause: Schema.optional(OAuthFailureCause),
      serviceError: Schema.optional(OAuthServiceError),
-     retryAfter: RetryAfter,
+@@ -929,7 +935,15 @@ export const OAuthCompletionFailed = UserFacingError.define({
+     resource: Schema.optional(OAuthResourceIndicator),
    },
    recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
--  presentation: ({ reason, cause, serviceError, retryAfter }) =>
+-  presentation: ({ reason, cause, serviceError, retryAfter, resource }) =>
 +  presentation: ({
 +    reason,
 +    cause,
 +    serviceError,
 +    retryAfter,
++    resource,
 +    grantedScopesKnown,
 +    scopeNamesOmitted,
 +  }) =>
      withCause(
        (
          {
-@@ -877,13 +890,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -1019,13 +1033,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
              instructions:
                "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
            }),
@@ -6490,7 +6492,7 @@ index 3cda5ee..df3daf4 100644
              title: "Sign-in was cancelled",
              description: "Access was not approved on the service’s sign-in page.",
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
-index 368df7c..7176c2c 100644
+index 368df7cd..7176c2cf 100644
 --- a/packages/sdk/src/contracts/provider.ts
 +++ b/packages/sdk/src/contracts/provider.ts
 @@ -1,9 +1,9 @@
@@ -6549,7 +6551,7 @@ index 368df7c..7176c2c 100644
  );
 diff --git a/packages/sdk/src/implementation/account-consumer-plan.ts b/packages/sdk/src/implementation/account-consumer-plan.ts
 new file mode 100644
-index 0000000..f5d1653
+index 00000000..f5d16535
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-consumer-plan.ts
 @@ -0,0 +1,42 @@
@@ -6596,7 +6598,7 @@ index 0000000..f5d1653
 +    }),
 +  );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 85e045c..15bd64b 100644
+index 85e045cb..15bd64b8 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -306,6 +306,7 @@ const protocol23: AppProtocol = { ...protocol20, version: 23, nodeEntry: nodeApp
@@ -6616,10 +6618,10 @@ index 85e045c..15bd64b 100644
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 2e7812b..4573efc 100644
+index 05979534..6f767f55 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -481,6 +481,7 @@ export const makeApps = (
+@@ -484,6 +484,7 @@ export const makeApps = (
              scope,
              provider,
              cardinality: value.cardinality,
@@ -6627,7 +6629,7 @@ index 2e7812b..4573efc 100644
              contributed: scope === "app" && value.contributed === true,
              health: value.health,
              interactiveHealth: value.interactiveHealth,
-@@ -507,6 +508,7 @@ export const makeApps = (
+@@ -510,6 +511,7 @@ export const makeApps = (
                scope,
                provider,
                cardinality,
@@ -6635,7 +6637,7 @@ index 2e7812b..4573efc 100644
                contributed,
                health,
                interactiveHealth,
-@@ -518,6 +520,7 @@ export const makeApps = (
+@@ -521,6 +523,7 @@ export const makeApps = (
                  provider: provider.id,
                  definition: provider.definition,
                  cardinality,
@@ -6644,7 +6646,7 @@ index 2e7812b..4573efc 100644
                  ...(health === undefined ? {} : { health }),
                  ...(interactiveHealth === undefined ? {} : { interactiveHealth }),
 diff --git a/packages/sdk/src/implementation/connection-state.ts b/packages/sdk/src/implementation/connection-state.ts
-index b636a83..5479a16 100644
+index b636a83f..5479a164 100644
 --- a/packages/sdk/src/implementation/connection-state.ts
 +++ b/packages/sdk/src/implementation/connection-state.ts
 @@ -107,6 +107,7 @@ export const finishConnection = (
@@ -6664,7 +6666,7 @@ index b636a83..5479a16 100644
      yield* query(() =>
        db.updateMany("accountConnections", {
 diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
-index 40bf469..9348a64 100644
+index 40bf469e..9348a642 100644
 --- a/packages/sdk/src/implementation/connection-target.ts
 +++ b/packages/sdk/src/implementation/connection-target.ts
 @@ -1,10 +1,11 @@
@@ -6737,10 +6739,10 @@ index 40bf469..9348a64 100644
        db.updateMany("accounts", {
          where: (b) => b("id", "=", account.id),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 482362e..567177c 100644
+index 7b5d71e6..0f969342 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -99,6 +99,11 @@ export const createExecutor = (
+@@ -105,6 +105,11 @@ export const createExecutor = (
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
      const acquisition = options.acquisition ?? (yield* AccountAcquisitionConfiguration);
@@ -6752,7 +6754,7 @@ index 482362e..567177c 100644
      const acquisitionRegistry = yield* makeAcquisitionRegistry(acquisition.registrations).pipe(
        Effect.orDie,
      );
-@@ -271,7 +276,7 @@ export const createExecutor = (
+@@ -278,7 +283,7 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
      );
@@ -6761,7 +6763,7 @@ index 482362e..567177c 100644
        db,
        credentials,
        crypto,
-@@ -280,6 +285,13 @@ export const createExecutor = (
+@@ -287,6 +292,13 @@ export const createExecutor = (
        options.hooks,
        makeAcquisitionConnect(db, credentials, acquisitionRegistry),
      );
@@ -6775,7 +6777,7 @@ index 482362e..567177c 100644
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
        db,
-@@ -444,6 +456,7 @@ export const createExecutor = (
+@@ -462,6 +474,7 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -6783,7 +6785,7 @@ index 482362e..567177c 100644
          ...makeConnectionInteractive(db, interactive, options.hooks),
          cancel: (input) =>
            Effect.gen(function* () {
-@@ -460,16 +473,25 @@ export const createExecutor = (
+@@ -478,16 +491,25 @@ export const createExecutor = (
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
@@ -6813,7 +6815,7 @@ index 482362e..567177c 100644
          findOAuth: (input) =>
            Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
 diff --git a/packages/sdk/src/implementation/oauth-connection-plan.ts b/packages/sdk/src/implementation/oauth-connection-plan.ts
-index ed56f8a..15a0957 100644
+index ed56f8a8..15a09576 100644
 --- a/packages/sdk/src/implementation/oauth-connection-plan.ts
 +++ b/packages/sdk/src/implementation/oauth-connection-plan.ts
 @@ -1,4 +1,6 @@
@@ -6840,7 +6842,7 @@ index ed56f8a..15a0957 100644
      return {
        plan: {
 diff --git a/packages/sdk/src/implementation/oauth-consent-state.ts b/packages/sdk/src/implementation/oauth-consent-state.ts
-index de7acfa..95619de 100644
+index de7acfab..95619de4 100644
 --- a/packages/sdk/src/implementation/oauth-consent-state.ts
 +++ b/packages/sdk/src/implementation/oauth-consent-state.ts
 @@ -1,4 +1,6 @@
@@ -6910,7 +6912,7 @@ index de7acfa..95619de 100644
      const primary = yield* ownedAccount(db, { account: attempt.account, owner: attempt.owner });
      const identity = yield* accountIdentity(db, primary, lifecycle);
 diff --git a/packages/sdk/src/implementation/oauth-grant-reuse.ts b/packages/sdk/src/implementation/oauth-grant-reuse.ts
-index 1a5f25c..4e8620e 100644
+index 1a5f25c2..4e8620e2 100644
 --- a/packages/sdk/src/implementation/oauth-grant-reuse.ts
 +++ b/packages/sdk/src/implementation/oauth-grant-reuse.ts
 @@ -131,21 +131,24 @@ export const makeOAuthGrantReuse =
@@ -6970,7 +6972,7 @@ index 1a5f25c..4e8620e 100644
            }
            const account = accounts[0];
 diff --git a/packages/sdk/src/implementation/oauth-protocol-native.ts b/packages/sdk/src/implementation/oauth-protocol-native.ts
-index 7a5e4ca..a4521e1 100644
+index 5333cb6c..004f3ebd 100644
 --- a/packages/sdk/src/implementation/oauth-protocol-native.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol-native.ts
 @@ -34,6 +34,7 @@ import {
@@ -6981,7 +6983,7 @@ index 7a5e4ca..a4521e1 100644
  import {
    challengeDiagnostics,
    descriptionLength,
-@@ -1345,25 +1346,37 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1393,25 +1394,37 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      });
  
    return {
@@ -7032,7 +7034,7 @@ index 7a5e4ca..a4521e1 100644
          const profile = yield* request(async (settings) => {
            const response = await settings[oauth.customFetch](endpoint.href, {
              method: "GET",
-@@ -1376,19 +1389,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1424,19 +1437,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
              throw new OAuthProtocolFailed({ reason: "invalid_response" });
            return response.json();
          });
@@ -7059,7 +7061,7 @@ index 7a5e4ca..a4521e1 100644
          };
        }).pipe(Effect.withSpan("oauth.identify")),
      discover: (method: OAuthMethod) =>
-@@ -1447,7 +1457,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+@@ -1495,7 +1505,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
            yield* allowedEndpoints(resolved.server);
            return { ...resolved, ...requestEncoding, grant: "client_credentials" as const };
          }
@@ -7071,7 +7073,7 @@ index 7a5e4ca..a4521e1 100644
            scopes: [...new Set([...resolved.scopes, ...(identityConsent?.scopes ?? [])])],
 diff --git a/packages/sdk/src/implementation/oauth-scope-evidence.ts b/packages/sdk/src/implementation/oauth-scope-evidence.ts
 new file mode 100644
-index 0000000..ba983ea
+index 00000000..ba983ea3
 --- /dev/null
 +++ b/packages/sdk/src/implementation/oauth-scope-evidence.ts
 @@ -0,0 +1,31 @@
@@ -7107,7 +7109,7 @@ index 0000000..ba983ea
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 385601f..b1cd83d 100644
+index 3d7677fd..afc02aff 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,8 @@
@@ -7127,7 +7129,7 @@ index 385601f..b1cd83d 100644
    type Crypto,
    Effect,
    Exit,
-@@ -1733,7 +1736,10 @@ export const makeOAuth = (
+@@ -1809,7 +1812,10 @@ export const makeOAuth = (
            existing,
            {
              ...chosen.firstParty,
@@ -7139,7 +7141,7 @@ index 385601f..b1cd83d 100644
            },
            resolved.redirect,
            method.response,
-@@ -2018,6 +2024,7 @@ export const makeOAuth = (
+@@ -2096,6 +2102,7 @@ export const makeOAuth = (
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
        const provider = yield* requireTargetProvider(db, connection);
@@ -7147,7 +7149,7 @@ index 385601f..b1cd83d 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -2202,6 +2209,22 @@ export const makeOAuth = (
+@@ -2280,6 +2287,22 @@ export const makeOAuth = (
        // including a refusal or changed target that rolled back the account it signed in to: the
        // claimed sign-in cannot complete again, so the request reads failed until a new one starts.
        return yield* exchangeClaimed(protocol, input, callback, id, attempt, legacySavedClient).pipe(
@@ -7170,7 +7172,7 @@ index 385601f..b1cd83d 100644
          Effect.tapError((error) =>
            Schema.is(OAuthCompletionFailed)(error) ||
            Schema.is(AccountConnectionRefused)(error) ||
-@@ -2578,6 +2601,14 @@ export const makeOAuth = (
+@@ -2665,6 +2688,14 @@ export const makeOAuth = (
                attempt,
                attemptId: id,
                grant: yield* decodedGrantOf(generation),
@@ -7185,7 +7187,7 @@ index 385601f..b1cd83d 100644
              });
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
-@@ -2724,8 +2755,12 @@ export const makeOAuth = (
+@@ -2811,8 +2842,12 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||
@@ -7201,10 +7203,10 @@ index 385601f..b1cd83d 100644
              return yield* reconnect("grant_unusable");
          }
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 4b0c4b4..afafbc5 100644
+index ff2e1c65..3849a530 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
-@@ -135,8 +135,9 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
+@@ -136,8 +136,9 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
        Effect.mapError(() => new StorageError()),
      );
      const { hosts: _hosts, site: _site, ...shared } = parsed;
@@ -7217,7 +7219,7 @@ index 4b0c4b4..afafbc5 100644
    });
  
 diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
-index 018b7f5..5d59a67 100644
+index 018b7f57..5d59a674 100644
 --- a/packages/ui/src/contracts/account-identities.ts
 +++ b/packages/ui/src/contracts/account-identities.ts
 @@ -1,5 +1,9 @@
@@ -7397,7 +7399,7 @@ index 018b7f5..5d59a67 100644
    return undefined;
  };
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 973740e..bc11018 100644
+index 973740ec..bc110184 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -13,6 +13,7 @@ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
@@ -7464,7 +7466,7 @@ index 973740e..bc11018 100644
                  />
                  {accountDetails !== undefined && (
 diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
-index 2b1bd34..cfe806d 100644
+index 2b1bd348..cfe806d0 100644
 --- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
 @@ -206,7 +206,8 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
@@ -7478,7 +7480,7 @@ index 2b1bd34..cfe806d 100644
          </fieldset>
        )}
 diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
-index f1546ac..6d4f767 100644
+index f1546acb..6d4f767f 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 @@ -1,3 +1,4 @@

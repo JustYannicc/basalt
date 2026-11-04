@@ -1,11 +1,13 @@
 {
   "identity": "basalt-framework",
   "file": "0009-basalt-framework.patch",
-  "content_sha256": "1ec0b51b9c31f67addc2f3bb6083f19bd337e90fad68f8b68fc1b1cc50ec2524",
+  "content_sha256": "094f387c9cb839715d5e9b319b8f4534b3498bd1162e8854a1d8bbd0cccd89d6",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "executor-caller-identity",
-  "requires": "npm apps release with executor#2346"
+  "requires": "npm apps release with executor#2346",
+  "rebased_from": "1ec0b51b9c31f67addc2f3bb6083f19bd337e90fad68f8b68fc1b1cc50ec2524",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

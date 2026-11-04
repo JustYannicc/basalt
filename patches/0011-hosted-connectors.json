@@ -1,9 +1,11 @@
 {
   "identity": "executor-hosted-connectors",
   "file": "0011-hosted-connectors.patch",
-  "content_sha256": "d0670382457c38692a847c9ad96449988369a090f66bb65e02bde6c3e582a4a3",
+  "content_sha256": "eeccd5e8d286011945bf3e50650270aa0af8501e0e606c94f535be3251fb91f4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "d0670382457c38692a847c9ad96449988369a090f66bb65e02bde6c3e582a4a3",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

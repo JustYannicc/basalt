@@ -1,0 +1,575 @@
+diff --git a/apps/hosted/cloud/src/implementation/auth-provisioning.ts b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
+index dfc171d..5354034 100644
+--- a/apps/hosted/cloud/src/implementation/auth-provisioning.ts
++++ b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
+@@ -1,12 +1,13 @@
+ /** Auth setup runs in a scoped Node deployment job, never in a Worker request. */
+-import { Pool } from "pg";
++import { Pool, type PoolClient, type PoolConfig } from "pg";
+ import { betterAuth } from "better-auth";
+ import { provisionHostedOAuthResources } from "@executor-js/hosted-server";
+ import { databaseUrl } from "@executor-js/hosted-server/database";
+ import { migrationFailed } from "@executor-js/hosted-server/migrations";
+-import { Config, Effect, Redacted } from "effect";
++import { Config, Duration, Effect, Redacted } from "effect";
+ import { unavailableAuthEmail } from "../contracts/email.ts";
+ import { cloudAuthOptions, cloudAuthSettings } from "./auth-options.ts";
++import { migrationLimits, migrationSessionSettings } from "./migration-guard.ts";
+ 
+ /** The caller's scope owns the setup pool; migrations and provisioning use the same options. */
+ export const cloudAuthSetup = Effect.gen(function* () {
+@@ -15,10 +16,27 @@ export const cloudAuthSetup = Effect.gen(function* () {
+   const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
+   const database = yield* Effect.acquireRelease(
+     Effect.try({
+-      try: () => new Pool({ connectionString: Redacted.value(url), max: 2 }),
++      try: () => {
++        // Better Auth's own sessions get the same limits as the migration session, set the same way.
++        // pg-pool awaits `onConnect` before lending a new session (its typings omit it). When the
++        // settings fail, the session closes and the query it was opened for fails.
++        const config: PoolConfig & {
++          readonly onConnect: (client: PoolClient) => Promise<unknown>;
++        } = {
++          connectionString: Redacted.value(url),
++          max: 2,
++          connectionTimeoutMillis: Duration.toMillis(migrationLimits.connect),
++          query_timeout: Duration.toMillis(migrationLimits.read),
++          keepAlive: true,
++          keepAliveInitialDelayMillis: 10_000,
++          onConnect: (client) => client.query(migrationSessionSettings.join("; ")),
++        };
++        return new Pool(config);
++      },
+       catch: migrationFailed("auth"),
+     }),
+-    (pool) => Effect.promise(() => pool.end()),
++    // A statement still waiting holds its session, and ending the pool waits for it.
++    (pool) => Effect.promise(() => pool.end()).pipe(Effect.timeoutOption(migrationLimits.close)),
+   );
+   // Setup serves no requests; the limit stays at its default.
+   const base = cloudAuthOptions({ ...settings, rateLimitEnabled: true }, [], unavailableAuthEmail);
+diff --git a/apps/hosted/cloud/src/implementation/migration-guard.ts b/apps/hosted/cloud/src/implementation/migration-guard.ts
+new file mode 100644
+index 0000000..4b8ac9c
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/migration-guard.ts
+@@ -0,0 +1,316 @@
++/**
++ * Limits for every wait in the cloud migration job, so a stuck run fails with the step it stopped
++ * at before the deploy command's own timeout kills it without output. The job's sessions name
++ * themselves, so a failed run can report them and whatever blocks them. It never ends another
++ * session.
++ */
++import { PgClient } from "@effect/sql-pg";
++import { HostedMigrationFailed, MigrationPhase } from "@executor-js/hosted-server/migrations";
++import {
++  Cause,
++  Console,
++  Duration,
++  Effect,
++  Exit,
++  Fiber,
++  Option,
++  Redacted,
++  Ref,
++  Schema,
++} from "effect";
++import { SqlClient } from "effect/sql";
++
++/** How the job's sessions appear in `pg_stat_activity`. */
++export const migrationApplicationName = "executor-deploy-job";
++
++/**
++ * Sent as plain `SET` statements first on every session, so the startup options stay exactly what
++ * the connection URL says. They match the limits the migration transaction already sets locally.
++ */
++export const migrationSessionSettings = [
++  "set lock_timeout = '5s'",
++  "set statement_timeout = '60s'",
++  `set application_name = '${migrationApplicationName}'`,
++] as const;
++
++export interface MigrationLimits {
++  /** Opening one connection: DNS, TCP, TLS and authentication. */
++  readonly connect: Duration.Duration;
++  /**
++   * Waiting for a reply on Better Auth's sessions; above `statement_timeout`. The migration
++   * session's client has no such option, so `attempt` bounds a dead connection there.
++   */
++  readonly read: Duration.Duration;
++  /** One whole run with its own sessions. */
++  readonly attempt: Duration.Duration;
++  /** Closing a run's sessions. */
++  readonly close: Duration.Duration;
++  /** The blocker report after a failed run. */
++  readonly report: Duration.Duration;
++  /** Pause before the one retry after a lock timeout. */
++  readonly retryAfter: Duration.Duration;
++  readonly attempts: number;
++}
++
++export const migrationLimits: MigrationLimits = {
++  connect: Duration.seconds(10),
++  read: Duration.seconds(75),
++  attempt: Duration.seconds(150),
++  close: Duration.seconds(10),
++  report: Duration.seconds(15),
++  retryAfter: Duration.seconds(2),
++  attempts: 2,
++};
++
++/** The longest the job can take; the deploy command's timeout must exceed it. */
++export const migrationWorstCase = Duration.sum(
++  Duration.times(
++    Duration.sum(
++      Duration.sum(migrationLimits.attempt, migrationLimits.close),
++      migrationLimits.report,
++    ),
++    migrationLimits.attempts,
++  ),
++  Duration.times(migrationLimits.retryAfter, migrationLimits.attempts - 1),
++);
++
++/**
++ * When `migrate.ts` exits on its own, outside the Effect runtime, if the job somehow outlives its
++ * worst case. Below the deploy command's timeout, whose error drops the job's stderr: an exit
++ * keeps it in the command's error.
++ */
++export const migrationHardLimit = Duration.sum(migrationWorstCase, Duration.seconds(20));
++
++/** A run failed or ran out of time at `phase`. The message carries no driver text or values. */
++export class CloudMigrationStopped extends Schema.TaggedError<CloudMigrationStopped>()(
++  "CloudMigrationStopped",
++  {
++    phase: Schema.String,
++    attempt: Schema.Number,
++    attempts: Schema.Number,
++    reason: Schema.String,
++  },
++) {
++  override get message() {
++    return `Cloud migration failed at "${this.phase}" (attempt ${this.attempt} of ${this.attempts}): ${this.reason}`;
++  }
++}
++
++class AttemptDeadline extends Schema.TaggedError<AttemptDeadline>()("AttemptDeadline", {}) {}
++
++/** SQLSTATE classes, so a Node error code such as `EPIPE` is not read as one. */
++const sqlState = /^(?:[0-5][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/;
++
++/** The first SQLSTATE along `cause`'s chain, including {@link HostedMigrationFailed}'s own. */
++export const sqlStateOf = (cause: unknown): string | undefined => {
++  let current: unknown = cause;
++  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
++    for (const key of ["sqlState", "code"]) {
++      const value = Reflect.get(current, key);
++      if (typeof value === "string" && sqlState.test(value)) return value;
++    }
++    current = Reflect.get(current, "cause");
++  }
++  return undefined;
++};
++
++const failureTags = (cause: unknown) => {
++  const tags: Array<string> = [];
++  let current: unknown = cause;
++  for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
++    const tag = Reflect.get(current, "_tag") ?? Reflect.get(current, "name");
++    if (typeof tag === "string") tags.push(tag);
++    current = Reflect.get(current, "cause");
++  }
++  return tags.length > 0 ? tags.join(" > ") : "unknown cause";
++};
++
++const describe = (cause: unknown) => {
++  const state = sqlStateOf(cause);
++  if (state === "55P03") return "lock timeout (55P03)";
++  if (state === "57014") return "statement timeout or cancel (57014)";
++  // Its message holds only cause tags and a SQLSTATE.
++  if (cause instanceof HostedMigrationFailed) return cause.message;
++  return `${failureTags(cause)}${state === undefined ? "" : ` (SQLSTATE ${state})`}`;
++};
++
++/**
++ * Run `attempt` with its phase recorded, within {@link migrationLimits}. A lock timeout (55P03)
++ * gets exactly one more attempt on fresh sessions: the migration transaction rolled back, and
++ * every auth and provisioning step repeats safely. Nothing else is retried. Each step is written
++ * to stderr as it starts, so even a killed job shows where it was, and each failure writes its
++ * phase and `report` there too.
++ */
++export const guardMigration = <E, R, RE>(options: {
++  readonly attempt: Effect.Effect<void, E, R>;
++  readonly report: Effect.Effect<ReadonlyArray<string>, RE>;
++  readonly limits?: Partial<MigrationLimits>;
++}) =>
++  Effect.gen(function* () {
++    const limits = { ...migrationLimits, ...options.limits };
++    const phase = yield* Ref.make("open the database sessions");
++    for (let attempt = 1; ; attempt++) {
++      const enter = (next: string) =>
++        Ref.set(phase, next).pipe(
++          Effect.andThen(Console.error(`Migration step (attempt ${attempt}): ${next}`)),
++        );
++      yield* enter("open the database sessions");
++      // Detached, so closing a stalled run's sessions, which can stall too, gets only `close`.
++      const fiber = yield* options.attempt.pipe(
++        Effect.provideService(MigrationPhase, enter),
++        Effect.exit,
++        Effect.forkDetach,
++      );
++      const stop = Fiber.interrupt(fiber).pipe(Effect.timeoutOption(limits.close));
++      const finished = yield* Fiber.join(fiber).pipe(
++        Effect.timeoutOption(limits.attempt),
++        Effect.onInterrupt(() => stop),
++      );
++      let cause: unknown;
++      if (Option.isNone(finished)) {
++        yield* stop;
++        cause = new AttemptDeadline();
++      } else if (Exit.isSuccess(finished.value)) return;
++      // A defect, such as a pool that failed to close, is reported like a failure.
++      else cause = Cause.squash(finished.value.cause);
++      const stopped = new CloudMigrationStopped({
++        phase: yield* Ref.get(phase),
++        attempt,
++        attempts: limits.attempts,
++        reason:
++          cause instanceof AttemptDeadline
++            ? `did not finish within ${Duration.format(limits.attempt)}`
++            : describe(cause),
++      });
++      yield* Console.error(stopped.message);
++      const lines = yield* options.report.pipe(
++        Effect.timeoutOrElse({
++          duration: limits.report,
++          orElse: () => Effect.succeed(["Blocker report: timed out"]),
++        }),
++        Effect.orElseSucceed(() => ["Blocker report: unavailable"]),
++      );
++      for (const line of lines) yield* Console.error(line);
++      const retry = !(cause instanceof AttemptDeadline) && sqlStateOf(cause) === "55P03";
++      if (!retry || attempt >= limits.attempts) return yield* stopped;
++      yield* Console.error(`Retrying in ${Duration.format(limits.retryAfter)} on fresh sessions`);
++      yield* Effect.sleep(limits.retryAfter);
++    }
++  });
++
++/**
++ * A statement's shape without its values: comments, string, dollar-quoted and numeric literals
++ * become `?`; parameter placeholders and identifiers stay.
++ */
++export const queryFingerprint = (text: string | null | undefined) => {
++  if (text === null || text === undefined || text.trim() === "") return "(none)";
++  const shape = text
++    .replace(/--[^\n]*/g, " ")
++    .replace(/\/\*[\s\S]*?\*\//g, " ")
++    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)?\$[\s\S]*?(?:\$\1\$|$)/g, "?")
++    .replace(/\b[eE]'(?:[^'\\]|\\[\s\S]|'')*(?:'|$)/g, "?")
++    .replace(/(?:\b[bBxXnN]|\b[uU]&)?'(?:[^']|'')*(?:'|$)/g, "?")
++    .replace(
++      /(?<![\w$])(?:0[xXoObB][0-9A-Fa-f_]+|(?:\d[\d_]*)?\.?\d[\d_]*(?:[eE][+-]?\d+)?)\b/g,
++      "?",
++    )
++    .replace(/\s+/g, " ")
++    .trim();
++  return shape.length > 160 ? `${shape.slice(0, 157)}...` : shape;
++};
++
++/** One session the report found, as the report query returns it. */
++export interface BlockerRow {
++  readonly kind: "migration" | "blocker" | "open transaction";
++  readonly pid: number;
++  readonly blocks: number | null;
++  readonly state: string | null;
++  readonly wait: string | null;
++  readonly waiting_for: string | null;
++  readonly xact_age: number | null;
++  readonly state_age: number | null;
++  readonly application: string | null;
++  readonly same_login: boolean | null;
++  readonly query: string | null;
++}
++
++const label = (value: string | null, fallback: string) => {
++  const clean = (value ?? "")
++    // Another client's application name could hold an email address, so values with `@` are dropped.
++    .replace(/[^\w .:/()-]/g, "")
++    .slice(0, 60)
++    .trim();
++  return (value ?? "").includes("@") ? "(redacted)" : clean === "" ? fallback : clean;
++};
++
++/** Report lines for `rows`: no values, addresses or login names. */
++export const formatBlockerRows = (rows: ReadonlyArray<BlockerRow>): ReadonlyArray<string> => {
++  if (rows.length === 0) return ["Blocker report: no deploy-job sessions or open transactions"];
++  return rows.map((row) => {
++    const who =
++      row.kind === "blocker"
++        ? `blocker pid ${row.pid} (blocks ${row.blocks ?? "?"})`
++        : row.kind === "migration"
++          ? `deploy-job session pid ${row.pid}`
++          : `open transaction pid ${row.pid}`;
++    const parts = [
++      label(row.state, "unknown state"),
++      row.wait === null ? "not waiting" : `waiting on ${label(row.wait, "?")}`,
++      ...(row.waiting_for === null ? [] : [`for ${label(row.waiting_for, "?")}`]),
++      ...(row.xact_age === null ? [] : [`transaction open ${row.xact_age}s`]),
++      ...(row.state_age === null ? [] : [`in this state ${row.state_age}s`]),
++      `application ${label(row.application, "(none)")}`,
++      row.same_login === true ? "same login" : "other login",
++    ];
++    return `Blocker report: ${who}: ${parts.join(", ")}: ${queryFingerprint(row.query)}`;
++  });
++};
++
++/**
++ * Read-only: the job's sessions, the sessions blocking them, and this database's five oldest
++ * other open transactions. `pg_blocking_pids` only reads lock state.
++ */
++export const blockerQuery = `
++with ours as (
++  select pid from pg_stat_activity
++  where datname = current_database() and application_name = $1 and pid <> pg_backend_pid()
++), blockers as (
++  select distinct b.pid, o.pid as blocks
++  from ours o cross join lateral unnest(pg_blocking_pids(o.pid)) as b(pid)
++), oldest as (
++  select pid from pg_stat_activity
++  where datname = current_database() and xact_start is not null
++    and pid <> pg_backend_pid() and pid not in (select pid from ours)
++    and pid not in (select pid from blockers)
++  order by xact_start limit 5
++), picked as (
++  select 'migration' as kind, pid, null::integer as blocks from ours
++  union all select 'blocker', pid, blocks from blockers
++  union all select 'open transaction', pid, null from oldest
++)
++select p.kind, p.pid, p.blocks, a.state,
++  case when a.wait_event is null then null
++    else a.wait_event_type || ':' || a.wait_event end as wait,
++  (select string_agg(l.locktype || ' ' || l.mode ||
++      coalesce(' on ' || l.relation::regclass::text, ''), '; ')
++    from pg_locks l where l.pid = p.pid and not l.granted) as waiting_for,
++  floor(extract(epoch from now() - a.xact_start))::integer as xact_age,
++  floor(extract(epoch from now() - a.state_change))::integer as state_age,
++  a.application_name as application,
++  a.usename = session_user as same_login,
++  a.query
++from picked p join pg_stat_activity a on a.pid = p.pid
++order by p.kind, a.xact_start nulls last`;
++
++/** Run the report on its own short session, with the same URL and limits. */
++export const blockerReport = (url: Redacted.Redacted) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql`set lock_timeout = '1s'`;
++    yield* sql`set statement_timeout = '5s'`;
++    const rows = yield* sql.unsafe<BlockerRow>(blockerQuery, [migrationApplicationName]);
++    return formatBlockerRows(rows);
++  }).pipe(
++    Effect.provide(PgClient.layer({ url, maxConnections: 1, connectTimeout: Duration.seconds(5) })),
++    Effect.scoped,
++  );
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index 8fa83bc..7a13959 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -5,12 +5,20 @@ import { PgClient, PgTypes } from "@effect/sql-pg";
+ import {
+   migrateHostedDatabase,
+   migrationFailed,
++  migrationPhase,
+   migrateProductSteps,
+ } from "@executor-js/hosted-server/migrations";
++import { databaseUrl } from "@executor-js/hosted-server/database";
+ import { Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudAuthSetup } from "./auth-provisioning.ts";
+ import { migrateAppDomainRecords } from "./app-domain-records.ts";
++import {
++  blockerReport,
++  guardMigration,
++  migrationLimits,
++  migrationSessionSettings,
++} from "./migration-guard.ts";
+ 
+ /** Additive cloud tables; existing organizations and memberships are never changed. */
+ export const migrateOnboarding = Effect.gen(function* () {
+@@ -180,8 +188,8 @@ export const migrateSetupAssignments = Effect.gen(function* () {
+   )`;
+ }).pipe(Effect.mapError(migrationFailed("product")));
+ 
+-/** Apply Better Auth and product migrations, then close both database pools. */
+-export const migrateCloudDatabase = Effect.scoped(
++/** One run with its own sessions: Better Auth and product migrations, then close both pools. */
++const migrateCloudDatabaseOnce = Effect.scoped(
+   Effect.gen(function* () {
+     const setup = yield* cloudAuthSetup;
+     // The pinned driver does not include regclass (OID 2205), which Effect's
+@@ -192,6 +200,7 @@ export const migrateCloudDatabase = Effect.scoped(
+       encode: (value) => PgTypes.encode(value, PgTypes.OID.oid),
+     });
+     const cloudMigrations = Effect.gen(function* () {
++      yield* migrationPhase("run the cloud product steps");
+       const registry = yield* makeRegistryStorage(yield* organizationPublishers);
+       yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
+       yield* migrateProductSteps("private_cloud_migrations", {
+@@ -204,10 +213,32 @@ export const migrateCloudDatabase = Effect.scoped(
+         "7_v1_import_orgs": migrateV1ImportOrgs,
+       });
+     });
+-    yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(
+-      Effect.provide(PgClient.layer({ url: setup.url, maxConnections: 1, types })),
++    yield* Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* migrationPhase("prepare the migration session");
++      // One statement each: this client sends even unprepared statements as a single command.
++      for (const setting of migrationSessionSettings)
++        yield* sql.unsafe(setting).pipe(Effect.mapError(migrationFailed("product")));
++      yield* migrateHostedDatabase(setup.options, cloudMigrations);
++    }).pipe(
++      Effect.provide(
++        PgClient.layer({
++          url: setup.url,
++          maxConnections: 1,
++          types,
++          connectTimeout: migrationLimits.connect,
++        }),
++      ),
+     );
++    yield* migrationPhase("provision the OAuth resources");
+     yield* setup.provision;
+-    yield* Effect.log("Hosted Postgres schemas are current");
++    yield* migrationPhase("close the database sessions");
+   }),
+ );
++
++/** Apply Better Auth and product migrations within the job's limits; see `migration-guard.ts`. */
++export const migrateCloudDatabase = Effect.gen(function* () {
++  const url = yield* databaseUrl;
++  yield* guardMigration({ attempt: migrateCloudDatabaseOnce, report: blockerReport(url) });
++  yield* Effect.log("Hosted Postgres schemas are current");
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+index 7800c6e..65dbbd1 100644
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -90,7 +90,8 @@ const preparedPreviewDatabase = (stage: TestStage) =>
+             ...(yield* roleHostsJobEnvironment),
+           },
+           memo: false,
+-          timeout: "5 minutes",
++          // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
++          timeout: "7 minutes",
+         });
+     if (!globalThis.__ALCHEMY_RUNTIME__) {
+       const fixtureOutput = yield* Config.String("TEST_STAGE_ACCOUNTS_OUTPUT").pipe(Config.option);
+@@ -229,7 +230,8 @@ const productionDatabase = Effect.gen(function* () {
+       ...(yield* roleHostsJobEnvironment),
+     },
+     memo: false,
+-    timeout: "5 minutes",
++    // Above the job's own hard limit (`migrationHardLimit`), so it exits with its phase first.
++    timeout: "7 minutes",
+   });
+   // Every database consumer waits for the migration, including an existing Worker update.
+   const migrated = Output.all(role.pooledOrigin, migrations.hash).pipe(
+diff --git a/apps/hosted/cloud/src/migrate.ts b/apps/hosted/cloud/src/migrate.ts
+index 3658c8c..19eb382 100644
+--- a/apps/hosted/cloud/src/migrate.ts
++++ b/apps/hosted/cloud/src/migrate.ts
+@@ -1,5 +1,22 @@
+ /** Explicit Node migration job for cloud Postgres; never runs inside the Worker. */
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import { Duration, Runtime } from "effect";
++import { migrationHardLimit } from "./implementation/migration-guard.ts";
+ import { migrateCloudDatabase } from "./implementation/migrations.ts";
+ 
+-NodeRuntime.runMain(migrateCloudDatabase);
++// A last stop outside the Effect runtime, so the deploy command never times out on this job.
++setTimeout(() => {
++  process.stderr.write(
++    `Cloud migration job exceeded ${Duration.format(migrationHardLimit)}; see its last step above\n`,
++  );
++  process.exit(1);
++}, Duration.toMillis(migrationHardLimit)).unref();
++
++// Exit on success too: a session the job gave up closing must not keep a finished job running.
++NodeRuntime.runMain(migrateCloudDatabase, {
++  teardown: (exit, onExit) =>
++    Runtime.defaultTeardown(exit, (code) => {
++      onExit(code);
++      process.exit(code);
++    }),
++});
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index e691b71..8eee52b 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -3,7 +3,7 @@ import type { BetterAuthOptions } from "better-auth";
+ import { getMigrations } from "better-auth/db/migration";
+ import { createDataStepJournal } from "@executor-js/app-management/data-steps";
+ import { makeExecutorStorage } from "@executor-js/sdk/core";
+-import { Effect, Schema } from "effect";
++import { Context, Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import * as Migrator from "effect/sql/Migrator";
+ import { migrateProvisioning } from "./provisioning-schema.ts";
+@@ -56,6 +56,19 @@ export const migrationFailed =
+     });
+   };
+ 
++/**
++ * Records the step a migration run is about to take, so a caller that stops a stuck run can say
++ * where it stopped. The default records nothing.
++ */
++export const MigrationPhase = Context.Reference<(phase: string) => Effect.Effect<void>>(
++  "hosted/MigrationPhase",
++  { defaultValue: () => () => Effect.void },
++);
++
++/** Marks the start of a migration step for {@link MigrationPhase}. */
++export const migrationPhase = (phase: string) =>
++  Effect.flatMap(MigrationPhase, (record) => record(phase));
++
+ /**
+  * Apply an append-only list once, with completion recorded in the same SQL
+  * transaction. The caller owns startup access or the hosted migration lock.
+@@ -127,6 +140,7 @@ export const migrateHostedDatabase = (
+         // Fail the deployment instead of waiting indefinitely behind live work.
+         yield* sql`set local lock_timeout = '5s'`;
+         yield* sql`set local statement_timeout = '60s'`;
++        yield* migrationPhase("take the migration lock");
+         yield* sql`select pg_advisory_xact_lock(641028113)`;
+         yield* migrateHostedSchemas(options, additional);
+       }),
+@@ -144,7 +158,9 @@ export const migrateHostedSchemas = (
+   Effect.gen(function* () {
+     const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+     // Check compatibility before Better Auth's independent pool can commit DDL.
++    yield* migrationPhase("check the executor storage version");
+     yield* storage.checkMigration.pipe(Effect.mapError(migrationFailed("product")));
++    yield* migrationPhase("plan the auth schema");
+     const migrations = yield* Effect.tryPromise({
+       try: () => getMigrations(options),
+       catch: migrationFailed("auth"),
+@@ -153,15 +169,19 @@ export const migrateHostedSchemas = (
+     // before applying migrations rather than discovering it on the next login.
+     if (migrations.schemaProblems.length > 0)
+       return yield* new HostedMigrationFailed({ stage: "auth" });
++    yield* migrationPhase("apply the auth schema");
+     yield* Effect.tryPromise({
+       try: () => migrations.runMigrations(),
+       catch: migrationFailed("auth"),
+     });
++    yield* migrationPhase("migrate the executor tables");
+     yield* storage.migrateTables.pipe(Effect.mapError(migrationFailed("product")));
++    yield* migrationPhase("run the hosted product steps");
+     yield* hostedProductMigrations;
+     yield* additional;
+     // Index builds block writes to their tables until the enclosing transaction commits, and
+     // runtime writers set no lock timeout. Build them last so they hold that lock only for
+     // themselves, the version update and the commit.
++    yield* migrationPhase("build the executor indexes");
+     yield* storage.migrate.pipe(Effect.mapError(migrationFailed("product")));
+   });

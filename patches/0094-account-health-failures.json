@@ -1,9 +1,11 @@
 {
   "identity": "basalt-account-health-failures",
   "file": "0094-account-health-failures.patch",
-  "content_sha256": "f5d7ba6a0332d9e6a09dce25aa09eaf1dd8221c0cf5b0dfcae4d0848ea8b5da6",
+  "content_sha256": "fd308216bd5b14336b43ff8cd6016c2207591fbc656f5e453325f531c44583a7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "f5d7ba6a0332d9e6a09dce25aa09eaf1dd8221c0cf5b0dfcae4d0848ea8b5da6",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

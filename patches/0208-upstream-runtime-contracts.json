@@ -1,0 +1,9 @@
+{
+  "identity": "executor-upstream-runtime-contracts",
+  "file": "0208-upstream-runtime-contracts.patch",
+  "content_sha256": "89fc547dbf0aaa0362d001c0b8049a9d178ff3881166a8499765c42c1b8516ec",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

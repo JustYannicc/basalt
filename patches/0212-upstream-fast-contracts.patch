@@ -1,0 +1,127 @@
+diff --git a/packages/apps/src/contracts/account-status.ts b/packages/apps/src/contracts/account-status.ts
+index 73586833..bb800ee7 100644
+--- a/packages/apps/src/contracts/account-status.ts
++++ b/packages/apps/src/contracts/account-status.ts
+@@ -4,7 +4,7 @@ import { Schema } from "effect";
+ const label = Schema.NonEmptyString.check(Schema.isMaxLength(64));
+ const resetsAt = Schema.String.check(
+   Schema.isMaxLength(35),
+-  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/),
++  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u),
+   Schema.makeFilter((value) => {
+     const instant = Date.parse(value);
+     if (!Number.isFinite(instant)) return false;
+diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+index 75b170a0..5ee69b86 100644
+--- a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+@@ -75,9 +75,9 @@ export function AddAnotherDialog<IE>({
+   // State updates land after the event; a second click in the same frame must not send twice.
+   const inFlight = useRef(false);
+   // The dialog keeps its content while it animates closed, after `target` is cleared.
+-  const last = useRef(target);
+-  if (target !== undefined) last.current = target;
+-  const shown = target ?? last.current;
++  const [last, setLast] = useState(target);
++  if (target !== undefined && target !== last) setLast(target);
++  const shown = target ?? last;
+   const entry = shown?.entry;
+   const draft: Draft<IE> | undefined =
+     entry &&
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+index 095370cc..8aa98d5e 100644
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -296,7 +296,7 @@ const guides = (
+   endpoint: string,
+   product: string,
+   server: string,
+-  executor: boolean,
++  _executor: boolean,
+ ): Record<AssistantId, AssistantGuide> => ({
+   claude: {
+     name: "Claude",
+diff --git a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
+index 4e444d47..0f6c69ad 100644
+--- a/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
++++ b/apps/hosted/cloud/src/infrastructure/maps-routes/index.ts
+@@ -3,7 +3,7 @@ import { authorizeHostedRoutesAccount } from "@executor-js/hosted-server/hosted-
+ import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-routes/contracts";
+ import { verifyHostedRoutesToken } from "@executor-js/hosted-server/hosted-routes-token";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+-import { OrganizationForbidden, OrganizationId } from "@executor-js/hosted-server/organization";
++import { OrganizationId } from "@executor-js/hosted-server/organization";
+ import { Effect, Option, Redacted, Result, Schema, Stream } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import type { SqlClient } from "effect/sql";
+@@ -27,12 +27,6 @@ interface RoutesOptions {
+   readonly fetcher?: typeof fetch;
+ }
+ 
+-interface Authorized {
+-  readonly app: string;
+-  readonly organization: string;
+-  readonly user: string;
+-}
+-
+ const tokenFrom = (request: HttpServerRequest.HttpServerRequest) => {
+   const authorization = request.headers.authorization;
+   if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return undefined;
+diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
+index cdc8a5cb..42bda5ce 100644
+--- a/e2e/tests/hosted-routes.spec.ts
++++ b/e2e/tests/hosted-routes.spec.ts
+@@ -5,7 +5,6 @@ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+ import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
+ import { withHostedHttpCase } from "../support/case.ts";
+-import { App } from "../support/contracts.ts";
+ import { cloudLocks } from "../support/cloud-locks.ts";
+ import { Emulators } from "../support/emulators.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+diff --git a/e2e/tests/google-oauth-choices.spec.ts b/e2e/tests/google-oauth-choices.spec.ts
+index e0dcef2b..7411bf48 100644
+--- a/e2e/tests/google-oauth-choices.spec.ts
++++ b/e2e/tests/google-oauth-choices.spec.ts
+@@ -68,9 +68,12 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, {
+             );
+             const connection = (account?: string) =>
+               api
+-                .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
+-                  ...(account === undefined ? {} : { account }),
+-                })
++                .request(
++                  actors.owner,
++                  "POST",
++                  connectionsPath(path, "user", "service"),
++                  account === undefined ? {} : { account },
++                )
+                 .pipe(Effect.flatMap((answer) => body(Resource, answer)));
+             return { path, id: app.id, connection };
+           });
+diff --git a/e2e/support/cloud-listener.ts b/e2e/support/cloud-listener.ts
+index 761e0cf7..0f2b0222 100644
+--- a/e2e/support/cloud-listener.ts
++++ b/e2e/support/cloud-listener.ts
+@@ -12,6 +12,8 @@ export const cloudListener = Effect.gen(function* () {
+ 
+ /** Read only the API resource's successful listener announcement, never another Worker's URL. */
+ export const cloudApiAddress = (line: string) => {
++  // Strip ANSI color sequences from the CLI listener announcement.
++  // eslint-disable-next-line no-control-regex
+   const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
+   const match =
+     /\[Api\] Started in [^\n]* → (http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)\/?(?:\s|$)/u.exec(
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index 20102119..d7c29cfb 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -20,7 +20,7 @@ import type {
+   HostedOAuthStartResult,
+ } from "@executor-js/hosted-server";
+ import { Link } from "@tanstack/react-router";
+-import { createContext, useContext, useEffect, useRef, useState } from "react";
++import { createContext, useContext, useEffect, useRef } from "react";
+ import { AtomRegistry } from "effect/reactivity";
+ import { Cause, Effect, Match, Option, Exit, Schema } from "effect";
+ import { Button } from "@executor-js/ui/components/button";

@@ -1,0 +1,232 @@
+diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+--- a/apps/hosted/cloud/src/implementation/billing.ts
++++ b/apps/hosted/cloud/src/implementation/billing.ts
+@@ -180,7 +180,11 @@
+    * can overwrite this job's value in Autumn, so each pass re-reads the live
+    * count after recording it and repeats until they agree.
+    */
+-  const syncSeats = (organization: OrganizationId, mode: "changed" | "verify") =>
++  const syncSeats = (
++    organization: OrganizationId,
++    mode: "changed" | "verify",
++    checkoutPlan?: string,
++  ) =>
+     Effect.gen(function* () {
+       let current: { readonly count: number; readonly synced: number | null } | undefined =
+         yield* members.use(seatCounts(organization));
+@@ -190,7 +194,16 @@
+         const count: number = current.count;
+         const { autumn, catalog, customerId, value } = yield* customer(organization);
+         const balance = value.balances[catalog.members];
+-        if (balance === undefined) return yield* new BillingUnavailable();
++        if (balance === undefined) {
++          // Contact-sales rejection needs no confirmed seats; purchasable plans still do.
++          if (
++            checkoutPlan === catalog.enterprise &&
++            active(value, [`${catalog.free}-pay-as-you-go`]) &&
++            !active(value, [catalog.free, catalog.team, catalog.enterprise])
++          )
++            return;
++          return yield* new BillingUnavailable();
++        }
+         if (balance.usage !== count)
+           yield* use(
+             autumn.updateBalance({ customerId, featureId: catalog.members, usage: count }),
+@@ -280,7 +293,7 @@
+         checkout: (organization, plan, returnUrl) =>
+           Effect.gen(function* () {
+             // A new plan bills the seats Autumn holds now, so confirm them with Autumn.
+-            yield* syncSeats(organization, "verify");
++            yield* syncSeats(organization, "verify", plan);
+             const current = yield* overview(organization);
+             if (
+               !current.plans.some(
+diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
+--- a/e2e/tests/cloud-sso.spec.ts
++++ b/e2e/tests/cloud-sso.spec.ts
+@@ -8,7 +8,11 @@
+ import { Target } from "../support/platform.ts";
+ import { ssoFixture } from "../support/sso.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { holdQuery } from "../support/query-transition.ts";
++import {
++  holdQuery,
++  installBrowserClock,
++  advanceToReconciliation,
++} from "../support/query-transition.ts";
+ import { Emulators } from "../support/emulators.ts";
+ import { targetHosts } from "../support/role-hosts.ts";
+ 
+@@ -43,6 +47,24 @@
+         .status,
+     ).toBe(400);
+     if (capture) {
++      yield* installBrowserClock;
++      const free = overview.plans.find((plan) => plan.name === "Free");
++      if (!free) return yield* Effect.die("Missing Free from the provisioned catalog");
++      const customer = () =>
++        emulators.billingCustomer({ organizationId: team.id, freePlanId: free.id });
++      const membersFeature = `${free.id.slice(0, -"-free".length)}-members`;
++      const members = yield* body(
++        Schema.Struct({ members: Schema.Array(Schema.Struct({ id: Schema.String })) }),
++        yield* api.request(
++          actors.owner,
++          "GET",
++          `/api/auth/organization/list-members?organizationId=${team.id}`,
++        ),
++      );
++      const invited = yield* body(
++        Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
++        yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
++      );
+       for (const selection of [
+         { name: "Free", status: "active" },
+         { name: "Team", status: "active" },
+@@ -61,10 +83,62 @@
+           yield* api.request(actors.owner, "GET", billingPath),
+         );
+         expect(current.enterprise).toBe(false);
++        if (selection.name === "Free" || selection.name === "Team") {
++          const before = yield* customer();
++          expect(before.balances[membersFeature]?.usage).toBe(members.members.length);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          const synced = yield* customer();
++          expect(synced.balances[membersFeature]?.usage).toBe(members.members.length);
++          expect(synced.subscriptions).toEqual(before.subscriptions);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect(yield* customer()).toEqual(synced);
++          const invitation = yield* api.request(
++            actors.owner,
++            "POST",
++            "/api/auth/organization/invite-member",
++            { organizationId: team.id, email: invited.user.email, role: "member" },
++          );
++          expect(invitation.status).toBe(200);
++          const { id } = yield* body(Schema.Struct({ id: Schema.String }), invitation);
++          expect(
++            (yield* api.request(actors.admin, "POST", "/api/auth/organization/accept-invitation", {
++              invitationId: id,
++            })).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect((yield* customer()).balances[membersFeature]?.usage).toBe(
++            members.members.length + 1,
++          );
++          expect(
++            (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
++              organizationId: team.id,
++              memberIdOrEmail: invited.user.email,
++            })).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++              plan: enterprise.id,
++            })).status,
++          ).toBe(400);
++          expect((yield* customer()).balances[membersFeature]?.usage).toBe(members.members.length);
++        }
+         const held = yield* holdQuery(/\/api\/organizations\/[^/]+\/billing$/, "continue");
+         yield* browser.use(`Open ${selection.name} settings before billing resolves`, (page) =>
+           page.goto(`/org/${team.slug}/organization`),
+         );
++        yield* advanceToReconciliation;
+         yield* held.requested;
+         expect(
+           yield* browser.use("SSO stays hidden while the plan is unknown", (page) =>
+@@ -92,13 +166,22 @@
+         page.getByRole("link", { name: "Contact sales", exact: true }).waitFor(),
+       );
+       yield* browser.checkpoint("Enterprise uses custom pricing and contact sales");
+-      const free = overview.plans.find((plan) => plan.name === "Free");
+-      if (!free) return yield* Effect.die("Missing Free from the provisioned catalog");
+       yield* emulators.billingSubscription({
+         organizationId: team.id,
+         planId: `${free.id}-pay-as-you-go`,
+         status: "active",
+       });
++      const payg = yield* customer();
++      expect(payg.balances[membersFeature]).toBeUndefined();
++      const teamPlan = overview.plans.find((plan) => plan.name === "Team");
++      if (!teamPlan) return yield* Effect.die("Missing Team from the provisioned catalog");
++      expect(teamPlan.purchase).toBe("checkout");
++      expect(
++        (yield* api.request(actors.owner, "POST", `${billingPath}/checkout`, {
++          plan: teamPlan.id,
++        })).status,
++      ).toBe(503);
++      expect(yield* customer()).toEqual(payg);
+       // Checkout synchronizes seats first. PAYG has no seats to synchronize and
+       // must still reach the plan policy instead of failing with billing unavailable.
+       expect(
+@@ -106,6 +189,7 @@
+           plan: enterprise.id,
+         })).status,
+       ).toBe(400);
++      expect(yield* customer()).toEqual(payg);
+     }
+     yield* emulators.billingSubscription({
+       organizationId: team.id,
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -493,13 +493,47 @@
+       ),
+     );
+   return {
++    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
++      Effect.gen(function* () {
++        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
++        if (!match?.[1])
++          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
++        return yield* request(
++          value.services.billing.baseUrl,
++          "/v1/customers.get",
++          { customer_id: `${match[1]}:organization:${input.organizationId}` },
++          value.services.billing.token,
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({
++                balances: Schema.Record(
++                  Schema.String,
++                  Schema.Struct({
++                    feature_id: Schema.String,
++                    usage: Schema.Number,
++                    remaining: Schema.Number,
++                    unlimited: Schema.Boolean,
++                  }),
++                ),
++                subscriptions: Schema.Array(
++                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
++                ),
++              }),
++            ),
++          ),
++        );
++      }),
+     billingSubscription: (input: {
+       readonly organizationId: string;
+       readonly planId: string;
+       readonly status: "active" | "trialing" | "scheduled" | "expired";
+     }) =>
+       Effect.gen(function* () {
+-        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
++        const match =
++          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
++            input.planId,
++          );
+         if (!match?.[1])
+           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
+         yield* request(

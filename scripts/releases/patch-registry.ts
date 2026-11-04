@@ -28,7 +28,10 @@ export function parsePatchManifestV3(source: string): PatchManifestV3 {
   return manifest;
 }
 
-export function assertPatchManifestMatchesFiles(manifest: PatchManifestV3, activeFiles: string[]): void {
+export function assertPatchManifestMatchesFiles(
+  manifest: PatchManifestV3,
+  activeFiles: string[],
+): void {
   const tracked = manifest.patches.map((patch) => patch.file).sort();
   const actual = [...activeFiles].sort();
   if (JSON.stringify(tracked) !== JSON.stringify(actual))
@@ -47,8 +50,8 @@ export function assertPatchManifestContentMatchesFiles(
     if (actual !== patch.content_sha256)
       mismatches.push(
         `Patch content digest does not match registry identity: ${patch.identity} (patches/${patch.file})\n` +
-        `Registered content_sha256: ${patch.content_sha256}\n` +
-        `Expected content_sha256 for current patch bytes: ${actual}`,
+          `Registered content_sha256: ${patch.content_sha256}\n` +
+          `Expected content_sha256 for current patch bytes: ${actual}`,
       );
   }
   if (mismatches.length) throw new Error(mismatches.join("\n"));
@@ -58,8 +61,14 @@ export function sha256PatchContent(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-export function assertPoolCarryManifestContent(manifest: PatchManifestV3, content: Uint8Array): void {
-  if (!manifest.pool_carries || sha256PatchContent(content) !== manifest.pool_carries.content_sha256)
+export function assertPoolCarryManifestContent(
+  manifest: PatchManifestV3,
+  content: Uint8Array,
+): void {
+  if (
+    !manifest.pool_carries ||
+    sha256PatchContent(content) !== manifest.pool_carries.content_sha256
+  )
     throw new Error("Pool source manifest digest does not match the release registry");
 }
 
@@ -77,9 +86,10 @@ export function patchOriginKey(repository: string, patch: PatchRecord): string {
 }
 
 /** Validates that an automated tools update removes whole upstream records only. */
-export function removedPatchRecords(
-  contents?: { base?: string; candidate?: string },
-): { ok: true; removed: PatchManifestRemoval[] } | { ok: false; reason: string; removed: [] } {
+export function removedPatchRecords(contents?: {
+  base?: string;
+  candidate?: string;
+}): { ok: true; removed: PatchManifestRemoval[] } | { ok: false; reason: string; removed: [] } {
   if (!contents?.base || !contents.candidate)
     return { ok: false, reason: "manifest snapshots are missing", removed: [] };
   try {
@@ -94,48 +104,85 @@ export function removedPatchRecords(
     const candidateIdentities = new Set(candidate.patches.map((patch) => patch.identity));
     if (candidate.patches.some((patch) => !sameJson(baseByIdentity.get(patch.identity), patch)))
       return { ok: false, reason: "manifest records may only be removed", removed: [] };
-    if (!isSubsequence(candidate.patches.map((patch) => patch.identity), base.patches.map((patch) => patch.identity)))
+    if (
+      !isSubsequence(
+        candidate.patches.map((patch) => patch.identity),
+        base.patches.map((patch) => patch.identity),
+      )
+    )
       return { ok: false, reason: "manifest record order cannot change", removed: [] };
 
     const removed = base.patches.filter((patch) => !candidateIdentities.has(patch.identity));
-    if (!removed.length) return { ok: false, reason: "manifest change removes no records", removed: [] };
+    if (!removed.length)
+      return { ok: false, reason: "manifest change removes no records", removed: [] };
     if (removed.some((patch) => patch.kind !== "upstream"))
-      return { ok: false, reason: "overlay retirement requires a separate reviewed update", removed: [] };
+      return {
+        ok: false,
+        reason: "overlay retirement requires a separate reviewed update",
+        removed: [],
+      };
     return {
       ok: true,
-      removed: removed.map(({ identity, file, content_sha256, kind }) => ({ identity, file, content_sha256, kind })),
+      removed: removed.map(({ identity, file, content_sha256, kind }) => ({
+        identity,
+        file,
+        content_sha256,
+        kind,
+      })),
     };
   } catch {
     return { ok: false, reason: "invalid format 3 patch manifest", removed: [] };
   }
 }
 
-export function updatedManifest(manifest: PatchManifestV3, removedIdentities: Set<string>): PatchManifestV3 {
-  return { ...manifest, patches: manifest.patches.filter((patch) => !removedIdentities.has(patch.identity)) };
+export function updatedManifest(
+  manifest: PatchManifestV3,
+  removedIdentities: Set<string>,
+): PatchManifestV3 {
+  return {
+    ...manifest,
+    patches: manifest.patches.filter((patch) => !removedIdentities.has(patch.identity)),
+  };
 }
 
 function validateManifest(value: unknown): asserts value is PatchManifest {
-  if (!isRecord(value) || typeof value.format_version !== "number" ||
-    typeof value.repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value.repository) ||
-    !Array.isArray(value.patches))
+  if (
+    !isRecord(value) ||
+    typeof value.format_version !== "number" ||
+    typeof value.repository !== "string" ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value.repository) ||
+    !Array.isArray(value.patches)
+  )
     throw new Error("Invalid scripts/releases/patches.json manifest");
   if (value.format_version === 2) {
     validateLegacyManifest(value);
     return;
   }
-  if (value.format_version !== 3 || !hasOnlyKeys(value, ["format_version", "repository", "patches"], ["pool_carries"]))
+  if (
+    value.format_version !== 3 ||
+    !hasOnlyKeys(value, ["format_version", "repository", "patches"], ["pool_carries"])
+  )
     throw new Error("Invalid scripts/releases/patches.json manifest");
-  if (value.pool_carries !== undefined && (!isRecord(value.pool_carries) ||
-    !hasExactKeys(value.pool_carries, ["manifest", "content_sha256"]) ||
-    value.pool_carries.manifest !== "containers/pool/sources.json" ||
-    typeof value.pool_carries.content_sha256 !== "string" || !SHA256.test(value.pool_carries.content_sha256)))
+  if (
+    value.pool_carries !== undefined &&
+    (!isRecord(value.pool_carries) ||
+      !hasExactKeys(value.pool_carries, ["manifest", "content_sha256"]) ||
+      value.pool_carries.manifest !== "containers/pool/sources.json" ||
+      typeof value.pool_carries.content_sha256 !== "string" ||
+      !SHA256.test(value.pool_carries.content_sha256))
+  )
     throw new Error("Invalid pool carry binding");
 
   const identities = new Set<string>();
   const files = new Set<string>();
   const digests = new Set<string>();
   for (const patch of value.patches) {
-    if (!isPatchRecord(patch) || identities.has(patch.identity) || files.has(patch.file) || digests.has(patch.content_sha256))
+    if (
+      !isPatchRecord(patch) ||
+      identities.has(patch.identity) ||
+      files.has(patch.file) ||
+      digests.has(patch.content_sha256)
+    )
       throw new Error("Invalid or duplicate format 3 patch record");
     identities.add(patch.identity);
     files.add(patch.file);
@@ -143,8 +190,13 @@ function validateManifest(value: unknown): asserts value is PatchManifest {
   }
 }
 
-function validateLegacyManifest(value: Record<string, unknown>): asserts value is LegacyPatchManifest {
-  if (!hasExactKeys(value, ["format_version", "repository", "patches"]) || !Array.isArray(value.patches))
+function validateLegacyManifest(
+  value: Record<string, unknown>,
+): asserts value is LegacyPatchManifest {
+  if (
+    !hasExactKeys(value, ["format_version", "repository", "patches"]) ||
+    !Array.isArray(value.patches)
+  )
     throw new Error("Invalid legacy patch manifest");
   const names = new Set<string>();
   for (const patch of value.patches) {
@@ -155,34 +207,101 @@ function validateLegacyManifest(value: Record<string, unknown>): asserts value i
 }
 
 function isPatchRecord(value: unknown): value is PatchRecord {
-  if (!isRecord(value) || typeof value.identity !== "string" || !IDENTITY.test(value.identity) ||
-    typeof value.file !== "string" || !PATCH_FILE.test(value.file) ||
-    typeof value.content_sha256 !== "string" || !SHA256.test(value.content_sha256) ||
-    typeof value.database_sensitive !== "boolean" || typeof value.workflow_sensitive !== "boolean") return false;
-  const common = ["identity", "file", "content_sha256", "kind", "upstream_pull_request", "database_sensitive", "workflow_sensitive"];
-  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue)) return false;
+  if (
+    !isRecord(value) ||
+    typeof value.identity !== "string" ||
+    !IDENTITY.test(value.identity) ||
+    typeof value.file !== "string" ||
+    !PATCH_FILE.test(value.file) ||
+    typeof value.content_sha256 !== "string" ||
+    !SHA256.test(value.content_sha256) ||
+    typeof value.database_sensitive !== "boolean" ||
+    typeof value.workflow_sensitive !== "boolean"
+  )
+    return false;
+  const hasRebase = value.rebased_from !== undefined || value.rebased_from_pin !== undefined;
+  if (
+    hasRebase &&
+    (typeof value.rebased_from !== "string" ||
+      !SHA256.test(value.rebased_from) ||
+      value.rebased_from === value.content_sha256 ||
+      typeof value.rebased_from_pin !== "string" ||
+      !/^[a-f0-9]{40}$/.test(value.rebased_from_pin))
+  )
+    return false;
+  const provenance = ["rebased_from", "rebased_from_pin"];
+  const common = [
+    "identity",
+    "file",
+    "content_sha256",
+    "kind",
+    "upstream_pull_request",
+    "database_sensitive",
+    "workflow_sensitive",
+  ];
+  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue))
+    return false;
   if (value.kind === "upstream")
-    return hasOnlyKeys(value, common, ["upstream_issue"]) && validPullRequest(value.upstream_pull_request);
-  if (value.kind !== "overlay" || value.upstream_pull_request !== null ||
-    !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires"])) return false;
+    return (
+      hasOnlyKeys(value, common, ["upstream_issue", ...provenance]) &&
+      validPullRequest(value.upstream_pull_request)
+    );
+  if (
+    value.kind !== "overlay" ||
+    value.upstream_pull_request !== null ||
+    !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires", ...provenance])
+  )
+    return false;
   const hasRemovalCondition = value.remove_with !== undefined || value.requires !== undefined;
-  return !hasRemovalCondition ||
-    typeof value.remove_with === "string" && value.remove_with !== value.identity && IDENTITY.test(value.remove_with) &&
-    typeof value.requires === "string" && value.requires.length > 0 && value.requires.length <= 240 && !/[\r\n\0]/.test(value.requires);
+  return (
+    !hasRemovalCondition ||
+    (typeof value.remove_with === "string" &&
+      value.remove_with !== value.identity &&
+      IDENTITY.test(value.remove_with) &&
+      typeof value.requires === "string" &&
+      value.requires.length > 0 &&
+      value.requires.length <= 240 &&
+      !/[\r\n\0]/.test(value.requires))
+  );
 }
 
 function isLegacyPatchRecord(value: unknown): value is LegacyPatchManifest["patches"][number] {
-  if (!isRecord(value) || typeof value.file !== "string" || !PATCH_FILE.test(value.file) ||
-    typeof value.database_sensitive !== "boolean" || typeof value.workflow_sensitive !== "boolean") return false;
-  const common = ["file", "kind", "upstream_pull_request", "database_sensitive", "workflow_sensitive"];
-  if (value.kind === "upstream") return hasExactKeys(value, common) && validPullRequest(value.upstream_pull_request);
-  if (value.kind !== "overlay" || value.upstream_pull_request !== null ||
-    !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires"])) return false;
-  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue)) return false;
+  if (
+    !isRecord(value) ||
+    typeof value.file !== "string" ||
+    !PATCH_FILE.test(value.file) ||
+    typeof value.database_sensitive !== "boolean" ||
+    typeof value.workflow_sensitive !== "boolean"
+  )
+    return false;
+  const common = [
+    "file",
+    "kind",
+    "upstream_pull_request",
+    "database_sensitive",
+    "workflow_sensitive",
+  ];
+  if (value.kind === "upstream")
+    return hasExactKeys(value, common) && validPullRequest(value.upstream_pull_request);
+  if (
+    value.kind !== "overlay" ||
+    value.upstream_pull_request !== null ||
+    !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires"])
+  )
+    return false;
+  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue))
+    return false;
   const hasRemovalCondition = value.remove_with !== undefined || value.requires !== undefined;
-  return !hasRemovalCondition ||
-    typeof value.remove_with === "string" && value.remove_with !== value.file && PATCH_FILE.test(value.remove_with) &&
-    typeof value.requires === "string" && value.requires.length > 0 && value.requires.length <= 240 && !/[\r\n\0]/.test(value.requires);
+  return (
+    !hasRemovalCondition ||
+    (typeof value.remove_with === "string" &&
+      value.remove_with !== value.file &&
+      PATCH_FILE.test(value.remove_with) &&
+      typeof value.requires === "string" &&
+      value.requires.length > 0 &&
+      value.requires.length <= 240 &&
+      !/[\r\n\0]/.test(value.requires))
+  );
 }
 
 function validPullRequest(value: unknown): boolean {
@@ -194,12 +313,20 @@ function validPositiveInteger(value: unknown): boolean {
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  return keys.length === Object.keys(value).length && keys.every((key) => Object.hasOwn(value, key));
+  return (
+    keys.length === Object.keys(value).length && keys.every((key) => Object.hasOwn(value, key))
+  );
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, required: string[], optional: string[]): boolean {
-  return required.every((key) => Object.hasOwn(value, key)) &&
-    Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  required: string[],
+  optional: string[],
+): boolean {
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key))
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -212,7 +339,12 @@ function sameJson(left: unknown, right: unknown): boolean {
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
-  if (isRecord(value)) return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])]),
+    );
   return value;
 }
 

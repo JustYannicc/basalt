@@ -1,9 +1,11 @@
 {
   "identity": "basalt-dashboard-lazy-page-frames",
   "file": "0172-dashboard-lazy-page-frames.patch",
-  "content_sha256": "c731b8ae3a03e866c9e1a1d6377379ffe19627f04e08db31536b86233e06cdff",
+  "content_sha256": "b27c369a46e7b5f5864e1044c1b85ee552ec4f275bce773cf5698e2e7b5e8539",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "c731b8ae3a03e866c9e1a1d6377379ffe19627f04e08db31536b86233e06cdff",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

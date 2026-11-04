@@ -1,0 +1,2522 @@
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index 7a13959..b34c9ab 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -13,6 +13,7 @@ import { Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudAuthSetup } from "./auth-provisioning.ts";
+ import { migrateAppDomainRecords } from "./app-domain-records.ts";
++import { migrateProductionOps } from "../infrastructure/production-ops/schema.ts";
+ import {
+   blockerReport,
+   guardMigration,
+@@ -211,6 +212,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+         "5_v1_import_map": migrateV1ImportMap,
+         "6_setup_assignments": migrateSetupAssignments,
+         "7_v1_import_orgs": migrateV1ImportOrgs,
++        "8_production_ops_receipts": migrateProductionOps,
+       });
+     });
+     yield* Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+new file mode 100644
+index 0000000..6b367e2
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+@@ -0,0 +1,84 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { canonical, sha256 } from "./crypto.ts";
++
++/** Full rows stay inside encrypted snapshots. This list is changed only by reviewed source. */
++export const backupTables = new Set([
++  "organization",
++  "member",
++  "user",
++  "account",
++  "executor_accounts",
++  "executor_account_identities",
++  "executor_providers",
++  "executor_oauth_grants",
++  "executor_account_acquisitions",
++  "executor_account_connections",
++  "hosted_account_access",
++  "hosted_account_groups",
++  "hosted_account_observation_access",
++  "hosted_app_account_links",
++  "hosted_app_access",
++  "hosted_app_groups",
++  "hosted_groups",
++  "hosted_group_members",
++  "executor_apps",
++  "executor_deployments",
++  "hosted_contributed_departure_jobs",
++  "hosted_contributed_departures",
++  "executor_account_observations",
++  "executor_schedules",
++  "executor_workflow_runs",
++]);
++
++export const snapshotTables = (tables: readonly string[]) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const unique = [...new Set(tables)].sort();
++    if (
++      unique.length === 0 ||
++      unique.length > 24 ||
++      unique.some((table) => !backupTables.has(table))
++    )
++      return yield* Effect.fail(new Error("Unknown backup table"));
++    const snapshot: Record<string, readonly Schema.Json[]> = {};
++    for (const table of unique) {
++      const rows = yield* sql
++        .unsafe(`select to_jsonb(entry) as row from "${table}" entry limit 10001`)
++        .pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ row: Schema.Json }))),
++          ),
++        );
++      if (rows.length > 10000) return yield* Effect.fail(new Error("Backup exceeds its row bound"));
++      snapshot[table] = rows
++        .map(({ row }) => row)
++        .sort((left, right) => canonical(left).localeCompare(canonical(right), "en"));
++      if (Buffer.byteLength(canonical(snapshot)) > 8_000_000)
++        return yield* Effect.fail(new Error("Backup exceeds its byte bound"));
++    }
++    return { tables: unique, rows: snapshot, sha256: sha256(canonical(snapshot)) };
++  });
++
++export const backupSelections: Readonly<Record<string, readonly string[]>> = {
++  accounts: [
++    "executor_accounts",
++    "executor_account_identities",
++    "executor_providers",
++    "executor_oauth_grants",
++    "hosted_account_access",
++    "hosted_account_groups",
++    "hosted_app_account_links",
++  ],
++  pools: [
++    "organization",
++    "executor_apps",
++    "executor_deployments",
++    "hosted_app_access",
++    "hosted_app_groups",
++    "hosted_app_account_links",
++  ],
++  departures: ["hosted_contributed_departure_jobs", "hosted_contributed_departures"],
++  reporters: ["executor_account_observations", "hosted_account_observation_access"],
++  workflows: ["executor_schedules", "executor_workflow_runs"],
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/body.ts b/apps/hosted/cloud/src/infrastructure/production-ops/body.ts
+new file mode 100644
+index 0000000..02905be
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/body.ts
+@@ -0,0 +1,22 @@
++import { Effect, Stream } from "effect";
++import { HttpServerRequest } from "effect/http";
++
++/** Read with a byte bound before parsing, including requests without Content-Length. */
++export const requestBody = Effect.gen(function* () {
++  const request = yield* HttpServerRequest.HttpServerRequest;
++  const chunks: Uint8Array[] = [];
++  let length = 0;
++  yield* request.stream.pipe(
++    Stream.runForEach((chunk) =>
++      Effect.gen(function* () {
++        length += chunk.byteLength;
++        if (length > 24_000_000)
++          return yield* Effect.fail(new Error("Ops request exceeds its bound"));
++        chunks.push(chunk);
++      }),
++    ),
++  );
++  return yield* Effect.try(() =>
++    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+new file mode 100644
+index 0000000..f835d1e
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -0,0 +1,52 @@
++import type { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++
++export type Json =
++  | null
++  | boolean
++  | number
++  | string
++  | readonly Json[]
++  | { readonly [key: string]: Json };
++
++export interface Change {
++  readonly table: string;
++  readonly key: Readonly<Record<string, string | null>>;
++  readonly action: "insert" | "update" | "delete";
++  readonly beforeSha256: string | null;
++  readonly afterSha256: string | null;
++}
++
++export interface MigrationPlan {
++  readonly changes: readonly Change[];
++  readonly data: Json;
++}
++
++export interface Verification {
++  readonly ok: boolean;
++  readonly checks: Readonly<Record<string, boolean>>;
++}
++
++/** The runner owns transactions, backup binding, authorization and receipts. Modules perform SQL only. */
++export interface ProductionMigration {
++  readonly name: string;
++  readonly revision: string;
++  readonly tables: readonly string[];
++  readonly inspect: (request: Json) => Effect.Effect<MigrationPlan, unknown, SqlClient.SqlClient>;
++  readonly apply: (
++    request: Json,
++    plan: MigrationPlan,
++  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
++  readonly verify: (
++    request: Json,
++    plan: MigrationPlan,
++  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient>;
++}
++
++/** Network proof collection has a separate, read-only operation before migration inspection. */
++export interface ProductionPreparation {
++  readonly name: string;
++  readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
++}
++
++export const productionOpsPath = "/api/internal/production-ops";
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+new file mode 100644
+index 0000000..3a9af56
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+@@ -0,0 +1,131 @@
++import { createHash } from "node:crypto";
++import { Schema } from "effect";
++import type { Json } from "./contracts.ts";
++
++const encoder = new TextEncoder();
++const context = "basalt-production-ops-v1";
++const Sealed = Schema.Struct({
++  version: Schema.Literal(1),
++  iv: Schema.String,
++  ciphertext: Schema.String,
++});
++const Recipient = Schema.Struct({
++  version: Schema.Literal(1),
++  recipient: Schema.String,
++  wrappedKey: Schema.String,
++  iv: Schema.String,
++  ciphertext: Schema.String,
++});
++export const ProtectedArtifact = Schema.Struct({
++  version: Schema.Literal(1),
++  sha256: Schema.String,
++  sealed: Sealed,
++  recipient: Recipient,
++});
++export type ProtectedArtifact = typeof ProtectedArtifact.Type;
++
++/** Sorted object keys make the reviewed file hash independent of transport serialization. */
++export function canonical(value: unknown): string {
++  return JSON.stringify(value, (_key, entry: unknown) => {
++    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
++    return Object.fromEntries(
++      Object.entries(entry).sort(([left], [right]) => left.localeCompare(right, "en")),
++    );
++  });
++}
++
++export const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
++const bytes = (value: string) => Uint8Array.from(Buffer.from(value, "base64"));
++const base64 = (value: ArrayBuffer | Uint8Array) =>
++  Buffer.from(value instanceof Uint8Array ? value : new Uint8Array(value)).toString("base64");
++
++async function encryptionKey(secret: string, usage: "encrypt" | "decrypt") {
++  if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error("Invalid ops encryption key");
++  const source = await crypto.subtle.importKey(
++    "raw",
++    Uint8Array.from(Buffer.from(secret, "hex")),
++    "HKDF",
++    false,
++    ["deriveKey"],
++  );
++  return crypto.subtle.deriveKey(
++    {
++      name: "HKDF",
++      hash: "SHA-256",
++      salt: encoder.encode(context),
++      info: encoder.encode("artifacts"),
++    },
++    source,
++    { name: "AES-GCM", length: 256 },
++    false,
++    [usage],
++  );
++}
++
++/** The runner copy supports later apply; the recipient copy keeps recovery independent of runtime secrets. */
++export async function protectArtifact(
++  value: unknown,
++  secret: string,
++  recipient: string,
++  target: string,
++): Promise<ProtectedArtifact> {
++  const plaintext = encoder.encode(`${canonical(value)}\n`);
++  if (plaintext.byteLength > 8_000_000) throw new Error("Ops artifact exceeds its bound");
++  const aad = encoder.encode(`${context}:${target}`);
++  const iv = crypto.getRandomValues(new Uint8Array(12));
++  const ciphertext = await crypto.subtle.encrypt(
++    { name: "AES-GCM", iv, additionalData: aad },
++    await encryptionKey(secret, "encrypt"),
++    plaintext,
++  );
++  const publicBytes = bytes(recipient);
++  const publicKey = await crypto.subtle.importKey(
++    "spki",
++    publicBytes,
++    { name: "RSA-OAEP", hash: "SHA-256" },
++    false,
++    ["encrypt"],
++  );
++  if ((publicKey.algorithm as RsaHashedKeyAlgorithm).modulusLength < 3072)
++    throw new Error("Ops recipient requires RSA 3072 or stronger");
++  const rawKey = crypto.getRandomValues(new Uint8Array(32));
++  const copyKey = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt"]);
++  const copyIv = crypto.getRandomValues(new Uint8Array(12));
++  const copy = await crypto.subtle.encrypt(
++    { name: "AES-GCM", iv: copyIv, additionalData: aad },
++    copyKey,
++    plaintext,
++  );
++  const wrappedKey = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, rawKey);
++  return {
++    version: 1,
++    sha256: sha256(new TextDecoder().decode(plaintext)),
++    sealed: { version: 1, iv: base64(iv), ciphertext: base64(ciphertext) },
++    recipient: {
++      version: 1,
++      recipient: sha256(base64(publicBytes)),
++      wrappedKey: base64(wrappedKey),
++      iv: base64(copyIv),
++      ciphertext: base64(copy),
++    },
++  };
++}
++
++export async function openArtifact(
++  artifact: ProtectedArtifact,
++  secret: string,
++  target: string,
++): Promise<Json> {
++  const plaintext = await crypto.subtle.decrypt(
++    {
++      name: "AES-GCM",
++      iv: bytes(artifact.sealed.iv),
++      additionalData: encoder.encode(`${context}:${target}`),
++    },
++    await encryptionKey(secret, "decrypt"),
++    bytes(artifact.sealed.ciphertext),
++  );
++  const text = new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
++  if (sha256(text) !== artifact.sha256) throw new Error("Ops artifact hash mismatch");
++  return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(text));
++}
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+new file mode 100644
+index 0000000..ef893bf
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+@@ -0,0 +1,45 @@
++import * as Cloudflare from "alchemy/Cloudflare";
++import { Effect, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { McpServer } from "../mcp-server-worker.ts";
++import { requestBody } from "./body.ts";
++export { productionOpsPath } from "./contracts.ts";
++
++const Binding = Schema.declare(
++  (value): value is { readonly fetch: (request: Request) => Promise<Response> } =>
++    typeof value === "object" &&
++    value !== null &&
++    "fetch" in value &&
++    typeof value.fetch === "function",
++);
++
++/** Large operator modules stay in the private Worker already holding the SQL and OAuth services. */
++export const cloudProductionOpsForward = Effect.gen(function* () {
++  yield* Cloudflare.Workers.bindWorker(McpServer);
++  return Effect.gen(function* () {
++    const body = yield* requestBody.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const environment = yield* Cloudflare.WorkerEnvironment;
++    const worker = yield* Schema.decodeUnknownEffect(Binding)(environment[McpServer.LogicalId]);
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const response = yield* Effect.tryPromise(() =>
++      worker.fetch(
++        new Request(request.originalUrl, {
++          method: "POST",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify(body),
++        }),
++      ),
++    );
++    return HttpServerResponse.fromWeb(response);
++  }).pipe(
++    Effect.catchCause(() =>
++      HttpServerResponse.json(
++        { error: "operation_refused" },
++        { status: 409, headers: { "cache-control": "no-store" } },
++      ),
++    ),
++    Effect.withTracerEnabled(false),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+new file mode 100644
+index 0000000..ad32d87
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -0,0 +1,84 @@
++import { openEnvelope } from "@executor-js/hosted-server/pool-token";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudDatabaseConnection, cloudDirectDatabaseConnection } from "../database.ts";
++import { cloudHosts } from "../stage.ts";
++import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
++import { Operation, runProductionOperation } from "./runner.ts";
++import { cloudProductionPreparations } from "./preparations.ts";
++import { requestBody } from "./body.ts";
++import { canonical, sha256 } from "./crypto.ts";
++export { productionOpsPath } from "./contracts.ts";
++
++const SignedRequest = Schema.Struct({
++  version: Schema.Literal(1),
++  id: Schema.NonEmptyString,
++  target: Schema.NonEmptyString,
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++  operation: Operation,
++});
++
++/** No browser session or user-controlled SQL participates in the operator's signed request. */
++export const cloudProductionOps = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const encryptionKey = yield* cloudEncryptionKey.pipe(Effect.orDie);
++  const hosts = yield* cloudHosts.pipe(Effect.orDie);
++  const preparations = yield* cloudProductionPreparations;
++  const runtimeConnection = yield* cloudDatabaseConnection;
++  const directConnection = yield* cloudDirectDatabaseConnection;
++  return Effect.gen(function* () {
++    if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++    const body = yield* requestBody.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const raw = yield* Effect.tryPromise(() =>
++      openEnvelope(Redacted.value(key.value), "sbops1", body.envelope),
++    );
++    const signed = yield* Schema.decodeUnknownEffect(SignedRequest)(raw).pipe(Effect.option);
++    const now = yield* Clock.currentTimeMillis;
++    if (
++      Option.isNone(signed) ||
++      signed.value.target !== hosts.browser ||
++      signed.value.at > now + 5000 ||
++      signed.value.expiresAt <= now ||
++      signed.value.expiresAt > signed.value.at + 60_000 ||
++      signed.value.id.length > 128
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const secret = yield* encryptionKey;
++    // Include the direct origin because a Hyperdrive proxy address can survive an origin change.
++    // Credentials stay inside this digest; rotating either binding invalidates an old plan.
++    const databaseTargetSha256 = sha256(
++      canonical({
++        context: "basalt-production-database-v1",
++        runtime: Redacted.value(yield* runtimeConnection.connectionString),
++        direct: Redacted.value(yield* directConnection.connectionString),
++      }),
++    );
++    const result = yield* runProductionOperation(
++      {
++        target: hosts.browser,
++        release: productionOpsRelease,
++        databaseTargetSha256,
++        encryptionKey: Redacted.value(secret),
++        preparations,
++      },
++      signed.value.operation,
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.timeout("25 seconds"));
++    return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
++  }).pipe(
++    // SQL errors can quote credentials from a rejected row. Only a fixed refusal crosses HTTP or telemetry.
++    Effect.catchCause(() =>
++      HttpServerResponse.json(
++        { error: "operation_refused" },
++        { status: 409, headers: { "cache-control": "no-store" } },
++      ),
++    ),
++    Effect.withTracerEnabled(false),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+new file mode 100644
+index 0000000..2c95e7f
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -0,0 +1,70 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** These projections are the complete SQL interface; workflow inputs never supply SQL. */
++export const inventoryQueries = {
++  receipts: `select plan_sha256, migration, revision, release, backup_sha256,
++    verification, applied_at::text from private_production_ops_receipts
++    where organization_id = $1 order by applied_at desc, plan_sha256 limit 2001`,
++  organizations: `select o.id as organization, o.name as organization_name, m.id as member,
++    m."userId" as user_id, m.role, u.email,
++    coalesce((select jsonb_agg(distinct a."providerId") from account a where a."userId" = u.id), '[]'::jsonb) as linked_sign_in_methods,
++    coalesce(u."emailVerified", false) as email_verified
++    from organization o left join member m on m."organizationId" = o.id
++    left join "user" u on u.id = m."userId"
++    where o.id = $1 order by o.id, m.id limit 2001`,
++  accounts: `select a.id, a.owner, a.provider, a.method, a.label, a.credential_generation,
++    p.organization_id, p.creator_id, p.personal_user_id, p.kind, p.audience, p.revision
++    from executor_accounts a left join hosted_account_access p on p.account_id = a.id and p.organization_id = $1
++    where a.owner = 'organization:' || $1 order by a.id limit 2001`,
++  pools: `select o.id as organization, entry.key as owner, entry.value ->> 'app' as app,
++    entry.value ->> 'version' as version, entry.value ->> 'authorization' as authorization,
++    entry.value ->> 'membership' as membership
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++    where o.id = $1 order by o.id, entry.key limit 2001`,
++  "app-links": `select l.app, l.requirement, l.subject, l.account, l.linked_by, l.created_at::text,
++    a.owner, a.active_deployment from hosted_app_account_links l join executor_apps a on a.id = l.app
++    join executor_accounts account on account.id = l.account
++    where a.owner = 'organization:' || $1 and account.owner = a.owner
++    order by l.app, l.requirement, l.account, l.subject nulls first limit 2001`,
++  "retired-tokens": `select a.id, a.owner, a.provider, a.method,
++    p.organization_id, p.creator_id, p.kind, p.revision
++    from executor_accounts a
++    join hosted_account_access p on p.account_id = a.id and p.organization_id = $1 and p.kind = 'personal'
++    join organization team on team.id = $1
++    join executor_apps app on app.owner = a.owner
++      and app.id = coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) -> p.personal_user_id ->> 'app'
++    where a.owner = 'organization:' || $1 and a.method = 'token'
++      and exists (select 1 from executor_deployments d where d.code = app.code
++        and d.requirements::jsonb -> 'accounts' -> 'pool' ->> 'provider' = a.provider)
++    order by a.id limit 2001`,
++  departures: `select id, organization_id, user_id, status, attempts,
++    available_at::text, updated_at::text from hosted_contributed_departure_jobs
++    where organization_id = $1 order by id limit 2001`,
++  workflows: `select id, app, owner, actor, name, status, "created_at"::text
++    from executor_workflow_runs entry where entry.owner = 'organization:' || $1
++    and exists (select 1 from executor_apps a where a.id = entry.app and a.owner = 'organization:' || $1)
++    order by id limit 2001`,
++  schedules: `select id, app, owner, actor, name, enabled, revision, next_at::text,
++    active_run from executor_schedules entry where entry.owner = 'organization:' || $1
++    and exists (select 1 from executor_apps a where a.id = entry.app and a.owner = 'organization:' || $1)
++    order by id limit 2001`,
++  reporters: `select id, account, owner, source, generation, checked_at::text,
++    next_allowed_at::text, lease_until::text from executor_account_observations entry
++    where entry.owner = 'organization:' || $1
++    and exists (select 1 from executor_accounts a where a.id = entry.account and a.owner = 'organization:' || $1)
++    order by id limit 2001`,
++} as const;
++
++export const inventory = (selection: string, organization: string) =>
++  Effect.gen(function* () {
++    if (!Object.hasOwn(inventoryQueries, selection))
++      return yield* Effect.fail(new Error("Unknown inventory"));
++    const sql = yield* SqlClient.SqlClient;
++    const query = inventoryQueries[selection as keyof typeof inventoryQueries];
++    const rows = yield* sql
++      .unsafe(query, [organization])
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Json))));
++    if (rows.length > 2000) return yield* Effect.fail(new Error("Inventory exceeds its bound"));
++    return { selection, organization, rows };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+new file mode 100644
+index 0000000..b63d256
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -0,0 +1,4 @@
++import type { ProductionMigration } from "./contracts.ts";
++
++/** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
++export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+new file mode 100644
+index 0000000..61c6758
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -0,0 +1,7 @@
++import { Effect } from "effect";
++import type { ProductionPreparation } from "./contracts.ts";
++
++/** Each registration binds its runtime dependencies before exposing the SQL-only operation. */
++export const cloudProductionPreparations = Effect.succeed<
++  Readonly<Record<string, ProductionPreparation>>
++>({});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+new file mode 100644
+index 0000000..b518371
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -0,0 +1,320 @@
++import { Clock, Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type {
++  Json,
++  MigrationPlan,
++  ProductionMigration,
++  ProductionPreparation,
++} from "./contracts.ts";
++import { canonical, openArtifact, protectArtifact, ProtectedArtifact, sha256 } from "./crypto.ts";
++import { backupSelections, backupTables, snapshotTables } from "./backup.ts";
++import { inventory } from "./inventory.ts";
++import { productionMigrations } from "./migrations.ts";
++import { checkPlanScope, OrganizationRequest, requireOrganization } from "./scope.ts";
++
++export const Operation = Schema.Struct({
++  action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
++  selection: Schema.NonEmptyString,
++  request: OrganizationRequest,
++  recipient: Schema.NonEmptyString,
++  artifact: Schema.optionalKey(ProtectedArtifact),
++  planSha256: Schema.optionalKey(Schema.String),
++  backupSha256: Schema.optionalKey(Schema.String),
++  go: Schema.optionalKey(Schema.String),
++});
++export type Operation = typeof Operation.Type;
++
++const Plan = Schema.Struct({
++  format: Schema.Literal("basalt-production-plan-v1"),
++  target: Schema.String,
++  database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++  release: Schema.String,
++  migration: Schema.String,
++  revision: Schema.String,
++  preparedAt: Schema.Number,
++  request: OrganizationRequest,
++  plan: Schema.Struct({
++    changes: Schema.Array(
++      Schema.Struct({
++        table: Schema.String,
++        key: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
++        action: Schema.Literals(["insert", "update", "delete"]),
++        beforeSha256: Schema.NullOr(Schema.String),
++        afterSha256: Schema.NullOr(Schema.String),
++      }),
++    ),
++    data: Schema.Json,
++  }),
++  backupSha256: Schema.String,
++});
++
++export interface OpsSettings {
++  readonly target: string;
++  readonly release: string;
++  readonly databaseTargetSha256: string;
++  readonly encryptionKey: string;
++  readonly preparations: Readonly<Record<string, ProductionPreparation>>;
++}
++
++const fail = (reason: string) => Effect.fail(new Error(reason));
++const checksum = /^[a-f0-9]{64}$/;
++
++function validPlan(module: ProductionMigration, plan: MigrationPlan): boolean {
++  if (plan.changes.length > 2000 || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(module.revision))
++    return false;
++  const seen = new Set<string>();
++  return (
++    module.tables.length > 0 &&
++    module.tables.every((table) => backupTables.has(table)) &&
++    plan.changes.every((change) => {
++      const id = canonical([change.table, change.key]);
++      const unique = !seen.has(id);
++      seen.add(id);
++      const before = change.beforeSha256;
++      const after = change.afterSha256;
++      return (
++        unique &&
++        module.tables.includes(change.table) &&
++        Object.keys(change.key).length > 0 &&
++        Object.values(change.key).every(
++          (value) => value === null || (value.length > 0 && value.length <= 512),
++        ) &&
++        (change.action === "insert"
++          ? before === null && after !== null && checksum.test(after)
++          : change.action === "delete"
++            ? before !== null && checksum.test(before) && after === null
++            : before !== null && after !== null && checksum.test(before) && checksum.test(after))
++      );
++    })
++  );
++}
++
++const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        return yield* work;
++      }),
++    );
++  });
++
++const databaseName = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const rows = yield* sql`select current_database() as name`.pipe(
++    Effect.flatMap(
++      Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ name: Schema.String }))),
++    ),
++  );
++  return rows[0]?.name ?? (yield* fail("Database identity unavailable"));
++});
++
++const databaseIdentity = (targetSha256: string) =>
++  databaseName.pipe(Effect.map((name) => ({ name, targetSha256 })));
++
++const inspect = (module: ProductionMigration, request: Json) =>
++  module
++    .inspect(request)
++    .pipe(
++      Effect.flatMap((plan) =>
++        validPlan(module, plan) ? Effect.succeed(plan) : fail("Invalid migration plan"),
++      ),
++    );
++
++/** Only the registered modules can reach writes. Inventory, backup and plan inspection stay SQL read-only. */
++export const runProductionOperation = (settings: OpsSettings, operation: Operation) =>
++  Effect.gen(function* () {
++    const now = yield* Clock.currentTimeMillis;
++    const organization = operation.request.organization;
++    yield* requireOrganization(organization);
++    const protect = (value: unknown) =>
++      Effect.tryPromise(() =>
++        protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
++      );
++    if (operation.action === "inventory") {
++      const result = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
++          return { ...(yield* inventory(operation.selection, organization)), database };
++        }),
++      );
++      return {
++        action: "inventory",
++        rows: result.rows.length,
++        artifact: yield* protect({
++          format: "basalt-production-inventory-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          ...result,
++        }),
++      };
++    }
++    const module = Object.hasOwn(productionMigrations, operation.selection)
++      ? productionMigrations[operation.selection]
++      : undefined;
++    if (operation.action === "backup") {
++      const tables = module?.tables ?? backupSelections[operation.selection];
++      if (tables === undefined) return yield* fail("Unknown backup selection");
++      const snapshot = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
++          return { ...(yield* snapshotTables(tables)), database };
++        }),
++      );
++      return {
++        action: "backup",
++        tables: snapshot.tables,
++        artifact: yield* protect({
++          format: "basalt-production-backup-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          organization,
++          ...snapshot,
++        }),
++      };
++    }
++    if (operation.action === "prepare") {
++      const preparation = Object.hasOwn(settings.preparations, operation.selection)
++        ? settings.preparations[operation.selection]
++        : undefined;
++      if (preparation === undefined || preparation.name !== operation.selection)
++        return yield* fail("Unknown preparation selection");
++      const result = yield* preparation.run(operation.request);
++      return {
++        action: "prepare",
++        artifact: yield* protect({
++          format: "basalt-production-preparation-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          selection: preparation.name,
++          request: operation.request,
++          result,
++        }),
++      };
++    }
++    if (module === undefined || module.name !== operation.selection)
++      return yield* fail("Unknown migration");
++    if (operation.action === "dry-run") {
++      const result = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
++          const plan = yield* inspect(module, operation.request);
++          yield* checkPlanScope(plan, organization, "before");
++          const snapshot = yield* snapshotTables(module.tables);
++          return { database, plan, snapshot };
++        }),
++      );
++      const backup = yield* protect({
++        format: "basalt-production-backup-v1",
++        target: settings.target,
++        release: settings.release,
++        migration: module.name,
++        revision: module.revision,
++        observedAt: now,
++        ...result.snapshot,
++      });
++      const backupSha256 = sha256(`${canonical(backup)}\n`);
++      const plan = {
++        format: "basalt-production-plan-v1",
++        target: settings.target,
++        database: result.database,
++        release: settings.release,
++        migration: module.name,
++        revision: module.revision,
++        preparedAt: now,
++        request: operation.request,
++        plan: result.plan,
++        backupSha256,
++      };
++      return {
++        action: "dry-run",
++        changes: result.plan.changes.length,
++        backupSha256,
++        artifact: yield* protect(plan),
++        backup,
++      };
++    }
++    if (
++      operation.artifact === undefined ||
++      operation.planSha256 === undefined ||
++      operation.artifact.sha256 !== operation.planSha256 ||
++      operation.go !== `GO ${operation.planSha256}`
++    )
++      return yield* fail("Apply requires the reviewed plan hash and exact GO");
++    const raw = yield* Effect.tryPromise(() =>
++      openArtifact(operation.artifact!, settings.encryptionKey, settings.target),
++    );
++    const saved = yield* Schema.decodeUnknownEffect(Plan)(raw);
++    if (
++      saved.target !== settings.target ||
++      saved.release !== settings.release ||
++      saved.migration !== module.name ||
++      saved.revision !== module.revision ||
++      saved.backupSha256 !== operation.backupSha256 ||
++      canonical(saved.request) !== canonical(operation.request) ||
++      !validPlan(module, saved.plan) ||
++      now - saved.preparedAt > 3_600_000 ||
++      saved.preparedAt > now
++    )
++      return yield* fail("The reviewed plan no longer matches this operation");
++    const sql = yield* SqlClient.SqlClient;
++    const hash = operation.planSha256;
++    const receipt = yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level serializable`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        if (
++          (yield* databaseName) !== saved.database.name ||
++          settings.databaseTargetSha256 !== saved.database.targetSha256
++        )
++          return yield* fail("Database identity changed");
++        const prior =
++          yield* sql`select organization_id, migration, revision, release, backup_sha256 from private_production_ops_receipts
++      where plan_sha256 = ${hash} for update`;
++        if (prior.length > 0) {
++          const row = prior[0];
++          if (
++            row?.organization_id !== organization ||
++            row?.migration !== saved.migration ||
++            row?.revision !== saved.revision ||
++            row?.release !== saved.release ||
++            row?.backup_sha256 !== saved.backupSha256
++          )
++            return yield* fail("Receipt identity differs");
++          return { repeated: true };
++        }
++        yield* checkPlanScope(saved.plan, organization, "before", true);
++        const current = yield* inspect(module, saved.request);
++        if (canonical(current) !== canonical(saved.plan))
++          return yield* fail("Migration inputs changed after review");
++        yield* sql`insert into private_production_ops_receipts
++      (plan_sha256, organization_id, migration, revision, release, backup_sha256, verification)
++      values (${hash}, ${organization}, ${module.name}, ${module.revision}, ${settings.release}, ${saved.backupSha256}, '{}'::jsonb)`;
++        yield* module.apply(saved.request, saved.plan);
++        yield* checkPlanScope(saved.plan, organization, "after");
++        const verification = yield* module.verify(saved.request, saved.plan);
++        if (!verification.ok || Object.values(verification.checks).some((value) => !value))
++          return yield* fail("Migration verification failed");
++        yield* sql`update private_production_ops_receipts set verification = ${JSON.stringify(verification)}::jsonb
++      where plan_sha256 = ${hash}`;
++        return { repeated: false };
++      }),
++    );
++    const verification = yield* readOnly(
++      checkPlanScope(saved.plan, organization, "after").pipe(
++        Effect.andThen(module.verify(saved.request, saved.plan)),
++      ),
++    );
++    if (!verification.ok || Object.values(verification.checks).some((value) => !value))
++      return yield* fail("Committed migration needs operator investigation");
++    return { action: "apply", planSha256: hash, ...receipt, verification };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+new file mode 100644
+index 0000000..1095121
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+@@ -0,0 +1,19 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** An additive receipt makes an interrupted apply observable without replaying its writes. */
++export const migrateProductionOps = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists private_production_ops_receipts (
++    plan_sha256 text primary key,
++    organization_id text not null,
++    migration text not null,
++    revision text not null,
++    release text not null,
++    backup_sha256 text not null,
++    verification jsonb not null,
++    applied_at timestamptz not null default now()
++  )`;
++  yield* sql`create index if not exists private_production_ops_receipts_organization
++    on private_production_ops_receipts (organization_id, applied_at desc)`;
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..488484426b7a0c8b21a6b1ac71576ee84a7edc92
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -0,0 +1,162 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Change, MigrationPlan } from "./contracts.ts";
++
++export const OrganizationRequest = Schema.StructWithRest(
++  Schema.Struct({ organization: Schema.NonEmptyString.check(Schema.isMaxLength(256)) }),
++  [Schema.Record(Schema.String, Schema.Json)],
++);
++
++const owner = "entry.owner = 'organization:' || $1";
++const organization = "entry.organization_id = $1";
++const owned = (table: string, key: string) =>
++  `exists (select 1 from ${table} related where related.id = entry.${key} and related.owner = 'organization:' || $1)`;
++const optional = (key: string, predicate: string) => `(entry.${key} is null or ${predicate})`;
++const account = (key: string) => owned("executor_accounts", key);
++const app = (key: string) => owned("executor_apps", key);
++const member = (key: string) =>
++  `exists (select 1 from member m where m."userId" = entry.${key} and m."organizationId" = $1)`;
++const grant = (id: string) => `exists (select 1 from executor_oauth_grants g where g.id = ${id}
++  and (g.owner = 'organization:' || $1 or (g.owner is null
++    and exists (select 1 from executor_accounts a where coalesce(a.oauth_grant_id, a.id) = g.id and a.owner = 'organization:' || $1)
++    and not exists (select 1 from executor_accounts a where coalesce(a.oauth_grant_id, a.id) = g.id and a.owner <> 'organization:' || $1))))`;
++// OAuth falls back to the account ID; other auth methods can have no grant at all.
++const accountGrant = `(${grant("coalesce(entry.oauth_grant_id, entry.id)")}
++  or (entry.oauth_grant_id is null and not exists
++    (select 1 from executor_oauth_grants g where g.id = entry.id)))`;
++
++interface RowScope {
++  readonly keys: readonly string[];
++  readonly predicate: string;
++}
++const id = (predicate: string): RowScope => ({ keys: ["id"], predicate });
++
++/** Identities come from the table schema, never from mutable ownership filters supplied by a module. */
++const scopes: Readonly<Record<string, RowScope>> = {
++  organization: id("entry.id = $1"),
++  member: id('entry."organizationId" = $1'),
++  executor_accounts: id(
++    `${owner} and ${optional("identity_id", owned("executor_account_identities", "identity_id"))} and ${accountGrant}`,
++  ),
++  executor_account_identities: id(owner),
++  executor_oauth_grants: id(grant("entry.id")),
++  executor_account_acquisitions: {
++    keys: ["account"],
++    predicate: `${owner} and ${account("account")}`,
++  },
++  executor_account_connections: id(
++    `${owner} and ${optional("source_account", account("source_account"))} and ${optional("reconnect_account", account("reconnect_account"))}`,
++  ),
++  hosted_account_access: {
++    keys: ["account_id"],
++    predicate: `${organization} and ${account("account_id")}`,
++  },
++  hosted_account_groups: {
++    keys: ["account_id", "group_id"],
++    predicate: `${organization} and ${account("account_id")}`,
++  },
++  hosted_account_observation_access: {
++    keys: ["account_id"],
++    predicate: `${organization} and ${account("account_id")}`,
++  },
++  hosted_app_account_links: {
++    keys: ["app", "requirement", "account", "subject"],
++    predicate: `${app("app")} and ${account("account")} and ${optional("subject", member("subject"))}`,
++  },
++  hosted_app_access: id(`${organization} and ${app("id")}`),
++  hosted_app_groups: {
++    keys: ["app_id", "group_id"],
++    predicate: `${organization} and ${app("app_id")}`,
++  },
++  hosted_groups: id(organization),
++  hosted_group_members: {
++    keys: ["group_id", "member_id"],
++    predicate: `exists (select 1 from hosted_groups g join member m on m.id = entry.member_id where g.id = entry.group_id and g.organization_id = $1 and m."organizationId" = $1)`,
++  },
++  executor_apps: id(
++    `${owner} and ${optional("active_deployment", owned("executor_deployments", "active_deployment"))}`,
++  ),
++  executor_deployments: id(owner),
++  hosted_contributed_departure_jobs: id(organization),
++  hosted_contributed_departures: {
++    keys: ["job", "app", "requirement", "account"],
++    predicate: `exists (select 1 from hosted_contributed_departure_jobs j where j.id = entry.job and j.organization_id = $1) and ${app("app")} and ${account("account")}`,
++  },
++  executor_account_observations: id(`${owner} and ${account("account")}`),
++  executor_schedules: id(
++    `${owner} and ${app("app")} and ${optional("active_run", owned("executor_workflow_runs", "active_run"))}`,
++  ),
++  executor_workflow_runs: id(
++    `${owner} and ${app("app")} and ${owned("executor_deployments", "deployment")}`,
++  ),
++};
++
++export const requireOrganization = (organization: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select id from organization where id = ${organization}`;
++    if (rows.length !== 1) return yield* Effect.fail(new Error("Organization unavailable"));
++  });
++
++/** Lock declared existing rows before apply; inspect the same stable identities after writes and on replay. */
++export const checkPlanScope = (
++  plan: MigrationPlan,
++  organization: string,
++  phase: "before" | "after",
++  lock = false,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const tables = new Map<string, Change[]>();
++    for (const change of plan.changes) {
++      const scope = Object.hasOwn(scopes, change.table) ? scopes[change.table] : undefined;
++      if (scope === undefined)
++        return yield* Effect.fail(new Error("Migration table has no organization scope"));
++      if (
++        Object.keys(change.key).sort().join("\0") !== [...scope.keys].sort().join("\0") ||
++        scope.keys.some(
++          (key) =>
++            change.key[key] === null &&
++            !(change.table === "hosted_app_account_links" && key === "subject"),
++        )
++      )
++        return yield* Effect.fail(new Error("Invalid migration row identity"));
++      const group = tables.get(change.table) ?? [];
++      group.push(change);
++      tables.set(change.table, group);
++    }
++    for (const [table, changes] of tables) {
++      const scope = scopes[table]!;
++      const rows = yield* sql
++        .unsafe(
++          `select expected.value ->> 'index' as index, actual.scoped
++        from jsonb_array_elements($2::jsonb) expected
++        left join lateral (
++          select coalesce((${scope.predicate}), false) as scoped from "${table}" entry
++          where ${scope.keys.map((key) => `entry."${key}" is not distinct from (expected.value -> 'key' ->> '${key}')`).join(" and ")}
++          limit 2 ${lock ? "for update of entry" : ""}
++        ) actual on true`,
++          [
++            organization,
++            JSON.stringify(changes.map((change, index) => ({ index, key: change.key }))),
++          ],
++        )
++        .pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Array(
++                Schema.Struct({ index: Schema.String, scoped: Schema.NullOr(Schema.Boolean) }),
++              ),
++            ),
++          ),
++        );
++      for (const [index, change] of changes.entries()) {
++        const matches = rows.filter((row) => row.index === String(index) && row.scoped !== null);
++        const absent = phase === "before" ? change.action === "insert" : change.action === "delete";
++        if (absent ? matches.length !== 0 : matches.length !== 1 || matches[0]?.scoped !== true)
++          return yield* Effect.fail(
++            new Error("Migration row is outside the selected organization"),
++          );
++      }
++    }
++  });
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index ce5e4aa..a2a1cf4 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -26,6 +26,10 @@ import {
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
+ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
++import {
++  cloudProductionOpsForward,
++  productionOpsPath,
++} from "./infrastructure/production-ops/forward.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -612,7 +616,11 @@ export default Api.make(
+       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+     );
++    const productionOps = yield* cloudProductionOpsForward;
+     const routes = Layer.mergeAll(
++      HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index c2df1f7..033dee5 100644
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -24,6 +24,8 @@ import {
+ } from "./infrastructure/telemetry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { cloudSite } from "./infrastructure/site.ts";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** The executor and MCP identity are built once per isolate and shared by its objects. */
+@@ -78,7 +80,20 @@ export default McpServer.make(
+     };
+   }),
+   Effect.gen(function* () {
+-    return yield* makeWorkflowDisplayRpc(yield* cloudServingProduct(yield* appDataSupervisors));
++    const services = yield* cloudServingProduct(yield* appDataSupervisors);
++    const operations = yield* cloudProductionOps;
++    return {
++      ...(yield* makeWorkflowDisplayRpc(services)),
++      fetch: Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        if (
++          request.method !== "POST" ||
++          new URL(request.originalUrl).pathname !== productionOpsPath
++        )
++          return HttpServerResponse.empty({ status: 404 });
++        return yield* operations.pipe(Effect.provide(services));
++      }),
++    };
+   }).pipe(
+     Effect.provide(
+       Layer.mergeAll(McpSession.make(mcpSession), cloudTelemetry).pipe(
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 2f38a5e..54483ae 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -285,6 +285,31 @@ const notRunInCi: Partial<
+     { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
+   >
+ > = {
++  cloudProductionOps: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
++  },
++  cloudProductionOpsBinding: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
++  },
++  cloudProductionOpsScope: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
++  },
++  cloudProductionOpsStableKeys: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
++  },
++  cloudProductionOpsReferences: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
++  },
+   cloudPoolSetupAtomic: {
+     targets: ["cloud"],
+     reason:
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 2262db4..eb0372e 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -2,11 +2,13 @@ import {
+   Clock,
+   Deferred,
+   Effect,
++  Exit,
+   FileSystem,
+   Path,
+   Redacted,
+   Schedule,
+   Schema,
++  Scope,
+   Stream,
+ } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+@@ -26,6 +28,7 @@ import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
+ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
++import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
+ import {
+   OperatorOAuthFixture,
+   operatorOAuthFile,
+@@ -270,6 +273,9 @@ export const startCloudEnvironment = (input: {
+         : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+       MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
++      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
++        : {}),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_BUILD_VERSION: input.commit,
+       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+@@ -419,9 +425,12 @@ export const startCloudEnvironment = (input: {
+         ),
+         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
+       );
++    const alternatePort =
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : undefined;
+     yield* startCloudPostgres({
+       container,
+       databasePort: input.databasePort,
++      ...(alternatePort === undefined ? {} : { alternatePort }),
+       databasePassword,
+       dockerEnv,
+       log: `${directory}/postgres.log`,
+@@ -446,71 +455,96 @@ export const startCloudEnvironment = (input: {
+           );
+     if (built !== 0)
+       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
+-    const server = yield* processes.spawn(
+-      ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
+-        cwd: cloud,
+-        env: {
+-          ...env,
+-          AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
+-        },
+-        extendEnv: false,
+-        stdout: "pipe",
+-        stderr: "pipe",
+-        forceKillAfter: "15 seconds",
+-      }),
+-    );
+-    // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+-    // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+-    const applyFailed = yield* Deferred.make<void>();
+-    yield* capture(server, "cloud.log", (line) =>
+-      isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void,
+-    );
+-    // A Worker that is still starting holds the request until it can answer, so each probe has its
+-    // own deadline and the whole wait has one too.
+-    const ready = Effect.scoped(
+-      http.get(`${input.origin}/health`).pipe(
+-        Effect.flatMap((response) =>
+-          Effect.gen(function* () {
+-            yield* response.text;
+-            if (response.status !== 200)
+-              return yield* new CloudStartFailed({ operation: "Cloud readiness" });
++    const ownerScope = yield* Effect.scope;
++    const launch = Effect.gen(function* () {
++      const scope = yield* Scope.fork(ownerScope);
++      return yield* Effect.gen(function* () {
++        const server = yield* processes.spawn(
++          ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
++            cwd: cloud,
++            env: {
++              ...env,
++              AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
++            },
++            extendEnv: false,
++            stdout: "pipe",
++            stderr: "pipe",
++            forceKillAfter: "15 seconds",
+           }),
+-        ),
+-      ),
+-    ).pipe(
+-      Effect.timeout("10 seconds"),
+-      Effect.retry({ schedule: Schedule.spaced("500 millis") }),
+-      Effect.timeoutOrElse({
+-        duration: readinessDeadline,
+-        orElse: () =>
+-          Effect.fail(
+-            new CloudStartFailed({
+-              operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
+-            }),
+-          ),
+-      }),
+-    );
+-    yield* Effect.raceFirst(
+-      ready,
+-      Effect.raceFirst(
+-        server.exitCode.pipe(
+-          Effect.flatMap(() =>
+-            Effect.fail(
+-              new CloudStartFailed({ operation: "Cloud stopped before readiness; see cloud.log" }),
++        );
++        // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
++        // run nothing will edit the sources it waits on, so the Worker that failed never starts.
++        const applyFailed = yield* Deferred.make<void>();
++        const mcpStarted = yield* Deferred.make<void>();
++        yield* capture(server, "cloud.log", (line) => {
++          if (isAlchemyDevFailure(line)) return Deferred.succeed(applyFailed, undefined);
++          if (line.includes("[McpServer] Started in "))
++            return Deferred.succeed(mcpStarted, undefined);
++          return Effect.void;
++        });
++        // A Worker that is still starting holds the request until it can answer, so each probe has its
++        // own deadline and the whole wait has one too.
++        const health = Effect.scoped(
++          http.get(`${input.origin}/health`).pipe(
++            Effect.flatMap((response) =>
++              Effect.gen(function* () {
++                yield* response.text;
++                if (response.status !== 200)
++                  return yield* new CloudStartFailed({ operation: "Cloud readiness" });
++              }),
+             ),
+           ),
+-        ),
+-        Deferred.await(applyFailed).pipe(
+-          Effect.flatMap(() =>
+-            Effect.fail(
+-              new CloudStartFailed({
+-                operation: "Alchemy could not start every Cloud resource; see cloud.log",
+-              }),
++        ).pipe(
++          Effect.timeout("10 seconds"),
++          Effect.retry({ schedule: Schedule.spaced("500 millis") }),
++          Effect.timeoutOrElse({
++            duration: readinessDeadline,
++            orElse: () =>
++              Effect.fail(
++                new CloudStartFailed({
++                  operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
++                }),
++              ),
++          }),
++        );
++        // API health can answer before a restarted private service has finished booting.
++        const ready =
++          alternatePort === undefined
++            ? health
++            : Effect.all(
++                [health, Deferred.await(mcpStarted).pipe(Effect.timeout(readinessDeadline))],
++                { concurrency: 2 },
++              );
++        yield* Effect.raceFirst(
++          ready,
++          Effect.raceFirst(
++            server.exitCode.pipe(
++              Effect.flatMap(() =>
++                Effect.fail(
++                  new CloudStartFailed({
++                    operation: "Cloud stopped before readiness; see cloud.log",
++                  }),
++                ),
++              ),
++            ),
++            Deferred.await(applyFailed).pipe(
++              Effect.flatMap(() =>
++                Effect.fail(
++                  new CloudStartFailed({
++                    operation: "Alchemy could not start every Cloud resource; see cloud.log",
++                  }),
++                ),
++              ),
+             ),
+           ),
+-        ),
+-      ),
+-    );
++        );
++        return scope;
++      }).pipe(
++        Scope.provide(scope),
++        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
++      );
++    });
++    let serverScope = yield* launch;
+     const fixtures = yield* startFixtureControl(input.origin, directory, browser);
+     yield* fixtureRequest(fixtures, "/configure", {
+       origin: input.origin,
+@@ -520,9 +554,29 @@ export const startCloudEnvironment = (input: {
+       databaseName: "executor",
+       databaseUsername: "executor",
+     });
++    let binding: "original" | "alternate" = "original";
++    let running = true;
++    const reconfigure = (next: "original" | "alternate") =>
++      Effect.gen(function* () {
++        if (alternatePort === undefined)
++          return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
++        if (next !== binding || !running) {
++          running = false;
++          yield* Scope.close(serverScope, Exit.void);
++          env.CLOUD_DEV_DATABASE_PORT = String(
++            next === "original" ? input.databasePort : alternatePort,
++          );
++          serverScope = yield* launch;
++          binding = next;
++          running = true;
++        }
++        return { binding, databaseName: "executor" };
++      });
++    const controls =
++      alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
+     return {
+       emulators,
+-      fixtures,
++      fixtures: controls,
+       origin: input.origin,
+       oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
+     };
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index e9dcffc..2c9c62e 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -136,6 +136,8 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
+ export const startCloudPostgres = (input: {
+   readonly container: string;
+   readonly databasePort: number;
++  /** A second runner-owned endpoint for binding-change proof against the same retained database. */
++  readonly alternatePort?: number;
+   readonly databasePassword: string;
+   readonly dockerEnv: DockerEnv;
+   /** Receives the server's output. */
+@@ -178,6 +180,9 @@ export const startCloudPostgres = (input: {
+                 ]),
+             "--publish",
+             `127.0.0.1:${input.databasePort}:5432`,
++            ...(input.alternatePort === undefined
++              ? []
++              : ["--publish", `127.0.0.1:${input.alternatePort}:5432`]),
+             "--env",
+             "POSTGRES_USER=executor",
+             "--env",
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+new file mode 100644
+index 0000000..a47083f
+--- /dev/null
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -0,0 +1,72 @@
++/** Runner-only control of the disposable Cloud process, never installed in a product Worker. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Redacted, Schema } from "effect";
++import {
++  HttpClient,
++  HttpClientRequest,
++  HttpRouter,
++  HttpServer,
++  HttpServerRequest,
++  HttpServerResponse,
++} from "effect/http";
++import { createServer } from "node:http";
++import type { FixtureControl } from "../sdk/contracts.ts";
++
++const Change = Schema.Struct({ binding: Schema.Literals(["original", "alternate"]) });
++
++/** Preserve the existing fixture capability while adding one fixed local runtime operation. */
++export const cloudRuntimeControl = <A, E>(
++  fixtures: typeof FixtureControl.Type,
++  change: (binding: "original" | "alternate") => Effect.Effect<A, E>,
++) =>
++  Effect.gen(function* () {
++    const http = yield* HttpClient.HttpClient;
++    let changing = false;
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      if (request.headers.authorization !== `Bearer ${Redacted.value(fixtures.token)}`)
++        return HttpServerResponse.empty({ status: 401 });
++      if (request.url === "/runtime/database-binding" && request.method === "POST") {
++        const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
++        if (changing) return HttpServerResponse.empty({ status: 409 });
++        changing = true;
++        const result = yield* change(input.binding).pipe(
++          Effect.ensuring(
++            Effect.sync(() => {
++              changing = false;
++            }),
++          ),
++        );
++        return HttpServerResponse.jsonUnsafe(result);
++      }
++      let forward = HttpClientRequest.make(request.method)(`${fixtures.origin}${request.url}`).pipe(
++        HttpClientRequest.setHeaders(request.headers),
++      );
++      if (request.method !== "GET" && request.method !== "HEAD")
++        forward = HttpClientRequest.bodyText(
++          forward,
++          yield* request.text,
++          request.headers["content-type"],
++        );
++      const response = yield* http.execute(forward);
++      return HttpServerResponse.uint8Array(new Uint8Array(yield* response.arrayBuffer), {
++        status: response.status,
++        headers: response.headers,
++      });
++    }).pipe(
++      Effect.catchCause(() =>
++        HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++      ),
++    );
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("*", "/*", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Cloud runtime control requires TCP");
++    return { origin: `http://127.0.0.1:${server.address.port}`, token: fixtures.token };
++  });
+diff --git a/e2e/support/production-ops-account.ts b/e2e/support/production-ops-account.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a3a318d6bbcedf39af64e6cbed54ef044692c94
+--- /dev/null
++++ b/e2e/support/production-ops-account.ts
+@@ -0,0 +1,57 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Api, body, type Session } from "./api.ts";
++import { App, Resource } from "./contracts.ts";
++import { connectionsPath } from "./app-accounts.ts";
++import { appsManifest } from "./apps-release.ts";
++
++/** Create a real saved account and app link, without relying on asynchronous onboarding keys. */
++export const productionOpsAccount = (actor: Session, organization: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const prefix = `/api/organizations/${organization}`;
++    const deployed = yield* api.request(actor, "POST", `${prefix}/apps/deploy`, {
++      name: "Production operations account",
++      files: [
++        {
++          path: "index.ts",
++          content: `import { defineApp, defineProvider, oauth2, object, router, secrets, string } from "apps";
++const service = defineProvider({ name: "Operations fixture", auth: {
++  apiKey: secrets({ label: "API key", fields: object({ token: string() }) }),
++  token: secrets({ label: "Pool token", fields: object({ token: string() }) }),
++  oauth: oauth2({ authorizationUrl: "https://identity.example.test/authorize", tokenUrl: "https://identity.example.test/token", scopes: ["read"], tokenEndpointAuthMethod: "none" })
++} });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
++        },
++        appsManifest,
++      ],
++    });
++    expect(deployed.status).toBe(200);
++    const app = yield* body(App, deployed);
++    const appPath = `${prefix}/apps/${app.id}`;
++    let account: string | undefined;
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        expect((yield* api.request(actor, "DELETE", appPath)).status).toBe(200);
++        if (account !== undefined)
++          expect(
++            (yield* api.request(actor, "DELETE", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const connection = yield* api.request(
++      actor,
++      "POST",
++      connectionsPath(appPath, "user", "service"),
++      {},
++    );
++    expect(connection.status).toBe(200);
++    const pending = yield* body(Resource, connection);
++    const saved = yield* api.request(actor, "POST", `${prefix}/connections/${pending.id}/submit`, {
++      method: "apiKey",
++      fields: { token: "synthetic-production-ops-token" },
++    });
++    expect(saved.status).toBe(200);
++    account = (yield* body(Resource, saved)).id;
++    return { account, app: app.id };
++  });
+diff --git a/e2e/support/production-ops-client.ts b/e2e/support/production-ops-client.ts
+new file mode 100644
+index 0000000..f03eb41
+--- /dev/null
++++ b/e2e/support/production-ops-client.ts
+@@ -0,0 +1,112 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import {
++  constants,
++  createDecipheriv,
++  createHash,
++  createHmac,
++  generateKeyPairSync,
++  privateDecrypt,
++  randomUUID,
++} from "node:crypto";
++import { Actors } from "./actors.ts";
++import { Api } from "./api.ts";
++import { Target } from "./platform.ts";
++import { targetHosts } from "./role-hosts.ts";
++
++export const Artifact = Schema.Struct({
++  version: Schema.Literal(1),
++  sha256: Schema.String,
++  sealed: Schema.Struct({
++    version: Schema.Literal(1),
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++  recipient: Schema.Struct({
++    version: Schema.Literal(1),
++    recipient: Schema.String,
++    wrappedKey: Schema.String,
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++});
++export const Response = Schema.Struct({ action: Schema.String, artifact: Artifact });
++export const Inventory = Schema.Struct({
++  format: Schema.Literal("basalt-production-inventory-v1"),
++  target: Schema.String,
++  release: Schema.String,
++  database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++  selection: Schema.String,
++  organization: Schema.String,
++  rows: Schema.Array(Schema.Json),
++});
++export const Backup = Schema.Struct({
++  format: Schema.Literal("basalt-production-backup-v1"),
++  target: Schema.String,
++  release: Schema.String,
++  tables: Schema.Array(Schema.String),
++  rows: Schema.Record(Schema.String, Schema.Array(Schema.Json)),
++});
++
++/** Sign real operator HTTP requests and independently decrypt recipient artifacts. */
++export const productionOpsClient = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    target = yield* Target;
++  const origin = targetHosts(target).browser;
++  const anonymous = yield* api.session();
++  const pair = generateKeyPairSync("rsa", { modulusLength: 3072 });
++  const recipient = pair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
++  const request = (
++    operation: unknown,
++    overrides: {
++      target?: string;
++      expiresAt?: number;
++      secret?: string;
++      tamper?: { from: string; to: string };
++    } = {},
++  ) => {
++    const at = Date.now();
++    const payload = Buffer.from(
++      JSON.stringify({
++        version: 1,
++        id: randomUUID(),
++        target: overrides.target ?? origin,
++        at,
++        expiresAt: overrides.expiresAt ?? at + 60_000,
++        operation,
++      }),
++    ).toString("base64url");
++    const signature = createHmac("sha256", Buffer.from(overrides.secret ?? "ab".repeat(32), "hex"))
++      .update(`sbops1.${payload}`)
++      .digest("base64url");
++    return api.request(anonymous, "POST", "/api/internal/production-ops", {
++      envelope: `sbops1.${overrides.tamper === undefined ? payload : Buffer.from(Buffer.from(payload, "base64url").toString("utf8").replace(overrides.tamper.from, overrides.tamper.to)).toString("base64url")}.${signature}`,
++    });
++  };
++  const read = (selection: string, organization = actors.organization.id) => ({
++    action: "inventory",
++    selection,
++    request: { organization },
++    recipient,
++  });
++  const decrypt = (artifact: typeof Artifact.Type) => {
++    const copy = artifact.recipient;
++    const key = privateDecrypt(
++      { key: pair.privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
++      Buffer.from(copy.wrappedKey, "base64"),
++    );
++    const encrypted = Buffer.from(copy.ciphertext, "base64");
++    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(copy.iv, "base64"));
++    decipher.setAAD(Buffer.from(`basalt-production-ops-v1:${origin}`));
++    decipher.setAuthTag(encrypted.subarray(-16));
++    const plaintext = Buffer.concat([
++      decipher.update(encrypted.subarray(0, -16)),
++      decipher.final(),
++    ]);
++    expect(createHash("sha256").update(plaintext).digest("hex")).toBe(artifact.sha256);
++    const value: unknown = JSON.parse(plaintext.toString("utf8"));
++    return value;
++  };
++  return { origin, recipient, request, read, decrypt };
++});
+diff --git a/e2e/support/production-ops-inventory-rows.ts b/e2e/support/production-ops-inventory-rows.ts
+new file mode 100644
+index 0000000..bf86db6
+--- /dev/null
++++ b/e2e/support/production-ops-inventory-rows.ts
+@@ -0,0 +1,127 @@
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import { productionOpsRows } from "./production-ops-rows.ts";
++
++/** Populate every named projection with owned and foreign retained rows. No extra app builds. */
++export const productionOpsInventoryRows = Effect.gen(function* () {
++  const fixture = yield* productionOpsRows;
++  const { database } = fixture;
++  const decorate = (row: typeof fixture.own) => ({
++    ...row,
++    personal: randomUUID(),
++    shared: randomUUID(),
++    job: randomUUID(),
++    workflow: randomUUID(),
++    schedule: randomUUID(),
++    reporter: randomUUID(),
++    receipt: randomUUID(),
++  });
++  const own = decorate(fixture.own),
++    foreign = decorate(fixture.foreign);
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const row of [own, foreign]) {
++        yield* database.run({
++          sql: "delete from executor_schedules where id = $1",
++          params: [row.schedule],
++        });
++        yield* database.run({
++          sql: "delete from executor_workflow_runs where id = $1",
++          params: [row.workflow],
++        });
++        yield* database.run({
++          sql: "delete from executor_account_observations where id = $1",
++          params: [row.reporter],
++        });
++        yield* database.run({
++          sql: "delete from hosted_contributed_departure_jobs where id = $1",
++          params: [row.job],
++        });
++        yield* database.run({
++          sql: "delete from private_production_ops_receipts where plan_sha256 = $1",
++          params: [row.receipt],
++        });
++        yield* database.run({
++          sql: "delete from executor_accounts where id = $1 or id = $2",
++          params: [row.personal, row.shared],
++        });
++        yield* database.run({
++          sql: "delete from executor_providers where id = $1",
++          params: [row.personal],
++        });
++      }
++    }).pipe(Effect.orDie),
++  );
++  for (const row of [own, foreign]) {
++    const owner = `organization:${row.organization}`;
++    yield* database.run({
++      sql: "update executor_accounts set method = 'token', label = 'Pool access (retired)' where id = $1",
++      params: [row.account],
++    });
++    yield* database.run({
++      sql: `insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id, audience) values ($1, $2, $3, 'personal', $3, null)`,
++      params: [row.account, row.organization, row.user],
++    });
++    yield* database.run({
++      sql: `insert into executor_providers (id, definition) select $2, definition from executor_providers where id = (select provider from executor_accounts where id = $1)`,
++      params: [row.account, row.personal],
++    });
++    // Same name is not evidence. The personal account has another provider; the shared token has the pool's exact provider.
++    yield* database.run({
++      sql: `insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text, 'provider', $2::text))).* from executor_accounts a where id = $1`,
++      params: [row.account, row.personal],
++    });
++    yield* database.run({
++      sql: `insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text))).* from executor_accounts a where id = $1`,
++      params: [row.account, row.shared],
++    });
++    yield* database.run({
++      sql: `insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id, audience) values ($1, $3, $4, 'personal', $4, null), ($2, $3, $4, 'shared', null, 'everyone')`,
++      params: [row.personal, row.shared, row.organization, row.user],
++    });
++    yield* database.run({
++      sql: `update executor_deployments d set requirements = jsonb_set(d.requirements::jsonb, '{accounts,pool}', jsonb_build_object('provider', a.provider)) from executor_accounts a where d.id = $1 and a.id = $2`,
++      params: [row.deployment, row.account],
++    });
++    yield* database.run({
++      sql: `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('basaltPools', jsonb_build_object($2::text, jsonb_build_object('app', $3::text))))::text where id = $1`,
++      params: [row.organization, row.user, row.app],
++    });
++    yield* database.run({
++      sql: `insert into hosted_contributed_departure_jobs (id, organization_id, user_id, status) values ($1, $2, $3, 'succeeded')`,
++      params: [row.job, row.organization, row.user],
++    });
++    yield* database.run({
++      sql: `insert into executor_workflow_runs (id, app, owner, start_key, deployment, name, accounts, status, encrypted, created_at) values ($1, $2, $3, $1, $4, 'scope-proof', '{}'::jsonb, 'succeeded', decode('00','hex'), now())`,
++      params: [row.workflow, row.app, owner, row.deployment],
++    });
++    yield* database.run({
++      sql: `insert into executor_schedules (id, app, owner, name, timing, enabled, approval_mode, revision) values ($1, $2, $3, 'scope-proof', '{}'::jsonb, false, 'manual', 'fixture')`,
++      params: [row.schedule, row.app, owner],
++    });
++    yield* database.run({
++      sql: `insert into executor_account_observations (id, account, owner, source, generation, next_allowed_at) select $1, id, owner, 'scope-proof', credential_generation, now() + interval '1 day' from executor_accounts where id = $2`,
++      params: [row.reporter, row.account],
++    });
++    yield* database.run({
++      sql: `insert into private_production_ops_receipts (plan_sha256, organization_id, migration, revision, release, backup_sha256, verification) values ($1, $2, 'inventory-proof', 'fixture', 'fixture', 'fixture', '{"ok":true}')`,
++      params: [row.receipt, row.organization],
++    });
++  }
++  const snapshot = Effect.all({
++    base: fixture.snapshot,
++    departures: database.run({
++      sql: "select to_jsonb(d) as row from hosted_contributed_departures d where job = $1 or job = $2 order by job, app, account",
++      params: [own.job, foreign.job],
++    }),
++    workflows: database.run({
++      sql: "select to_jsonb(w) as row from executor_workflow_runs w where id = $1 or id = $2 order by id",
++      params: [own.workflow, foreign.workflow],
++    }),
++    schedules: database.run({
++      sql: "select to_jsonb(s) as row from executor_schedules s where id = $1 or id = $2 order by id",
++      params: [own.schedule, foreign.schedule],
++    }),
++  });
++  return { ...fixture, own, foreign, database, snapshot };
++});
+diff --git a/e2e/support/production-ops-rows.ts b/e2e/support/production-ops-rows.ts
+new file mode 100644
+index 0000000..73c4fcf
+--- /dev/null
++++ b/e2e/support/production-ops-rows.ts
+@@ -0,0 +1,145 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "./actors.ts";
++import { Target } from "./platform.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { productionOpsAccount } from "./production-ops-account.ts";
++import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
++
++/** All direct rows are synthetic and confined to the managed Cloud's disposable database. */
++export const productionOpsRows = Effect.gen(function* () {
++  const actors = yield* Actors,
++    target = yield* Target,
++    database = yield* cloudLocks;
++  if (target.fixtures === undefined) return yield* Effect.die("Managed Cloud required");
++  const fixtures = target.fixtures;
++  const outsideId = randomUUID().replaceAll("-", "");
++  yield* Effect.addFinalizer(() =>
++    fixtureRequest(fixtures, "/remove", { id: outsideId }).pipe(Effect.orDie),
++  );
++  const outside = yield* fixtureRequest(fixtures, "/actors", {
++    id: outsideId,
++    label: "Operations foreign organization",
++  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActors)));
++  const original = yield* productionOpsAccount(actors.owner, actors.organization.id);
++  const id = () => randomUUID();
++  const ownUsers = yield* database
++    .run({
++      sql: 'select "userId" as id from member where "organizationId" = $1 and role = $2',
++      params: [actors.organization.id, "owner"],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++      ),
++    );
++  const ownUser = ownUsers[0];
++  if (ownUser === undefined) return yield* Effect.die("Fixture owner missing");
++  const own = {
++    organization: actors.organization.id,
++    user: ownUser.id,
++    account: id(),
++    app: id(),
++    deployment: id(),
++    connection: id(),
++    grant: id(),
++    identity: id(),
++  };
++  const foreign = {
++    organization: outside.organization.id,
++    user: outside.actors.owner.userId,
++    account: id(),
++    app: id(),
++    deployment: id(),
++    connection: id(),
++    grant: id(),
++    identity: id(),
++  };
++  // Registered before writes so partial setup failures release every synthetic reference too.
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const row of [own, foreign]) {
++        yield* database.run({
++          sql: "delete from hosted_app_account_links where app = $1",
++          params: [row.app],
++        });
++        yield* database.run({
++          sql: "delete from executor_account_connections where id = $1",
++          params: [row.connection],
++        });
++        yield* database.run({ sql: "delete from executor_apps where id = $1", params: [row.app] });
++        yield* database.run({
++          sql: "delete from executor_accounts where id = $1",
++          params: [row.account],
++        });
++        yield* database.run({
++          sql: "delete from executor_deployments where id = $1",
++          params: [row.deployment],
++        });
++        yield* database.run({
++          sql: "delete from executor_oauth_grants where id = $1",
++          params: [row.grant],
++        });
++        yield* database.run({
++          sql: "delete from executor_account_identities where id = $1",
++          params: [row.identity],
++        });
++        yield* database.run({
++          sql: "delete from private_production_ops_receipts where organization_id = $1 and migration = 'scope-proof'",
++          params: [row.organization],
++        });
++      }
++    }).pipe(Effect.orDie),
++  );
++  for (const row of [own, foreign]) {
++    const owner = `organization:${row.organization}`;
++    yield* database.run({
++      sql: `insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text, 'owner', $3::text, 'identity_id', null, 'oauth_grant_id', null))).* from executor_accounts a where a.id = $1`,
++      params: [original.account, row.account, owner],
++    });
++    yield* database.run({
++      sql: `insert into executor_deployments select (jsonb_populate_record(null::executor_deployments, to_jsonb(d) || jsonb_build_object('id', $2::text, 'owner', $3::text))).* from executor_apps a join executor_deployments d on d.id = a.active_deployment where a.id = $1`,
++      params: [original.app, row.deployment, owner],
++    });
++    yield* database.run({
++      sql: `insert into executor_apps select (jsonb_populate_record(null::executor_apps, to_jsonb(a) || jsonb_build_object('id', $2::text, 'owner', $3::text, 'active_deployment', $4::text, 'name', $2::text, 'slug', $2::text))).* from executor_apps a where a.id = $1`,
++      params: [original.app, row.app, owner, row.deployment],
++    });
++    yield* database.run({
++      sql: `insert into executor_account_connections (id, owner, provider, state, revision, created_at, expires_at, target) select $2, $3, provider, '{}'::jsonb, 'fixture', now(), now() + interval '1 hour', '{}'::jsonb from executor_accounts where id = $1`,
++      params: [original.account, row.connection, owner],
++    });
++    yield* database.run({
++      sql: `insert into executor_oauth_grants (id, owner, encrypted, status, updated_at) values ($1, $2, decode('00', 'hex'), 'active', now())`,
++      params: [row.grant, owner],
++    });
++    yield* database.run({
++      sql: `insert into executor_account_identities (id, owner, placement, issuer, subject, name, label, verified_at, created_at) values ($1, $2, 'personal', 'https://identity.example.test', $3, 'Synthetic identity', 'Synthetic identity', now(), now())`,
++      params: [row.identity, owner, row.user],
++    });
++    yield* database.run({
++      sql: `insert into hosted_app_account_links (app, requirement, account, subject, linked_by) values ($1, 'scope-proof', $2, $3, $3)`,
++      params: [row.app, row.account, row.user],
++    });
++  }
++  const account = (value = own.account) =>
++    database.run({
++      sql: "select to_jsonb(a) as row from executor_accounts a where id = $1",
++      params: [value],
++    });
++  const snapshot = database.run({
++    sql: `select
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_accounts a where id = any($1::text[])) as accounts,
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_apps a where id = any($2::text[])) as apps,
++      (select jsonb_agg(to_jsonb(a) order by id) from executor_account_connections a where id = any($3::text[])) as connections,
++      (select jsonb_agg(to_jsonb(a) order by app, subject) from hosted_app_account_links a where app = any($2::text[])) as links`,
++    params: [
++      `{${own.account},${foreign.account}}`,
++      `{${own.app},${foreign.app}}`,
++      `{${own.connection},${foreign.connection}}`,
++    ],
++  });
++  expect((yield* account()).length).toBe(1);
++  return { own, foreign, database, account, snapshot };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 01d372e..9c0713c 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2293,6 +2293,62 @@ export const scenarios = plan({
+       local: na("Local runs its background jobs in its own server process."),
+     },
+   },
++  cloudProductionOps: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops.spec.ts",
++    title:
++      "Cloud production operations encrypt named read-only inventories and backups and refuse unreviewed writes",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsBinding: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops.spec.ts",
++    title: "Cloud production operations bind inventories to the runtime database target",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsScope: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops.spec.ts",
++    title: "Cloud production operations scope inventories to the requested organization",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsStableKeys: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce stable identities through apply and replay",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsReferences: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-migrations.spec.ts",
++    title: "Cloud production operations enforce organization references before verification",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
+   cloudPoolMigrationInventory: {
+     fixtures: "actors",
+     file: "pool-migration-inventory.spec.ts",
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9937f85b3c35931f6b770ba66320b13bb366ec9
+--- /dev/null
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -0,0 +1,217 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Artifact, productionOpsClient } from "../support/production-ops-client.ts";
++import { productionOpsInventoryRows } from "../support/production-ops-inventory-rows.ts";
++import { scenarios } from "../test-plan.ts";
++
++const DryRun = Schema.Struct({
++  action: Schema.Literal("dry-run"),
++  artifact: Artifact,
++  backupSha256: Schema.String,
++});
++const Applied = Schema.Struct({
++  action: Schema.Literal("apply"),
++  repeated: Schema.Boolean,
++  verification: Schema.Struct({ ok: Schema.Boolean }),
++});
++
++const proof = Effect.gen(function* () {
++  const rows = yield* productionOpsInventoryRows;
++  const client = yield* productionOpsClient;
++  const operation = (
++    name: string,
++    foreign: string = rows.foreign.account,
++    account = rows.own.account,
++  ) => ({
++    action: "dry-run",
++    selection: "scope-proof",
++    recipient: client.recipient,
++    request: {
++      organization: rows.own.organization,
++      account,
++      app: rows.own.app,
++      connection: rows.own.connection,
++      job: rows.own.job,
++      workflow: rows.own.workflow,
++      schedule: rows.own.schedule,
++      subject: rows.own.user,
++      foreign,
++      operation: name,
++    },
++  });
++  const apply = (op: ReturnType<typeof operation>, dry: typeof DryRun.Type) => ({
++    ...op,
++    action: "apply",
++    artifact: dry.artifact,
++    planSha256: dry.artifact.sha256,
++    backupSha256: dry.backupSha256,
++    go: `GO ${dry.artifact.sha256}`,
++  });
++  const dryRun = (op: ReturnType<typeof operation>) =>
++    Effect.gen(function* () {
++      const response = yield* client.request(op);
++      expect(response.status).toBe(200);
++      return yield* body(DryRun, response);
++    });
++  return { ...rows, ...client, operation, apply, dryRun };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
++  it.effect(scenarios.cloudProductionOpsStableKeys.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* proof;
++        const valid = p.operation("increment");
++        const before = yield* p.account();
++        const dry = yield* p.dryRun(valid);
++        expect(yield* p.account()).toEqual(before);
++        const applied = yield* p.request(p.apply(valid, dry));
++        expect(applied.status).toBe(200);
++        expect((yield* body(Applied, applied)).repeated).toBe(false);
++        const after = yield* p.account();
++        expect(after).not.toEqual(before);
++        const replay = yield* p.request(p.apply(valid, dry));
++        expect(replay.status).toBe(200);
++        expect((yield* body(Applied, replay)).repeated).toBe(true);
++        expect(yield* p.account()).toEqual(after);
++        expect(
++          (yield* p.request({
++            ...p.apply(valid, dry),
++            request: { ...valid.request, organization: p.foreign.organization },
++          })).status,
++        ).toBe(409);
++        for (const [name, foreign, account] of [
++          ["mutable-delete", `organization:${p.foreign.organization}`, p.own.account],
++          ["collision", p.foreign.account, p.foreign.account],
++        ] as const) {
++          const operation = p.operation(name, foreign, account);
++          const before = yield* p.account(account);
++          const response = yield* p.request(operation);
++          if (response.status === 200) {
++            const prepared = yield* body(DryRun, response);
++            expect((yield* p.request(p.apply(operation, prepared))).status).toBe(409);
++          } else expect(response.status).toBe(409);
++          expect(yield* p.account(account)).toEqual(before);
++        }
++        const failing = p.operation("bad-verification");
++        const bad = yield* p.dryRun(failing);
++        const unchanged = yield* p.account();
++        expect((yield* p.request(p.apply(failing, bad))).status).toBe(409);
++        expect(yield* p.account()).toEqual(unchanged);
++        expect(
++          yield* p.database.run({
++            sql: "select plan_sha256 from private_production_ops_receipts where plan_sha256 = $1",
++            params: [bad.artifact.sha256],
++          }),
++        ).toEqual([]);
++        yield* p.database.run({
++          sql: "update hosted_app_account_links set subject = null where app = $1",
++          params: [p.own.app],
++        });
++        const nullable = p.operation("link-null", p.own.user);
++        nullable.request.subject = "null";
++        const nullablePlan = yield* p.dryRun(nullable);
++        expect((yield* p.request(p.apply(nullable, nullablePlan))).status).toBe(200);
++        // A committed receipt cannot authorize a foreign replacement at the same stable ID.
++        yield* p.database.run({
++          sql: "update executor_accounts set owner = $2 where id = $1",
++          params: [p.own.account, `organization:${p.foreign.organization}`],
++        });
++        expect((yield* p.request(p.apply(valid, dry))).status).toBe(409);
++        yield* p.database.run({
++          sql: "update executor_accounts set owner = $2 where id = $1",
++          params: [p.own.account, `organization:${p.own.organization}`],
++        });
++        const deletedId = randomUUID();
++        yield* Effect.addFinalizer(() =>
++          p.database
++            .run({ sql: "delete from executor_accounts where id = $1", params: [deletedId] })
++            .pipe(Effect.orDie),
++        );
++        yield* p.database.run({
++          sql: `insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text))).* from executor_accounts a where id = $1`,
++          params: [p.own.account, deletedId],
++        });
++        const deletion = p.operation("delete", p.foreign.account, deletedId);
++        const deletionPlan = yield* p.dryRun(deletion);
++        expect((yield* p.request(p.apply(deletion, deletionPlan))).status).toBe(200);
++        expect(yield* p.account(deletedId)).toEqual([]);
++        yield* p.database.run({
++          sql: `insert into executor_accounts select (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object('id', $2::text))).* from executor_accounts a where id = $1`,
++          params: [p.foreign.account, deletedId],
++        });
++        expect((yield* p.request(p.apply(deletion, deletionPlan))).status).toBe(409);
++        expect(
++          (yield* p.request(p.operation("increment", p.own.account, p.foreign.account))).status,
++        ).toBe(409);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsReferences.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* proof;
++        const grantlessId = randomUUID();
++        yield* Effect.addFinalizer(() =>
++          p.database
++            .run({
++              sql: "delete from executor_accounts where id = $1 or id = $2",
++              params: [p.foreign.grant, grantlessId],
++            })
++            .pipe(Effect.orDie),
++        );
++        expect(yield* p.account(p.foreign.grant)).toEqual([]);
++        const implicit = p.operation("implicit-grant", p.foreign.account, p.foreign.grant);
++        const implicitPlan = yield* p.dryRun(implicit);
++        expect(
++          (yield* p.request(p.apply(implicit, implicitPlan))).status,
++          "Null references must not borrow a foreign grant at the inserted account ID",
++        ).toBe(409);
++        expect(yield* p.account(p.foreign.grant)).toEqual([]);
++        expect(
++          yield* p.database.run({
++            sql: "select plan_sha256 from private_production_ops_receipts where plan_sha256 = $1",
++            params: [implicitPlan.artifact.sha256],
++          }),
++        ).toEqual([]);
++        const grantless = p.operation("grantless-insert", p.own.account, grantlessId);
++        const grantlessPlan = yield* p.dryRun(grantless);
++        expect((yield* p.request(p.apply(grantless, grantlessPlan))).status).toBe(200);
++        expect((yield* p.account(grantlessId)).length).toBe(1);
++        const grantlessReplay = yield* p.request(p.apply(grantless, grantlessPlan));
++        expect(grantlessReplay.status).toBe(200);
++        expect((yield* body(Applied, grantlessReplay)).repeated).toBe(true);
++        for (const [name, foreign] of [
++          ["account-grant", p.foreign.grant],
++          ["account-identity", p.foreign.identity],
++          ["app-deployment", p.foreign.deployment],
++          ["connection-source", p.foreign.account],
++          ["connection-reconnect", p.foreign.account],
++          ["link-subject", p.foreign.user],
++          ["departure-app", p.foreign.app],
++          ["departure-account", p.foreign.account],
++          ["workflow-deployment", p.foreign.deployment],
++          ["schedule-run", p.foreign.workflow],
++        ] as const) {
++          const operation = p.operation(name, foreign);
++          const unchanged = yield* p.snapshot;
++          const dry = yield* p.dryRun(operation);
++          expect((yield* p.request(p.apply(operation, dry))).status).toBe(409);
++          expect(yield* p.snapshot).toEqual(unchanged);
++          expect(
++            yield* p.database.run({
++              sql: "select plan_sha256 from private_production_ops_receipts where plan_sha256 = $1",
++              params: [dry.artifact.sha256],
++            }),
++          ).toEqual([]);
++        }
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+new file mode 100644
+index 0000000..fd4550c
+--- /dev/null
++++ b/e2e/tests/production-ops.spec.ts
+@@ -0,0 +1,233 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++import { fixtureRequest } from "../sdk/fixtures.ts";
++import { productionOpsInventoryRows } from "../support/production-ops-inventory-rows.ts";
++import {
++  productionOpsClient,
++  Response,
++  Inventory,
++  Backup,
++} from "../support/production-ops-client.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Production operations", (it) => {
++  it.effect(scenarios.cloudProductionOps.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const { origin, recipient, request, read, decrypt } = yield* productionOpsClient;
++
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/internal/production-ops", {})).status,
++        ).toBe(409);
++        expect((yield* request(read("organizations"), { secret: "cd".repeat(32) })).status).toBe(
++          401,
++        );
++        expect(
++          (yield* request(read("organizations"), { target: "https://another.example.test" }))
++            .status,
++        ).toBe(401);
++        expect((yield* request(read("organizations"), { expiresAt: Date.now() - 1 })).status).toBe(
++          401,
++        );
++        expect((yield* request(read("select * from account"))).status).toBe(409);
++
++        for (const selection of [
++          "organizations",
++          "accounts",
++          "pools",
++          "app-links",
++          "retired-tokens",
++          "departures",
++          "workflows",
++          "schedules",
++          "reporters",
++          "receipts",
++        ] as const) {
++          const response = yield* request(read(selection));
++          expect(response.status).toBe(200);
++          const encrypted = yield* body(Response, response);
++          expect(JSON.stringify(response.body)).not.toContain("@example.test");
++          const inventory = yield* Schema.decodeUnknownEffect(Inventory)(
++            decrypt(encrypted.artifact),
++          );
++          expect(inventory.selection).toBe(selection);
++          expect(inventory.organization).toBe(actors.organization.id);
++          expect(inventory.target).toBe(origin);
++          expect(inventory.release).toMatch(/^[a-f0-9]{40}$/);
++          if (selection === "organizations") {
++            expect(inventory.rows.length).toBeGreaterThan(0);
++            const rows = yield* Schema.decodeUnknownEffect(
++              Schema.Array(Schema.Struct({ organization: Schema.String })),
++            )(inventory.rows);
++            for (const row of rows) expect(row.organization).toBe(actors.organization.id);
++          }
++        }
++        expect((yield* request({ ...read("accounts"), request: {} })).status).toBe(401);
++        expect(
++          (yield* request({
++            ...read("accounts"),
++            request: { organization: "missing-organization" },
++          })).status,
++        ).toBe(409);
++        for (const organization of ["", 1, "x".repeat(257)]) {
++          expect((yield* request({ ...read("accounts"), request: { organization } })).status).toBe(
++            401,
++          );
++        }
++        expect(
++          (yield* request(read("accounts"), {
++            tamper: { from: actors.organization.id, to: "forged-organization" },
++          })).status,
++        ).toBe(401);
++        const before = yield* body(Response, yield* request(read("accounts")));
++        const snapshotResponse = yield* request({
++          action: "backup",
++          selection: "accounts",
++          request: { organization: actors.organization.id },
++          recipient,
++        });
++        expect(snapshotResponse.status).toBe(200);
++        const snapshot = yield* body(Response, snapshotResponse);
++        const backup = yield* Schema.decodeUnknownEffect(Backup)(decrypt(snapshot.artifact));
++        expect(backup.tables).toEqual([
++          "executor_account_identities",
++          "executor_accounts",
++          "executor_oauth_grants",
++          "executor_providers",
++          "hosted_account_access",
++          "hosted_account_groups",
++          "hosted_app_account_links",
++        ]);
++        expect(Object.keys(backup.rows).sort()).toEqual(backup.tables);
++        const after = yield* body(Response, yield* request(read("accounts")));
++        expect(
++          (yield* Schema.decodeUnknownEffect(Inventory)(decrypt(after.artifact))).rows,
++        ).toEqual((yield* Schema.decodeUnknownEffect(Inventory)(decrypt(before.artifact))).rows);
++        for (const action of ["backup", "prepare", "dry-run", "apply"])
++          expect(
++            (yield* request({
++              action,
++              selection: "unregistered",
++              request: { organization: actors.organization.id },
++              recipient,
++            })).status,
++          ).toBe(409);
++        expect(
++          (yield* request({
++            action: "backup",
++            selection: "account;drop-table",
++            request: { organization: actors.organization.id },
++            recipient,
++          })).status,
++        ).toBe(409);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsBinding.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const target = yield* Target;
++        const { request, read, decrypt } = yield* productionOpsClient;
++        if (target.fixtures === undefined) return yield* Effect.die("Cloud fixture required");
++        const fixtures = target.fixtures;
++        const originalResponse = yield* body(Response, yield* request(read("organizations")));
++        const original = yield* Schema.decodeUnknownEffect(Inventory)(
++          decrypt(originalResponse.artifact),
++        );
++        yield* fixtureRequest(
++          fixtures,
++          "/runtime/database-binding",
++          { binding: "alternate" },
++          "5 minutes",
++        );
++        const changed = yield* body(Response, yield* request(read("organizations")));
++        const changedInventory = yield* Schema.decodeUnknownEffect(Inventory)(
++          decrypt(changed.artifact),
++        );
++        expect(changedInventory.database.name).toBe(original.database.name);
++        expect(changedInventory.database.targetSha256).not.toBe(original.database.targetSha256);
++        expect(changedInventory.rows).toEqual(original.rows);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsScope.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { request, read, decrypt, recipient } = yield* productionOpsClient;
++        const accounts = yield* productionOpsInventoryRows;
++        for (const [wanted, excluded] of [
++          [accounts.own, accounts.foreign],
++          [accounts.foreign, accounts.own],
++        ] as const) {
++          const expected = {
++            organizations: ["organization", wanted.organization],
++            accounts: ["id", wanted.account],
++            pools: ["app", wanted.app],
++            "app-links": ["app", wanted.app],
++            "retired-tokens": ["id", wanted.account],
++            departures: ["id", wanted.job],
++            workflows: ["id", wanted.workflow],
++            schedules: ["id", wanted.schedule],
++            reporters: ["id", wanted.reporter],
++            receipts: ["plan_sha256", wanted.receipt],
++          } as const;
++          for (const [selection, match] of Object.entries(expected)) {
++            const response = yield* request(read(selection, wanted.organization));
++            expect(response.status).toBe(200);
++            const encrypted = yield* body(Response, response);
++            const inventory = yield* Schema.decodeUnknownEffect(Inventory)(
++              decrypt(encrypted.artifact),
++            );
++            expect(inventory.organization).toBe(wanted.organization);
++            const rows = yield* Schema.decodeUnknownEffect(
++              Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
++            )(inventory.rows);
++            expect(
++              rows.some((row) => row[match[0]] === match[1]),
++              selection,
++            ).toBe(true);
++            for (const forbidden of [
++              excluded.organization,
++              excluded.account,
++              excluded.app,
++              excluded.job,
++              excluded.workflow,
++              excluded.schedule,
++              excluded.reporter,
++              excluded.receipt,
++            ])
++              expect(JSON.stringify(rows)).not.toContain(forbidden);
++            if (selection === "retired-tokens")
++              expect(rows.map((row) => row.id)).toEqual([wanted.account]);
++          }
++        }
++        const snapshot = yield* request({
++          action: "backup",
++          selection: "accounts",
++          request: { organization: accounts.own.organization },
++          recipient,
++        });
++        expect(snapshot.status).toBe(200);
++        const backup = yield* Schema.decodeUnknownEffect(Backup)(
++          decrypt((yield* body(Response, snapshot)).artifact),
++        );
++        const retained = yield* Schema.decodeUnknownEffect(
++          Schema.Array(Schema.Struct({ id: Schema.String })),
++        )(backup.rows.executor_accounts);
++        expect(retained.some((row) => row.id === accounts.own.account)).toBe(true);
++        expect(retained.some((row) => row.id === accounts.foreign.account)).toBe(true);
++      }),
++    ),
++  );
++});

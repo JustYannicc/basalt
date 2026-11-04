@@ -393,7 +393,7 @@ index 00000000..6d06cf8d
 +    }),
 +});
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 2242e405..b508f390 100644
+index 7e5e40d4..b2786127 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
 @@ -1,4 +1,9 @@
@@ -510,7 +510,7 @@ index 621aa73f..641258da 100644
  import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
  import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { hostedWorkflowApprovals } from "./workflow-app-approvals.ts";
-
+ 
  import { requireGroupSharing } from "./group-sharing.ts";
  import {
 @@ -882,6 +884,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
@@ -523,10 +523,10 @@ index 621aa73f..641258da 100644
      attach: (instance: Executor) =>
        Effect.sync(() => {
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index a14b8c51..10a1d36a 100644
+index c8c4c285..23040937 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -130,6 +130,8 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -153,6 +153,8 @@ export const cloudExecutor = Effect.fn(function* (
          Effect.provideContext(services),
        );
        const executor = yield* createExecutor({
@@ -536,10 +536,10 @@ index a14b8c51..10a1d36a 100644
          secret: key,
          origin,
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 912abbeb..16a80054 100644
+index 1a54b31d..3e5e0f43 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -115,6 +115,8 @@ export const selfHostExecutorServices = <E, R>(
+@@ -122,6 +122,8 @@ export const selfHostExecutorServices = <E, R>(
          Config.withDefault(origin),
        );
        const executor = yield* createExecutor({
@@ -549,10 +549,10 @@ index 912abbeb..16a80054 100644
          secret: key,
          origin,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 86d7500d..a7acd013 100644
+index 09ba2204..dda20b6c 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -366,6 +366,7 @@ export interface ExecutorInputs {
+@@ -382,6 +382,7 @@ export interface ExecutorInputs {
    /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
    readonly hooks?: ResourceLifecycle;
    readonly appCalls?: import("./app-calls.ts").AppCallHooks;
@@ -561,7 +561,7 @@ index 86d7500d..a7acd013 100644
    /** Authenticated product review page for a durable workflow question. */
    readonly workflowInputUrl?: (input: {
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index f8735731..5ede3e08 100644
+index cd28f441..c438aa1a 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -1,3 +1,4 @@
@@ -570,7 +570,7 @@ index f8735731..5ede3e08 100644
  export * from "./models.ts";
  export * from "./account-observation-driver.ts";
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 1cf07e15..d2a7f6ef 100644
+index cf3012de..8602847c 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,5 +1,6 @@
@@ -581,7 +581,7 @@ index 1cf07e15..d2a7f6ef 100644
  import { makeAppCallReceipts } from "./app-call-receipts.ts";
  import { AppCallsHost } from "../contracts/app-calls.ts";
  import { makeAppConnections } from "./app-connections.ts";
-@@ -169,7 +170,13 @@ export const createExecutor = (
+@@ -175,7 +176,13 @@ export const createExecutor = (
            ),
      };
      const base = toEffectRuntime(options.runtime, options.blobs, cache);
@@ -596,7 +596,7 @@ index 1cf07e15..d2a7f6ef 100644
      const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
      const appCalls = makeAppCalls({
        db,
-@@ -186,13 +193,18 @@ export const createExecutor = (
+@@ -192,13 +199,18 @@ export const createExecutor = (
      }) =>
        Effect.gen(function* () {
          const appCall = yield* appCalls.forInvocation(input);
@@ -616,7 +616,7 @@ index 1cf07e15..d2a7f6ef 100644
                },
              };
        });
-@@ -302,6 +314,7 @@ export const createExecutor = (
+@@ -309,6 +321,7 @@ export const createExecutor = (
        declarations,
        options.workflows,
        options.workflowInputUrl,
@@ -624,7 +624,7 @@ index 1cf07e15..d2a7f6ef 100644
      );
      const webhooks = makeWebhooks(
        options.database,
-@@ -348,6 +361,7 @@ export const createExecutor = (
+@@ -355,6 +368,7 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
        makeAppConfirmations(db, appConnectionStore, options.appCalls),
@@ -632,7 +632,7 @@ index 1cf07e15..d2a7f6ef 100644
      );
      const interactiveOperations = makeInteractiveAccounts(
        db,
-@@ -680,7 +694,10 @@ export const createExecutor = (
+@@ -698,7 +712,10 @@ export const createExecutor = (
              return result;
            }),
        },
@@ -645,7 +645,7 @@ index 1cf07e15..d2a7f6ef 100644
        publications: catalog.publications,
        registry: catalog.registry,
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 0a4b1bf8..9159828e 100644
+index 8db3ffd3..16c1a3e0 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -1,3 +1,5 @@
@@ -654,7 +654,7 @@ index 0a4b1bf8..9159828e 100644
  import type { AppApprovedConfiguration } from "../contracts/app-calls.ts";
  import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.ts";
  import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
-@@ -778,8 +780,20 @@ export const makeTools = (
+@@ -874,8 +876,20 @@ export const makeTools = (
    configurationApproved?: (
      event: Omit<AppApprovedConfiguration, "actor" | "connections">,
    ) => Effect.Effect<void, StorageError>,
@@ -675,25 +675,25 @@ index 0a4b1bf8..9159828e 100644
    const resolveAccount = oauth.resolveSelected;
    const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
    /** Renew an account the service refused without repeating what it refused; undefined when none was. */
-@@ -845,7 +859,7 @@ export const makeTools = (
-     app: state.app.id,
+@@ -951,7 +965,7 @@ export const makeTools = (
      build: state.version.build,
+     hostApi: listings.hostApi(state.version),
      ...context,
 -    ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
 +    ...toolControls(state),
      ...(state.version.requirements.capabilities?.sharedDefinitions === true
        ? { definitions: "shared" as const }
        : {}),
-@@ -1579,7 +1593,7 @@ export const makeTools = (
+@@ -1733,7 +1747,7 @@ export const makeTools = (
                appView = undefined;
                return runtime.call({
                  app: state.app.id,
 -                ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
 +                ...toolControls(state),
                  build: state.version.build,
+                 hostApi: listings.hostApi(state.version),
                  database: ownsDatabase(state.version.requirements),
-                 ...context,
-@@ -1786,9 +1800,7 @@ export const makeTools = (
+@@ -1951,9 +1965,7 @@ export const makeTools = (
                          appView = undefined;
                          return runtime.call({
                            app: saved.app,
@@ -702,8 +702,8 @@ index 0a4b1bf8..9159828e 100644
 -                            : { workflowControls: workflows(state) }),
 +                          ...toolControls(state),
                            build: state.version.build,
+                           hostApi: listings.hostApi(state.version),
                            database: ownsDatabase(state.version.requirements),
-                           ...context,
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
 index 961e20df..3a6f0ae3 100644
 --- a/packages/apps/src/implementation/host.ts
@@ -751,7 +751,7 @@ index 961e20df..3a6f0ae3 100644
              : yield* safe(
                  () => Schema.decodeUnknownEffect(JsonValue)(input),
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index c7afe68a..4dc2be5a 100644
+index e2a21500..aa5f7efa 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -1,3 +1,4 @@
@@ -759,7 +759,7 @@ index c7afe68a..4dc2be5a 100644
  import { HostedAppConnections } from "./app-connections.ts";
  import { HostedModels } from "./models.ts";
  import { hostCookieName } from "./browser.ts";
-@@ -189,6 +190,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+@@ -195,6 +196,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
      HostedPools,
      HostedModels,
      HostedAppConnections,
@@ -768,7 +768,7 @@ index c7afe68a..4dc2be5a 100644
      HostedAppData,
      HostedMcpConnections,
 diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
-index 9538a0b0..753d7c85 100644
+index e37454e8..dd4a8031 100644
 --- a/apps/hosted/server/src/implementation/api.ts
 +++ b/apps/hosted/server/src/implementation/api.ts
 @@ -1,3 +1,4 @@
@@ -776,7 +776,7 @@ index 9538a0b0..753d7c85 100644
  import { hostedAppConnectionHandlers } from "./app-connections.ts";
  import { hostedAccountResetHandlers } from "./account-resets.ts";
  import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
-@@ -90,6 +91,7 @@ export const hostedHandlers = Layer.mergeAll(
+@@ -91,6 +92,7 @@ export const hostedHandlers = Layer.mergeAll(
    hostedPoolHandlers,
    hostedModelHandlers,
    hostedAppConnectionHandlers,
@@ -799,10 +799,10 @@ index 7d41e423..dc84b5a7 100644
    "15_hosted_routes": migrateHostedRoutes,
 +  "16_tool_policies": migrateToolPolicies,
  });
-
+ 
  /**
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
-index b13ee894..06c42862 100644
+index 0695ce67..f0ba5336 100644
 --- a/apps/hosted/cloud/src/implementation/migrations.ts
 +++ b/apps/hosted/cloud/src/implementation/migrations.ts
 @@ -1,3 +1,4 @@
@@ -810,14 +810,14 @@ index b13ee894..06c42862 100644
  import { makeRegistryStorage } from "@executor-js/app-registry";
  import { organizationPublishers } from "./publishers.ts";
  /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
-@@ -217,6 +218,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+@@ -311,6 +312,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
          "7_v1_import_orgs": migrateV1ImportOrgs,
          "8_production_ops_receipts": migrateProductionOps,
          "9_production_ops_database_identity": migrateProductionOpsDatabaseIdentity,
 +        "10_tool_policies": migrateToolPolicies,
-       });
-     });
-     yield* Effect.gen(function* () {
+         "14_v1_session_handoffs": migrateV1SessionHandoffs,
+         "15_v1_import_allowed": migrateV1ImportAllowed,
+         "16_setup_skip_assignments": migrateSetupSkipAssignments,
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 index 70a467b9..8f7c6b97 100644
 --- a/apps/hosted/server/package.json
@@ -1702,7 +1702,7 @@ index bc68e274..30ed9ce3 100644
 +  readonly previous?: AppCallConfirmation;
 +  readonly current?: AppCallConfirmation;
 +}
-
+ 
  /** Issued only after a successful consumed SDK approval, never an ordinary tools.call. */
  export interface AppApprovedConfiguration {
 @@ -198,6 +228,10 @@ export interface AppProtectedDispatch {
@@ -2838,7 +2838,7 @@ index 98dba49c..c2c91d62 100644
    );
  }
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 66ad1eac..1a8bd5eb 100644
+index 56a591cb..5c5fcd52 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -14,6 +14,8 @@ export type HostedError =
@@ -3286,10 +3286,10 @@ index 00000000..12391ff7
 +  );
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 01985bab..664feeaf 100644
+index 5022f900..0284fee0 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8712,6 +8712,59 @@ export const scenarios = plan({
+@@ -9777,6 +9777,59 @@ export const scenarios = plan({
        local: na("This scenario exercises hosted service claims and organization inventory."),
      },
    },
@@ -4044,7 +4044,7 @@ index 00000000..0b85df5f
 +  );
 +}
 diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
-index 0250df7b..bcf31f0e 100644
+index e80b928d..9fc0d2c0 100644
 --- a/packages/sdk/src/implementation/workflows.ts
 +++ b/packages/sdk/src/implementation/workflows.ts
 @@ -1,3 +1,5 @@
@@ -4053,7 +4053,7 @@ index 0250df7b..bcf31f0e 100644
  import { makeWorkflowInputs } from "./workflow-inputs.ts";
  import { CurrentActor } from "../contracts/executor.ts";
  /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
-@@ -126,6 +128,7 @@ export const makeWorkflowRuns = (
+@@ -150,6 +152,7 @@ export const makeWorkflowRuns = (
    declarations: Declarations,
    backend?: WorkflowRuntime,
    reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
@@ -4061,7 +4061,7 @@ index 0250df7b..bcf31f0e 100644
  ) => {
    const db = database(storage);
    const read = (run: WorkflowRunId, app?: AppId) =>
-@@ -626,7 +629,7 @@ export const makeWorkflowRuns = (
+@@ -726,7 +729,7 @@ export const makeWorkflowRuns = (
          const row = yield* read(input.run, input.app);
          if (row.actor !== actor) return yield* failure("not_found");
        });
@@ -4070,7 +4070,7 @@ index 0250df7b..bcf31f0e 100644
        start: (input) =>
          parse(
            StartWorkflow,
-@@ -652,6 +655,9 @@ export const makeWorkflowRuns = (
+@@ -752,6 +755,9 @@ export const makeWorkflowRuns = (
            within(input).pipe(Effect.andThen(terminate(input))),
          ),
      };

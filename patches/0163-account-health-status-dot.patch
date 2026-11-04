@@ -1,7 +1,16 @@
 diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+index 9caf3aa0..e08a93de 100644
 --- a/e2e/tests/account-health.spec.ts
 +++ b/e2e/tests/account-health.spec.ts
-@@ -329,7 +329,10 @@
+@@ -4,7 +4,6 @@ import { Effect, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+-import { holdQuery } from "../support/query-transition.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+@@ -331,7 +330,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
          );
          expect(
            yield* browser.use("Outdated result is marked", (page) =>

@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index 754f972..b90fea9 100644
+index 1378a2bb..9f9850d2 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
 @@ -18,7 +18,7 @@ export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
@@ -11,8 +11,8 @@ index 754f972..b90fea9 100644
   * `GOOGLE_ALLOWED_SCOPES` (`apps/cloud/src/engine/first-party-oauth-clients.ts` in
   * UsefulSoftwareCo/executor): the scopes v1's catalog requested for its 13 first-party Google
   * presets (Calendar, Meet, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos
-@@ -65,6 +65,28 @@ const googleAllowedScopes = [
-   "https://www.googleapis.com/auth/webmasters",
+@@ -74,6 +74,28 @@ const googleAllowedScopes = [
+   "https://www.googleapis.com/auth/script.metrics",
  ];
  
 +/** Admin SDK scopes requested by the official Google Admin app. */
@@ -40,7 +40,7 @@ index 754f972..b90fea9 100644
  /**
   * The user scopes Executor for Slack may ask for and a grant may hold: v1's `slackMcpUserScopes`
   * (`packages/react/src/lib/slack-mcp-oauth.ts` in UsefulSoftwareCo/executor), the user scopes
-@@ -281,7 +303,7 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -370,7 +392,7 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
      },
      tokenEndpointAuthMethod: "client_secret_post",
      defaultScopes: ["openid", "email", "profile"],
@@ -50,7 +50,7 @@ index 754f972..b90fea9 100644
    },
    {
 diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
-index 009fbd0..4b0fe77 100644
+index 22388778..16805620 100644
 --- a/e2e/tests/credential-placement.spec.ts
 +++ b/e2e/tests/credential-placement.spec.ts
 @@ -50,6 +50,7 @@ const Redirect = Schema.Struct({
@@ -61,7 +61,7 @@ index 009fbd0..4b0fe77 100644
    firstParty: Schema.optional(Schema.Struct({ label: Schema.String })),
    userScopes: Schema.optional(Schema.Array(Schema.String)),
  });
-@@ -1014,6 +1015,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1025,6 +1026,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            tokenUrl: "https://oauth2.googleapis.com/token",
          };
          const calendar = "https://www.googleapis.com/auth/calendar";
@@ -71,7 +71,7 @@ index 009fbd0..4b0fe77 100644
          /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
          const signIn = (key: string, scopes: readonly string[]) =>
            Effect.gen(function* () {
-@@ -1037,6 +1041,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1048,6 +1052,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
              );
              return { started, setup: yield* body(Setup, answered) };
            });
@@ -112,7 +112,7 @@ index 009fbd0..4b0fe77 100644
          const cleared = {
            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
-@@ -1053,13 +1091,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1064,13 +1102,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
          });
@@ -142,10 +142,10 @@ index 009fbd0..4b0fe77 100644
            ],
            { concurrency: "unbounded" },
          );
-@@ -1080,6 +1132,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
-           firstParty: { label: "Executor for Google" },
-           scopes: ["openid", "email", "profile"],
-         });
+@@ -1109,6 +1161,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+           expect(url.searchParams.get("client_id"), key).toBe(clientId);
+           expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+         }
 +        expect(defaults.setup.scopes).not.toContain(adminDirectoryUser);
 +        expect(admin.setup).toMatchObject({
 +          mode: "automatic",

@@ -1,9 +1,11 @@
 {
   "identity": "basalt-native-subscription-health",
   "file": "0083-native-subscription-health.patch",
-  "content_sha256": "06610cf559a39bf43b01d9dc9a74fa04a96eb5583f8948e5315f937c5f52a0ea",
+  "content_sha256": "d224aa0703e5398c02f9182d9482d1bd4374d9435f871ef3e671216b5598196a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "06610cf559a39bf43b01d9dc9a74fa04a96eb5583f8948e5315f937c5f52a0ea",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

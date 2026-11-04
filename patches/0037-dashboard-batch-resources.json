@@ -1,9 +1,11 @@
 {
   "identity": "executor-dashboard-batch-resources",
   "file": "0037-dashboard-batch-resources.patch",
-  "content_sha256": "646ae33a07da81dda4f074cbff1d13f7666c1b27aa8244dbbff925eddc37e394",
+  "content_sha256": "8a2ca466aba09ea58bbbbbccd82e9c5f8e233cd44dc0ba365e9e894771d35063",
   "kind": "upstream",
   "upstream_pull_request": 2451,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "646ae33a07da81dda4f074cbff1d13f7666c1b27aa8244dbbff925eddc37e394",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-upstream-fast-contracts",
+  "file": "0212-upstream-fast-contracts.patch",
+  "content_sha256": "a4561b57ac0abf05e3513994dc600c7df739d5cd37f2d174ea71746ca2620c09",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

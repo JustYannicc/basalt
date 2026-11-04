@@ -1,9 +1,11 @@
 {
   "identity": "basalt-oauth-granted-scopes",
   "file": "0123-oauth-granted-scopes.patch",
-  "content_sha256": "3633af20ac32d84df86e555bd3137eb54469e838979dcee4a504bb8e7a5b4e33",
+  "content_sha256": "41cf7afd8d986c9226a48539380982ae242685c18e2163baebc59a687115033c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "3633af20ac32d84df86e555bd3137eb54469e838979dcee4a504bb8e7a5b4e33",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

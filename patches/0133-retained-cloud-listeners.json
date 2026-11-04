@@ -1,9 +1,11 @@
 {
   "identity": "basalt-retained-cloud-listeners",
   "file": "0133-retained-cloud-listeners.patch",
-  "content_sha256": "5854e231955ab98eebb92b141ac9cead7e7a9d4ae9bcd1afea6c6fa1591214c2",
+  "content_sha256": "0fccb7e463d2caa2f7c7046ca9002d80c9511c2deaf382b1b09b93b93046dc3b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "5854e231955ab98eebb92b141ac9cead7e7a9d4ae9bcd1afea6c6fa1591214c2",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

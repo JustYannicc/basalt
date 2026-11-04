@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 32b5d221..e2a21500 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -1,3 +1,4 @@
@@ -6,7 +7,7 @@ diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/co
  import { HostedModels } from "./models.ts";
  import { hostCookieName } from "./browser.ts";
  import { HostedWorkflowInputs } from "./workflow-inputs.ts";
-@@ -187,6 +188,7 @@
+@@ -193,6 +194,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
      HostedPoolUsage,
      HostedPools,
      HostedModels,
@@ -16,6 +17,7 @@ diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/co
      HostedMcpConnections,
 diff --git a/apps/hosted/server/src/contracts/app-connections.ts b/apps/hosted/server/src/contracts/app-connections.ts
 new file mode 100644
+index 00000000..e8e29791
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/app-connections.ts
 @@ -0,0 +1,59 @@
@@ -79,6 +81,7 @@ new file mode 100644
 +  )
 +  .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index 6dcc12df..e37454e8 100644
 --- a/apps/hosted/server/src/implementation/api.ts
 +++ b/apps/hosted/server/src/implementation/api.ts
 @@ -1,3 +1,4 @@
@@ -86,7 +89,7 @@ diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/s
  import { hostedAccountResetHandlers } from "./account-resets.ts";
  import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
  import { hostedAppAccountHandlers } from "./app-account-links.ts";
-@@ -88,6 +89,7 @@
+@@ -89,6 +90,7 @@ export const hostedHandlers = Layer.mergeAll(
    hostedPoolUsageHandlers,
    hostedPoolHandlers,
    hostedModelHandlers,
@@ -96,6 +99,7 @@ diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/s
    hostedWebhookHandlers,
 diff --git a/apps/hosted/server/src/implementation/app-connections.ts b/apps/hosted/server/src/implementation/app-connections.ts
 new file mode 100644
+index 00000000..366e85a5
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/app-connections.ts
 @@ -0,0 +1,44 @@
@@ -144,6 +148,7 @@ new file mode 100644
 +      ),
 +);
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 312f3470..621aa73f 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,4 @@
@@ -151,7 +156,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
  import { requireOrganizationAppWrite } from "./organization-app-write.ts";
  import { commitServiceInstall, removeServiceInstall } from "./service-install-records.ts";
  import { CurrentOrganization } from "../contracts/organization.ts";
-@@ -277,6 +278,40 @@
+@@ -277,6 +278,40 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
          ),
        );
      const lifecycle: ResourceLifecycle = {
@@ -193,9 +198,10 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
          linkedAccounts(sql, { subject: input.subject, apps: [input.app] }).pipe(
            Effect.map((linked) =>
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index c4eeaba0..56a591cb 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -14,6 +14,8 @@
+@@ -14,6 +14,8 @@ export type HostedError =
    | Schema.SchemaError;
  const errorMessage = Match.type<HostedError>().pipe(
    Match.tagsExhaustive({
@@ -206,6 +212,7 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
      AccountResetRefused: ({ message }) => message,
 diff --git a/e2e/support/app-call-sdk-source.ts b/e2e/support/app-call-sdk-source.ts
 new file mode 100644
+index 00000000..a8e9340f
 --- /dev/null
 +++ b/e2e/support/app-call-sdk-source.ts
 @@ -0,0 +1,122 @@
@@ -333,6 +340,7 @@ new file mode 100644
 +`;
 diff --git a/e2e/support/app-call-sdk.ts b/e2e/support/app-call-sdk.ts
 new file mode 100644
+index 00000000..f2a37fe5
 --- /dev/null
 +++ b/e2e/support/app-call-sdk.ts
 @@ -0,0 +1,87 @@
@@ -424,14 +432,13 @@ new file mode 100644
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 3a9784a5..5022f900 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8710,6 +8710,44 @@
-       "self-host": scheduled,
-       cloud: na("Uses a runner-owned catalog and retained instance fixtures for the UI journey."),
+@@ -9777,6 +9777,44 @@ export const scenarios = plan({
        local: na("This scenario exercises hosted service claims and organization inventory."),
-+    },
-+  },
+     },
+   },
 +  appCallWorkflow: {
 +    file: "app-call-receipts.spec.ts",
 +    title:
@@ -468,11 +475,14 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      local: na("Uses hosted organization audiences and connection authority."),
 +      "self-host": scheduled,
 +      cloud: managedCloud,
-     },
-   },
++    },
++  },
    appModelRequests: {
+     fixtures: "actors",
+     legacyStorage: true,
 diff --git a/e2e/tests/app-call-receipts.spec.ts b/e2e/tests/app-call-receipts.spec.ts
 new file mode 100644
+index 00000000..eb66f824
 --- /dev/null
 +++ b/e2e/tests/app-call-receipts.spec.ts
 @@ -0,0 +1,233 @@
@@ -711,6 +721,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/app-calls.spec.ts b/e2e/tests/app-calls.spec.ts
 new file mode 100644
+index 00000000..9763b47c
 --- /dev/null
 +++ b/e2e/tests/app-calls.spec.ts
 @@ -0,0 +1,148 @@
@@ -863,6 +874,7 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/apps/package.json b/packages/apps/package.json
+index 65ae7a9f..8d8db7e3 100644
 --- a/packages/apps/package.json
 +++ b/packages/apps/package.json
 @@ -1,6 +1,6 @@
@@ -875,6 +887,7 @@ diff --git a/packages/apps/package.json b/packages/apps/package.json
    "type": "module",
 diff --git a/packages/apps/protocols/33.json b/packages/apps/protocols/33.json
 new file mode 100644
+index 00000000..b3882e4d
 --- /dev/null
 +++ b/packages/apps/protocols/33.json
 @@ -0,0 +1,4479 @@
@@ -5359,6 +5372,7 @@ new file mode 100644
 +}
 diff --git a/packages/apps/src/contracts/app-calls.ts b/packages/apps/src/contracts/app-calls.ts
 new file mode 100644
+index 00000000..3a53867e
 --- /dev/null
 +++ b/packages/apps/src/contracts/app-calls.ts
 @@ -0,0 +1,88 @@
@@ -5451,9 +5465,10 @@ new file mode 100644
 +  command: typeof AppToolPolicyCommand.Type,
 +) => Effect.Effect<typeof AppToolPolicyReply.Type, AppCallFailed>;
 diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/app.ts
+index 07fd8bfa..d77a60bd 100644
 --- a/packages/apps/src/contracts/app.ts
 +++ b/packages/apps/src/contracts/app.ts
-@@ -132,6 +132,7 @@
+@@ -132,6 +132,7 @@ export interface App<Slots extends ScopedSlots, Def extends AppDefinition<never>
    /** Declared beside the accounts and checked when the module loads. */
    readonly icons?: import("./icons.ts").AppIcons;
    readonly models?: import("./models.ts").DeclaredModels;
@@ -5462,9 +5477,10 @@ diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/ap
  }
  
 diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contracts/context.ts
+index 1e56c0c7..6b97a20c 100644
 --- a/packages/apps/src/contracts/context.ts
 +++ b/packages/apps/src/contracts/context.ts
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,7 @@ import type { AppIcon } from "./icons.ts";
   */
  export interface AppRequirements {
    readonly models?: import("./models.ts").DeclaredModels;
@@ -5472,7 +5488,7 @@ diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contract
    readonly app?: { readonly accounts: AccountSlots };
    readonly user?: { readonly accounts: AccountSlots };
    /** Removed: declare `user: { accounts }` for the caller's accounts or `app: { accounts }`. */
-@@ -65,7 +66,8 @@
+@@ -65,7 +66,8 @@ export type AppContext<
  export type QueryContext<
    Requirements extends AppRequirements = AppRequirements,
    Scope extends AccountScope = "user",
@@ -5482,7 +5498,7 @@ diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contract
  
  /** Interactive mutation context; outside calls happen between SQL transactions, never inside one. */
  export type MutationContext<
-@@ -73,6 +75,7 @@
+@@ -73,6 +75,7 @@ export type MutationContext<
    Scope extends AccountScope = "user",
  > = Omit<AppContext<Requirements, Scope>, "workflows"> & {
    readonly workflows: WorkflowControls;
@@ -5491,9 +5507,10 @@ diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contract
    EventsContext<Requirements> &
    import("./models.ts").ModelSlots<Requirements>;
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+index 4eb0f0b8..5af7993f 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,7 @@ import {
  } from "./workflows.ts";
  export * from "./workflows.ts";
  export * from "./models.ts";
@@ -5502,9 +5519,10 @@ diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/h
  export * from "./failure.ts";
  import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
 diff --git a/packages/apps/src/contracts/operations.ts b/packages/apps/src/contracts/operations.ts
+index 29d5d01e..b7a2fd3c 100644
 --- a/packages/apps/src/contracts/operations.ts
 +++ b/packages/apps/src/contracts/operations.ts
-@@ -12,6 +12,7 @@
+@@ -12,6 +12,7 @@ import type { JsonObject } from "./schema.ts";
   */
  export type OperationContext = EvaluationContext<ScopedSlots> & {
    readonly audience?: "app";
@@ -5513,6 +5531,7 @@ diff --git a/packages/apps/src/contracts/operations.ts b/packages/apps/src/contr
  };
  /** The host validates input, checks approval, then owns the transaction and output validation. */
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index a15fa5d4..8cc97df6 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -5523,6 +5542,7 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
 +export const frameworkProtocol = 33;
 diff --git a/packages/apps/src/contracts/protocols/31.ts b/packages/apps/src/contracts/protocols/31.ts
 new file mode 100644
+index 00000000..9e5c66d3
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/31.ts
 @@ -0,0 +1,691 @@
@@ -6218,6 +6238,7 @@ new file mode 100644
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+index eb9b82a2..0f632060 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -1,3 +1,10 @@
@@ -6231,7 +6252,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
  import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
  import { AccountObservationResult } from "../account-observation.ts";
  /**
-@@ -50,7 +57,7 @@
+@@ -50,7 +57,7 @@ import {
    WorkflowControlCommand,
    WorkflowFailure,
    WorkflowReplay,
@@ -6240,7 +6261,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
    WorkflowRpcResult,
    WorkflowRunId,
  } from "../workflows.ts";
-@@ -192,6 +199,7 @@
+@@ -192,6 +199,7 @@ export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
  /** Account slots available without binding accounts or evaluating the app factory. */
  export const DeclaredRequirements = Schema.Struct({
    models: Schema.optionalKey(DeclaredModels),
@@ -6248,7 +6269,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
    /** Protocol support of this retained framework build, not an author-declared requirement. */
    capabilities: Schema.optionalKey(
      Schema.Struct({
-@@ -650,6 +658,10 @@
+@@ -654,6 +662,10 @@ export const messageDirections = {
    elicitationRequest: "bundle",
    workflowStep: "bundle",
    workflowControl: "bundle",
@@ -6259,7 +6280,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
    modelRequest: "bundle",
    modelReply: "host",
    cacheCommand: "bundle",
-@@ -677,6 +689,10 @@
+@@ -681,6 +693,10 @@ export const current = {
      workflowStep: WorkflowRpcCommand,
      workflowStepReply: WorkflowRpcResult,
      workflowControl: WorkflowControlCommand,
@@ -6271,6 +6292,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
      modelReply: ModelReply,
      cacheCommand: CacheCommand,
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index d03734fa..d09d516c 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -1,3 +1,4 @@
@@ -6278,13 +6300,14 @@ diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/s
  import { protocol30 } from "./30.ts";
  /**
   * Every released host protocol that the framework no longer speaks. Each is frozen: `bun run check`
-@@ -66,4 +67,5 @@
+@@ -66,4 +67,5 @@ export const releasedProtocols = [
    protocol26,
    protocol27,
    protocol30,
 +  protocol31,
  ] as const;
 diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contracts/workflows.ts
+index 01aceab5..18520f50 100644
 --- a/packages/apps/src/contracts/workflows.ts
 +++ b/packages/apps/src/contracts/workflows.ts
 @@ -1,3 +1,4 @@
@@ -6292,7 +6315,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
  /** Portable workflow declarations, run views and durable execution capabilities. */
  import {
    WorkflowInputCommand,
-@@ -186,6 +187,7 @@
+@@ -186,6 +187,7 @@ export type WorkflowStepContext<
    Scope extends AccountScope = "user",
  > = Omit<AppContext<Requirements, Scope>, "elicit" | "workflows"> &
    import("./models.ts").ModelSlots<Requirements> & {
@@ -6300,7 +6323,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
      readonly runId: WorkflowRunId;
      readonly stepId: string;
      readonly idempotencyKey: string;
-@@ -253,6 +255,7 @@
+@@ -253,6 +255,7 @@ export interface WorkflowDriver {
      name: string,
      options: WorkflowStepOptions,
      run: () => Effect.Effect<JsonValue, WorkflowFailure>,
@@ -6308,7 +6331,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
    ) => Effect.Effect<JsonValue, WorkflowFailure>;
    readonly sleep: (
      name: string,
-@@ -263,6 +266,12 @@
+@@ -263,6 +266,12 @@ export interface WorkflowDriver {
  /** Trusted host callbacks for one pinned run. Credentials are resolved only while executing a step. */
  export interface WorkflowExecution {
    readonly runId: WorkflowRunId;
@@ -6321,7 +6344,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
    readonly driver: WorkflowDriver;
    readonly input?: (command: WorkflowInputCommand) => Effect.Effect<WorkflowInput, WorkflowFailure>;
    readonly resolve: () => Effect.Effect<HostContext, WorkflowFailure>;
-@@ -330,6 +339,23 @@
+@@ -330,6 +339,23 @@ export const WorkflowRpcCommand = Schema.Union([
      timeout: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
    }),
  ]);
@@ -6345,7 +6368,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
  export const WorkflowRpcResult = Schema.Union([
    Schema.Struct({ ok: Schema.Literal(true), value: JsonValue }),
    Schema.Struct({ ok: Schema.Literal(false), error: WorkflowFailure }),
-@@ -339,6 +365,8 @@
+@@ -339,6 +365,8 @@ export type WorkflowRpcResult = typeof WorkflowRpcResult.Type;
  export type WorkflowRpc = (input: unknown, callback?: () => Promise<unknown>) => Promise<unknown>;
  /** Native app-scoped management capability supplied only by an authorized host invocation. */
  export interface WorkflowHostControls {
@@ -6356,6 +6379,7 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
    ) => Effect.Effect<WorkflowRun, WorkflowFailure>;
 diff --git a/packages/apps/src/implementation/app-calls.ts b/packages/apps/src/implementation/app-calls.ts
 new file mode 100644
+index 00000000..0b734dbd
 --- /dev/null
 +++ b/packages/apps/src/implementation/app-calls.ts
 @@ -0,0 +1,33 @@
@@ -6393,6 +6417,7 @@ new file mode 100644
 +    ),
 +});
 diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/implementation/app.ts
+index c9f0b947..b0b0c004 100644
 --- a/packages/apps/src/implementation/app.ts
 +++ b/packages/apps/src/implementation/app.ts
 @@ -1,3 +1,4 @@
@@ -6400,7 +6425,7 @@ diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/impleme
  import { DeclaredModels } from "../contracts/models.ts";
  import { ManyAccounts } from "../contracts/provider.ts";
  /** App author boundary: Promise callbacks are adapted into one native Effect definition. */
-@@ -344,6 +345,14 @@
+@@ -344,6 +345,14 @@ export const defineApp = <
      throw new TypeError(`The app's icons are invalid: ${iconsProblem}`);
    const native: NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>> = {
      accounts,
@@ -6416,6 +6441,7 @@ diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/impleme
        ? {}
        : {
 diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
+index 00df080a..32a2de8f 100644
 --- a/packages/apps/src/implementation/failure-detail.ts
 +++ b/packages/apps/src/implementation/failure-detail.ts
 @@ -1,3 +1,4 @@
@@ -6423,7 +6449,7 @@ diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/
  import { ModelRequestFailed } from "../contracts/models.ts";
  import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
  export { accountFieldSecrets } from "@executor-js/utils/account-secrets";
-@@ -286,6 +287,13 @@
+@@ -416,6 +417,13 @@ const graphqlFailureMessage = (error: GraphqlError, secrets: readonly string[])
   * value is the app's own error, with its own code and scalar fields. Account secrets are replaced.
   */
  export const failureDetail = (error: unknown, secrets: readonly string[]): FailureDetail => {
@@ -6438,9 +6464,10 @@ diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/
      return {
        source: "service",
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 5bd51e72..961e20df 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -85,6 +85,7 @@
+@@ -85,6 +85,7 @@ import { bindMcpAppSource } from "./mcp-app-source.ts";
  import { locate } from "./router.ts";
  import { readCatalog, routerSkills } from "./router-catalog.ts";
  import { shareCatalog } from "../contracts/shared-catalog.ts";
@@ -6448,7 +6475,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
  import { authorModels } from "./models.ts";
  import type { DeclaredModels } from "../contracts/models.ts";
  import { dispatchWebhook } from "./webhooks.ts";
-@@ -260,6 +261,7 @@
+@@ -260,6 +261,7 @@ function requirements(
    icons: AppIcons | undefined,
    checks: readonly string[] | undefined,
    models: DeclaredModels | undefined,
@@ -6456,7 +6483,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
  ) {
    return Effect.gen(function* () {
      return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
-@@ -286,6 +288,7 @@
+@@ -286,6 +288,7 @@ function requirements(
            }),
        ...(icons === undefined ? {} : { icons }),
        ...(models === undefined ? {} : { models }),
@@ -6464,7 +6491,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
      }).pipe(
        Effect.mapError((cause) =>
          declarationInvalid("The app's account declarations are invalid", cause),
-@@ -511,6 +514,7 @@
+@@ -511,6 +514,7 @@ function dispatch(
          native.icons,
          native.connectChecks,
          native.models,
@@ -6472,7 +6499,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
        );
        if (request.operation === "connect") {
          const selected = native.accounts.app[request.slot] ?? native.accounts.user[request.slot];
-@@ -817,7 +821,7 @@
+@@ -817,7 +821,7 @@ function dispatch(
          const workflowContext = yield* makeWorkflowContext(
            execution,
            definition,
@@ -6481,7 +6508,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
              Effect.gen(function* () {
                const current = yield* execution.resolve();
                const accounts = yield* safe(
-@@ -845,6 +849,13 @@
+@@ -845,6 +849,13 @@ function dispatch(
                    stepId,
                    idempotencyKey: stepId,
                    models: authorModels(native.models, context.models, signal),
@@ -6495,7 +6522,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
                  },
                  // The resolved values, not the app's decoded fields, which may be `Redacted`.
                  secrets: accountSecrets(current.accounts),
-@@ -927,6 +938,11 @@
+@@ -927,6 +938,11 @@ function dispatch(
              sql: session.writer,
              events: emitter("sourceAccount" in request ? request.sourceAccount : undefined),
              models: authorModels(native.models, context.models, bound.signal),
@@ -6507,7 +6534,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
            },
            native.accounts,
          );
-@@ -1032,7 +1048,31 @@
+@@ -1032,7 +1048,31 @@ function dispatch(
              ),
            new HostToolPolicyFailed(),
          );
@@ -6540,7 +6567,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
            Match.when("approved", () => Effect.void),
            Match.when("denied", () => Effect.fail(new HostToolBlocked())),
            Match.when("user-approval", () =>
-@@ -1071,6 +1111,11 @@
+@@ -1071,6 +1111,11 @@ function dispatch(
                  fetch,
                  ...(audience === "app" ? { audience: "app" as const } : {}),
                  workflows: kind === "mutate" ? workflowControls : workflowReads,
@@ -6553,9 +6580,10 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
                  ...(kind === "mutate"
                    ? {
 diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
+index 1b5f3b00..de0238df 100644
 --- a/packages/apps/src/implementation/workflow-context.ts
 +++ b/packages/apps/src/implementation/workflow-context.ts
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,7 @@ import {
    type WorkflowStepContext as AuthorStepContext,
  } from "../contracts/workflows.ts";
  import { JsonValue } from "../contracts/schema.ts";
@@ -6563,7 +6591,7 @@ diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/app
  import { ModelRequestFailed } from "../contracts/models.ts";
  import { nativeOperation } from "./operations.ts";
  import { declaredOperations } from "./router.ts";
-@@ -43,7 +44,10 @@
+@@ -43,7 +44,10 @@ export const workflowSafe = <A>(
        return Effect.fail(
          new WorkflowFailure({
            reason: "execution",
@@ -6575,7 +6603,7 @@ diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/app
            ...(errorName === undefined ? {} : { errorName }),
            ...(message === undefined ? {} : { message }),
          }),
-@@ -73,6 +77,7 @@
+@@ -73,6 +77,7 @@ export const makeWorkflowContext = (
    fresh: (
      stepId: string,
      signal: AbortSignal,
@@ -6583,7 +6611,7 @@ diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/app
    ) => Effect.Effect<
      { readonly context: WorkflowStepContext; readonly secrets: readonly string[] },
      WorkflowFailure
-@@ -128,34 +133,42 @@
+@@ -128,34 +133,42 @@ export const makeWorkflowContext = (
            Effect.mapError(() => new WorkflowFailure({ reason: "input", retryable: false })),
          );
          return yield* execution.driver
@@ -6654,7 +6682,7 @@ diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/app
            )
            .pipe(Effect.mapError(inStep(name)));
        });
-@@ -185,13 +198,17 @@
+@@ -185,13 +198,17 @@ export const makeWorkflowContext = (
          if (timeout === undefined)
            return yield* new WorkflowFailure({ reason: "input", retryable: false });
          return yield* execution.driver
@@ -6680,6 +6708,7 @@ diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/app
            .pipe(Effect.mapError(inStep(name)));
        });
 diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/src/implementation/workflow-rpc.ts
+index dfbda2d8..cf5fded5 100644
 --- a/packages/apps/src/implementation/workflow-rpc.ts
 +++ b/packages/apps/src/implementation/workflow-rpc.ts
 @@ -1,10 +1,17 @@
@@ -6701,7 +6730,7 @@ diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/sr
    WorkflowRpcResult,
    WorkflowRun,
    WorkflowRunPage,
-@@ -35,6 +42,18 @@
+@@ -35,6 +42,18 @@ export const isolatedWorkflowExecution = (
      );
    return {
      runId,
@@ -6720,7 +6749,7 @@ diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/sr
      input: (command) =>
        request({ operation: "input", command }).pipe(
          Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
-@@ -43,28 +62,30 @@
+@@ -43,28 +62,30 @@ export const isolatedWorkflowExecution = (
      driver: {
        waitForInput: (name, id, expiresAt) =>
          request({ operation: "input-wait", name, id, expiresAt }).pipe(Effect.asVoid),
@@ -6770,7 +6799,7 @@ diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/sr
            );
          }),
        sleep: (name, duration) =>
-@@ -111,6 +132,30 @@
+@@ -151,6 +172,30 @@ export const isolatedWorkflowControls = (
        ),
      );
    return {
@@ -6798,10 +6827,11 @@ diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/sr
 +          reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
 +        ),
 +      ),
-     start: (input) => run({ operation: "start", ...input }),
-     get: (input) => run({ operation: "get", ...input }),
-     terminate: (input) => run({ operation: "terminate", ...input }),
+     start: (input) => request({ operation: "start", ...input }, WorkflowRun),
+     get: (input) => request({ operation: "get", ...input }, WorkflowRun),
+     terminate: (input) => request({ operation: "terminate", ...input }, WorkflowRun),
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
+index 7b6ffa87..34e25975 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
 @@ -1,3 +1,5 @@
@@ -6812,6 +6842,7 @@ diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
  export type {
 diff --git a/packages/sdk/src/contracts/app-calls.ts b/packages/sdk/src/contracts/app-calls.ts
 new file mode 100644
+index 00000000..bc68e274
 --- /dev/null
 +++ b/packages/sdk/src/contracts/app-calls.ts
 @@ -0,0 +1,210 @@
@@ -7026,9 +7057,10 @@ new file mode 100644
 +  ) => Effect.Effect<"approved" | "user-approval", StorageError | AppCallFailed>;
 +}
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index 9b70f2ea..430fc3ca 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
-@@ -71,6 +71,7 @@
+@@ -71,6 +71,7 @@ export type AccountRequirement = typeof AccountRequirement.Type;
  export const AppRequirements = Schema.Struct({
    capabilities: DeclaredRequirements.fields.capabilities,
    models: DeclaredRequirements.fields.models,
@@ -7037,6 +7069,7 @@ diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/app
    database: DeclaredRequirements.fields.database,
    sql: DeclaredRequirements.fields.sql,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 00c41a13..09ba2204 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,3 +1,4 @@
@@ -7044,7 +7077,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
  import { InteractiveHost } from "./interactive-accounts.ts";
  import {
    AccountAcquisitionHost,
-@@ -126,6 +127,24 @@
+@@ -126,6 +127,24 @@ export interface HostAccessLifecycle {
   * bounded access acknowledgements described by HostAccessLifecycle.
   */
  export interface ResourceLifecycle {
@@ -7069,7 +7102,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    /**
     * The saved account's placement, resolved from product state, never from the current actor.
     * Equal placements may group verified identities; null keeps the account independent.
-@@ -346,6 +365,7 @@
+@@ -362,6 +381,7 @@ export interface ExecutorInputs {
    readonly registry?: RegistryOptions;
    /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
    readonly hooks?: ResourceLifecycle;
@@ -7077,7 +7110,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    readonly workflows?: WorkflowRuntime;
    /** Authenticated product review page for a durable workflow question. */
    readonly workflowInputUrl?: (input: {
-@@ -483,6 +503,8 @@
+@@ -501,6 +521,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       */
      readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
    };
@@ -7086,7 +7119,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    readonly apps: Omit<FlatExecutor["apps"], (typeof LegacyVersionEndpoints)[number]> & {
      readonly workflows: FlatExecutor["appWorkflows"];
      readonly workflowRuns: FlatExecutor["appWorkflowRuns"];
-@@ -548,6 +570,7 @@
+@@ -566,6 +588,7 @@ export type PromiseExecutor = Promisify<
    Omit<
      Executor,
      | typeof WorkflowHost
@@ -7095,9 +7128,10 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
      | typeof RepositoryHost
      | typeof InteractiveHost
 diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+index aecb7137..801ffe3e 100644
 --- a/packages/sdk/src/contracts/storage.ts
 +++ b/packages/sdk/src/contracts/storage.ts
-@@ -149,6 +149,8 @@
+@@ -149,6 +149,8 @@ export interface Credentials {
        | WebhookId
        | WorkflowRunId
        | WorkflowInputId
@@ -7106,7 +7140,7 @@ diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/
        | import("./app-views.ts").AppViewId
        | import("./events.ts").EventSubscriptionId
        | import("./events.ts").StoredEventId,
-@@ -164,6 +166,8 @@
+@@ -164,6 +166,8 @@ export interface Credentials {
        | WebhookId
        | WorkflowRunId
        | WorkflowInputId
@@ -7116,6 +7150,7 @@ diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/
        | import("./events.ts").EventSubscriptionId
        | import("./events.ts").StoredEventId,
 diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
+index d91bf83f..3095752a 100644
 --- a/packages/sdk/src/contracts/workerd-host.ts
 +++ b/packages/sdk/src/contracts/workerd-host.ts
 @@ -1,3 +1,4 @@
@@ -7123,7 +7158,7 @@ diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contr
  import { ModelCommand } from "apps/contracts";
  import { WorkflowInputCommand } from "apps/contracts";
  /** Private host capabilities and parsed app requests for the embedded workerd runtime. */
-@@ -114,6 +115,15 @@
+@@ -117,6 +118,15 @@ export const WorkflowHostCommand = Schema.Union([
      input: WorkflowValue,
      stepId: Schema.NonEmptyString,
      timeout: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -7140,15 +7175,17 @@ diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contr
    Schema.Struct({ operation: Schema.Literal("control"), run: WorkflowRunId, command: Schema.Json }),
    Schema.Struct({
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 03a41f9c..7e5e40d4 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -57,3 +57,4 @@
+@@ -67,3 +67,4 @@ export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
  export { asciiJson } from "./implementation/ascii-json.ts";
  
  export * from "./contracts/app-views.ts";
 +export * from "./contracts/app-calls.ts";
 diff --git a/packages/sdk/src/implementation/app-call-accounts.ts b/packages/sdk/src/implementation/app-call-accounts.ts
 new file mode 100644
+index 00000000..ba629d58
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-accounts.ts
 @@ -0,0 +1,22 @@
@@ -7176,6 +7213,7 @@ new file mode 100644
 +  });
 diff --git a/packages/sdk/src/implementation/app-call-receipts.ts b/packages/sdk/src/implementation/app-call-receipts.ts
 new file mode 100644
+index 00000000..d59f3660
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-receipts.ts
 @@ -0,0 +1,132 @@
@@ -7313,6 +7351,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/app-call-schema.ts b/packages/sdk/src/implementation/app-call-schema.ts
 new file mode 100644
+index 00000000..fd107aa4
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-schema.ts
 @@ -0,0 +1,28 @@
@@ -7346,6 +7385,7 @@ new file mode 100644
 +});
 diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
 new file mode 100644
+index 00000000..3786359a
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-calls.ts
 @@ -0,0 +1,313 @@
@@ -7664,6 +7704,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk/src/implementation/app-confirmations.ts
 new file mode 100644
+index 00000000..9dc93d6e
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-confirmations.ts
 @@ -0,0 +1,148 @@
@@ -7817,6 +7858,7 @@ new file mode 100644
 +    }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
 new file mode 100644
+index 00000000..259f4b09
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-connections.ts
 @@ -0,0 +1,197 @@
@@ -8018,9 +8060,10 @@ new file mode 100644
 +  return { operations, find, payload, seal, view, declaration, authorize };
 +};
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index bf9ec42e..c46108f9 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -309,6 +309,7 @@
+@@ -309,6 +309,7 @@ const protocol26: AppProtocol = { ...protocol25, version: 26, nodeEntry: nodeApp
  const protocol27: AppProtocol = { ...protocol26, version: 27, nodeEntry: nodeAppEntry(27) };
  const protocol30: AppProtocol = { ...protocol27, version: 30, nodeEntry: nodeAppEntry(30) };
  const protocol31: AppProtocol = { ...protocol30, version: 31, nodeEntry: nodeAppEntry(31) };
@@ -8028,7 +8071,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -534,6 +535,7 @@
+@@ -534,6 +535,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol27,
      protocol30,
      protocol31,
@@ -8037,9 +8080,10 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 6f767f55..cd4d0bcc 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -501,6 +501,9 @@
+@@ -504,6 +504,9 @@ export const makeApps = (
          ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
          ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
          ...(built.requirements.models === undefined ? {} : { models: built.requirements.models }),
@@ -8050,6 +8094,7 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
            entries.map(
              ({
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index a8c11726..cf3012de 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,8 @@
@@ -8061,7 +8106,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import { modelsForInvocation } from "./models.ts";
  import { toolsFailure, toolsProblem } from "./account-tools-health.ts";
  import type { ToolsProbe } from "./account-health.ts";
-@@ -164,25 +169,56 @@
+@@ -170,25 +175,56 @@ export const createExecutor = (
            ),
      };
      const base = toEffectRuntime(options.runtime, options.blobs, cache);
@@ -8121,7 +8166,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          }).pipe(Effect.provideService(AppEventSink, sink)),
        workflow: (input) =>
          Effect.gen(function* () {
-@@ -190,7 +226,41 @@
+@@ -196,7 +232,41 @@ export const createExecutor = (
              ...input,
              durableStep: true,
            });
@@ -8164,7 +8209,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          }),
      };
      // The operator's own OAuth clients, by ID; their tokens are managed.
-@@ -277,6 +347,7 @@
+@@ -284,6 +354,7 @@ export const createExecutor = (
        }),
        workflows.controls,
        options.hooks,
@@ -8172,7 +8217,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
      );
      const interactiveOperations = makeInteractiveAccounts(
        db,
-@@ -410,7 +481,11 @@
+@@ -419,7 +490,11 @@ export const createExecutor = (
                durableStep: true,
                ...(context.caller === undefined ? {} : { caller: context.caller }),
              });
@@ -8185,7 +8230,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
            }),
        },
        [RepositoryHost]: {
-@@ -605,6 +680,8 @@
+@@ -623,6 +698,8 @@ export const createExecutor = (
              return result;
            }),
        },
@@ -8195,9 +8240,10 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        registry: catalog.registry,
        skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index 7e6b9723..fa7c7eed 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -7,7 +7,7 @@
+@@ -9,7 +9,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
  export const database = (storage: ExecutorDatabase) => ({
@@ -8207,9 +8253,10 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
  });
  
 diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
+index 62dd22f3..1e1dfa0e 100644
 --- a/packages/sdk/src/implementation/owners.ts
 +++ b/packages/sdk/src/implementation/owners.ts
-@@ -124,6 +124,12 @@
+@@ -124,6 +124,12 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
          yield* query(() =>
            tx.deleteMany("scheduledRuns", { where: (b) => b("owner", "=", owner) }),
          );
@@ -8223,6 +8270,7 @@ diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implem
          // Webhook sources belong to the app owner; delete by owner for the same reason as schedules.
          yield* query(() =>
 diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
+index 91c073fc..b7adb58d 100644
 --- a/packages/sdk/src/implementation/promise.ts
 +++ b/packages/sdk/src/implementation/promise.ts
 @@ -1,3 +1,4 @@
@@ -8230,7 +8278,7 @@ diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/imple
  import {
    WorkflowInputTarget,
    AnswerWorkflowInput,
-@@ -83,6 +84,12 @@
+@@ -83,6 +84,12 @@ const invocationOptions = (
  /** Adapt an existing native client; each Promise call runs one decoded operation. */
  export const promiseExecutor = (executor: Executor): PromiseExecutor => {
    return {
@@ -8244,6 +8292,7 @@ diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/imple
        bundle: (input) => run(AppSkillInputs.list, input, executor.skills.bundle),
        list: (input) => run(AppSkillInputs.list, input, executor.skills.list),
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 26f1eb22..42365a19 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,4 @@
@@ -8251,7 +8300,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
  import { accountAcquisitions4020 } from "./account-acquisition-schema.ts";
  import { accountDriverChecks } from "./account-driver-check-schema.ts";
  import { accountObservations } from "./account-observation-schema.ts";
-@@ -806,6 +807,18 @@
+@@ -811,6 +812,18 @@ export const storageSchemas = [
        }),
      },
    }),
@@ -8271,9 +8320,10 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index b02dfcbf..eb232705 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,7 @@
+@@ -25,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -8282,7 +8332,7 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -77,7 +77,7 @@
+@@ -80,7 +80,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -8292,6 +8342,7 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
        lockAccountObservation: (id: string) =>
          sql`update executor_account_observations set id = id where id = ${id}`.pipe(
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 71985366..8db3ffd3 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -1,3 +1,4 @@
@@ -8299,7 +8350,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
  import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.ts";
  import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
  import { McpAppViewSink, McpToolResult, type McpAppViewObservation } from "apps/contracts";
-@@ -97,7 +98,6 @@
+@@ -104,7 +105,6 @@ import {
    InvocationSelection,
    type PrefetchedInvocation,
    type PrefetchHost,
@@ -8307,7 +8358,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
    type ToolRouter,
  } from "../contracts/tools.ts";
  import type { ExecutorDatabase } from "./storage.ts";
-@@ -775,6 +775,9 @@
+@@ -871,6 +871,9 @@ export const makeTools = (
    listings: Listings,
    workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
    lifecycle?: ResourceLifecycle,
@@ -8317,9 +8368,9 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
  ) => {
    const db = database(storage);
    const resolveAccount = oauth.resolveSelected;
-@@ -1829,6 +1832,16 @@
-                         )(result.failure),
+@@ -1997,6 +2000,16 @@ export const makeTools = (
                        );
+                     }
                      const value = result.success;
 +                    if (!toolError && kind === "mutation" && configurationApproved !== undefined)
 +                      yield* configurationApproved({
@@ -8335,6 +8386,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                        appView !== undefined &&
                        options?.observeAppView !== undefined &&
 diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+index 8c58a56c..ab8e7a24 100644
 --- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
 +++ b/packages/sdk/src/implementation/worker-workflow-rpc.ts
 @@ -1,9 +1,17 @@
@@ -8347,7 +8399,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
 +  AppToolPolicyReply,
 +} from "apps/contracts";
  /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
- import { Cause, Effect, Redacted, Schema } from "effect";
+ import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
  import {
    WorkflowInput,
    WorkflowFailure,
@@ -8355,8 +8407,8 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
 +  NativeWorkflowRpcCommand as WorkflowRpcCommand,
    WorkflowRpcResult,
    WorkflowControlCommand,
-   type WorkflowExecution,
-@@ -34,12 +42,43 @@
+   WorkflowRun,
+@@ -36,12 +44,43 @@ export const invocationWorkflow = (
  ): Effect.Effect<WorkflowRpc> =>
    Effect.gen(function* () {
      const services = yield* Effect.context<never>();
@@ -8402,7 +8454,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
                case "input":
                  if (execution.input === undefined)
                    return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
-@@ -55,18 +94,40 @@
+@@ -57,18 +96,40 @@ export const invocationWorkflow = (
                case "do": {
                  if (callback === undefined)
                    return yield* new WorkflowFailure({ reason: "input", retryable: false });
@@ -8454,7 +8506,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
                    ),
                  );
                }
-@@ -86,6 +147,17 @@
+@@ -88,6 +149,17 @@ export const invocationWorkflow = (
                  // RPC Promise cancellation cannot interrupt its remote callee. Apply
                  // the attempt deadline on the host that owns the storage transaction.
                  return yield* execution.invoke(command).pipe(
@@ -8472,16 +8524,18 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
                    Effect.timeout(command.timeout),
                    Effect.catchTag("TimeoutError", () =>
                      Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
-@@ -96,13 +168,53 @@
+@@ -98,6 +170,7 @@ export const invocationWorkflow = (
          ),
          { signal },
        );
 +    };
    });
- /** App-scoped lifecycle management uses the same private callback transport as step execution. */
- export const invocationWorkflowControls = (controls: WorkflowHostControls, signal: AbortSignal) =>
+ const issues = SchemaIssue.makeFormatterStandardSchemaV1();
+ const controlOperations = ["start", "get", "list", "terminate"] as const;
+@@ -130,8 +203,47 @@ export const invocationWorkflowControls = (controls: WorkflowHostControls, signa
    Effect.gen(function* () {
      const services = yield* Effect.context<never>();
+     const run = Schema.encodeEffect(WorkflowRun);
 -    return (input: unknown): Promise<unknown> =>
 -      Effect.runPromiseWith(services)(
 +    return (input: unknown): Promise<unknown> => {
@@ -8527,14 +8581,15 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
 +      return Effect.runPromiseWith(services)(
          reply(
            Effect.gen(function* () {
-             const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input);
-@@ -120,4 +232,5 @@
+             const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input).pipe(
+@@ -164,4 +276,5 @@ export const invocationWorkflowControls = (controls: WorkflowHostControls, signa
          ),
          { signal },
        );
 +    };
    });
 diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+index b2efd78d..a3c90fdb 100644
 --- a/packages/sdk/src/implementation/workerd-client.ts
 +++ b/packages/sdk/src/implementation/workerd-client.ts
 @@ -1,3 +1,5 @@
@@ -8543,7 +8598,7 @@ diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/sr
  import { ModelRequestFailed, ModelReply } from "apps/contracts";
  import { WorkflowInput } from "apps/contracts";
  /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
-@@ -159,8 +161,46 @@
+@@ -160,8 +162,46 @@ export const workerdHostHandler = (options: {
              const context = yield* host.context(command.run);
              return Redacted.value(context.accounts);
            }
@@ -8593,6 +8648,7 @@ diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/sr
              if (command.result.ok) yield* host.finish(command.run, command.result);
              else
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index 1bf52d0e..975a0415 100644
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
 @@ -1,3 +1,5 @@
@@ -8601,7 +8657,7 @@ diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src
  import { ModelCommand } from "apps/contracts";
  import { WorkflowInput } from "apps/contracts";
  /** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
-@@ -459,6 +461,20 @@
+@@ -470,6 +472,20 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
              Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
            const execution: WorkflowExecution = {
              runId: seed.runId,
@@ -8622,7 +8678,7 @@ diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src
              input: (command) =>
                hostRequest(this.env, { operation: "input", run: seed.runId, command }).pipe(
                  Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
-@@ -506,7 +522,17 @@
+@@ -517,7 +533,17 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
                  Effect.mapError(decodeWorkflowFailure),
                ),
              invoke: (input) =>

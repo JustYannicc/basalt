@@ -1,9 +1,11 @@
 {
   "identity": "executor-app-account-counts",
   "file": "0032-app-account-counts.patch",
-  "content_sha256": "256782366054ca85f91fa925c90e11956bc020a656415cf5e68fd835122a400b",
+  "content_sha256": "4ad7764c3717eb493f7667333193fcf3a4b1c6d8cf1202d732becbf9dd5817f5",
   "kind": "upstream",
   "upstream_pull_request": 2438,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "256782366054ca85f91fa925c90e11956bc020a656415cf5e68fd835122a400b",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

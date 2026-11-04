@@ -1,15 +1,18 @@
 diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
-index d452f3f49..82df0ba6e 100644
+index 32fda8c3..5ea8ed1c 100644
 --- a/apps/docs/content/run/self-host.mdx
 +++ b/apps/docs/content/run/self-host.mdx
-@@ -30,4 +30,6 @@ These settings override the defaults:
+@@ -29,6 +29,8 @@ These settings override the defaults:
+ | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
  | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
  | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 +| `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
 +| `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
  | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
  | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
-@@ -91,4 +93,14 @@ The bundled Motel collector records traces by default. You can export to your ow
+ | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
+@@ -91,6 +93,16 @@ already registered or entered stay in use when you turn this on.
+ The bundled Motel collector records traces by default. You can export to your own collector instead. See
  [Tracing](/run/tracing).
  
 +### Your own name and logo
@@ -24,74 +27,92 @@ index d452f3f49..82df0ba6e 100644
 +
  ## Run it
  
+ <ReleaseCommand product="docker" />
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 88163dc0e..077cd51a6 100644
+index e34f10a0..52b59071 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -29,4 +29,5 @@ import {
+@@ -28,6 +28,7 @@ import {
+ } from "./infrastructure/telemetry.ts";
  
  import { workerBuild } from "./infrastructure/worker-build.ts";
 +import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
  /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
-@@ -54,4 +55,5 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -53,6 +54,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         }),
          ...(yield* telemetryBindings),
          ...(yield* sentryBindings).env,
 +        ...(yield* productBrandBindings),
        },
        compatibility: {
+         date: "2026-09-08",
 diff --git a/apps/hosted/cloud/src/contracts/billing.ts b/apps/hosted/cloud/src/contracts/billing.ts
-index b434885e5..7c7b25134 100644
+index 87f55b3f..9f0bfafd 100644
 --- a/apps/hosted/cloud/src/contracts/billing.ts
 +++ b/apps/hosted/cloud/src/contracts/billing.ts
-@@ -46,5 +46,5 @@ export const BillingUnavailable = ApiError.define({
+@@ -47,7 +47,7 @@ export const MemberLimit = Schema.Struct({
+ export const BillingUnavailable = ApiError.define({
    tag: "BillingUnavailable",
    status: 503,
 -  message: "Executor could not reach its billing service. Try again.",
 +  message: "The billing service could not be reached. Try again.",
  });
  export type BillingUnavailable = typeof BillingUnavailable.Type;
+ /** Billing is disabled for this deployment. */
 diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
-index af11069c9..90e0d7c65 100644
+index c334a771..ef52455b 100644
 --- a/apps/hosted/cloud/src/contracts/onboarding.ts
 +++ b/apps/hosted/cloud/src/contracts/onboarding.ts
-@@ -132,5 +132,5 @@ export const OnboardingUnavailable = ApiError.define({
+@@ -173,7 +173,7 @@ export const OnboardingCreated = Schema.Union([
+ export const OnboardingUnavailable = ApiError.define({
    tag: "OnboardingUnavailable",
    status: 503,
 -  message: "Executor could not complete onboarding. Try again.",
 +  message: "Onboarding could not be completed. Try again.",
  });
  export type OnboardingUnavailable = typeof OnboardingUnavailable.Type;
+ /** A company suggestion is optional; a failed lookup never prevents confirmation. */
 diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
-index 6f83e0b9e..d5b450cbc 100644
+index 402fb348..f9eea2a1 100644
 --- a/apps/hosted/cloud/src/implementation/auth-options.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-options.ts
-@@ -25,4 +25,5 @@ import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
+@@ -25,6 +25,7 @@ import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
  import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
  import { cloudMemberLimit } from "./member-limit.ts";
+ import { v1HandoffSessions } from "./v1-session-handoff.ts";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  
  /** The better-auth endpoint that creates accounts from a verified email code. */
-@@ -99,4 +100,5 @@ export const cloudAuthSettings = Effect.gen(function* () {
+ const emailCodeSignInPath = "/sign-in/email-otp";
+@@ -99,6 +100,7 @@ export const cloudAuthSettings = Effect.gen(function* () {
+     hosts,
      resourceOrigins,
      issuer: hosts.issuer,
 +    brand: yield* CurrentProductBrand,
      callbackOrigin,
      oauthRedirectUri,
-@@ -276,5 +278,5 @@ export const cloudAuthOptions = (
+     oauthProxy,
+@@ -278,7 +280,7 @@ export const cloudAuthOptions = (
+         Effect.runPromise(
            send({
              to: user.email,
 -            subject: "Verify your Executor email",
 +            subject: `Verify your ${settings.brand.name} email`,
              text: Redacted.make(
                `Verify your email address by opening this link:\n\n${url}\n\nIf you did not request this, ignore this email.`,
-@@ -357,4 +359,5 @@ export const cloudAuthOptions = (
+             ),
+@@ -359,6 +361,7 @@ export const cloudAuthOptions = (
+                 id,
                  organizationName: organization.name,
                  origin: settings.url,
 +                brand: settings.brand,
                }),
              ),
-@@ -378,5 +381,11 @@ export const cloudAuthOptions = (
+           ),
+@@ -382,7 +385,13 @@ export const cloudAuthOptions = (
+             ctx !== undefined &&
              (await ctx.context.internalAdapter.findUserByEmail(data.email)) === null;
            await Effect.runPromise(
 -            send(emailCodeMessage({ ...data, type: signUp ? "sign-up" : data.type })),
@@ -104,18 +125,21 @@ index 6f83e0b9e..d5b450cbc 100644
 +            ),
            );
          },
-@@ -386,5 +395,5 @@ export const cloudAuthOptions = (
+       }),
+@@ -390,7 +399,7 @@ export const cloudAuthOptions = (
+       // move of the dashboard between hosts under it. Ceremonies run on the browser origin.
        passkey({
          rpID: settings.hosts.passkey.rpId,
 -        rpName: "Executor",
 +        rpName: settings.brand.name,
          origin: settings.hosts.passkey.origin,
        }),
+     ],
 diff --git a/apps/hosted/cloud/src/implementation/email-messages.ts b/apps/hosted/cloud/src/implementation/email-messages.ts
-index 99509c93f..c6b0c4668 100644
+index 99509c93..c6b0c466 100644
 --- a/apps/hosted/cloud/src/implementation/email-messages.ts
 +++ b/apps/hosted/cloud/src/implementation/email-messages.ts
-@@ -1,33 +1,37 @@
+@@ -1,34 +1,38 @@
  import { Redacted } from "effect";
  import type { AuthEmail, UnsubscribeLinks } from "../contracts/email.ts";
 +import {
@@ -161,13 +185,15 @@ index 99509c93f..c6b0c4668 100644
 +});
  
  const escapeHtml = (value: string) =>
-@@ -45,4 +49,5 @@ export const invitationEmailMessage = ({
+   value
+@@ -44,12 +48,21 @@ export const invitationEmailMessage = ({
+   id,
    organizationName,
    origin,
 +  brand,
  }: {
    readonly email: string;
-@@ -50,5 +55,13 @@ export const invitationEmailMessage = ({
+   readonly id: string;
    readonly organizationName: string;
    readonly origin: string;
 +  readonly brand: ProductBrand;
@@ -181,7 +207,9 @@ index 99509c93f..c6b0c4668 100644
 +  );
    const invitationUrl = `${origin}/invite?invitation=${encodeURIComponent(id)}`;
    const name = escapeHtml(organizationName);
-@@ -58,13 +71,13 @@ export const invitationEmailMessage = ({
+   const link = escapeHtml(invitationUrl);
+@@ -57,28 +70,28 @@ export const invitationEmailMessage = ({
+   const unsolicited = "If you did not expect this invitation, ignore this email.";
    return {
      to: email,
 -    subject: "You’re invited to Executor",
@@ -199,7 +227,7 @@ index 99509c93f..c6b0c4668 100644
 +  <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">You’re invited to join ${name} on ${product}.</div>
    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;"><tr><td align="center" style="padding:40px 16px;">
      <!--[if mso]><table role="presentation" width="520" align="center"><tr><td><![endif]-->
-@@ -72,6 +85,6 @@ export const invitationEmailMessage = ({
+     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:520px;table-layout:fixed;border-collapse:separate;border-spacing:0;">
        <tr><td style="padding:0 0 24px;">
          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;"><tr>
 -          <td width="32" valign="middle"><img src="https://executor.sh/favicon-192.png" alt="" width="32" height="32" style="display:block;width:32px;height:32px;border:0;border-radius:6px;"></td>
@@ -208,14 +236,16 @@ index 99509c93f..c6b0c4668 100644
 +          <td valign="middle" style="padding-left:10px;font-size:20px;line-height:28px;font-weight:700;letter-spacing:-0.5px;">${product}</td>
          </tr></table>
        </td></tr>
-@@ -79,5 +92,5 @@ export const invitationEmailMessage = ({
+       <tr><td bgcolor="#ffffff" style="padding:32px 28px;border:1px solid #e5e5e5;border-radius:12px;background:#ffffff;">
          <p style="margin:0 0 16px;color:#666666;font-size:11px;line-height:16px;font-weight:700;letter-spacing:1.5px;">TEAM INVITATION</p>
          <h1 style="margin:0 0 16px;font-size:28px;line-height:36px;letter-spacing:-0.7px;font-weight:700;">You’re invited.</h1>
 -        <p style="margin:0 0 28px;color:#444444;font-size:16px;line-height:26px;overflow-wrap:anywhere;word-break:break-word;">Join <strong style="color:#171717;">${name}</strong> on Executor.</p>
 +        <p style="margin:0 0 28px;color:#444444;font-size:16px;line-height:26px;overflow-wrap:anywhere;word-break:break-word;">Join <strong style="color:#171717;">${name}</strong> on ${product}.</p>
          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;"><tr><td align="center" bgcolor="#0a0a0a" style="border-radius:6px;background:#0a0a0a;mso-padding-alt:14px 24px;">
            <a href="${link}" style="display:inline-block;border:solid #0a0a0a;border-width:14px 24px;border-radius:6px;color:#ffffff;font-size:15px;line-height:20px;font-weight:700;text-align:center;text-decoration:none;mso-padding-alt:0;">Join team</a>
-@@ -152,10 +165,12 @@ export const emailCodeMessage = ({
+         </td></tr></table>
+@@ -151,22 +164,24 @@ export const emailCodeMessage = ({
+   email,
    otp,
    type,
 +  brand,
@@ -230,7 +260,8 @@ index 99509c93f..c6b0c4668 100644
 +  const { heading, instruction } = purposes(brand.name)[type];
    const expiry = `This code expires in ${emailCodeExpiresIn / 60} minutes. Never share this code with anyone.`;
    const unsolicited = "If you didn't request this, you can safely ignore this email.";
-@@ -164,8 +179,8 @@ export const emailCodeMessage = ({
+   return {
+     to: email,
      subject:
        type === "sign-in" || type === "sign-up"
 -        ? `Your Executor ${type} code`
@@ -242,7 +273,9 @@ index 99509c93f..c6b0c4668 100644
 +      `${brand.name}\n\n${heading}\n\n${instruction}\n\n${otp}\n\n${expiry}\n\n${unsolicited}`,
      ),
      html: Redacted.make(`<!doctype html>
-@@ -175,7 +190,7 @@ export const emailCodeMessage = ({
+ <html lang="en">
+@@ -174,9 +189,9 @@ export const emailCodeMessage = ({
+ <body style="margin:0;padding:0;background:#f6f6f6;color:#171717;font-family:Arial,Helvetica,sans-serif;">
    <table role="presentation" style="width:100%;border-collapse:collapse;"><tr><td style="padding:40px 16px;">
      <table role="presentation" align="center" style="width:100%;max-width:480px;border-collapse:collapse;background:#ffffff;"><tr><td style="padding:32px;">
 -      <p style="margin:0 0 32px;font-size:18px;font-weight:700;">Executor</p>
@@ -252,18 +285,21 @@ index 99509c93f..c6b0c4668 100644
 +      <p style="margin:0 0 24px;font-size:16px;line-height:1.6;">${escapeHtml(instruction)}</p>
        <p style="margin:0 0 24px;padding:20px 12px;background:#f3f3f3;text-align:center;font-family:Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:6px;">${escapeHtml(otp)}</p>
        <p style="margin:0 0 16px;font-size:14px;line-height:1.6;">${expiry}</p>
+       <p style="margin:0;color:#595959;font-size:14px;line-height:1.6;">${unsolicited}</p>
 diff --git a/apps/hosted/cloud/src/implementation/entry.ts b/apps/hosted/cloud/src/implementation/entry.ts
-index 9fcc55f03..6872a4c53 100644
+index 9fcc55f0..6872a4c5 100644
 --- a/apps/hosted/cloud/src/implementation/entry.ts
 +++ b/apps/hosted/cloud/src/implementation/entry.ts
-@@ -1,4 +1,6 @@
+@@ -1,5 +1,7 @@
  import { browserReturnTo, type BrowserSession } from "@executor-js/hosted-server/browser/contracts";
  import type { AuthenticationUnavailable } from "@executor-js/hosted-server";
 +import { unavailablePage } from "@executor-js/dashboard-start/document";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  import { Effect, Schema } from "effect";
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
-@@ -113,9 +115,11 @@ export const cloudEntryDocument = <E, R, E2, R2>(
+ import { CloudEntry, CloudEntryPage } from "../contracts/entry.ts";
+@@ -112,11 +114,13 @@ export const cloudEntryDocument = <E, R, E2, R2>(
+   }).pipe(
      Effect.tapCause(reportCloudFailure),
      Effect.catch(() =>
 -      Effect.succeed(
@@ -280,47 +316,58 @@ index 9fcc55f03..6872a4c53 100644
 +      }),
      ),
    );
+ 
 diff --git a/apps/hosted/cloud/src/infrastructure/email.ts b/apps/hosted/cloud/src/infrastructure/email.ts
-index 0a696ebe0..3cf0ccda6 100644
+index 9d050418..e11cc3b2 100644
 --- a/apps/hosted/cloud/src/infrastructure/email.ts
 +++ b/apps/hosted/cloud/src/infrastructure/email.ts
-@@ -13,4 +13,5 @@ import {
+@@ -12,6 +12,7 @@ import {
+   type SendAuthEmail,
    type SendWelcomeEmail,
  } from "../contracts/email.ts";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  
  const emailDomain = Config.String("AUTH_EMAIL_DOMAIN").pipe(
-@@ -50,4 +51,5 @@ export const authEmailInfrastructure = Effect.gen(function* () {
+   Config.withDefault("executor.sh"),
+@@ -49,6 +50,7 @@ export const authEmailInfrastructure = Effect.gen(function* () {
+  * its native binding; production keeps Cloudflare delivery.
   */
  export const cloudEmail = Effect.gen(function* () {
 +  const brand = yield* CurrentProductBrand;
    const from = `no-reply@${yield* emailDomain}`;
    const founder = "rhys@executor.sh";
-@@ -118,5 +120,5 @@ export const cloudEmail = Effect.gen(function* () {
+   // Better Auth starts new Effect fibers. Preserve the environment that owns resource outputs.
+@@ -117,7 +119,7 @@ export const cloudEmail = Effect.gen(function* () {
+   const send: SendAuthEmail = (email) =>
      Effect.suspend(() =>
        client.send({
 -        from: { name: "Executor", email: from },
 +        from: { name: brand.name, email: from },
          to: email.to,
          subject: email.subject,
+         text: Redacted.value(email.text),
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index abec6b3c0..61f8265f7 100644
+index f9610bbe..7d368164 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -3,5 +3,5 @@ import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy"
- import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
- import { makeRegistryStorage } from "@executor-js/app-registry";
--import { firstPartyOAuthClients, hostedOAuthClientName } from "@executor-js/hosted-server";
-+import { firstPartyOAuthClients } from "@executor-js/hosted-server";
- import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
- import {
-@@ -33,4 +33,5 @@ import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
+@@ -6,7 +6,6 @@ import {
+   firstPartyOAuthClients,
+   hostedApi,
+   hostedApiRevision,
+-  hostedOAuthClientName,
+ } from "@executor-js/hosted-server";
+ import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import api from "../../.generated/executor-api-revision.json" with { type: "json" };
+@@ -40,6 +39,7 @@ import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
+ import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
  import { cloudClientMetadata } from "./client-metadata.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
 +import { productBrandConfig } from "@executor-js/utils/product-brand";
  
  /**
-@@ -131,5 +132,6 @@ export const cloudExecutor = Effect.fn(function* (
+  * Cloudflare offers no connect hook for global fetch, so this host cannot re-check a resolved
+@@ -157,7 +157,8 @@ export const cloudExecutor = Effect.fn(function* (
+         hostApi: hostedApi(resourceOrigins.api, apiRevision),
          oauth: {
            httpClient: egress.client,
 -          clientName: hostedOAuthClientName,
@@ -328,31 +375,39 @@ index abec6b3c0..61f8265f7 100644
 +          clientName: (yield* productBrandConfig.pipe(Effect.orDie)).name,
            urlPolicy: egress.policy,
            // The document lists a callback on its own origin, which its sign-ins send.
+           ...(Option.isSome(clientMetadata)
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
-index a148de0a0..77f4de4cc 100644
+index 9c636708..fa7c6246 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
-@@ -36,4 +36,5 @@ import { isolateDeclarations } from "./isolate-memory.ts";
- import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+@@ -39,6 +39,7 @@ import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+ import { interactionFaults } from "./mcp-interaction-faults.ts";
+ import { mcpInteractionStore } from "./mcp-interaction-store.ts";
  import { mcpSessionStore } from "./mcp-session-store.ts";
 +import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
  
  /**
-@@ -59,4 +60,5 @@ export const makeMcpSession = Effect.fn(function* ({
+  * How often an object holding a program wakes itself. workerd evicts an object 70–140 s after its
+@@ -71,6 +72,7 @@ export const makeMcpSession = Effect.fn(function* ({
    const analytics = yield* cloudAnalytics;
-   const objectDatabase = yield* cloudObjectDatabase;
+   // One object per grant: through Hyperdrive, so active sessions share its PgBouncer clients.
+   const objectDatabase = yield* cloudObjectDatabase(cloudDatabaseConnection);
 +  const brand = yield* productBrandConfig.pipe(Effect.orDie);
    return Effect.gen(function* () {
      const state = yield* Cloudflare.DurableObjectState;
-@@ -78,4 +80,5 @@ export const makeMcpSession = Effect.fn(function* ({
-     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
-     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
-+      Effect.provideService(CurrentProductBrand, brand),
-       Effect.provide(HttpServer.layerServices),
-     );
+     // Every request and MCP operation of this session shares the object's connections.
+@@ -97,7 +99,7 @@ export const makeMcpSession = Effect.fn(function* ({
+       undefined,
+       mcpSessionStore(state.storage),
+       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
+-    ).pipe(Effect.provide(HttpServer.layerServices));
++    ).pipe(Effect.provideService(CurrentProductBrand, brand), Effect.provide(HttpServer.layerServices));
+     /** While the object holds a program, an alarm is due within `holdMillis`. */
+     const hold = Effect.gen(function* () {
+       if (handler.programs() === 0) return;
 diff --git a/apps/hosted/cloud/src/infrastructure/product-brand.ts b/apps/hosted/cloud/src/infrastructure/product-brand.ts
 new file mode 100644
-index 000000000..8d8819eaa
+index 00000000..8d8819ea
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/product-brand.ts
 @@ -0,0 +1,14 @@
@@ -371,16 +426,19 @@ index 000000000..8d8819eaa
 +  return bindings;
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/welcome-email.ts b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
-index 6808b1a70..a3ed0b9d8 100644
+index 37a23454..30462b67 100644
 --- a/apps/hosted/cloud/src/infrastructure/welcome-email.ts
 +++ b/apps/hosted/cloud/src/infrastructure/welcome-email.ts
-@@ -8,4 +8,5 @@ import { cloudHosts } from "./stage.ts";
+@@ -8,6 +8,7 @@ import { cloudHosts } from "./stage.ts";
  import { cloudSecrets } from "./secrets.ts";
+ import { jobFailed } from "../contracts/job-outcome.ts";
  import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
 +import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
  
  /** The cron invocation owns its database connection and closes it after the batch. */
-@@ -23,16 +24,20 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
+ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
+@@ -23,18 +24,22 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
+         Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
        ),
      );
 +    // The welcome is a personal note from Executor's founder, so another brand sends none.
@@ -412,30 +470,38 @@ index 6808b1a70..a3ed0b9d8 100644
 +        : Effect.void;
      return {
        deliver: deliverUser().pipe(
+         Effect.catch((error) =>
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 8bb6bfbd5..a80359d80 100644
+index 5bb48887..0b5c1d9a 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -137,4 +137,6 @@ import { Dashboard } from "./infrastructure/dashboard-worker.ts";
+@@ -138,6 +138,8 @@ import { Api } from "./infrastructure/api-worker.ts";
+ import { Dashboard } from "./infrastructure/dashboard-worker.ts";
  import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
  import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
 +import { productBrandBindings } from "./infrastructure/product-brand.ts";
 +import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
  export { Api } from "./infrastructure/api-worker.ts";
  
-@@ -180,4 +182,5 @@ export default Api.make(
+ export default Api.make(
+@@ -181,6 +183,7 @@ export default Api.make(
+         ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
          // Every deployed stage lists production's official app feed.
          ...(origin === undefined ? {} : yield* appCatalogBinding),
 +        ...(yield* productBrandBindings),
        },
        build: workerBuild("api"),
-@@ -217,4 +220,5 @@ export default Api.make(
+       // Auth callbacks and the dashboard share the configured canonical origin.
+@@ -223,6 +226,7 @@ export default Api.make(
+     };
    }),
    Effect.gen(function* () {
 +    const brand = yield* CurrentProductBrand;
      const lifetime = yield* previewLifetime;
      const analytics = yield* cloudAnalytics;
-@@ -704,7 +708,10 @@ export default Api.make(
+     const reportErrors = yield* cloudSentry;
+@@ -750,9 +754,12 @@ export default Api.make(
+         // Server-rendered pages read the API through this complete pipeline, in-process.
          withHostPipeline,
          lifetime.http,
 +        Effect.provideService(CurrentProductBrand, brand),
@@ -446,27 +512,32 @@ index 8bb6bfbd5..a80359d80 100644
 +    Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
      Effect.provide(
        Layer.mergeAll(
+         // The coordinator calls the retired one once, at handover.
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
-index bce60d075..521b00781 100644
+index 7192d960..f7fab697 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
-@@ -23,4 +23,5 @@ import {
+@@ -23,6 +23,7 @@ import {
+   telemetryBindings,
  } from "./infrastructure/telemetry.ts";
  import { workerBuild } from "./infrastructure/worker-build.ts";
 +import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
  /** The executor and MCP identity are built once per isolate and shared by its objects. */
-@@ -63,4 +64,5 @@ export default McpServer.make(
+ const mcpSession = Effect.gen(function* () {
+@@ -69,6 +70,7 @@ export default McpServer.make(
+         }),
          ...(yield* telemetryBindings),
          ...(yield* sentryBindings).env,
 +        ...(yield* productBrandBindings),
        },
      };
+   }),
 diff --git a/apps/hosted/cloud/web/src/implementation/components/support.tsx b/apps/hosted/cloud/web/src/implementation/components/support.tsx
-index b4aaabd26..f95e30943 100644
+index b4aaabd2..f95e3094 100644
 --- a/apps/hosted/cloud/web/src/implementation/components/support.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/components/support.tsx
-@@ -1,9 +1,13 @@
+@@ -1,10 +1,14 @@
  import type { ReactElement } from "react";
  import { SupportDialog } from "@executor-js/ui/dashboard/support-dialog";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
@@ -481,49 +552,59 @@ index b4aaabd26..f95e30943 100644
 +  if (!isDefaultProductBrand(useProductBrand())) return null;
    return (
      <SupportDialog
+       onOpen={captureSupportOpened}
 diff --git a/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx b/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
-index 3b28b1783..893bda190 100644
+index 3b28b178..893bda19 100644
 --- a/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/pages/sso-sign-in.tsx
-@@ -7,5 +7,5 @@ import { Input } from "@executor-js/ui/components/input";
+@@ -6,7 +6,7 @@ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 +import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
  import { Cause, Exit } from "effect";
  import { AsyncResult } from "effect/reactivity";
-@@ -15,5 +15,5 @@ import { ssoSignInAtom } from "../../contracts/sso.ts";
+ import { useState } from "react";
+@@ -14,7 +14,7 @@ import { ssoSignInAtom } from "../../contracts/sso.ts";
+ 
  /** Discover the verified company connection from an email, then let its IdP authenticate. */
  export function SsoSignInForm({ redirect, error: callbackError }: LoginProps) {
 -  useDocumentTitle(productTitle("Sign in with SSO"));
 +  useDocumentTitle("Sign in with SSO");
    const [email, setEmail] = useState("");
    const [error, setError] = useState<string>();
+   const signIn = useAtomSet(ssoSignInAtom, { mode: "promiseExit" });
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
-index 7437fd147..f6c55f570 100644
+index 7437fd14..f6c55f57 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
-@@ -12,5 +12,5 @@ import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.ts
+@@ -11,7 +11,7 @@ import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization
+ import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.tsx";
  import { useLocation } from "@tanstack/react-router";
  import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
 -import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
 +import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
  import { DashboardDocument } from "@executor-js/dashboard-start/shell";
  import styles from "@executor-js/hosted-web/styles?url";
-@@ -23,5 +23,4 @@ export const Route = createRootRoute({
+ import { fontPreloads } from "@executor-js/ui/lib/fonts";
+@@ -22,7 +22,6 @@ import { serverDocument } from "../document.ts";
+ export const Route = createRootRoute({
    head: () => ({
      links: [...fontPreloads, { rel: "stylesheet", href: styles }],
 -    meta: [{ title: "Executor" }],
    }),
    shellComponent: DashboardDocument,
-@@ -49,5 +48,5 @@ function Root() {
+   // Sign-in is decided before any HTML; the browser's session check only revalidates.
+@@ -48,17 +47,17 @@ function Root() {
+   const ssoSignIn = pathname === "/login/sso";
    if (pathname === "/email/unsubscribe" || pathname === "/email/unsubscribe/")
      return (
 -      <DocumentTitleProvider fallbackTitle={productTitle("Email preferences")}>
 +      <DocumentTitleProvider fallbackTitle={"Email preferences"}>
          <Outlet />
        </DocumentTitleProvider>
-@@ -55,9 +54,9 @@ function Root() {
+     );
    return (
      <DocumentTitleProvider
 -      fallbackTitle={productTitle(
@@ -536,31 +617,38 @@ index 7437fd147..f6c55f570 100644
 +      }
      >
        <AnalyticsIdentity />
+       <ErrorReportingIdentity />
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx b/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
-index f2546e553..cd97f7225 100644
+index f2546e55..cd97f722 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/routes/email.unsubscribe.tsx
-@@ -1,4 +1,6 @@
+@@ -1,5 +1,7 @@
  import { createFileRoute, useLocation } from "@tanstack/react-router";
  import { Button } from "@executor-js/ui/components/button";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 +import { isDefaultProductBrand } from "@executor-js/ui/contracts/product-brand";
  
  /** Public confirmation: opening a link never saves a preference or requires a session. */
-@@ -14,4 +16,5 @@ export const Route = createFileRoute("/email/unsubscribe")({
+ export const Route = createFileRoute("/email/unsubscribe")({
+@@ -13,6 +15,7 @@ export const Route = createFileRoute("/email/unsubscribe")({
+ });
  
  function UnsubscribePage() {
 +  const brand = useProductBrand();
    const { result } = Route.useSearch();
    const { hash } = useLocation();
-@@ -23,5 +26,5 @@ function UnsubscribePage() {
+   const token = hash.replace(/^#/, "");
+@@ -22,7 +25,7 @@ function UnsubscribePage() {
+   return (
      <main className="flex min-h-dvh items-center justify-center p-6">
        <section className="w-full max-w-md space-y-5">
 -        <p className="text-sm font-medium text-muted-foreground">Executor</p>
 +        <p className="text-sm font-medium text-muted-foreground">{brand.name}</p>
          <h1 className="text-2xl font-semibold tracking-tight">
            {complete
-@@ -33,7 +36,9 @@ function UnsubscribePage() {
+             ? "You’re unsubscribed"
+@@ -32,9 +35,11 @@ function UnsubscribePage() {
+         </h1>
          <p className="text-sm leading-6 text-muted-foreground">
            {complete
 -            ? "You won’t receive optional emails from Executor. You can still request sign-in codes and receive essential account emails."
@@ -572,11 +660,13 @@ index f2546e553..cd97f7225 100644
 +                : `Use the link in your latest ${brand.name} email.`
                : "We’ll stop sending optional emails to this account. You can still request sign-in codes and receive essential account emails."}
          </p>
+         {result === "error" && (
 diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
-index 4b856263c..80d4b4905 100644
+index 4b856263..80d4b490 100644
 --- a/apps/hosted/self-host/compose.yaml
 +++ b/apps/hosted/self-host/compose.yaml
-@@ -29,4 +29,7 @@ services:
+@@ -28,6 +28,9 @@ services:
+       # Seconds a Worker stays loaded without a call (default 300); 0 keeps idle ones until the limit.
        EXECUTOR_APP_WORKER_IDLE_SECONDS:
        EXECUTOR_OAUTH_CALLBACK_URL:
 +      # Your own product name and square logo URL in place of Executor's.
@@ -584,79 +674,99 @@ index 4b856263c..80d4b4905 100644
 +      EXECUTOR_PRODUCT_LOGO_URL:
        # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
        # document there, which authorization servers must be able to fetch over public HTTPS.
+       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
 diff --git a/apps/hosted/self-host/src/implementation/auth-options.ts b/apps/hosted/self-host/src/implementation/auth-options.ts
-index df239509f..c5ef237ab 100644
+index df239509..c5ef237a 100644
 --- a/apps/hosted/self-host/src/implementation/auth-options.ts
 +++ b/apps/hosted/self-host/src/implementation/auth-options.ts
-@@ -5,4 +5,5 @@ import { organization } from "better-auth/plugins/organization";
+@@ -4,6 +4,7 @@ import { genericOAuth } from "better-auth/plugins/generic-oauth";
+ import { organization } from "better-auth/plugins/organization";
  import { Config, Effect, Option, Redacted, Schema } from "effect";
  import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 +import { productBrandConfig } from "@executor-js/utils/product-brand";
  
  const httpsUrl = (message: string) =>
-@@ -35,4 +36,5 @@ export const selfHostAuthSettings = Effect.gen(function* () {
+   Schema.String.check(
+@@ -34,6 +35,7 @@ export const selfHostAuthSettings = Effect.gen(function* () {
+     ...settings,
      resourceOrigins: singleResourceOrigin(settings.url),
      issuer: `${settings.url}/api/auth`,
 +    brand: yield* productBrandConfig,
    };
    const discovery = yield* Config.String("SSO_DISCOVERY_URL").pipe(Config.option);
+   if (Option.isNone(discovery) || discovery.value === "") return { ...base, sso: null };
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 64a5cd95f..f11ed1d02 100644
+index 7f649004..8e011957 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -34,5 +34,4 @@ import {
+@@ -35,7 +35,6 @@ import {
+   authSettings,
    clientMetadataSetting,
    firstPartyOAuthClients,
 -  hostedOAuthClientName,
    withDeploySetupWake,
    withExecutorAnalytics,
-@@ -50,4 +49,5 @@ import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } fro
+   executorDefaultRedeployed,
+@@ -51,6 +50,7 @@ import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/
+ import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { SqlClient } from "effect/sql";
 +import { productBrandConfig } from "@executor-js/utils/product-brand";
  
  /** Native resources supplied at the self-host composition boundary. */
-@@ -113,5 +113,5 @@ export const selfHostExecutorServices = <E, R>(
+ export interface SelfHostPlatform {
+@@ -119,7 +119,7 @@ export const selfHostExecutorServices = <E, R>(
+         hooks: lifecycle.hooks,
          oauth: {
            httpClient: egress.client,
 -          clientName: hostedOAuthClientName,
 +          clientName: (yield* productBrandConfig).name,
            urlPolicy: egress.policy,
            ...(Option.isSome(clientMetadata)
+             ? {
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index 00b796706..eee4f953a 100644
+index 962ad2fc..dd81719f 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
-@@ -53,4 +53,5 @@ import { selfHostAnalytics } from "./product-analytics.ts";
+@@ -52,6 +52,7 @@ import { selfHostAnalytics } from "./product-analytics.ts";
+ 
  import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
  import type { selfHostExecutorServices } from "./executor-services.ts";
 +import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
  /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
  export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-@@ -64,4 +65,5 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+   readonly skills: readonly SourceFile[];
+@@ -63,6 +64,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+ }) =>
    Effect.gen(function* () {
      const { skills, egress, executorServices, dashboard } = options;
 +    const brand = yield* productBrandConfig;
      const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
      const analytics = yield* selfHostAnalytics;
-@@ -229,5 +231,5 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+     /** Requests and background schedules record through this instance's sink unless it opted out. */
+@@ -227,7 +229,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+             return yield* observed(apps.pipe(requestTiming));
            if (addresses.ownsHost(request.headers.host)) return notFound;
            return yield* observed(product);
 -        }).pipe(recordRequestRejections),
 +        }).pipe(recordRequestRejections, Effect.provideService(CurrentProductBrand, brand)),
        ),
      );
+     return routes;
 diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
-index c56ad02ce..8053e5630 100644
+index c56ad02c..8053e563 100644
 --- a/apps/hosted/self-host/src/mcp.ts
 +++ b/apps/hosted/self-host/src/mcp.ts
-@@ -16,4 +16,5 @@ import { PgliteClient } from "@effect/sql-pglite";
+@@ -15,6 +15,7 @@ import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
+ import { PgliteClient } from "@effect/sql-pglite";
  import { Config, Effect, RcMap, Schema } from "effect";
  import { HttpServerResponse } from "effect/http";
 +import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
  
  /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
-@@ -26,11 +27,15 @@ export const selfHostMcp = Effect.gen(function* () {
+ export const selfHostMcp = Effect.gen(function* () {
+@@ -25,13 +26,17 @@ export const selfHostMcp = Effect.gen(function* () {
+       Config.withDefault(defaultMcpLimits.timeoutMs),
      ),
    });
 +  const brand = yield* productBrandConfig;
@@ -676,11 +786,13 @@ index c56ad02ce..8053e5630 100644
 +      ),
      idleTimeToLive: "30 minutes",
      capacity: 256,
+   });
 diff --git a/apps/hosted/self-host/web/src/implementation/pages/login.tsx b/apps/hosted/self-host/web/src/implementation/pages/login.tsx
-index 24a8f1eaf..c079fcb88 100644
+index 24a8f1ea..c079fcb8 100644
 --- a/apps/hosted/self-host/web/src/implementation/pages/login.tsx
 +++ b/apps/hosted/self-host/web/src/implementation/pages/login.tsx
-@@ -19,10 +19,13 @@ import {
+@@ -18,12 +18,15 @@ import {
+   type SelfHostSignIn,
  } from "../../contracts/auth.ts";
  import { ssoRefusalExplanation } from "../../contracts/sso.ts";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
@@ -696,7 +808,9 @@ index 24a8f1eaf..c079fcb88 100644
 +  useDocumentTitle("Sign in");
    const page = usePageUrl();
    const config = useAtomValue(configurationAtom);
-@@ -90,9 +93,13 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
+   const session = useAtomValue(sessionAtom);
+@@ -89,11 +92,15 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
+     <main className="auth-page flex flex-col min-h-dvh items-center justify-center p-[24px]">
        <section className="auth-form w-full max-w-85 flex flex-col gap-6 [&_form]:flex [&_form]:flex-col [&_form]:gap-4 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.75 [&_label]:text-[13px] [&_label]:font-medium [&_input]:h-10.5 [&_form_>_button]:min-h-10.5 [&_.wordmark]:p-0 [&_.wordmark]:h-8 [&_.wordmark]:min-h-8 [&_.wordmark]:w-auto [&_.wordmark]:justify-start">
          <div className="wordmark flex items-center gap-2 h-12 py-0 px-[8px] font-mono text-[15px] font-medium [&_img]:w-5.25 [&_img]:h-5.25 max-[740px]:p-0 max-[740px]:w-11 max-[740px]:h-11 max-[740px]:justify-center max-[740px]:shrink-0 max-[740px]:[&_>_span]:hidden">
 -          <img src="/favicon.png" alt="" />
@@ -713,64 +827,78 @@ index 24a8f1eaf..c079fcb88 100644
 +              : `Sign in to ${brand.name}`}
          </h1>
          {setup && <p>Create your administrator account and organization.</p>}
+         <form
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
-index f3ffd6e02..2692d5ff4 100644
+index f3ffd6e0..2692d5ff 100644
 --- a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
 +++ b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
-@@ -9,5 +9,5 @@ import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization
+@@ -8,7 +8,7 @@ import { AuthBoundary } from "@executor-js/hosted-web/auth";
+ import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
  import { useLocation } from "@tanstack/react-router";
  import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
 -import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
 +import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
  import { DashboardDocument } from "@executor-js/dashboard-start/shell";
  import styles from "@executor-js/hosted-web/styles?url";
-@@ -20,5 +20,4 @@ export const Route = createRootRoute({
+ import { fontPreloads } from "@executor-js/ui/lib/fonts";
+@@ -19,7 +19,6 @@ import { serverDocument } from "../document.ts";
+ export const Route = createRootRoute({
    head: () => ({
      links: [...fontPreloads, { rel: "stylesheet", href: styles }],
 -    meta: [{ title: "Executor" }],
    }),
    shellComponent: DashboardDocument,
-@@ -38,5 +37,5 @@ function Root() {
+   // Sign-in is decided before any HTML; the browser's session check only revalidates.
+@@ -37,7 +36,7 @@ function Root() {
+   const session = useAtomValue(sessionAtom);
    const { pathname } = useLocation();
    return (
 -    <DocumentTitleProvider fallbackTitle={productTitle(hostedPageTitle(pathname))}>
 +    <DocumentTitleProvider fallbackTitle={hostedPageTitle(pathname)}>
        <AuthBoundary>
          <OrganizationResumeBoundary>
+           <Outlet />
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index 08a8b5efb..ee4f4233a 100644
+index 3b97c1d7..c16e3673 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
-@@ -151,5 +151,5 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
+@@ -156,7 +156,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
+             authorizationCode: {
                authorizationUrl: "/api/auth/oauth2/authorize",
                tokenUrl: "/api/auth/oauth2/token",
 -              scopes: { executor: "Use Executor in the selected organization" },
 +              scopes: { executor: "Act in the selected organization" },
              },
            },
+         },
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
-index d9f0d7d09..677230b83 100644
+index f07dedb6..b831cd8f 100644
 --- a/apps/hosted/server/src/contracts/app-ui.ts
 +++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -72,5 +72,5 @@ export const AppUiUnavailable = ApiError.define({
+@@ -72,7 +72,7 @@ export type AppUiAddressInvalid = typeof AppUiAddressInvalid.Type;
+ export const AppUiUnavailable = ApiError.define({
    tag: "AppUiUnavailable",
    status: 503,
 -  message: "Executor could not read the app's page build or domain right now. Try again.",
 +  message: "The app's page build or domain could not be read right now. Try again.",
  });
  export type AppUiUnavailable = typeof AppUiUnavailable.Type;
-@@ -86,5 +86,5 @@ export const AppUiLocation = Schema.Union([
+ /**
+@@ -86,7 +86,7 @@ export const AppUiLocation = Schema.Union([
+     url: Schema.Null,
      reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
        description:
 -        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this Executor has no app domain configured, so no app UI has an address.",
 +        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this deployment has no app domain configured, so no app UI has an address.",
      }),
    }),
+   Schema.Struct({ status: Schema.Literals(["pending", "failed"]), url: Schema.Null }),
 diff --git a/apps/hosted/server/src/contracts/auth.ts b/apps/hosted/server/src/contracts/auth.ts
-index 96c5003fb..4d059016d 100644
+index 8dbbcb09..15bb0f2c 100644
 --- a/apps/hosted/server/src/contracts/auth.ts
 +++ b/apps/hosted/server/src/contracts/auth.ts
-@@ -22,9 +22,9 @@ export const Unauthorized = UserFacingError.define({
+@@ -21,11 +21,11 @@ export const Unauthorized = UserFacingError.define({
+   tag: "Unauthorized",
    status: 401,
    title: "Sign-in required",
 -  description: "Executor needs a valid sign-in session to complete this action.",
@@ -783,7 +911,9 @@ index 96c5003fb..4d059016d 100644
 +      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
    },
  });
-@@ -36,8 +36,8 @@ export const Forbidden = UserFacingError.define({
+ /** Parsed Unauthorized failure. */
+@@ -35,10 +35,10 @@ export const Forbidden = UserFacingError.define({
+   tag: "Forbidden",
    status: 403,
    title: "Request not allowed",
 -  description: "This request did not meet Executor’s access checks.",
@@ -794,7 +924,9 @@ index 96c5003fb..4d059016d 100644
 +      "Open this site directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
      instructions:
        "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
-@@ -58,10 +58,10 @@ export const AuthenticationUnavailable = UserFacingError.define({
+   },
+@@ -57,12 +57,12 @@ export const AuthenticationUnavailable = UserFacingError.define({
+   tag: "AuthenticationUnavailable",
    status: 503,
    title: "Session check unavailable",
 -  description: "Executor could not verify your sign-in session.",
@@ -807,39 +939,47 @@ index 96c5003fb..4d059016d 100644
 +      "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
    },
    retryable: true,
+ });
 diff --git a/apps/hosted/server/src/contracts/browser.ts b/apps/hosted/server/src/contracts/browser.ts
-index e7c1c720b..eab67ffd7 100644
+index e7c1c720..eab67ffd 100644
 --- a/apps/hosted/server/src/contracts/browser.ts
 +++ b/apps/hosted/server/src/contracts/browser.ts
-@@ -2,4 +2,5 @@ import { Option, Schema } from "effect";
+@@ -1,6 +1,7 @@
+ import { Option, Schema } from "effect";
  import { OrganizationId } from "./organization.ts";
  import type { ResourceOrigins } from "@executor-js/mcp-auth";
 +import type { ProductBrand } from "@executor-js/utils/product-brand";
  
  /** Display identity only; session tokens and organization preferences never cross this boundary. */
-@@ -62,4 +63,6 @@ export interface HostedDocumentContext {
+ export const BrowserSession = Schema.NullOr(
+@@ -61,6 +62,8 @@ export interface HostedDocumentContext {
+    * for any of them.
     */
    readonly resourceOrigins: ResourceOrigins;
 +  /** The name and logo the pages present. */
 +  readonly brand: ProductBrand;
  }
  
+ /**
 diff --git a/apps/hosted/server/src/contracts/groups.ts b/apps/hosted/server/src/contracts/groups.ts
-index bf0f9bb10..8848e43c0 100644
+index bf0f9bb1..8848e43c 100644
 --- a/apps/hosted/server/src/contracts/groups.ts
 +++ b/apps/hosted/server/src/contracts/groups.ts
-@@ -77,5 +77,5 @@ export const GroupsUnavailable = ApiError.define({
+@@ -76,7 +76,7 @@ export type GroupConflict = typeof GroupConflict.Type;
+ export const GroupsUnavailable = ApiError.define({
    tag: "GroupsUnavailable",
    status: 503,
 -  message: "Executor could not read or save groups. Try again.",
 +  message: "Groups could not be read or saved. Try again.",
  });
  export type GroupsUnavailable = typeof GroupsUnavailable.Type;
+ /** Lazy request-owned database acquisition; an isolate must never retain a live client. */
 diff --git a/apps/hosted/server/src/contracts/oauth-client-metadata.ts b/apps/hosted/server/src/contracts/oauth-client-metadata.ts
-index 7c9007e7e..fbcc61fea 100644
+index 7c9007e7..fbcc61fe 100644
 --- a/apps/hosted/server/src/contracts/oauth-client-metadata.ts
 +++ b/apps/hosted/server/src/contracts/oauth-client-metadata.ts
-@@ -9,7 +9,4 @@ import { Schema } from "effect";
+@@ -8,9 +8,6 @@ import { Schema } from "effect";
+ /** Where a hosted install serves its document. The URL is the client's identity, so keep it. */
  export const clientMetadataDocumentPath = "/oauth/client-metadata.json";
  
 -/** The name hosted installs give their OAuth client, in registrations and in the document. */
@@ -847,102 +987,122 @@ index 7c9007e7e..fbcc61fea 100644
 -
  /** The document a hosted install serves. Values follow the RFC 7591 client metadata registry. */
  export interface ClientMetadataDocument {
+   /** The document's own URL, compared as a plain string by the authorization server. */
 diff --git a/apps/hosted/server/src/contracts/organization-removal.ts b/apps/hosted/server/src/contracts/organization-removal.ts
-index e09cd87ad..5cb5db4f7 100644
+index e09cd87a..5cb5db4f 100644
 --- a/apps/hosted/server/src/contracts/organization-removal.ts
 +++ b/apps/hosted/server/src/contracts/organization-removal.ts
-@@ -24,5 +24,5 @@ export const OrganizationRemovalUnavailable = ApiError.define({
+@@ -23,7 +23,7 @@ export type OrganizationRemoved = typeof OrganizationRemoved.Type;
+ export const OrganizationRemovalUnavailable = ApiError.define({
    tag: "OrganizationRemovalUnavailable",
    status: 503,
 -  message: "Executor could not start or read the organization's removal. Try again.",
 +  message: "The organization's removal could not be started or read. Try again.",
  });
  export type OrganizationRemovalUnavailable = typeof OrganizationRemovalUnavailable.Type;
+ 
 diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
-index b304a6078..e996647c7 100644
+index 4765b2e5..eb6f8b4d 100644
 --- a/apps/hosted/server/src/contracts/organization.ts
 +++ b/apps/hosted/server/src/contracts/organization.ts
-@@ -147,5 +147,5 @@ export const OrganizationIconUnavailable = ApiError.define({
+@@ -145,7 +145,7 @@ export type OrganizationIconInvalid = typeof OrganizationIconInvalid.Type;
+ export const OrganizationIconUnavailable = ApiError.define({
    tag: "OrganizationIconUnavailable",
    status: 503,
 -  message: "Executor's image storage could not complete this request. Try again.",
 +  message: "Image storage could not complete this request. Try again.",
  });
  export type OrganizationIconUnavailable = typeof OrganizationIconUnavailable.Type;
+ /** Missing uploaded image; membership is checked independently before reading. */
 diff --git a/apps/hosted/server/src/implementation/api-oauth.ts b/apps/hosted/server/src/implementation/api-oauth.ts
-index ff276b61a..a7d498de4 100644
+index ff276b61..a7d498de 100644
 --- a/apps/hosted/server/src/implementation/api-oauth.ts
 +++ b/apps/hosted/server/src/implementation/api-oauth.ts
-@@ -4,4 +4,5 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+@@ -3,6 +3,7 @@ import { Effect } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
  import { requestResourceOrigin } from "@executor-js/mcp-auth";
  import { ApiAuthentication } from "../contracts/auth.ts";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  
  /** RFC 9728 metadata for the organization management API. */
-@@ -15,5 +16,5 @@ export const apiProtectedResource = Effect.gen(function* () {
+ export const apiProtectedResource = Effect.gen(function* () {
+@@ -14,7 +15,7 @@ export const apiProtectedResource = Effect.gen(function* () {
+     authorization_servers: [issuer],
      scopes_supported: ["executor", "offline_access"],
      bearer_methods_supported: ["header"],
 -    resource_name: "Executor API",
 +    resource_name: `${(yield* CurrentProductBrand).name} API`,
    });
  });
+ 
 diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
-index 200e174ac..d6be0489b 100644
+index 3c423a43..d734663b 100644
 --- a/apps/hosted/server/src/implementation/auth.ts
 +++ b/apps/hosted/server/src/implementation/auth.ts
-@@ -25,4 +25,5 @@ import {
+@@ -25,6 +25,7 @@ import {
+   RequireUser,
    Unauthorized,
  } from "../contracts/auth.ts";
 +import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
  
  /**
-@@ -79,4 +80,6 @@ export const authOptions = (
+  * Connected-account OAuth uses the configured relay URL, or this host's callback. It is returned
+@@ -79,12 +80,14 @@ export const authOptions = (
+     readonly resourceOrigins: ResourceOrigins;
      /** The authorization server's issuer; `${url}/api/auth` where one origin serves everything. */
      readonly issuer: string;
 +    /** The name sign-in presents, such as in authenticator apps; Executor when unset. */
 +    readonly brand?: ProductBrand;
    },
    ipAddressHeaders: string[],
-@@ -84,5 +87,5 @@ export const authOptions = (
+   observers: GrantObservers = {},
  ) =>
    ({
 -    appName: "Executor",
 +    appName: (settings.brand ?? defaultProductBrand).name,
      baseURL: settings.url,
      basePath: "/api/auth",
+     trustedOrigins: [settings.url],
 diff --git a/apps/hosted/server/src/implementation/document.ts b/apps/hosted/server/src/implementation/document.ts
-index 02d249f9c..bc6532516 100644
+index 02d249f9..bc653251 100644
 --- a/apps/hosted/server/src/implementation/document.ts
 +++ b/apps/hosted/server/src/implementation/document.ts
-@@ -11,4 +11,5 @@ import {
+@@ -10,6 +10,7 @@ import {
+ } from "../contracts/browser.ts";
  import { Cookies, HttpServerRequest } from "effect/http";
  import type { ResourceOrigins } from "@executor-js/mcp-auth";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  
  /**
-@@ -38,4 +39,5 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
+  * A missing session produces `null`; a failed lookup fails, so the page reports that it is
+@@ -37,5 +38,6 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
+       session,
        lastOrganization: readLastOrganization(saved, session),
        resourceOrigins,
 +      brand: yield* CurrentProductBrand,
      } satisfies HostedDocumentContext;
    }).pipe(Effect.withSpan("dashboard.session"));
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
-index fc42e4bb8..758bceb7d 100644
+index 85f39c35..544c7369 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
-@@ -54,4 +54,5 @@ import { resourceAuthorityForLinks } from "./resource-policy.ts";
+@@ -54,6 +54,7 @@ import { callerAccounts } from "./app-accounts.ts";
+ import { resourceAuthorityForLinks } from "./resource-policy.ts";
  import { BearerHashes } from "./bearer-access.ts";
  import { hostedMcpBackend } from "./mcp.ts";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  
  // A native MCP server retains its tool handlers. Authority is supplied only while
-@@ -141,21 +142,24 @@ export const makeHostedMcp = (
+ // dispatching the HTTP request, never while registering those handlers.
+@@ -142,24 +143,27 @@ export const makeHostedMcp = (
    sessions?: McpOptions["sessions"],
+   interactions?: McpOptions["interactions"],
  ) =>
 -  makeMcp({
 -    backend: requestBackend,
 -    ...(beforeExecute === undefined ? {} : { beforeExecute }),
 -    ...(sessions === undefined ? {} : { sessions }),
+-    ...(interactions === undefined ? {} : { interactions }),
 -    caller: requestCaller,
 -    instructions: executorIntro,
 -    limits,
@@ -962,6 +1122,7 @@ index fc42e4bb8..758bceb7d 100644
 +      backend: requestBackend,
 +      ...(beforeExecute === undefined ? {} : { beforeExecute }),
 +      ...(sessions === undefined ? {} : { sessions }),
++      ...(interactions === undefined ? {} : { interactions }),
 +      caller: requestCaller,
 +      instructions: executorIntro,
 +      limits,
@@ -978,18 +1139,22 @@ index fc42e4bb8..758bceb7d 100644
 +  ).pipe(Effect.orDie);
  
  /** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */
-@@ -488,5 +492,5 @@ export const mcpProtectedResource = Effect.gen(function* () {
+ export const requestedMcpOrganization = (url: URL): OrganizationReference | undefined => {
+@@ -497,7 +501,7 @@ export const mcpProtectedResource = Effect.gen(function* () {
+     authorization_servers: [issuer],
      scopes_supported: ["mcp", "offline_access"],
      bearer_methods_supported: ["header"],
 -    resource_name: "Executor",
 +    resource_name: (yield* CurrentProductBrand).name,
    });
  });
+ /** RFC 8414 authorization-server metadata from Better Auth. */
 diff --git a/apps/hosted/server/src/implementation/oauth-client-metadata.ts b/apps/hosted/server/src/implementation/oauth-client-metadata.ts
-index 9ac636ad2..bb66db260 100644
+index 9ac636ad..bb66db26 100644
 --- a/apps/hosted/server/src/implementation/oauth-client-metadata.ts
 +++ b/apps/hosted/server/src/implementation/oauth-client-metadata.ts
-@@ -7,7 +7,7 @@ import {
+@@ -6,9 +6,9 @@ import {
+   type ClientMetadataDocument,
    ClientMetadataUrlInvalid,
    clientMetadataDocumentPath,
 -  hostedOAuthClientName,
@@ -998,7 +1163,9 @@ index 9ac636ad2..bb66db260 100644
 +import { CurrentProductBrand, productLogoUrl } from "@executor-js/utils/product-brand";
  
  /**
-@@ -100,14 +100,16 @@ const applicationType = (callback: string) => {
+  * The operator's document URL, whether this host serves the document at it, and the one callback
+@@ -99,16 +99,18 @@ const applicationType = (callback: string) => {
+  * this client send as `redirect_uri`. A host that does not serve a document answers 404.
   */
  export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSetting>) =>
 -  Effect.sync(() => {
@@ -1018,15 +1185,19 @@ index 9ac636ad2..bb66db260 100644
 +      logo_uri: productLogoUrl(brand, url.origin),
        redirect_uris: [callback],
        grant_types: ["authorization_code", "refresh_token"],
+       response_types: ["code"],
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
-index 5146a2895..a1bc3c791 100644
+index 01564e11..45c55158 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
-@@ -102,9 +102,9 @@ const message = Match.type<AppUiError>().pipe(
+@@ -101,12 +101,12 @@ const message = Match.type<AppUiError>().pipe(
+     AppNotFound: () => "This app no longer exists.",
      AppNotDeployed: () => "Deploy this app before opening its page.",
      VersionNotFound: () => "This app’s version is no longer available. Reload the app.",
 -    StorageError: () => "Executor could not read this app. Try again.",
+-    RequestInvalid: () => "This page sent a request Executor could not accept. Reload the page.",
 +    StorageError: () => "This app could not be read. Try again.",
++    RequestInvalid: () => "This page sent a request that could not be accepted. Reload the page.",
      AppUiUnavailable: () =>
        "The app page is unavailable. Check its version and the server’s app URL settings.",
      Unauthorized: () => "Your session ended. Sign in again.",
@@ -1034,63 +1205,77 @@ index 5146a2895..a1bc3c791 100644
 +    Forbidden: () => "Open this page from the site’s configured address.",
      AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
      HttpClientError: () =>
+       pageOutdated() ? outdatedPageMessage : "Could not reach the server. Try again.",
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index cfcb0018b..62c58d4c8 100644
+index 99ffd0e0..74d5e3c9 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -126,5 +126,5 @@ const errorMessage = Match.type<HostedError>().pipe(
+@@ -126,7 +126,7 @@ const errorMessage = Match.type<HostedError>().pipe(
+       "This tool changed between a query and a mutation. Reload the app’s tools and try again.",
      ToolBlocked: (error) => `${error.description} ${error.recovery.action}`,
      ToolApprovalRequired: () =>
 -      "The tool needs approval, which this request cannot give, so Executor will not run the call from here. Run it from the app’s Tools tab to review it.",
 +      "The tool needs approval, which this request cannot give, so the call will not run from here. Run it from the app’s Tools tab to review it.",
      ToolRunApprovalRefused: (error) => `${error.description} ${error.recovery.action}`,
      ToolPolicyFailed: () =>
+       "The tool's approval policy could not be evaluated. Check the policy code.",
 diff --git a/apps/hosted/web/src/contracts/mcp.ts b/apps/hosted/web/src/contracts/mcp.ts
-index af8c6640a..73f8b9d68 100644
+index af8c6640..73f8b9d6 100644
 --- a/apps/hosted/web/src/contracts/mcp.ts
 +++ b/apps/hosted/web/src/contracts/mcp.ts
-@@ -39,5 +39,5 @@ const request = <A>(
+@@ -38,7 +38,7 @@ const request = <A>(
+   Effect.flatMap(authCallOptions, (options) =>
      Effect.tryPromise({
        try: () => run(options),
 -      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
 +      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
      }),
    ).pipe(
-@@ -105,5 +105,5 @@ const deviceCall = <A>(
+     Effect.flatMap((result) =>
+@@ -104,7 +104,7 @@ const deviceCall = <A>(
+   Effect.flatMap(authCallOptions, (options) =>
      Effect.tryPromise({
        try: () => run(options),
 -      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
 +      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
      }),
    ).pipe(
+     Effect.flatMap((result) =>
 diff --git a/apps/hosted/web/src/implementation/components/account-pending.tsx b/apps/hosted/web/src/implementation/components/account-pending.tsx
-index 152c937bd..a0c53593d 100644
+index 152c937b..a0c53593 100644
 --- a/apps/hosted/web/src/implementation/components/account-pending.tsx
 +++ b/apps/hosted/web/src/implementation/components/account-pending.tsx
-@@ -12,4 +12,5 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+@@ -11,6 +11,7 @@ import {
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
  import { organizationSettingClass } from "./organization-settings-pending.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** The page headings and copy are the same on every visit. */
-@@ -73,4 +74,5 @@ export function AccountSettingPending({
+ export const profileTitle = "Profile";
+@@ -72,6 +73,7 @@ export function AccountSettingPending({
+ 
  /** Lazy route loading keeps the profile page identity and its static controls. */
  export function ProfilePending() {
 +  const brand = useProductBrand();
    return (
      <PageFrame>
-@@ -86,5 +88,5 @@ export function ProfilePending() {
+       <PageHeader title={profileTitle} description={profileDescription} />
+@@ -85,7 +87,7 @@ export function ProfilePending() {
+         <AccountSettingPending title="Email" description="Used for sign-in and invitations." />
          <AccountSettingPending
            title="Organizations"
 -          description="Where you are a member. Everything else in Executor lives inside one of these."
 +          description={`Where you are a member. Everything else in ${brand.name} lives inside one of these.`}
          >
            <Skeleton className="h-9 w-full" aria-label="Loading organizations" />
+         </AccountSettingPending>
 diff --git a/apps/hosted/web/src/implementation/components/auth.tsx b/apps/hosted/web/src/implementation/components/auth.tsx
-index e2ce5d517..530304c7b 100644
+index 66140ae7..e290df3a 100644
 --- a/apps/hosted/web/src/implementation/components/auth.tsx
 +++ b/apps/hosted/web/src/implementation/components/auth.tsx
-@@ -21,7 +21,9 @@ import {
+@@ -20,9 +20,11 @@ import {
+   DropdownMenuSeparator,
    DropdownMenuTrigger,
  } from "@executor-js/ui/components/dropdown-menu";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
@@ -1100,31 +1285,39 @@ index e2ce5d517..530304c7b 100644
 +  const brand = useProductBrand();
    const session = useAtomValue(sessionAtom);
    const refresh = useAtomRefresh(sessionAtom);
-@@ -63,5 +65,5 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
+   const location = useLocation();
+@@ -62,7 +64,7 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
+     return pathname === "/mcp/authorize" || pathname === "/device" ? (
        <McpConsentLoading />
      ) : (
 -      <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />
 +      <div className="min-h-dvh" aria-busy="true" aria-label={`Opening ${brand.name}`} />
      );
    }
+   // Keep signed OAuth queries intact instead of using the router's reserialized href.
 diff --git a/apps/hosted/web/src/implementation/components/connection-status.tsx b/apps/hosted/web/src/implementation/components/connection-status.tsx
-index 74c42e099..dff59b1bf 100644
+index 74c42e09..dff59b1b 100644
 --- a/apps/hosted/web/src/implementation/components/connection-status.tsx
 +++ b/apps/hosted/web/src/implementation/components/connection-status.tsx
-@@ -3,4 +3,6 @@ import { Spinner } from "@executor-js/ui/components/spinner";
+@@ -2,6 +2,8 @@ import { useId, type ReactNode } from "react";
+ import { Spinner } from "@executor-js/ui/components/spinner";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { AlertCircleIcon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 +import { productWordmark } from "@executor-js/ui/contracts/product-brand";
  
  /** Center connection progress or failure content; callers own recovery actions and navigation. */
-@@ -14,4 +16,5 @@ export function ConnectionStatusPage({
+ export function ConnectionStatusPage({
+@@ -13,6 +15,7 @@ export function ConnectionStatusPage({
+   readonly message: string;
    readonly children?: ReactNode;
  }) {
 +  const brand = useProductBrand();
    const titleId = useId();
    const title = {
-@@ -24,6 +27,6 @@ export function ConnectionStatusPage({
+     connecting: "Connecting account…",
+@@ -23,8 +26,8 @@ export function ConnectionStatusPage({
+     <main className="grid min-h-dvh place-items-center px-4 py-12 sm:px-6">
        <div className="w-full max-w-110">
          <div className="mb-6 flex items-center justify-center gap-2 text-[19px] font-semibold tracking-[-0.04em]">
 -          <img src="/favicon.png" alt="" className="size-6" />
@@ -1133,48 +1326,60 @@ index 74c42e099..dff59b1bf 100644
 +          {productWordmark(brand)}
          </div>
          <section
+           aria-labelledby={titleId}
 diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-index 15b7f0854..efa60d989 100644
+index 15b7f085..efa60d98 100644
 --- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
 +++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
-@@ -21,4 +21,5 @@ import { useOrganizationRoute } from "./organization.tsx";
+@@ -20,6 +20,7 @@ import { catalogAtom } from "../../contracts/api.ts";
+ import { useOrganizationRoute } from "./organization.tsx";
  import { appError } from "../../contracts/apps.ts";
  import type { HostedError } from "../../contracts/errors.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  const catalogIcons = catalogIconsAtom(catalogAtom);
-@@ -54,4 +55,5 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
+ /** Organization-aware atoms stay inside the hosted product. */
+@@ -53,6 +54,7 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
+ };
  /** Hosted failures keep auth and transport details out of display components. */
  export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
 +  const brand = useProductBrand();
    const error = Cause.findErrorOption(cause);
    if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
-@@ -69,5 +71,5 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+     return (
+@@ -68,7 +70,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+     return (
        <ErrorNotice
          error={error.value}
 -        context="While completing this action in Executor."
 +        context={`While completing this action in ${brand.name}.`}
          retry={retry}
          retrying={retrying}
-@@ -79,5 +81,5 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+         layout={layout}
+@@ -78,7 +80,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+     return (
        <ErrorNotice
          error={new ConnectionFailed()}
 -        context="While completing this action in Executor."
 +        context={`While completing this action in ${brand.name}.`}
          retry={retry}
          retrying={retrying}
+         layout={layout}
 diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
-index 1b98d761d..fe2899648 100644
+index 14d54563..0a77a722 100644
 --- a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
 +++ b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
-@@ -19,4 +19,6 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+@@ -18,6 +18,8 @@ import { DashboardShell as SharedShell } from "@executor-js/ui/dashboard/shell";
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { SessionMenu } from "./auth.tsx";
  import { useDocumentationUrl } from "../documentation.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 +import { productWordmark } from "@executor-js/ui/contracts/product-brand";
  
  const items = [
-@@ -168,9 +170,10 @@ export function DashboardFrame({
+   { to: "/org/$organizationSlug/apps", label: "Apps", icon: BoxesIcon },
+@@ -167,11 +169,12 @@ export function DashboardFrame({
+   readonly account?: boolean;
    readonly children: ReactNode;
  }) {
 +  const productBrand = useProductBrand();
@@ -1186,24 +1391,30 @@ index 1b98d761d..fe2899648 100644
 +    children: <span>{productWordmark(productBrand)}</span>,
    };
    return (
+     <SharedShell
 diff --git a/apps/hosted/web/src/implementation/components/entry.tsx b/apps/hosted/web/src/implementation/components/entry.tsx
-index 61a86ceb8..e62a2bf8a 100644
+index 61a86ceb..e62a2bf8 100644
 --- a/apps/hosted/web/src/implementation/components/entry.tsx
 +++ b/apps/hosted/web/src/implementation/components/entry.tsx
-@@ -11,4 +11,6 @@ import {
+@@ -10,6 +10,8 @@ import {
+ } from "./dashboard-frame.tsx";
  import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { SessionMenu } from "./auth.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 +import { productWordmark } from "@executor-js/ui/contracts/product-brand";
  
  /** A shared entry frame before an organization URL is known. */
-@@ -25,4 +27,5 @@ export function HostedEntry({
+ export function HostedEntry({
+@@ -24,6 +26,7 @@ export function HostedEntry({
+   /** Room for a long review, such as an import preview. */
    readonly wide?: boolean;
  }) {
 +  const brand = useProductBrand();
    const heading = useId();
    const width = wide ? "max-w-[760px]" : "max-w-[560px]";
-@@ -34,6 +37,6 @@ export function HostedEntry({
+   return (
+@@ -33,8 +36,8 @@ export function HostedEntry({
+         aria-labelledby={heading}
        >
          <div className="mb-8 flex items-center gap-2 font-mono text-[15px]">
 -          <img src="/favicon.png" alt="" className="size-5" />
@@ -1212,14 +1423,18 @@ index 61a86ceb8..e62a2bf8a 100644
 +          <span>{productWordmark(brand)}</span>
          </div>
          <h1 id={heading} className="text-2xl font-medium tracking-[-0.04em]">
-@@ -54,5 +57,5 @@ export function HostedEntry({
+           {title}
+@@ -53,7 +56,7 @@ export function HostedEntry({
+ 
  /** Neutral entry content does not assume an organization count or a setup outcome. */
  export function HostedEntryLoading({
 -  title = "Opening Executor",
 +  title,
    description = "Loading your organizations…",
    label = "Loading organizations",
-@@ -62,6 +65,7 @@ export function HostedEntryLoading({
+ }: {
+@@ -61,8 +64,9 @@ export function HostedEntryLoading({
+   readonly description?: string;
    readonly label?: string;
  }) {
 +  const brand = useProductBrand();
@@ -1228,34 +1443,42 @@ index 61a86ceb8..e62a2bf8a 100644
 +    <HostedEntry title={title ?? `Opening ${brand.name}`} description={description}>
        <div role="status" aria-label={label} className="space-y-3">
          <Skeleton className="h-12 w-full rounded-md" />
+         <Skeleton className="h-3 w-2/3" />
 diff --git a/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx b/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
-index 681dd9da8..d84a72ee1 100644
+index 681dd9da..d84a72ee 100644
 --- a/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
 +++ b/apps/hosted/web/src/implementation/components/organization-settings-pending.tsx
-@@ -14,4 +14,5 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+@@ -13,6 +13,7 @@ import {
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
  import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** Keep form geometry identical before and after the organization values arrive. */
-@@ -21,4 +22,5 @@ export const organizationSettingClass =
+ export const organizationSettingClass =
+@@ -20,6 +21,7 @@ export const organizationSettingClass =
+ 
  /** Render known settings copy and controls, with placeholders only for server values. */
  export function OrganizationSettingsPending({ children }: { readonly children?: ReactNode }) {
 +  const brand = useProductBrand();
    const page = usePageUrl();
    return (
-@@ -37,5 +39,5 @@ export function OrganizationSettingsPending({ children }: { readonly children?:
+     <PageFrame>
+@@ -36,7 +38,7 @@ export function OrganizationSettingsPending({ children }: { readonly children?:
+             <CardTitle>
                <h2>Organization name</h2>
              </CardTitle>
 -            <CardDescription>Shown across Executor.</CardDescription>
 +            <CardDescription>Shown across {brand.name}.</CardDescription>
            </CardHeader>
            <CardContent>
+             <div className="flex h-9 w-[min(100%,_520px)] items-center rounded-[6px] border border-input px-3 max-[740px]:min-h-11 max-[640px]:h-10">
 diff --git a/apps/hosted/web/src/implementation/components/setup-page.tsx b/apps/hosted/web/src/implementation/components/setup-page.tsx
-index e8e68e463..e18055680 100644
+index fd81593e..51bcca1a 100644
 --- a/apps/hosted/web/src/implementation/components/setup-page.tsx
 +++ b/apps/hosted/web/src/implementation/components/setup-page.tsx
-@@ -5,7 +5,9 @@ import { Button } from "@executor-js/ui/components/button";
+@@ -4,9 +4,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Button } from "@executor-js/ui/components/button";
  import { cn } from "@executor-js/ui/lib/utils";
  import { SessionMenu } from "./auth.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
@@ -1266,13 +1489,17 @@ index e8e68e463..e18055680 100644
 + * Onboarding pages are one 600px column under the product mark, with their actions right below
   * the step. Identity controls stay outside the instructions: wide screens pin them to the bottom
   * corner; narrower ones place them above the column. The column starts at a fixed top, so a step
-@@ -14,4 +16,5 @@ import { SessionMenu } from "./auth.tsx";
-  */
- export function SetupPage({ className, children }: ComponentProps<"main">) {
+  * that grows or shrinks never moves what is above it. A step that keeps its own content scrolling,
+@@ -23,6 +25,7 @@ export function SetupPage({
+   /** Reports leaving from a setup step, before the session ends. */
+   readonly onSignOut?: () => void;
+ }) {
 +  const brand = useProductBrand();
    return (
      <main
-@@ -26,6 +29,6 @@ export function SetupPage({ className, children }: ComponentProps<"main">) {
+       className={cn(
+@@ -35,8 +38,8 @@ export function SetupPage({
+       </div>
        <div className="flex min-h-0 w-full max-w-[600px] flex-1 flex-col">
          <div className="mb-8 flex items-center gap-2 font-mono text-[15px] max-sm:mb-6">
 -          <img src="/favicon.png" alt="" width={20} height={20} className="size-5" />
@@ -1281,128 +1508,164 @@ index e8e68e463..e18055680 100644
 +          <span>{productWordmark(brand)}</span>
          </div>
          {children}
+       </div>
 diff --git a/apps/hosted/web/src/implementation/document.ts b/apps/hosted/web/src/implementation/document.ts
-index 13d2a2dd3..ca67952bd 100644
+index 13d2a2dd..ca67952b 100644
 --- a/apps/hosted/web/src/implementation/document.ts
 +++ b/apps/hosted/web/src/implementation/document.ts
-@@ -9,4 +9,5 @@ import { Option, Schema } from "effect";
+@@ -8,6 +8,7 @@ import { Atom } from "effect/reactivity";
+ import { Option, Schema } from "effect";
  import { OrganizationSummary } from "../contracts/organization.ts";
  import { resourceOriginsAtom } from "../contracts/mcp.ts";
 +import { productBrandAtom } from "@executor-js/ui/contracts/product-brand";
  
  /** Everything a hosted document receives from its host. */
-@@ -19,4 +20,5 @@ export const hostedServerValues = (document: HostedDocument) => [
+ export type HostedDocument = HostedDocumentContext & DocumentApi;
+@@ -18,6 +19,7 @@ export const hostedServerValues = (document: HostedDocument) => [
+   ...sessionInitialValues(document.session),
    Atom.initialValue(lastOrganizationAtom, document.lastOrganization),
    Atom.initialValue(resourceOriginsAtom, document.resourceOrigins),
 +  Atom.initialValue(productBrandAtom, document.brand),
  ];
  
+ /**
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
-index c520dad6f..813e56f49 100644
+index 077aab64..79ad08ca 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
-@@ -39,4 +39,5 @@ import {
+@@ -38,6 +38,7 @@ import {
+   HostedAccountDialog,
    type AccountDialogKind,
  } from "./account-actions.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /**
-@@ -113,4 +114,5 @@ const searchRank = (item: SetupApp, term: string) => {
+  * The apps offered first, by catalog ID, when the catalog lists them: the ones most teams connect
+@@ -116,6 +117,7 @@ const searchRank = (item: SetupApp, term: string) => {
+  * one height and one button width, so connecting never moves the list.
   */
  export function AccountsSetupPage() {
 +  const brand = useProductBrand();
-   const { organization } = useOrganizationRoute();
+   const { organization, slug } = useOrganizationRoute();
    // When the assistant connected first, its handoff rides in the URL to the first prompt.
-@@ -144,5 +146,5 @@ export function AccountsSetupPage() {
+   const handoff = setupHandoff(parseAccountsSetupSearch(useLocation().search));
+@@ -151,7 +153,7 @@ export function AccountsSetupPage() {
+         >
            <SetupTitle id="accounts-setup-title">Connect your accounts</SetupTitle>
            <SetupLede>
 -            Your assistant uses these through Executor. Connect the tools you work in now
 +            Your assistant uses these through {brand.name}. Connect the tools you work in now
              <span className="max-sm:hidden"> — you can add more any time</span>.
            </SetupLede>
-@@ -226,4 +228,5 @@ function LoadingList() {
+           <SetupCard className="flex min-h-60 flex-1 flex-col sm:h-[620px] sm:flex-initial">
+@@ -238,6 +240,7 @@ function LoadingList() {
+  * whole list.
   */
  function NotListed({ query }: { readonly query: string }) {
 +  const brand = useProductBrand();
    return (
      <div
-@@ -237,5 +240,5 @@ function NotListed({ query }: { readonly query: string }) {
+       role="note"
+@@ -249,7 +252,7 @@ function NotListed({ query }: { readonly query: string }) {
+       </p>
        <p className="mt-0.5">
          Once your assistant is connected, ask it to add{" "}
 -        {query === "" ? "any app or API" : `“${query}”`} through Executor.
 +        {query === "" ? "any app or API" : `“${query}”`} through {brand.name}.
        </p>
      </div>
+   );
 diff --git a/apps/hosted/web/src/implementation/pages/agent-setup.tsx b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
-index d8e813097..eea1d1e2f 100644
+index 3ec529cf..737617f3 100644
 --- a/apps/hosted/web/src/implementation/pages/agent-setup.tsx
 +++ b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
-@@ -55,4 +55,5 @@ import { SetupLink, useSetupSequence, useSetupViewed } from "../components/setup
+@@ -55,6 +55,7 @@ import {
+ import { SetupLink, useSetupSequence, useSetupViewed } from "../components/setup-sequence.tsx";
  import { useDocumentationUrl } from "../documentation.ts";
  import { useMcpOrigin } from "../resource-origin.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** Moves focus to a screen's heading when it replaces the previous one, without scrolling to it. */
-@@ -153,4 +154,5 @@ interface ScreenBaseline {
+ const focusHeading = (node: HTMLHeadingElement | null) => node?.focus({ preventScroll: true });
+@@ -155,6 +156,7 @@ interface ScreenBaseline {
+  * that connects from here, by the URL, leads on to its first prompt like a guide's.
   */
  function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & ScreenBaseline) {
 +  const brand = useProductBrand();
    const navigate = useNavigate();
-   const [agent, setAgent] = useState<ConnectedAgent>();
-@@ -163,5 +165,5 @@ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & S
+   const [found, setAgent] = useState<ConnectedAgent>();
+   const before = useAgentConnectedBefore();
+@@ -167,7 +169,7 @@ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & S
+         Connect your assistant
        </SetupTitle>
        <SetupLede>
 -        Executor works inside the AI assistant you already use. Pick yours to see how to add it.
 +        {brand.name} works inside the AI assistant you already use. Pick yours to see how to add it.
        </SetupLede>
        <div className="mt-6">
-@@ -209,4 +211,5 @@ function GuideStep({
+         <AssistantChoices
+@@ -213,6 +215,7 @@ function GuideStep({
+   readonly endpoint: string;
    readonly assistant: AssistantId;
  } & ScreenBaseline) {
 +  const brand = useProductBrand();
    useSetupViewed("setup_guide", assistant);
    const guide = useAssistantGuide(endpoint, assistant);
-@@ -216,5 +219,5 @@ function GuideStep({
+   const name = assistantName(assistant);
+@@ -222,7 +225,7 @@ function GuideStep({
+   return (
      <>
        <SetupTitle id="agent-setup-title" ref={focusHeading}>
 -        Add Executor to {name}
 +        Add {brand.name} to {name}
        </SetupTitle>
        <SetupLede>
-@@ -526,4 +529,5 @@ function StatusView({
+         <span className="max-sm:hidden">Takes about a minute. </span>This page updates once {name}{" "}
+@@ -549,6 +552,7 @@ function StatusView({
+   /** A hidden copy that only reserves space keeps a still placeholder in place of the spinner. */
    readonly reserved?: boolean;
  }) {
 +  const brand = useProductBrand();
    const spinner = reserved ? (
      <span className="size-4" />
-@@ -583,5 +587,5 @@ function StatusView({
+   ) : (
+@@ -606,7 +610,7 @@ function StatusView({
+               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2.5} size={12} aria-hidden />
              </span>
            }
 -          title="Executor is connected"
 +          title={`${brand.name} is connected`}
            detail={state.agent.name === null ? undefined : `Approved for ${state.agent.name}`}
            singleLineDetail
-@@ -658,4 +662,5 @@ function PromptStep({
+         />
+@@ -681,6 +685,7 @@ function PromptStep({
+   readonly assistant: AssistantId;
    readonly agent: GrantId;
  }) {
 +  const brand = useProductBrand();
    const { organization, slug } = useOrganizationRoute();
    const sequence = useSetupSequence();
-@@ -684,5 +689,5 @@ function PromptStep({
+   useSetupViewed("setup_prompt", assistant);
+@@ -707,7 +712,7 @@ function PromptStep({
+               // it usually takes, above the copy button it will enable.
                <div aria-busy="true" aria-label="Loading your prompt">
                  <PromptText>
 -                  {promptOpening(endpoint)}
 +                  {promptOpening(endpoint, brand.name)}
                    {"\n\n"}
                    <span className="flex h-6 items-center">
-@@ -697,5 +702,5 @@ function PromptStep({
+                     <Skeleton className="h-3.5 w-full" />
+@@ -720,7 +725,7 @@ function PromptStep({
+               </div>
              ),
            onSome: (accounts) => {
 -            const prompt = firstPrompt(endpoint, docsUrl, accounts);
 +            const prompt = firstPrompt(endpoint, brand.name, docsUrl, accounts);
              return (
                <>
-@@ -776,13 +781,14 @@ const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
+                 <PromptText>{prompt}</PromptText>
+@@ -799,15 +804,16 @@ function connectedAccounts(inventory: Inventory) {
+ const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
  
  /** The prompt's first paragraph, which names only the MCP URL. */
 -const promptOpening = (endpoint: string) =>
@@ -1420,80 +1683,99 @@ index d8e813097..eea1d1e2f 100644
 +  `${promptOpening(endpoint, product)}\n\n${
      connected === undefined
        ? `Read the docs to understand the product at ${docsUrl}, then help me get my first app set up.`
+       : `I've connected ${list.format(
 diff --git a/apps/hosted/web/src/implementation/pages/device.tsx b/apps/hosted/web/src/implementation/pages/device.tsx
-index 947f69580..899eb9c86 100644
+index 947f6958..899eb9c8 100644
 --- a/apps/hosted/web/src/implementation/pages/device.tsx
 +++ b/apps/hosted/web/src/implementation/pages/device.tsx
-@@ -35,4 +35,5 @@ import {
+@@ -34,6 +34,7 @@ import {
+ } from "../../contracts/mcp.ts";
  import { organizationsAtom } from "../../contracts/organization.ts";
  import { useResourceOrigins } from "../resource-origin.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** `verification_uri_complete` carries the code; the plain `verification_uri` asks for it. */
-@@ -133,4 +134,5 @@ function DeviceLookup({ code }: { readonly code: string }) {
+ export const deviceSearch = (search: Record<string, unknown>) => ({
+@@ -132,6 +133,7 @@ function DeviceLookup({ code }: { readonly code: string }) {
+ }
  
  function DeviceReview({ code, view }: { readonly code: string; readonly view: DeviceRequestView }) {
 +  const brand = useProductBrand();
    const resourceOrigins = useResourceOrigins();
    const target = grantTarget(resourceOrigins, [view.resource]);
-@@ -199,5 +201,5 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+   const client = useAtomValue(mcpClientAtom(view.clientId));
+@@ -198,7 +200,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+       description={
          <p>
            <strong>{client.value.client_name ?? "An application"}</strong> on another device wants to
 -          connect to Executor.
 +          connect to {brand.name}.
          </p>
        }
+     >
 diff --git a/apps/hosted/web/src/implementation/pages/groups.tsx b/apps/hosted/web/src/implementation/pages/groups.tsx
-index bba415bab..cfa785351 100644
+index b569c8ed..25eb5aeb 100644
 --- a/apps/hosted/web/src/implementation/pages/groups.tsx
 +++ b/apps/hosted/web/src/implementation/pages/groups.tsx
-@@ -25,5 +25,5 @@ import {
+@@ -24,7 +24,7 @@ import {
+   DialogTitle,
    DialogDescription,
  } from "@executor-js/ui/components/dialog";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 +import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
  import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
- import { useOrganizationRoute } from "../components/organization.tsx";
-@@ -41,5 +41,5 @@ export function GroupsPage({ id }: { readonly id?: string }) {
+ import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
+@@ -47,7 +47,7 @@ export function GroupsPage({ id }: { readonly id?: string }) {
+   const result = useAtomValue(groupsAtom(organization));
    const refresh = useAtomRefresh(groupsAtom(organization));
    const data = AsyncResult.value(result);
 -  useDocumentTitle(productTitle(groupsTitle));
 +  useDocumentTitle(groupsTitle);
    return (
      <GroupsFrame>
+       {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} retry={refresh} />}
 diff --git a/apps/hosted/web/src/implementation/pages/invite.tsx b/apps/hosted/web/src/implementation/pages/invite.tsx
-index dfdcee6fe..74270b948 100644
+index dfdcee6f..74270b94 100644
 --- a/apps/hosted/web/src/implementation/pages/invite.tsx
 +++ b/apps/hosted/web/src/implementation/pages/invite.tsx
-@@ -7,4 +7,5 @@ import { organizationError, OrganizationDestination } from "../components/organi
+@@ -6,6 +6,7 @@ import { acceptInvitationAtom } from "../../contracts/organization.ts";
+ import { organizationError, OrganizationDestination } from "../components/organization.tsx";
  import { Button } from "@executor-js/ui/components/button";
  import { LoginFrame } from "./login-frame.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** Invitation IDs are untrusted; Better Auth verifies recipient email and expiry. */
-@@ -14,4 +15,5 @@ export const inviteSearch = (search: Record<string, unknown>) => ({
+ export const inviteSearch = (search: Record<string, unknown>) => ({
+@@ -13,6 +14,7 @@ export const inviteSearch = (search: Record<string, unknown>) => ({
+ });
  /** Accept after authentication, including users who have no organization yet. */
  export function InvitePage({ invitation }: { readonly invitation: string }) {
 +  const brand = useProductBrand();
    const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
    const state = useAtomValue(acceptInvitationAtom);
-@@ -34,5 +36,5 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
+   const [joined, setJoined] = useState<{
+@@ -33,7 +35,7 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
+       <div className="flex flex-col gap-6 text-center">
          <p className="text-sm leading-6 text-balance text-muted-foreground">
            {invitation
 -            ? "You've been invited to an organization on Executor. Accept with the email this invitation was sent to."
 +            ? `You've been invited to an organization on ${brand.name}. Accept with the email this invitation was sent to.`
              : "This invitation link is incomplete. Ask for a new link."}
          </p>
+         <Button
 diff --git a/apps/hosted/web/src/implementation/pages/login-frame.tsx b/apps/hosted/web/src/implementation/pages/login-frame.tsx
-index 67b6edab8..20c84f0c6 100644
+index 67b6edab..20c84f0c 100644
 --- a/apps/hosted/web/src/implementation/pages/login-frame.tsx
 +++ b/apps/hosted/web/src/implementation/pages/login-frame.tsx
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,5 @@
  import type { ReactNode } from "react";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** Shared themed card for sign-in, SSO, credential enrollment, and invitations. */
-@@ -11,9 +12,10 @@ export function LoginFrame({
+ export function LoginFrame({
+@@ -10,11 +11,12 @@ export function LoginFrame({
+   readonly children: ReactNode;
    readonly footer?: ReactNode;
  }) {
 +  const brand = useProductBrand();
@@ -1506,11 +1788,13 @@ index 67b6edab8..20c84f0c6 100644
 +          <img src={brand.logo} alt="" className="size-10" />
          </a>
          <h1 className="mb-6 text-center text-2xl font-semibold leading-8 tracking-tight">
+           {title}
 diff --git a/apps/hosted/web/src/implementation/pages/login.tsx b/apps/hosted/web/src/implementation/pages/login.tsx
-index 6860082df..dc63c890b 100644
+index 6860082d..dc63c890 100644
 --- a/apps/hosted/web/src/implementation/pages/login.tsx
 +++ b/apps/hosted/web/src/implementation/pages/login.tsx
-@@ -10,11 +10,12 @@ import { AuthFailed, sessionAtom, signInAtom } from "../../contracts/auth.ts";
+@@ -9,13 +9,14 @@ import { LoginFrame } from "./login-frame.tsx";
+ import { AuthFailed, sessionAtom, signInAtom } from "../../contracts/auth.ts";
  import { Button } from "@executor-js/ui/components/button";
  import { Spinner } from "@executor-js/ui/components/spinner";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
@@ -1526,7 +1810,9 @@ index 6860082df..dc63c890b 100644
 +    return `${/^[aeiou]/i.test(product) ? "An" : "A"} ${product} account already uses this email. Sign in with the method you used before.`;
    if (error === "unable_to_link_account")
      return "This email is not linked to this sign-in method. Contact an administrator.";
-@@ -100,6 +101,6 @@ export function LoginPage({
+   return "Sign-in could not be completed. Please try again.";
+@@ -99,8 +100,8 @@ export function LoginPage({
+   readonly cardFooter?: ReactNode;
    readonly footer?: ReactNode;
  }) {
 -  useDocumentTitle(productTitle(title));
@@ -1535,23 +1821,28 @@ index 6860082df..dc63c890b 100644
 +  const callbackFailure = callbackError(callbackCode, useProductBrand().name);
    const session = useAtomValue(sessionAtom);
    const refreshSession = useAtomRefresh(sessionAtom);
+   const signIn = useAtomSet(signInAtom, { mode: "promiseExit" });
 diff --git a/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx b/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
-index 4a58c18fd..e0f77a996 100644
+index 4a58c18f..e0f77a99 100644
 --- a/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
 +++ b/apps/hosted/web/src/implementation/pages/mcp-authorize.tsx
-@@ -24,4 +24,5 @@ import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contra
+@@ -23,12 +23,14 @@ import {
+ import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
  import { organizationsAtom } from "../../contracts/organization.ts";
  import { useResourceOrigins } from "../resource-origin.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /**
-@@ -30,4 +31,5 @@ import { useResourceOrigins } from "../resource-origin.ts";
+  * The user approves the URL's requested connection. App/tool scoping remains a backend capability.
+  * The request may name a resource at any of the deployment's resource origins.
   */
  export function McpAuthorizePage() {
 +  const brand = useProductBrand();
    const page = usePageUrl();
    const resourceOrigins = useResourceOrigins();
-@@ -88,6 +90,6 @@ export function McpAuthorizePage() {
+   // Keep the signed query intact; repeated OAuth fields must not be reserialized by the router.
+@@ -87,8 +89,8 @@ export function McpAuthorizePage() {
+     <McpConsentLayout
        description={
          <p>
 -          <strong>{client.value.client_name ?? "An application"}</strong> wants to connect to
@@ -1560,30 +1851,38 @@ index 4a58c18fd..e0f77a996 100644
 +          {brand.name}.
          </p>
        }
+     >
 diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-index 1c4dd3bb2..04dde1644 100644
+index c77ff4f0..e36dc647 100644
 --- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 +++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-@@ -24,4 +24,5 @@ import {
+@@ -23,6 +23,7 @@ import {
+ } from "../../contracts/apps.ts";
  import { accountToNameAtom } from "../../contracts/accounts.ts";
  import type { HostedError } from "../../contracts/errors.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /** The SDK decides recovery for every completion reason; `setup` means the connection itself ended. */
-@@ -45,4 +46,5 @@ type CallbackState =
+ type Recovery = Exclude<OAuthCompletionRecovery, "cancelled"> | "setup";
+@@ -44,6 +45,7 @@ type CallbackState =
+  * user created it. The starting tab's context only adds its manual-client retry hint.
   */
  export function OAuthCallbackPage() {
 +  const brand = useProductBrand();
    const navigate = useNavigate();
    const registry = useContext(RegistryContext);
-@@ -103,5 +105,5 @@ export function OAuthCallbackPage() {
+   const started = useRef(false);
+@@ -102,7 +104,7 @@ export function OAuthCallbackPage() {
+         fixPrompt: Option.match(error, {
            onSome: (value) =>
              recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
 -              ? `While connecting an account in Executor.\n\n${value.fixPrompt}`
 +              ? `While connecting an account in ${brand.name}.\n\n${value.fixPrompt}`
                : undefined,
            onNone: () => undefined,
-@@ -126,6 +128,5 @@ export function OAuthCallbackPage() {
+         }),
+@@ -125,8 +127,7 @@ export function OAuthCallbackPage() {
+         )
            return setState({
              status: "failed",
 -            message:
@@ -1591,14 +1890,18 @@ index 1c4dd3bb2..04dde1644 100644
 +            message: `Another ${brand.name} user started this sign-in. Sign in as that user and open the link again.`,
              recovery: "setup",
            });
-@@ -168,5 +169,5 @@ export function OAuthCallbackPage() {
+         return fail(resolved.cause);
+@@ -169,7 +170,7 @@ export function OAuthCallbackPage() {
+             search: { view: "accounts" },
            }));
      })();
 -  }, [registry, navigate]);
 +  }, [registry, navigate, brand.name]);
    return (
      <ConnectionStatusPage
-@@ -202,8 +203,9 @@ function OAuthRecoveryActions({
+       status={state.status}
+@@ -203,10 +204,11 @@ function OAuthRecoveryActions({
+   readonly recovery: Recovery | "cancelled";
    readonly fixPrompt?: string | undefined;
  }) {
 +  const brand = useProductBrand();
@@ -1609,11 +1912,13 @@ index 1c4dd3bb2..04dde1644 100644
 +        <Link to="/">Open {brand.name}</Link>
        </Button>
      );
+   const context = pending.value;
 diff --git a/apps/hosted/web/src/implementation/pages/organization.tsx b/apps/hosted/web/src/implementation/pages/organization.tsx
-index aba30d862..65ed28810 100644
+index aba30d86..65ed2881 100644
 --- a/apps/hosted/web/src/implementation/pages/organization.tsx
 +++ b/apps/hosted/web/src/implementation/pages/organization.tsx
-@@ -35,6 +35,7 @@ import {
+@@ -34,8 +34,9 @@ import {
+   OrganizationDetailsBoundary,
  } from "../components/organization.tsx";
  import { OrganizationMembers, type MemberLimit } from "../components/organization-members.tsx";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
@@ -1622,128 +1927,160 @@ index aba30d862..65ed28810 100644
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  export type { MemberLimit };
-@@ -83,5 +84,5 @@ function OrganizationSettings({
+ 
+@@ -82,7 +83,7 @@ function OrganizationSettings({
+   const changingLogo = useAtomValue(changeOrganizationLogoAtom(organization.organization));
    const pending =
      organization.checking || renaming.waiting || changingSlug.waiting || changingLogo.waiting;
 -  useDocumentTitle(productTitle(`${organization.name} settings`));
 +  useDocumentTitle(`${organization.name} settings`);
    return (
      <PageFrame>
-@@ -207,4 +208,5 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
+       <PageHeader title={organization.name} />
+@@ -206,6 +207,7 @@ function OrganizationIcon({ disabled }: { readonly disabled: boolean }) {
+ }
  
  function OrganizationName({ disabled }: { readonly disabled: boolean }) {
 +  const brand = useProductBrand();
    const organization = useOrganization();
    const disabledReason =
-@@ -240,5 +242,5 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
+     organization.role === "member"
+@@ -239,7 +241,7 @@ function OrganizationName({ disabled }: { readonly disabled: boolean }) {
+           <CardTitle>
              <h2>Organization name</h2>
            </CardTitle>
 -          <CardDescription>Shown across Executor.</CardDescription>
 +          <CardDescription>Shown across {brand.name}.</CardDescription>
          </CardHeader>
          <CardContent>
+           <Input
 diff --git a/apps/hosted/web/src/implementation/pages/profile.tsx b/apps/hosted/web/src/implementation/pages/profile.tsx
-index 9097c7340..fd041f60b 100644
+index 9097c734..fd041f60 100644
 --- a/apps/hosted/web/src/implementation/pages/profile.tsx
 +++ b/apps/hosted/web/src/implementation/pages/profile.tsx
-@@ -16,5 +16,5 @@ import {
+@@ -15,7 +15,7 @@ import {
+ } from "@executor-js/ui/components/card";
  import { Skeleton } from "@executor-js/ui/components/skeleton";
  import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 +import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
  import { AccountFailed, renameUserAtom } from "../../contracts/account.ts";
  import { sessionAtom } from "../../contracts/auth.ts";
-@@ -28,4 +28,5 @@ import {
+ import { organizationsAtom } from "../../contracts/organization.ts";
+@@ -27,6 +27,7 @@ import {
+   profileTitle,
  } from "../components/account-pending.tsx";
  import { OrganizationAvatar } from "../components/organization.tsx";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  const errorMessage = (cause: Cause.Cause<AccountFailed>) => {
-@@ -46,5 +47,5 @@ const suggestedName = (email: string) => email.split("@")[0] ?? "";
+   const error = Cause.squash(cause);
+@@ -45,7 +46,7 @@ const suggestedName = (email: string) => email.split("@")[0] ?? "";
+  * verify a new address renders its own email setting; otherwise the email is read-only.
   */
  export function ProfilePage({ email }: { readonly email?: (current: string) => ReactNode }) {
 -  useDocumentTitle(productTitle(profileTitle));
 +  useDocumentTitle(profileTitle);
    const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
    return (
-@@ -170,4 +171,5 @@ function DisplayName({ current, email }: { readonly current: string; readonly em
+     <PageFrame>
+@@ -169,6 +170,7 @@ function DisplayName({ current, email }: { readonly current: string; readonly em
+ 
  /** Every organization this person belongs to; each one owns its own apps, accounts and groups. */
  function Memberships() {
 +  const brand = useProductBrand();
    const organizations = useAtomValue(organizationsAtom);
    const retry = useAtomRefresh(organizationsAtom);
-@@ -179,5 +181,5 @@ function Memberships() {
+   return (
+@@ -178,7 +180,7 @@ function Memberships() {
+           <h2>Organizations</h2>
          </CardTitle>
          <CardDescription>
 -          Where you are a member. Everything else in Executor lives inside one of these.
 +          Where you are a member. Everything else in {brand.name} lives inside one of these.
          </CardDescription>
        </CardHeader>
+       <CardContent className="pb-4!">
 diff --git a/apps/hosted/web/src/implementation/pages/security.tsx b/apps/hosted/web/src/implementation/pages/security.tsx
-index abc744c48..74310463d 100644
+index abc744c4..74310463 100644
 --- a/apps/hosted/web/src/implementation/pages/security.tsx
 +++ b/apps/hosted/web/src/implementation/pages/security.tsx
-@@ -14,5 +14,5 @@ import {
+@@ -13,7 +13,7 @@ import {
+ } from "@executor-js/ui/components/card";
  import { LocalTime, shortMoment } from "@executor-js/ui/components/local-time";
  import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 +import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
  import {
    AccountFailed,
-@@ -72,5 +72,5 @@ export const describeClient = (userAgent: string | null | undefined): string =>
+   revokeOtherSessionsAtom,
+@@ -71,7 +71,7 @@ export const describeClient = (userAgent: string | null | undefined): string =>
+  * host shows the signed-in sessions.
   */
  export function SecurityPage({ children }: { readonly children?: ReactNode }) {
 -  useDocumentTitle(productTitle(securityTitle));
 +  useDocumentTitle(securityTitle);
    return (
      <PageFrame>
+       <PageHeader title={securityTitle} description={securityDescription} />
 diff --git a/apps/hosted/web/src/implementation/pages/tokens.tsx b/apps/hosted/web/src/implementation/pages/tokens.tsx
-index efc5ac395..d3d9419bb 100644
+index efc5ac39..d3d9419b 100644
 --- a/apps/hosted/web/src/implementation/pages/tokens.tsx
 +++ b/apps/hosted/web/src/implementation/pages/tokens.tsx
-@@ -26,5 +26,5 @@ import {
+@@ -25,7 +25,7 @@ import {
+   DialogDescription,
    DialogFooter,
  } from "@executor-js/ui/components/dialog";
 -import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 +import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
  import {
    Select,
-@@ -74,5 +74,5 @@ export function TokensPage({
+   SelectContent,
+@@ -73,7 +73,7 @@ export function TokensPage({
+           name: "Organization you left",
            logo: null,
          });
 -  useDocumentTitle(productTitle(tokensTitle));
 +  useDocumentTitle(tokensTitle);
    const [offset, setOffset] = useState(0);
    const query = apiKeysAtom(offset);
+   const keys = useAtomValue(query);
 diff --git a/apps/local/web/src/implementation/routes/__root.tsx b/apps/local/web/src/implementation/routes/__root.tsx
-index 1b5ee08b8..9a4715604 100644
+index 1b5ee08b..9a471560 100644
 --- a/apps/local/web/src/implementation/routes/__root.tsx
 +++ b/apps/local/web/src/implementation/routes/__root.tsx
-@@ -10,5 +10,5 @@ import { localPageTitle } from "../../contracts/navigation.ts";
+@@ -9,7 +9,7 @@ import type { BrowserEntryValues } from "../router.tsx";
+ import { localPageTitle } from "../../contracts/navigation.ts";
  import { NotFoundPage } from "../components/not-found.tsx";
  import { useLocation } from "@tanstack/react-router";
 -import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
 +import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
  import { DashboardDocument } from "@executor-js/dashboard-start/shell";
  import styles from "../styles/globals.css?url";
-@@ -21,5 +21,4 @@ export const Route = createRootRouteWithContext<{
+ import { fontPreloads } from "@executor-js/ui/lib/fonts";
+@@ -20,7 +20,6 @@ export const Route = createRootRouteWithContext<{
+ }>()({
    head: () => ({
      links: [...fontPreloads, { rel: "stylesheet", href: styles }],
 -    meta: [{ title: "Executor · Local" }],
    }),
    shellComponent: DashboardDocument,
-@@ -31,5 +30,5 @@ function Root() {
+   component: Root,
+@@ -30,7 +29,7 @@ export const Route = createRootRouteWithContext<{
+ function Root() {
    const { pathname } = useLocation();
    return (
 -    <DocumentTitleProvider fallbackTitle={productTitle(localPageTitle(pathname))}>
 +    <DocumentTitleProvider fallbackTitle={localPageTitle(pathname)}>
        <BrowserEntry />
        <Outlet />
+       {/* A development overlay; it reads the browser origin and has no server markup. */}
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index caed05bc6..89d68399e 100644
+index cb108529..faf9378d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -75,4 +75,10 @@ const cloudOnboarding = {
+@@ -74,6 +74,12 @@ const cloudOnboarding = {
+ 
  /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
  export const appWorkerBudgetLimit = 2;
 +/** The brand the product brand scenario's server starts with; `server` is its MCP server name. */
@@ -1754,7 +2091,9 @@ index caed05bc6..89d68399e 100644
 +} as const;
  /**
   * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
-@@ -5704,4 +5710,21 @@ export const scenarios = plan({
+  * stalled app reached during the program is told apart from one discovery gave up on.
+@@ -6499,6 +6505,23 @@ export const scenarios = plan({
+       local: na("Local uses its configured instance API key."),
      },
    },
 +  productBrand: {
@@ -1776,9 +2115,10 @@ index caed05bc6..89d68399e 100644
 +  },
    sharedAuthorization: {
      fixtures: "actors",
+     file: "shared-authorization.spec.ts",
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
 new file mode 100644
-index 000000000..3e5f77054
+index 00000000..3e5f7705
 --- /dev/null
 +++ b/e2e/tests/product-brand.spec.ts
 @@ -0,0 +1,160 @@
@@ -1943,50 +2283,60 @@ index 000000000..3e5f77054
 +  );
 +});
 diff --git a/packages/dashboard-start/src/implementation/build-change-notice.tsx b/packages/dashboard-start/src/implementation/build-change-notice.tsx
-index 3f66ec7ed..b56709594 100644
+index 3f66ec7e..b5670959 100644
 --- a/packages/dashboard-start/src/implementation/build-change-notice.tsx
 +++ b/packages/dashboard-start/src/implementation/build-change-notice.tsx
-@@ -2,4 +2,5 @@ import { useSyncExternalStore } from "react";
+@@ -1,6 +1,7 @@
+ import { useSyncExternalStore } from "react";
  import { Button } from "@executor-js/ui/components/button";
  import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  
  /**
-@@ -9,4 +10,5 @@ import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
+  * Offers a reload once the server reports another build. It does not reload by itself: the page
+@@ -8,13 +9,14 @@ import { pageOutdated, subscribePageOutdated } from "./build-change.ts";
+  */
  export function BuildChangeNotice() {
    const outdated = useSyncExternalStore(subscribePageOutdated, pageOutdated, () => false);
 +  const brand = useProductBrand();
    if (!outdated) return null;
    return (
-@@ -15,5 +17,5 @@ export function BuildChangeNotice() {
+     <div
+       role="status"
        className="fixed inset-x-0 bottom-4 z-50 mx-auto flex w-fit max-w-[calc(100%-2rem)] items-center gap-3 rounded-lg border bg-card px-4 py-2 text-sm text-card-foreground shadow-lg"
      >
 -      <span>Executor was updated. Reload to use the new version.</span>
 +      <span>{brand.name} was updated. Reload to use the new version.</span>
        <Button size="sm" onClick={() => window.location.reload()}>
          Reload
+       </Button>
 diff --git a/packages/dashboard-start/src/implementation/build-change.ts b/packages/dashboard-start/src/implementation/build-change.ts
-index 84e06019a..b1bd7ea9e 100644
+index 84e06019..b1bd7ea9 100644
 --- a/packages/dashboard-start/src/implementation/build-change.ts
 +++ b/packages/dashboard-start/src/implementation/build-change.ts
-@@ -18,5 +18,5 @@ const outdatedEvent = "executor:page-outdated";
+@@ -17,7 +17,7 @@ const outdatedAttribute = "data-outdated-build";
+ const outdatedEvent = "executor:page-outdated";
  
  /** How a request failure on an outdated page reads: the failure is likely the update itself. */
 -export const outdatedPageMessage = "Executor was updated. Reload this page to use the new version.";
 +export const outdatedPageMessage = "A new version is available. Reload this page to use it.";
  
  /** Whether a response from this page's server named a build other than the page's own. */
+ export const pageOutdated = (): boolean =>
 diff --git a/packages/dashboard-start/src/implementation/document.ts b/packages/dashboard-start/src/implementation/document.ts
-index fc48a6eb7..9f32e1521 100644
+index fc48a6eb..9f32e152 100644
 --- a/packages/dashboard-start/src/implementation/document.ts
 +++ b/packages/dashboard-start/src/implementation/document.ts
-@@ -3,4 +3,5 @@ import { Effect, Option, Schema } from "effect";
+@@ -2,6 +2,7 @@
+ import { Effect, Option, Schema } from "effect";
  import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
  import type { DocumentApi } from "../contracts/document.ts";
 +import { CurrentProductBrand } from "@executor-js/utils/product-brand";
  import { inProcessApi } from "./in-process.ts";
  
-@@ -30,7 +31,24 @@ const documentHeaders = {
+ /** The module a dashboard build emits as `dist/server/server.js`, given host request context. */
+@@ -29,9 +30,26 @@ const documentHeaders = {
+   "x-content-type-options": "nosniff",
  } as const;
  
 -const unavailable = HttpServerResponse.html(
@@ -2014,14 +2364,18 @@ index fc48a6eb7..9f32e1521 100644
 +});
  
  /**
-@@ -77,5 +95,5 @@ export const dashboardDocument = <Context, E, R, E2, R2>(options: {
+  * Render the requested page. `context` reads what the page needs before rendering, such as the
+@@ -76,7 +94,7 @@ export const dashboardDocument = <Context, E, R, E2, R2>(options: {
+     );
    }).pipe(
      Effect.withSpan("dashboard.document"),
 -    Effect.catchTag("DashboardUnavailable", () => Effect.succeed(unavailable)),
 +    Effect.catchTag("DashboardUnavailable", () => unavailable),
    );
  
-@@ -95,6 +113,7 @@ export const withSameSiteReload = <E, R>(
+ /**
+@@ -94,7 +112,8 @@ export const withSameSiteReload = <E, R>(
+       request.headers["sec-fetch-mode"] !== "navigate"
      )
        return yield* document;
 +    const brand = yield* CurrentProductBrand;
@@ -2031,22 +2385,27 @@ index fc48a6eb7..9f32e1521 100644
      ).pipe(HttpServerResponse.setHeaders(documentHeaders));
    });
 diff --git a/packages/dashboard-start/src/implementation/shell.tsx b/packages/dashboard-start/src/implementation/shell.tsx
-index 17c41de30..8ab941e4e 100644
+index 17c41de3..8ab941e4 100644
 --- a/packages/dashboard-start/src/implementation/shell.tsx
 +++ b/packages/dashboard-start/src/implementation/shell.tsx
-@@ -4,4 +4,5 @@ import { HeadContent, Scripts } from "@tanstack/react-router";
+@@ -3,6 +3,7 @@
+ import { HeadContent, Scripts } from "@tanstack/react-router";
  import type { ReactNode } from "react";
  import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
 +import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  import type {} from "../contracts/build.ts";
  import { documentBuild } from "./document-build.ts";
-@@ -43,4 +44,5 @@ const holdEarlySubmissions = `(() => {
+ import { BuildChangeNotice } from "./build-change-notice.tsx";
+@@ -42,6 +43,7 @@ const holdEarlySubmissions = `(() => {
+ 
  /** Public build metadata read by browser telemetry; it carries no identity or configuration secrets. */
  export function DashboardDocument({ children }: { readonly children: ReactNode }) {
 +  const brand = useProductBrand();
    return (
      // `data-dashboard` lets automation tell dashboard documents from authored app pages.
-@@ -55,5 +57,7 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
+     <html lang="en" data-dashboard="">
+@@ -54,7 +56,9 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
+           name="executor-environment"
            content={import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME}
          />
 -        <link rel="icon" href="/favicon.png" />
@@ -2055,31 +2414,36 @@ index 17c41de30..8ab941e4e 100644
 +        <link rel="icon" href={brand.logo} />
          <script dangerouslySetInnerHTML={{ __html: holdEarlySubmissions }} />
          <HeadContent />
+       </head>
 diff --git a/packages/mcp/src/contracts/tools.ts b/packages/mcp/src/contracts/tools.ts
-index 1d89a29be..6da335777 100644
+index 5067a3c2..6d96aaa6 100644
 --- a/packages/mcp/src/contracts/tools.ts
 +++ b/packages/mcp/src/contracts/tools.ts
-@@ -53,4 +53,6 @@ export const BrowserMcpToolkit = Toolkit.make(
+@@ -53,6 +53,8 @@ export const BrowserMcpToolkit = Toolkit.make(
+ 
  /** Hosts supply authorized operations and documentation I/O. */
  export interface McpOptions {
 +  /** The server name clients show for this connection; Executor when unset. */
 +  readonly name?: string;
    readonly backend: McpBackend<Error>;
    /** Admit each new program once. Resumes never call this hook. */
+   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;
 diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implementation/server.ts
-index fdc494a1c..b658345cd 100644
+index bcdaedd1..9e810474 100644
 --- a/packages/mcp/src/implementation/server.ts
 +++ b/packages/mcp/src/implementation/server.ts
-@@ -314,5 +314,5 @@ export const makeMcp = (options: McpOptions) =>
+@@ -322,7 +322,7 @@ export const makeMcp = (options: McpOptions) =>
+         ).pipe(
            Layer.provide(
              McpServer.layerHttp({
 -              name: "Executor",
 +              name: options.name ?? "Executor",
                version: "0.1.0",
                instructions: options.instructions,
+               path: "/mcp",
 diff --git a/packages/ui/src/contracts/product-brand.ts b/packages/ui/src/contracts/product-brand.ts
 new file mode 100644
-index 000000000..1b2f12331
+index 00000000..1b2f1233
 --- /dev/null
 +++ b/packages/ui/src/contracts/product-brand.ts
 @@ -0,0 +1,20 @@
@@ -2104,55 +2468,67 @@ index 000000000..1b2f12331
 +/** The name as the dashboard's lowercase wordmark shows it beside the logo. */
 +export const productWordmark = (brand: ProductBrand) => brand.name.toLowerCase();
 diff --git a/packages/ui/src/contracts/registry-error.ts b/packages/ui/src/contracts/registry-error.ts
-index 6b89b958e..6cc70ed3c 100644
+index 6b89b958..6cc70ed3 100644
 --- a/packages/ui/src/contracts/registry-error.ts
 +++ b/packages/ui/src/contracts/registry-error.ts
-@@ -17,4 +17,4 @@ export const registryErrorMessage = (error: RegistryError) =>
+@@ -16,5 +16,5 @@ export const registryErrorMessage = (error: RegistryError) =>
+     status: "The app registry returned an unexpected response. Try again later.",
      "invalid-response": "The app registry returned an invalid response. Try again later.",
      limit: "The published app exceeds the supported source size.",
 -    unsupported: "This Executor reads a remote registry and cannot publish.",
 +    unsupported: "This deployment reads a remote registry and cannot publish.",
    })[error.reason];
 diff --git a/packages/ui/src/implementation/components/credential-fields.tsx b/packages/ui/src/implementation/components/credential-fields.tsx
-index 44088479b..4ee9da3a7 100644
+index 08106034..c247c91e 100644
 --- a/packages/ui/src/implementation/components/credential-fields.tsx
 +++ b/packages/ui/src/implementation/components/credential-fields.tsx
-@@ -11,4 +11,5 @@ import {
+@@ -13,6 +13,7 @@ import {
+   SelectTrigger,
    SelectValue,
  } from "@executor-js/ui/components/select";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** A field's title, or its name in words: `apiKey` reads "Api Key". */
-@@ -27,4 +28,5 @@ function FieldAccess({
+ export const fieldLabel = (name: string, field: { readonly title?: string | undefined }) =>
+@@ -29,6 +30,7 @@ function FieldAccess({
+   readonly hidden: boolean;
    readonly hosts?: readonly string[] | undefined;
  }) {
 +  const brand = useProductBrand();
    return (
      <TooltipProvider delayDuration={150}>
-@@ -47,5 +49,5 @@ function FieldAccess({
+       <Tooltip>
+@@ -49,7 +51,7 @@ function FieldAccess({
+         </TooltipTrigger>
          <TooltipContent className="max-w-64">
            {hidden
 -            ? `The app and your agent only see a placeholder. Executor swaps in the real value on requests to ${hosts?.join(", ")}.`
 +            ? `The app and your agent only see a placeholder. ${brand.name} swaps in the real value on requests to ${hosts?.join(", ")}.`
              : "The app reads this value and can send it anywhere."}
          </TooltipContent>
+       </Tooltip>
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
-index 0b4e4ec04..dbb58d637 100644
+index 0b4e4ec0..dbb58d63 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
-@@ -22,4 +22,5 @@ import {
+@@ -21,6 +21,7 @@ import {
+ } from "./account-description.tsx";
  import { ProviderIcon } from "./common.tsx";
  import { useDashboard } from "./context.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** Account management lives on its list row; products supply the menu items they support. */
-@@ -195,4 +196,5 @@ export function DisconnectAccountForm<E>({
+ export function AccountActionsMenu({
+@@ -194,6 +195,7 @@ export function DisconnectAccountForm<E>({
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabledReason?: string | undefined;
  }) {
 +  const brand = useProductBrand();
    const { provider, apps } = data;
    const [pending, setPending] = useState(false);
-@@ -203,6 +205,6 @@ export function DisconnectAccountForm<E>({
+   const [error, setError] = useState<Cause.Cause<E>>();
+@@ -202,8 +204,8 @@ export function DisconnectAccountForm<E>({
+       <AccountDialogIdentity data={data} />
        <p className="text-sm text-muted-foreground">
          {data.revocation === "automatic"
 -          ? `This deletes the saved credentials from Executor and asks ${provider.definition.name} to revoke its access.`
@@ -2161,36 +2537,46 @@ index 0b4e4ec04..dbb58d637 100644
 +          : `This deletes the saved credentials from ${brand.name} but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
          {apps.length === 0 && "No apps use this account."}
        </p>
+       {apps.length > 0 && (
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 8db729dc7..5345ce2cb 100644
+index 8db729dc..5345ce2c 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -27,4 +27,5 @@ import {
+@@ -26,6 +26,7 @@ import {
+   SelectTrigger,
    SelectValue,
  } from "../components/select.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
-@@ -241,4 +242,5 @@ function CredentialAccess({
+ export function AccountForm<A, E>({
+@@ -240,6 +241,7 @@ function CredentialAccess({
+   readonly hidden: boolean;
    readonly readable: boolean;
  }) {
 +  const brand = useProductBrand();
    if (!hidden && !readable) return null;
    return (
-@@ -257,5 +259,5 @@ function CredentialAccess({
+     <div className="flex flex-col gap-1.5 text-xs leading-relaxed" data-credential-hosts>
+@@ -256,7 +258,7 @@ function CredentialAccess({
+             <span className="font-medium text-emerald-700 dark:text-emerald-400">
                Hidden from app.
              </span>{" "}
 -            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
 +            The app and your agent only get a placeholder. {brand.name} swaps in the real value{" "}
              {hosts.length === 0 ? (
                "on no request."
-@@ -311,4 +313,5 @@ function SignInAccess({
+             ) : (
+@@ -310,6 +312,7 @@ function SignInAccess({
+   readonly provider: string;
    readonly hosts?: readonly string[] | undefined;
  }) {
 +  const brand = useProductBrand();
    return hosts === undefined ? (
      <p
-@@ -334,5 +337,7 @@ function SignInAccess({
+       className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
+@@ -333,7 +336,9 @@ function SignInAccess({
+       />
        <span>
          {hosts.length === 0 ? (
 -          <>Executor never sends your {provider} sign-in on the app's requests.</>
@@ -2199,48 +2585,60 @@ index 8db729dc7..5345ce2cb 100644
 +          </>
          ) : (
            <>
+             Your {provider} sign-in is only sent to{" "}
 diff --git a/packages/ui/src/implementation/dashboard/agent-setup.tsx b/packages/ui/src/implementation/dashboard/agent-setup.tsx
-index 475133d96..dbc719eb6 100644
+index 353aa802..1c09884f 100644
 --- a/packages/ui/src/implementation/dashboard/agent-setup.tsx
 +++ b/packages/ui/src/implementation/dashboard/agent-setup.tsx
-@@ -2,10 +2,10 @@ import { CopyButton } from "./code.tsx";
+@@ -1,9 +1,9 @@
+ import { CopyButton } from "./code.tsx";
  
- /**
-- * Services Executor cannot add without guessing are set up by the user's agent, which can read the
-+ * Services the product cannot add without guessing are set up by the user's agent, which can read the
-  * service's documentation and ask the user how they sign in.
-  */
--export const agentSetupPrompt = (endpoint?: string) =>
-+export const agentSetupPrompt = (product: string, endpoint?: string) =>
+ /** Hands a custom app's description to the user's agent, which writes and deploys it. */
+-export const newAppPrompt = (description: string, endpoint?: string) =>
++export const newAppPrompt = (description: string, endpoint?: string, product = "Executor") =>
    [
--    "Help me add a service to Executor as an app. Ask me which service I want to connect.",
-+    `Help me add a service to ${product} as an app. Ask me which service I want to connect.`,
+-    "Help me build a new Executor app.",
++    `Help me build a new ${product} app.`,
      "",
-     "Start with the Executor app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
-@@ -14,5 +14,5 @@ export const agentSetupPrompt = (endpoint?: string) =>
+     description.trim() === ""
+       ? "Ask me what the app should do."
+@@ -14,7 +14,7 @@ export const newAppPrompt = (description: string, endpoint?: string) =>
+       ? []
        : [
            "",
 -          `If you are not connected to Executor yet, connect to its MCP server at ${endpoint} first.`,
 +          `If you are not connected to ${product} yet, connect to its MCP server at ${endpoint} first.`,
          ]),
    ].join("\n");
+ 
+@@ -50,3 +50,5 @@ export function AgentSetupPrompt({
+     </section>
+   );
+ }
++
++export const agentSetupPrompt = (product: string, endpoint?: string) => newAppPrompt("", endpoint, product);
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 4f0855448..c051320f0 100644
+index 1f29a3c3..cdf7e73f 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -45,4 +45,5 @@ import {
+@@ -54,6 +54,7 @@ import {
+   DialogTitle,
  } from "../components/dialog.tsx";
  import { cn } from "../lib/utils.ts";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  const accountName = (account: AccountSummary) => account.label || "Unnamed account";
-@@ -185,4 +186,5 @@ function DeleteUnusedAccount<E, A>({
+ 
+@@ -194,6 +195,7 @@ function DeleteUnusedAccount<E, A>({
+   readonly Failure: ComponentType<FailureProps<E>>;
    readonly onClose: () => void;
  }) {
 +  const brand = useProductBrand();
    const run = useAtomSet(remove, { mode: "promiseExit" });
    const result = useAtomValue(remove);
-@@ -211,6 +213,6 @@ function DeleteUnusedAccount<E, A>({
+   const pending = AsyncResult.isWaiting(result);
+@@ -220,8 +222,8 @@ function DeleteUnusedAccount<E, A>({
+         <p className="text-sm text-muted-foreground">
            Delete it if you no longer need it.{" "}
            {data.revocation === "automatic"
 -            ? `This removes the saved credentials from Executor and asks ${provider} to revoke its access.`
@@ -2249,80 +2647,95 @@ index 4f0855448..c051320f0 100644
 +            : `This removes the saved credentials from ${brand.name} but does not revoke access at ${provider}. To end access, revoke it there too.`}
          </p>
          {AsyncResult.isFailure(result) && <Failure cause={result.cause} />}
+         <DialogFooter>
 diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
-index 7a9804d19..0713050dc 100644
+index 4ffca9a7..3f43ecd6 100644
 --- a/packages/ui/src/implementation/dashboard/app-detail.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
-@@ -20,5 +20,5 @@ import type { AppView } from "../../contracts/dashboard.ts";
+@@ -19,7 +19,7 @@ import type { AppLinkProps } from "../../contracts/dashboard.ts";
+ import type { AppView } from "../../contracts/dashboard.ts";
  import { AppIcon } from "./common.tsx";
  import { useDashboard } from "./context.tsx";
 -import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
 +import { useDocumentTitle } from "../hooks/document-title.ts";
  import { cn } from "../lib/utils.ts";
  
-@@ -96,5 +96,5 @@ export function AppDetailLayout({
+ const sections = [
+@@ -95,7 +95,7 @@ export function AppDetailLayout({
+   readonly actions?: ReactNode;
    readonly children: ReactNode;
  }) {
 -  useDocumentTitle(productTitle(app?.name ?? "App"));
 +  useDocumentTitle(app?.name ?? "App");
    return (
      <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
+       <header className="shrink-0 px-7 pb-7 pt-5 max-[740px]:flex max-[740px]:items-center max-[740px]:py-1.5 max-[740px]:pl-1 max-[740px]:pr-4">
 diff --git a/packages/ui/src/implementation/dashboard/app-overview.tsx b/packages/ui/src/implementation/dashboard/app-overview.tsx
-index 3e4bf54d7..e3d6c1586 100644
+index 3e4bf54d..e3d6c158 100644
 --- a/packages/ui/src/implementation/dashboard/app-overview.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-overview.tsx
-@@ -306,4 +306,5 @@ export function AppOverviewSource({
+@@ -305,15 +305,17 @@ export function AppOverviewSource({
+ }: {
    readonly source: typeof AppAuthoringMetadata.Type;
  }) {
 +  const brand = useProductBrand();
    return (
      <div className="space-y-3 pt-4 text-sm leading-6 text-muted-foreground">
-@@ -312,5 +313,5 @@ export function AppOverviewSource({
+       <p>View the files that make this app work.</p>
+       <p>
          {source.canEdit
            ? "Ask your agent to help make changes."
 -          : "This app is maintained by Executor."}
 +          : `This app is maintained by ${brand.name}.`}
        </p>
      </div>
-@@ -318,2 +319,3 @@ export function AppOverviewSource({
+   );
  }
  import { EmptyState } from "./empty-state.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
 diff --git a/packages/ui/src/implementation/dashboard/app-skills.tsx b/packages/ui/src/implementation/dashboard/app-skills.tsx
-index d268a44b3..dc2fda8a6 100644
+index d268a44b..dc2fda8a 100644
 --- a/packages/ui/src/implementation/dashboard/app-skills.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-skills.tsx
-@@ -31,4 +31,5 @@ import {
+@@ -30,6 +30,7 @@ import {
+ } from "./skill-editor.tsx";
  
  import { SkillWorkspace } from "./skill-workspace.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  type Skill = AppSkillBundle["skills"][number];
-@@ -175,4 +176,5 @@ function SkillCatalog<E>({
+ 
+@@ -174,6 +175,7 @@ function SkillCatalog<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
    readonly onCommitted: (result: Committed) => void;
  }) {
 +  const brand = useProductBrand();
    const [selected, setSelected] = useState<string>();
    // An open draft asks before another skill or file replaces it.
-@@ -188,5 +190,5 @@ function SkillCatalog<E>({
+   const [dirty, setDirty] = useState(false);
+@@ -187,7 +189,7 @@ function SkillCatalog<E>({
+         action={
            canEdit ? (
              <CopyButton
 -              code={`Add skills to my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
 +              code={`Add skills to my ${brand.name} app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
                label="Copy prompt"
                text="Copy prompt"
+               variant="default"
 diff --git a/packages/ui/src/implementation/dashboard/browser-approval.tsx b/packages/ui/src/implementation/dashboard/browser-approval.tsx
-index 7faba5507..1f362bbc8 100644
+index 7faba550..1f362bbc 100644
 --- a/packages/ui/src/implementation/dashboard/browser-approval.tsx
 +++ b/packages/ui/src/implementation/dashboard/browser-approval.tsx
-@@ -1,4 +1,6 @@
+@@ -1,5 +1,7 @@
  import { LocalTime, timeOfDay } from "../components/local-time.tsx";
  /** A shared review page for tool consent and standard MCP form input. */
 +import { productWordmark } from "../../contracts/product-brand.ts";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
  import {
-@@ -38,8 +40,8 @@ const defaults = (request: PendingInteraction) =>
+   BrowserApprovalFailed,
+@@ -37,10 +39,10 @@ const defaults = (request: PendingInteraction) =>
+       ],
      ),
    );
 -/** Executor accepted the answer, so the form must not offer it again. */
@@ -2335,7 +2748,9 @@ index 7faba5507..1f362bbc8 100644
 +const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>, product: string) => {
    const error = Cause.squash(cause);
    return error instanceof ToolRunApprovalRefused
-@@ -51,6 +53,6 @@ const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+     ? `${error.description} ${error.recovery.action}`
+@@ -50,8 +52,8 @@ const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+           Match.when("forbidden", () => "Your account cannot review this request."),
            Match.when("invalid-answer", () => "Check the form fields and try again."),
            Match.when("unavailable", () => "This request is no longer available."),
 -          Match.when("network", () => "Cannot reach Executor. Try again."),
@@ -2344,7 +2759,9 @@ index 7faba5507..1f362bbc8 100644
 +          Match.when("reply-unreadable", () => unreadableReply(product)),
            Match.exhaustive,
          )
-@@ -69,9 +71,10 @@ type Outcome = "answered" | "unavailable" | "reply-unreadable";
+       : "Cannot load this request. Try again.";
+@@ -68,11 +70,12 @@ type Outcome = "answered" | "unavailable" | "reply-unreadable";
+ 
  /** Authentication is provided by the product; the server independently checks every read and answer. */
  export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
 +  const brand = useProductBrand();
@@ -2357,74 +2774,92 @@ index 7faba5507..1f362bbc8 100644
 +        {productWordmark(brand)}
        </div>
        <BrowserApprovalCard atoms={atoms} />
-@@ -87,4 +90,5 @@ export function BrowserApprovalCard({
+     </main>
+@@ -86,6 +89,7 @@ export function BrowserApprovalCard({
+   readonly atoms: ReviewAtoms;
    readonly completion?: ReactNode;
  }) {
 +  const { name: product } = useProductBrand();
    const view = useAtomValue(atoms.view);
    const refused = AsyncResult.isFailure(view) ? refusal(view.cause) : undefined;
-@@ -110,5 +114,5 @@ export function BrowserApprovalCard({
+   const refresh = useAtomRefresh(atoms.view);
+@@ -109,7 +113,7 @@ export function BrowserApprovalCard({
+             Cannot open this request
            </h1>
            <p role="alert" className="my-4 text-sm text-muted-foreground">
 -            {failureMessage(view.cause)}
 +            {failureMessage(view.cause, product)}
            </p>
            <Button variant="outline" onClick={refresh}>
-@@ -139,4 +143,5 @@ function ApprovalResult({
+             Try again
+@@ -138,6 +142,7 @@ function ApprovalResult({
+   readonly status: Outcome;
    readonly completion?: ReactNode;
  }) {
 +  const { name: product } = useProductBrand();
    return (
      <>
-@@ -153,5 +158,5 @@ function ApprovalResult({
+       <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
+@@ -152,7 +157,7 @@ function ApprovalResult({
+           ? (completion ?? "You can return to your agent.")
            : status === "unavailable"
              ? "This request has expired, was handled, or is no longer running."
 -            : unreadableReply}
 +            : unreadableReply(product)}
        </p>
      </>
-@@ -169,4 +174,5 @@ function ApprovalForm({
+   );
+@@ -168,6 +173,7 @@ function ApprovalForm({
+   readonly appName: string | undefined;
    readonly atoms: ReviewAtoms;
  }) {
 +  const { name: product } = useProductBrand();
    const [values, setValues] = useState(() => defaults(request));
    const [persist, setPersist] = useState("");
-@@ -218,5 +224,5 @@ function ApprovalForm({
+   const [saved, setSaved] = useState<Outcome>();
+@@ -217,7 +223,7 @@ function ApprovalForm({
+     const result = await submit(response);
      if (Exit.isSuccess(result)) setSaved(result.value.status);
      else if (replyUnreadable(result.cause)) setSaved("reply-unreadable");
 -    else setError(failureMessage(result.cause));
 +    else setError(failureMessage(result.cause, product));
    };
    if (saved !== undefined) return <ApprovalResult status={saved} completion={completion} />;
+   const tool = request.status === "approval-required" ? request.invocation.tool : request.tool.tool;
 diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
-index 31eeb46c3..6595d22d3 100644
+index 3bbccb37..141c6f47 100644
 --- a/packages/ui/src/implementation/dashboard/common.tsx
 +++ b/packages/ui/src/implementation/dashboard/common.tsx
-@@ -19,4 +19,5 @@ import { Input } from "@executor-js/ui/components/input";
+@@ -18,6 +18,7 @@ import type { CatalogIcon } from "@executor-js/catalog/contracts";
+ import { Input } from "@executor-js/ui/components/input";
  import { cn } from "@executor-js/ui/lib/utils";
  import { Skeleton } from "../components/skeleton.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  const noIcons = Atom.make(noCatalogIcons);
  
-@@ -70,4 +71,5 @@ export function ProviderIcon({
+ /** The dashboard's catalog icons, or none outside a dashboard. */
+@@ -69,13 +70,14 @@ export function ProviderIcon({
+   readonly pending?: boolean;
  }) {
    const catalogIcons = useCatalogIcons();
 +  const { logo } = useProductBrand();
    const [failed, setFailed] = useState<readonly string[]>([]);
    const normalized = name.toLowerCase().trim();
-@@ -75,5 +77,6 @@ export function ProviderIcon({
+   // Fetched large enough to stay sharp in the biggest tile on a 2x screen.
+   const fetchSize = 64;
    const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
    const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
--  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
-+  // The built-in app keeps the name Executor and shows the deployment's logo.
-+  const source = normalized === "executor" ? logo : faviconUrl(domain, size);
+-  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, fetchSize);
++  const source = normalized === "executor" ? logo : faviconUrl(domain, fetchSize);
    const sources = declared ?? catalogIconSources(catalog);
    const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));
+   const own = sources !== null && !failed.includes(sources.light) ? sources : null;
 diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
-index 39cca43e8..1b1404ca3 100644
+index 1324daee..12fcbcc4 100644
 --- a/packages/ui/src/implementation/dashboard/connect.tsx
 +++ b/packages/ui/src/implementation/dashboard/connect.tsx
-@@ -4,4 +4,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -3,6 +3,13 @@ import { ArrowUpRight01Icon, McpServerIcon, ZoomInAreaIcon } from "@hugeicons/co
+ import { HugeiconsIcon } from "@hugeicons/react";
  import { AssistantId } from "../../contracts/dashboard.ts";
  import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
 +import {
@@ -2436,8 +2871,18 @@ index 39cca43e8..1b1404ca3 100644
 +import { useProductBrand } from "../hooks/product-brand.ts";
  import { Code, CopyButton } from "./code.tsx";
  import { Button } from "../components/button.tsx";
-@@ -26,7 +33,7 @@ import museScreenshot from "./assistant-screenshots/muse.webp";
- import cursorScreenshot from "./assistant-screenshots/cursor.webp";
+ import { Dialog, DialogContent, DialogTitle } from "../components/dialog.tsx";
+@@ -12,6 +19,7 @@ import {
+   ChatGptLogo,
+   ClaudeLogo,
+   CodexLogo,
++  CursorLogo,
+   DevinLogo,
+   GrokLogo,
+   MuseLogo,
+@@ -24,9 +32,9 @@ import devinScreenshot from "./assistant-screenshots/devin.webp";
+ import grokScreenshot from "./assistant-screenshots/grok.webp";
+ import museScreenshot from "./assistant-screenshots/muse.webp";
  
 -/** The agent installs Executor itself; the prompt carries everything it needs to start. */
 -export const mcpSetupPrompt = (endpoint: string, docs: string, next: string) =>
@@ -2447,7 +2892,9 @@ index 39cca43e8..1b1404ca3 100644
 +  `Help me connect to ${product} over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
  
  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
-@@ -42,18 +49,20 @@ interface AssistantGuide {
+ 
+@@ -40,20 +48,22 @@ const OtherLogo = ({ className }: SVGProps<SVGSVGElement>) => (
+ interface AssistantGuide {
    readonly name: string;
    readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
 -  /** How Executor gets into this assistant, shown under its name. */
@@ -2479,7 +2926,9 @@ index 39cca43e8..1b1404ca3 100644
 +    | undefined;
    readonly note?: ReactNode;
  }
-@@ -141,8 +150,8 @@ function MessageBlock({ message }: { readonly message: string }) {
+ 
+@@ -139,13 +149,36 @@ function MessageBlock({ message }: { readonly message: string }) {
+   );
  }
  
 -const signIn = (assistant: string) => (
@@ -2491,8 +2940,6 @@ index 39cca43e8..1b1404ca3 100644
 +    {product}&rsquo;s tools.
    </>
  );
-@@ -185,4 +194,27 @@ const cursorGuide = (endpoint: string): AssistantGuide => ({
- });
  
 +/** Executor's plugin is not this product's, so another brand adds the server in Cursor's settings. */
 +const cursorMcpGuide = (endpoint: string, product: string, server: string): AssistantGuide => ({
@@ -2519,7 +2966,9 @@ index 39cca43e8..1b1404ca3 100644
 +
  /** The public plugin connects to Executor Cloud; custom endpoints keep their own setup. */
  const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
-@@ -246,5 +278,18 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
+   name,
+@@ -207,7 +240,20 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
+     ),
  });
  
 -const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> => ({
@@ -2539,14 +2988,17 @@ index 39cca43e8..1b1404ca3 100644
 +): Record<AssistantId, AssistantGuide> => ({
    claude: {
      name: "Claude",
-@@ -258,5 +303,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     logo: ClaudeLogo,
+@@ -219,27 +265,27 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <Path items={["Add connector", "Add custom connector"]} />.
        </>,
        <>
 -        Name it <Ui>Executor</Ui>, paste your MCP URL and click <Ui>Continue</Ui>.
 +        Name it <Ui>{product}</Ui>, paste your MCP URL and click <Ui>Continue</Ui>.
          <EndpointField endpoint={endpoint} />
        </>,
-@@ -265,7 +310,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
+         Keep <Ui>Sign in now</Ui> and <Ui>Register automatically</Ui> selected, then click{" "}
          <Ui>Add</Ui>.
        </>,
 -      signIn("Claude"),
@@ -2556,7 +3008,7 @@ index 39cca43e8..1b1404ca3 100644
 +    screenshot: shot(executor, {
        src: claudeScreenshot,
        width: 538,
-@@ -273,10 +318,10 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       height: 451,
        alt: "Claude's Add custom connector dialog with Executor entered",
        caption: "Claude’s Add custom connector dialog",
 -    },
@@ -2570,14 +3022,16 @@ index 39cca43e8..1b1404ca3 100644
 +        click <Ui>Connect</Ui> next to {product}.
        </>
      ),
-@@ -295,5 +340,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+   },
+@@ -256,37 +302,38 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+               Open <Ui>Plugins</Ui>, click <Ui>Add</Ui>, then <Ui>Add custom MCP server</Ui>.
              </>,
              <>
 -              Name it <Ui>Executor</Ui>, paste your MCP URL and choose <Ui>OAuth</Ui>.
 +              Name it <Ui>{product}</Ui>, paste your MCP URL and choose <Ui>OAuth</Ui>.
                <EndpointField endpoint={endpoint} />
              </>,
-@@ -301,7 +346,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+             <>
                Review the warning, click <Ui>Create as a plugin</Ui>, then <Ui>Connect</Ui>.
              </>,
 -            signIn("ChatGPT"),
@@ -2587,7 +3041,7 @@ index 39cca43e8..1b1404ca3 100644
 +          screenshot: shot(executor, {
              src: chatgptScreenshot,
              width: 600,
-@@ -309,13 +354,13 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+             height: 760,
              alt: "ChatGPT's Add custom MCP server dialog with Executor, the MCP URL and OAuth",
              caption: "ChatGPT’s Add custom MCP server dialog",
 -          },
@@ -2600,11 +3054,43 @@ index 39cca43e8..1b1404ca3 100644
              </>
            ),
          },
--  cursor: cursorGuide(endpoint),
-+  cursor: executor ? cursorGuide(endpoint) : cursorMcpGuide(endpoint, product, server),
-   "claude-code": {
-     name: "Claude Code",
-@@ -324,7 +369,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
++  cursor: cursorMcpGuide(endpoint, product, server),
+   opencode: {
+     name: "OpenCode",
+     logo: OpenCodeLogo,
+     method: "Terminal",
+     steps: [
+       <>
+-        Add Executor from your terminal.
++        Add {product} from your terminal.
+         <CommandBlock
+-          code={`opencode mcp add executor --url ${shellQuote(endpoint)}`}
++          code={`opencode mcp add ${server} --url ${shellQuote(endpoint)}`}
+           path="install.sh"
+           label="Copy assistant setup"
+         />
+@@ -294,16 +341,16 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
+         Open the sign-in page.
+         <CommandBlock
+-          code="opencode mcp auth executor"
++          code={`opencode mcp auth ${server}`}
+           path="install.sh"
+           label="Copy sign-in command"
+         />
+       </>,
+-      signIn("OpenCode"),
++      signIn("OpenCode", product),
+     ],
+     note: (
+       <>
+-        On OpenCode 2, add <Command>--global</Command> to use Executor in every project.
++        On OpenCode 2, add <Command>--global</Command> to use {product} in every project.
+       </>
+     ),
+   },
+@@ -313,18 +360,18 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     method: "Terminal",
      steps: [
        <>
 -        Add Executor from your terminal.
@@ -2614,7 +3100,7 @@ index 39cca43e8..1b1404ca3 100644
 +          code={`claude mcp add --transport http ${server} ${shellQuote(endpoint)}`}
            path="install.sh"
            label="Copy assistant setup"
-@@ -332,8 +377,8 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         />
        </>,
        <>
 -        In Claude Code, run <Command>/mcp</Command>, choose <Ui>executor</Ui> and select{" "}
@@ -2625,7 +3111,9 @@ index 39cca43e8..1b1404ca3 100644
 +      signIn("Claude Code", product),
      ],
    },
-@@ -347,7 +392,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+   codex:
+@@ -336,9 +383,9 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+           method: "Terminal",
            steps: [
              <>
 -              Add Executor from your terminal.
@@ -2635,7 +3123,9 @@ index 39cca43e8..1b1404ca3 100644
 +                code={`codex mcp add ${server} --url ${shellQuote(endpoint)}`}
                  path="install.sh"
                  label="Copy assistant setup"
-@@ -357,10 +402,10 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+               />
+@@ -346,12 +393,12 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+             <>
                Open the sign-in page.
                <CommandBlock
 -                code="codex mcp login executor"
@@ -2648,14 +3138,18 @@ index 39cca43e8..1b1404ca3 100644
 +            signIn("Codex", product),
            ],
          },
-@@ -376,5 +421,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+   devin: {
+@@ -365,7 +412,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <Path items={["Add MCP", "New MCP"]} />.
        </>,
        <>
 -        Name it <Ui>Executor</Ui>. Set Transport type to <Ui>HTTP</Ui> and Authentication to{" "}
 +        Name it <Ui>{product}</Ui>. Set Transport type to <Ui>HTTP</Ui> and Authentication to{" "}
          <Ui>OAuth</Ui>.
        </>,
-@@ -384,8 +429,8 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
+@@ -373,16 +420,16 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <EndpointField endpoint={endpoint} />
        </>,
        <>
 -        Click <Ui>Connect</Ui> next to Executor. {signIn("Devin")}
@@ -2666,14 +3160,16 @@ index 39cca43e8..1b1404ca3 100644
 +    screenshot: shot(executor, {
        src: devinScreenshot,
        width: 799,
-@@ -393,5 +438,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       height: 810,
        alt: "Devin's New MCP form with Executor, HTTP transport and OAuth authentication",
        caption: "Devin’s New MCP form",
 -    },
 +    }),
      note: "In an organization, Personal access lets each member sign in with their own account.",
    },
-@@ -404,9 +449,9 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+   "grok-bot": {
+@@ -393,11 +440,11 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
          Send Grok Bot this message.
          <MessageBlock
 -          message={`Add Executor as a remote MCP server named executor at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. After I approve, list Executor's tools to confirm the connection.`}
@@ -2685,7 +3181,9 @@ index 39cca43e8..1b1404ca3 100644
 +        Open the sign-in link Grok Bot shows. Sign in to {product}, choose your team and approve
          access.
        </>,
-@@ -424,11 +469,11 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     ],
+@@ -413,19 +460,19 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         <Ui>Custom</Ui>.
        </>,
        <>
 -        Name it <Ui>Executor</Ui>, paste your MCP URL into <Ui>Server URL</Ui> and click{" "}
@@ -2700,14 +3198,16 @@ index 39cca43e8..1b1404ca3 100644
 +    screenshot: shot(executor, {
        src: grokScreenshot,
        width: 520,
-@@ -436,5 +481,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       height: 304,
        alt: "Grok's Custom Connector form with Executor and the MCP URL",
        caption: "Grok’s Custom Connector form",
 -    },
 +    }),
    },
    muse: {
-@@ -447,13 +492,13 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     name: "Muse",
+@@ -436,22 +483,22 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       <>
          Send Muse this message.
          <MessageBlock
 -          message={`Add Executor as a remote MCP server named executor at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. If you cannot add it, tell me where to add a custom MCP server in your settings. After I approve, list Executor's tools to confirm the connection.`}
@@ -2724,55 +3224,68 @@ index 39cca43e8..1b1404ca3 100644
 +    screenshot: shot(executor, {
        src: museScreenshot,
        width: 780,
-@@ -462,5 +507,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+       height: 90,
+       alt: "A setup message typed into Muse's chat box",
        caption: "Where the message goes in Muse",
        wide: true,
 -    },
 +    }),
    },
    other: {
-@@ -471,5 +516,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     name: "Other",
+@@ -460,13 +507,13 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+     steps: [
        <>
          In your assistant&rsquo;s settings, add a custom connector or remote MCP server named{" "}
 -        <Ui>Executor</Ui>.
 +        <Ui>{product}</Ui>.
        </>,
        <>
-@@ -477,5 +522,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+         Choose <Ui>Streamable HTTP</Ui> with <Ui>OAuth</Ui> and paste your MCP URL.
          <EndpointField endpoint={endpoint} />
        </>,
 -      <>Start its Connect or sign-in action. {signIn("your assistant")}</>,
 +      <>Start its Connect or sign-in action. {signIn("your assistant", product)}</>,
      ],
      note: "Your assistant needs to support remote MCP servers with OAuth sign-in.",
-@@ -485,5 +530,5 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+   },
+@@ -474,7 +521,7 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide>
+ 
  /** The name an assistant goes by in its guide and the setup around it. */
  export const assistantName = (assistant: AssistantId): string =>
 -  assistantGuides("")[assistant].name;
 +  assistantGuides("", defaultProductBrand)[assistant].name;
  
  /** Assistant logos as a grid of choices; `selected` marks the current one when the choice persists. */
-@@ -495,5 +540,5 @@ export function AssistantChoices({
+ export function AssistantChoices({
+@@ -484,7 +531,7 @@ export function AssistantChoices({
+   readonly selected?: AssistantId;
    readonly onSelect: (assistant: AssistantId) => void;
  }) {
 -  const guides = assistantGuides("");
 +  const guides = assistantGuides("", useProductBrand());
    return (
      <div
-@@ -526,5 +571,5 @@ export function AssistantChoices({
+       className="flex flex-wrap gap-1.5 @md:grid @md:grid-cols-5"
+@@ -515,7 +562,7 @@ export function AssistantChoices({
+ 
  /** One assistant's guide, with the product's exact MCP URL in every copyable example. */
  export const useAssistantGuide = (endpoint: string, assistant: AssistantId): AssistantGuide =>
 -  assistantGuides(endpoint)[assistant];
 +  assistantGuides(endpoint, useProductBrand())[assistant];
  
  export type { AssistantGuide };
-@@ -600,4 +645,5 @@ export function AssistantSetupGuide({
+ 
+@@ -589,6 +636,7 @@ export function AssistantSetupGuide({
+   readonly assistant: AssistantId;
  }) {
    const guide = useAssistantGuide(endpoint, assistant);
 +  const brand = useProductBrand();
    const Logo = guide.logo;
    return (
-@@ -611,5 +657,7 @@ export function AssistantSetupGuide({
+     <article
+@@ -600,7 +648,9 @@ export function AssistantSetupGuide({
+           <Logo className="size-5" />
          </span>
          <div className="min-w-0 flex-1 basis-40">
 -          <h3 className="text-sm font-medium">Add Executor to {guide.name}</h3>
@@ -2781,7 +3294,9 @@ index 39cca43e8..1b1404ca3 100644
 +          </h3>
            <p className="text-xs text-muted-foreground">{guide.method}</p>
          </div>
-@@ -736,6 +784,7 @@ export function McpInstallInstructions({
+         <AssistantGuideLink guide={guide} className="w-full @md:w-auto" />
+@@ -725,8 +775,9 @@ export function McpInstallInstructions({
+   readonly token?: ReactNode;
    readonly children?: ReactNode;
  }) {
 -  const prompt = mcpSetupPrompt(endpoint, docs, next);
@@ -2791,25 +3306,31 @@ index 39cca43e8..1b1404ca3 100644
 +  const command = `npx add-mcp ${shellQuote(endpoint)} --name ${productServerName(brand)} -g`;
    return (
      <div className="mcp-install-content min-w-0">
-@@ -775,5 +824,5 @@ export function McpInstallInstructions({
+       <Tabs defaultValue="assistant">
+@@ -764,7 +815,7 @@ export function McpInstallInstructions({
+         </TabsContent>
          <TabsContent value="prompt" className="mt-4">
            <p className="text-[13px] leading-5 text-muted-foreground">
 -            Send this to your agent. It adds the Executor MCP server, then asks you to sign in.
 +            Send this to your agent. It adds the {brand.name} MCP server, then asks you to sign in.
            </p>
            <p className="mt-3 rounded-lg border border-foreground/15 bg-foreground/[0.06] p-4 text-sm leading-6 break-words whitespace-pre-line select-text">
-@@ -804,5 +853,5 @@ export function McpInstallInstructions({
+             {prompt}
+@@ -793,7 +844,7 @@ export function McpInstallInstructions({
+         </TabsContent>
          <TabsContent value="command" className="mt-4">
            <p className="text-[13px] leading-5 text-muted-foreground">
 -            Run in your terminal, then choose the agents to add Executor to.
 +            Run in your terminal, then choose the agents to add {brand.name} to.
            </p>
            <div className="mcp-install-code relative mt-3 min-w-0 overflow-hidden rounded-lg border [&_pre]:py-4! [&_pre]:pr-14! [&_pre]:pl-4! [&_pre]:leading-6!">
+             <CopyButton code={command} label="Copy command" />
 diff --git a/packages/ui/src/implementation/dashboard/connected-agents.tsx b/packages/ui/src/implementation/dashboard/connected-agents.tsx
-index b23b78c1b..2aac1afdd 100644
+index b23b78c1..2aac1afd 100644
 --- a/packages/ui/src/implementation/dashboard/connected-agents.tsx
 +++ b/packages/ui/src/implementation/dashboard/connected-agents.tsx
-@@ -18,8 +18,9 @@ import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.t
+@@ -17,10 +17,11 @@ import {
+ import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.tsx";
  import { Skeleton } from "../components/skeleton.tsx";
  import { QueryView } from "./context.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
@@ -2820,111 +3341,128 @@ index b23b78c1b..2aac1afdd 100644
 +const accessLabel = (access: ConnectedAgentAccess, product: string) => {
    switch (access.kind) {
      case "all":
-@@ -30,5 +31,5 @@ const accessLabel = (access: ConnectedAgentAccess) => {
+       return "Every app";
+@@ -29,7 +30,7 @@ const accessLabel = (access: ConnectedAgentAccess) => {
+     case "connection":
        return `Scoped connection: ${access.name}`;
      case "api":
 -      return "Executor API";
 +      return `${product} API`;
    }
  };
-@@ -49,4 +50,5 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+ 
+@@ -48,6 +49,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+   /** Renders list and revocation failures. */
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
 +  const brand = useProductBrand();
    const [revoking, setRevoking] = useState<ConnectedAgent>();
    const submit = useAtomSet(revoke, { mode: "promiseExit" });
-@@ -86,5 +88,5 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+   const state = useAtomValue(revoke);
+@@ -85,7 +87,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
+           <DialogHeader>
              <DialogTitle>Revoke {revoking === undefined ? "" : agentName(revoking)}?</DialogTitle>
              <DialogDescription>
 -              This agent loses access immediately. To use Executor again, it must sign in and be
 +              This agent loses access immediately. To use {brand.name} again, it must sign in and be
                approved again.
              </DialogDescription>
-@@ -124,4 +126,5 @@ function AgentRow({
+           </DialogHeader>
+@@ -123,12 +125,13 @@ function AgentRow({
+   readonly agent: ConnectedAgent;
    readonly onRevoke: (agent: ConnectedAgent) => void;
  }) {
 +  const brand = useProductBrand();
    return (
      <li className="flex items-center gap-4 px-1 py-3">
-@@ -129,5 +132,5 @@ function AgentRow({
+       <div className="min-w-0 flex-1">
          <p className="truncate text-[13px] font-medium">{agentName(agent)}</p>
          <p className="mt-0.5 truncate text-xs text-muted-foreground">
 -          {accessLabel(agent.access)}
 +          {accessLabel(agent.access, brand.name)}
            {agent.lastActiveAt !== null && (
              <>
+               {" · Last used "}
 diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
-index 4c67cbf9b..8dfa428ae 100644
+index adffdac5..d754c1a3 100644
 --- a/packages/ui/src/implementation/dashboard/custom-app.tsx
 +++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
-@@ -11,4 +11,5 @@ import { AgentSetupPrompt, agentSetupPrompt } from "./agent-setup.tsx";
+@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
+ import type { MutationProps } from "../../contracts/dashboard.ts";
  import { Button } from "../components/button.tsx";
  import { Input } from "../components/input.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /**
-@@ -26,4 +27,5 @@ export function CustomAppForm<E>({
-   readonly endpoint?: string;
+  * Add a remote MCP server by URL. Executor confirms whether it needs no sign-in or supports
+@@ -21,6 +22,7 @@ export function CustomAppForm<E>({
+ }: MutationProps<CustomAppInput, DeployedApp, E> & {
+   readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
  }) {
 +  const brand = useProductBrand();
    const result = useAtomValue(mutation);
    const add = useAtomSet(mutation, { mode: "promiseExit" });
-@@ -88,5 +90,5 @@ export function CustomAppForm<E>({
-           </label>
-           <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
--            Executor checks whether this server needs no sign-in or supports OAuth.
-+            {brand.name} checks whether this server needs no sign-in or supports OAuth.
-           </span>
-         </fieldset>
-@@ -107,5 +109,5 @@ export function CustomAppForm<E>({
-         title="Any other service"
-         description="For OpenAPI, GraphQL, API keys, local tools, or anything else, send this prompt to your agent. It reads the service’s documentation and asks how you sign in."
--        prompt={agentSetupPrompt(endpoint)}
-+        prompt={agentSetupPrompt(brand.name, endpoint)}
-       />
-     </div>
+   const [name, setName] = useState("");
+@@ -88,7 +90,7 @@ export function CustomAppForm<E>({
+           />
+         </label>
+         <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
+-          Executor checks whether this server needs no sign-in or supports OAuth.
++          {brand.name} checks whether this server needs no sign-in or supports OAuth.
+         </span>
+       </fieldset>
+       {error && (
 diff --git a/packages/ui/src/implementation/dashboard/grant-picker.tsx b/packages/ui/src/implementation/dashboard/grant-picker.tsx
-index e92249ccb..636a548fb 100644
+index e92249cc..636a548f 100644
 --- a/packages/ui/src/implementation/dashboard/grant-picker.tsx
 +++ b/packages/ui/src/implementation/dashboard/grant-picker.tsx
-@@ -16,4 +16,5 @@ import {
+@@ -15,6 +15,7 @@ import {
+   SelectTrigger,
    SelectValue,
  } from "../components/select.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** A consent form needs at least one usable selection, or explicit all-app access. */
-@@ -38,4 +39,5 @@ export function GrantPicker<E>({
+ export const hasGrantSelection = (policy: GrantPolicy) =>
+@@ -37,6 +38,7 @@ export function GrantPicker<E>({
+   disabled?: boolean;
    emptyAction?: ReactNode;
  }) {
 +  const brand = useProductBrand();
    const approvalsId = useId();
    return (
-@@ -177,5 +179,5 @@ export function GrantPicker<E>({
+     <div className="grant-picker flex flex-col gap-4">
+@@ -176,13 +178,13 @@ export function GrantPicker<E>({
+                     <SelectValue />
                    </SelectTrigger>
                    <SelectContent>
 -                    <SelectItem value="browser">Require approval in Executor</SelectItem>
 +                    <SelectItem value="browser">Require approval in {brand.name}</SelectItem>
                      <SelectItem value="client">Allow this client to approve</SelectItem>
                    </SelectContent>
-@@ -183,5 +185,5 @@ export function GrantPicker<E>({
+                 </Select>
                  <p>
                    {policy.approval === "browser"
 -                    ? "Calls that need approval wait for you in the Executor browser."
 +                    ? `Calls that need approval wait for you in the ${brand.name} browser.`
                      : "This client can answer approval requests, including through native prompts."}
                  </p>
+               </div>
 diff --git a/packages/ui/src/implementation/dashboard/mcp-consent.tsx b/packages/ui/src/implementation/dashboard/mcp-consent.tsx
-index 79e454c6b..1ed12e2b1 100644
+index 79e454c6..1ed12e2b 100644
 --- a/packages/ui/src/implementation/dashboard/mcp-consent.tsx
 +++ b/packages/ui/src/implementation/dashboard/mcp-consent.tsx
-@@ -3,4 +3,6 @@ import { Match } from "effect";
+@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
+ import { Match } from "effect";
  import type { GrantTarget } from "@executor-js/mcp-auth/grants";
  import { Skeleton } from "../components/skeleton.tsx";
 +import { productWordmark } from "../../contracts/product-brand.ts";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** Stable consent shell shared by local and hosted connections, including their loading state. */
-@@ -12,13 +14,14 @@ export function McpConsentLayout({
+ export function McpConsentLayout({
+@@ -11,15 +13,16 @@ export function McpConsentLayout({
+   readonly children: ReactNode;
    readonly description: ReactNode;
  }) {
 +  const brand = useProductBrand();
@@ -2942,75 +3480,83 @@ index 79e454c6b..1ed12e2b1 100644
 +          <h1 className="font-semibold tracking-[-0.035em]">Connect to {brand.name}</h1>
            <div className="mcp-consent-intro text-muted-foreground text-[14px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550]">
              {description}
-@@ -78,4 +81,5 @@ export function McpConsentSummary({
+           </div>
+@@ -77,12 +80,13 @@ export function McpConsentSummary({
+   readonly target: GrantTarget;
    readonly destination?: string | undefined;
  }) {
 +  const brand = useProductBrand();
    const approval =
      target.kind === "api"
-@@ -83,5 +87,5 @@ export function McpConsentSummary({
+       ? undefined
        : Match.value(target.mode).pipe(
            Match.when("browser", () => ({
 -            title: "Approvals in Executor",
 +            title: `Approvals in ${brand.name}`,
              detail: "Calls that need approval wait for you to review them in your browser.",
            })),
-@@ -101,5 +105,5 @@ export function McpConsentSummary({
+           Match.when("native", () => ({
+@@ -100,7 +104,7 @@ export function McpConsentSummary({
+       <div>
          <h2>
            {target.kind === "api"
 -            ? "Connect to the Executor API"
 +            ? `Connect to the ${brand.name} API`
              : target.connection === undefined
                ? "Access to your apps"
-@@ -111,5 +115,5 @@ export function McpConsentSummary({
+               : "Access to one of your connections"}
+@@ -110,7 +114,7 @@ export function McpConsentSummary({
+             ? "This app can use the API with your account’s permissions."
              : target.connection === undefined
                ? "This connection can use all apps available to you. Your account’s permissions still apply."
 -              : "This connection can use only the apps and tools you chose for it in Executor. Changes you make there apply immediately."}
 +              : `This connection can use only the apps and tools you chose for it in ${brand.name}. Changes you make there apply immediately.`}
          </p>
        </div>
+       {approval !== undefined && (
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index b0777db05..d641be9d0 100644
+index 6349daa6..2e2b59aa 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -25,4 +25,5 @@ import { ErrorNotice } from "./error-notice.tsx";
+@@ -23,6 +23,7 @@ import { undeclaredError } from "@executor-js/utils/connection-failure";
+ import { ErrorNotice } from "./error-notice.tsx";
  import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
  import { useQuery } from "./context.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
-@@ -138,4 +139,5 @@ export function OAuthFields<A, E>({
-   readonly missingClient?: ReactNode;
+ export function OAuthSetup<E extends UserFacingError>({
+@@ -140,6 +141,7 @@ export function OAuthFields<A, E>({
+   /** A registered client whose details open prefilled; Connect updates it before signing in. */
+   readonly editClient?: OAuthClientId | undefined;
  }) {
 +  const brand = useProductBrand();
    const choices = clientChoices(options, account !== undefined);
-   const [picked, setPicked] = useState<ClientChoice | undefined>(
-@@ -172,5 +174,5 @@ export function OAuthFields<A, E>({
+   const editing =
+     editClient === undefined || options === "unresolved"
+@@ -180,7 +182,7 @@ export function OAuthFields<A, E>({
+   const guidance = machine
      ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
      : setup !== "unresolved" && setup.mode === "client-required"
 -      ? `Executor can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
 +      ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
        : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
-   const [clientId, setClientId] = useState("");
-@@ -311,5 +313,6 @@ export function OAuthFields<A, E>({
-           {missing && !manual && (
-             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">
--              No OAuth client is registered for {providerName}, and Executor doesn’t provide one.
-+              No OAuth client is registered for {providerName}, and {brand.name} doesn’t provide
-+              one.
-             </p>
-           )}
+   const [enteredClientId, setClientId] = useState<string>();
+   const clientId = enteredClientId ?? (updating ? editing.clientId : "");
 diff --git a/packages/ui/src/implementation/dashboard/publish-app.tsx b/packages/ui/src/implementation/dashboard/publish-app.tsx
-index 00a9be566..fc76c153a 100644
+index 00a9be56..fc76c153 100644
 --- a/packages/ui/src/implementation/dashboard/publish-app.tsx
 +++ b/packages/ui/src/implementation/dashboard/publish-app.tsx
-@@ -27,4 +27,5 @@ import { AppIcon } from "./common.tsx";
+@@ -26,6 +26,7 @@ import { CopyButton } from "./code.tsx";
+ import { AppIcon } from "./common.tsx";
  import { QueryView, useQuery } from "./context.tsx";
  import { cn } from "../lib/utils.ts";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
-@@ -42,6 +43,6 @@ const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | nu
+   readonly publication: typeof PublicationReadiness.Type;
+@@ -41,8 +42,8 @@ const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | nu
+       : `Set "name" in package.json to "${suggestedName}" and leave the other fields unchanged.`;
  
  /** A self-contained request an agent with this app's source tools can act on. */
 -const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>) =>
@@ -3019,13 +3565,17 @@ index 00a9be566..fc76c153a 100644
 +  `The ${product} app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
  
  ${repair.task} Commit the change to the app's working source. Don't deploy or publish the app.`;
-@@ -405,4 +406,5 @@ function PublishDialog<E>({
+ 
+@@ -404,6 +405,7 @@ function PublishDialog<E>({
+   readonly onClose: () => void;
    readonly onRenamed: (commit: string) => void;
  }) {
 +  const brand = useProductBrand();
    const [source] = useState(initialSource);
    const { publication } = source;
-@@ -469,9 +471,9 @@ function PublishDialog<E>({
+   const repair =
+@@ -468,11 +470,11 @@ function PublishDialog<E>({
+             Failure={Failure}
              onClose={onClose}
              onRenamed={onRenamed}
 -            prompt={agentPrompt(app, repair)}
@@ -3037,34 +3587,13 @@ index 00a9be566..fc76c153a 100644
 +            {repair !== undefined && <CopyPrompt prompt={agentPrompt(app, repair, brand.name)} />}
              <Button onClick={onClose}>OK</Button>
            </div>
-diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-index 80fad6b89..67d984779 100644
---- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-+++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-@@ -60,4 +60,5 @@ import { useIncrementalList } from "./incremental-list.tsx";
- import { McpInstallInstructions } from "./connect.tsx";
- import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
-+import { useProductBrand } from "../hooks/product-brand.ts";
- 
- /** Each host supplies its existing authorized catalog read of the app's tools. */
-@@ -138,4 +139,5 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends
-   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
- }) {
-+  const brand = useProductBrand();
-   const [view, setView] = useState<View>({ kind: "list" });
-   const [revoking, setRevoking] = useState<ConnectionView>();
-@@ -169,5 +171,5 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends
-             >
-               <div className="mb-4 flex flex-wrap items-center gap-2">
--                <h2 className="text-sm font-medium">Executor MCP server</h2>
-+                <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
-                 <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                   Every app you can use
+         )
 diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
-index 59e366853..3565f8901 100644
+index 59e36685..3565f890 100644
 --- a/packages/ui/src/implementation/dashboard/shell.tsx
 +++ b/packages/ui/src/implementation/dashboard/shell.tsx
-@@ -10,18 +10,24 @@ import {
+@@ -9,20 +9,26 @@ import {
+ } from "@hugeicons/core-free-icons";
  import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
  import { useMediaQuery } from "../hooks/media-query.ts";
 +import { useProductBrand } from "../hooks/product-brand.ts";
@@ -3099,7 +3628,9 @@ index 59e366853..3565f8901 100644
 +];
  
  /** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
-@@ -47,7 +53,8 @@ function ResourceLinks({
+ const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
+@@ -46,9 +52,10 @@ function ResourceLinks({
+   readonly docsUrl: string;
    readonly support: ReactNode;
  }) {
 +  const executor = isDefaultProductBrand(useProductBrand());
@@ -3109,37 +3640,46 @@ index 59e366853..3565f8901 100644
 +      {resources(docsUrl, executor).map(({ label, href, icon }) => (
          <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
            <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
-@@ -89,4 +96,5 @@ export function DashboardShell({
+           <span>{label}</span>
+@@ -88,6 +95,7 @@ export function DashboardShell({
+   readonly footer?: ReactNode;
    readonly children: ReactNode;
  }) {
 +  const { logo } = useProductBrand();
    const [menuOpen, setMenuOpen] = useState(false);
    const medium = useMediaQuery(mediumViewport);
-@@ -127,5 +135,5 @@ export function DashboardShell({
+   const [mediumCollapsed, setMediumCollapsed] = useState(true);
+@@ -126,7 +134,7 @@ export function DashboardShell({
+             </button>
            ) : (
              <span className="flex items-center justify-center shrink-0 size-8.5">
 -              <img src="/favicon.png" alt="" className="size-6" />
 +              <img src={logo} alt="" className="size-6" />
              </span>
            )}
+           {brand}
 diff --git a/packages/ui/src/implementation/dashboard/tool-runner.tsx b/packages/ui/src/implementation/dashboard/tool-runner.tsx
-index 60120c1eb..ef913c631 100644
+index 60120c1e..ef913c63 100644
 --- a/packages/ui/src/implementation/dashboard/tool-runner.tsx
 +++ b/packages/ui/src/implementation/dashboard/tool-runner.tsx
-@@ -28,4 +28,5 @@ import {
+@@ -27,6 +27,7 @@ import {
+   resolveSchema,
    ToolInputForm,
  } from "./tool-input-form.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  const isJson = Schema.is(Json);
-@@ -103,5 +104,5 @@ export const runningAs = <A extends AccountSummary>(
+ const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Json));
+@@ -102,26 +103,26 @@ export const runningAs = <A extends AccountSummary>(
+  * needs approval and may already have made changes, so this states only what Executor did with the
   * saved call: never that the tool did not run.
   */
 -const answered = (result: ToolResumeResultReceived) =>
 +const answered = (result: ToolResumeResultReceived, product: string) =>
    Match.value(result).pipe(
      Match.discriminatorsExhaustive("status")({
-@@ -110,6 +111,6 @@ const answered = (result: ToolResumeResultReceived) =>
+       completed: ({ toolError }) =>
+         toolError === true
            ? "Approved. The tool ran and reported an error, shown below."
            : "Approved. The tool ran, and its result is below.",
 -      denied: () => "Declined. Executor will not resume this saved call.",
@@ -3148,7 +3688,7 @@ index 60120c1eb..ef913c631 100644
 +      cancelled: () => `Cancelled. ${product} will not resume this saved call.`,
        failed: (failed) =>
          Match.value(failed).pipe(
-@@ -117,10 +118,10 @@ const answered = (result: ToolResumeResultReceived) =>
+           Match.when(
              { reason: "context-changed" },
              () =>
 -              "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
@@ -3161,43 +3701,55 @@ index 60120c1eb..ef913c631 100644
 +              `${product} could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.`,
            ),
            Match.when(
-@@ -131,5 +132,5 @@ const answered = (result: ToolResumeResultReceived) =>
+             { reason: "execution-failed" },
+@@ -130,7 +131,7 @@ const answered = (result: ToolResumeResultReceived) =>
+           ),
            Match.when(
              { reason: "expired" },
 -            () => "This request expired, so Executor will not resume this saved call.",
 +            () => `This request expired, so ${product} will not resume this saved call.`,
            ),
            Match.exhaustive,
-@@ -141,4 +142,5 @@ const answered = (result: ToolResumeResultReceived) =>
+         ),
+@@ -140,6 +141,7 @@ const answered = (result: ToolResumeResultReceived) =>
+ 
  /** The person reviews their own call; approving runs the saved call and shows its result here. */
  function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
 +  const brand = useProductBrand();
    const answer = useAtomValue(atoms.answer);
    const result =
-@@ -150,5 +152,5 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+     AsyncResult.isSuccess(answer) && answer.value.status === "answered"
+@@ -149,7 +151,7 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+     <>
        <BrowserApprovalCard
          atoms={atoms}
 -        completion={result === undefined ? undefined : answered(result)}
 +        completion={result === undefined ? undefined : answered(result, brand.name)}
        />
        {result?.status === "completed" && (
+         <section aria-label="Tool result">
 diff --git a/packages/ui/src/implementation/dashboard/webhook-setup.tsx b/packages/ui/src/implementation/dashboard/webhook-setup.tsx
-index 23c386fe2..13ef2b593 100644
+index 07162d61..fb280795 100644
 --- a/packages/ui/src/implementation/dashboard/webhook-setup.tsx
 +++ b/packages/ui/src/implementation/dashboard/webhook-setup.tsx
-@@ -19,4 +19,5 @@ import { Input } from "../components/input.tsx";
+@@ -17,6 +17,7 @@ import { Card, CardContent } from "../components/card.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
  import { Textarea } from "../components/textarea.tsx";
  import { CopyButton } from "./code.tsx";
 +import { useProductBrand } from "../hooks/product-brand.ts";
  
  type Action<E> = () => Promise<Exit.Exit<WebhookSubscription, E>>;
-@@ -99,4 +100,5 @@ function SetupForm<E>({
+ /** Compact setup UI shared by every product; authentication and exact error types stay in the caller. */
+@@ -97,6 +98,7 @@ function SetupForm<E>({
+   readonly confirmRemoval: Action<E>;
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
 +  const brand = useProductBrand();
    const [pending, setPending] = useState(false);
    const [failure, setFailure] = useState<Cause.Cause<E>>();
-@@ -141,6 +143,6 @@ function SetupForm<E>({
+   const [confirmed, setConfirmed] = useState(false);
+@@ -139,8 +141,8 @@ function SetupForm<E>({
+         <CardContent className="space-y-4 px-4">
            <h1 className="text-xl font-semibold">Webhook disabled</h1>
            <p>
 -            Executor has stopped accepting deliveries. If you added this webhook in your provider,
@@ -3206,11 +3758,13 @@ index 23c386fe2..13ef2b593 100644
 +            provider, remove it there before confirming.
            </p>
            <CopyValue label="Callback URL" value={view.subscription.callbackUrl} />
+           <label className="flex items-start gap-2 text-sm">
 diff --git a/packages/ui/src/implementation/hooks/document-title.ts b/packages/ui/src/implementation/hooks/document-title.ts
-index 7069be298..41505d5d3 100644
+index 7069be29..41505d5d 100644
 --- a/packages/ui/src/implementation/hooks/document-title.ts
 +++ b/packages/ui/src/implementation/hooks/document-title.ts
-@@ -10,9 +10,13 @@ import {
+@@ -9,11 +9,15 @@ import {
+   useState,
    type ReactNode,
  } from "react";
 +import { useProductBrand } from "./product-brand.ts";
@@ -3225,7 +3779,9 @@ index 7069be298..41505d5d3 100644
 + */
  export function DocumentTitleProvider({
    fallbackTitle,
-@@ -25,7 +29,8 @@ export function DocumentTitleProvider({
+   children,
+@@ -24,9 +28,10 @@ export function DocumentTitleProvider({
+   const [dynamicTitle, setDynamicTitle] = useState<string>();
    const nextRegistration = useRef(0);
    const activeRegistration = useRef<number | undefined>(undefined);
 +  const { name } = useProductBrand();
@@ -3236,7 +3792,9 @@ index 7069be298..41505d5d3 100644
 +  }, [dynamicTitle, fallbackTitle, name]);
    const register = useCallback((title: string) => {
      const id = ++nextRegistration.current;
-@@ -44,10 +49,7 @@ export function DocumentTitleProvider({
+     activeRegistration.current = id;
+@@ -43,11 +48,8 @@ export function DocumentTitleProvider({
+   return createElement(DocumentTitleContext, { value: context }, children);
  }
  
 -/** Register a page title while mounted inside the product title provider. */
@@ -3250,7 +3808,7 @@ index 7069be298..41505d5d3 100644
 -export const productTitle = (page: string) => `${page} · Executor`;
 diff --git a/packages/ui/src/implementation/hooks/product-brand.ts b/packages/ui/src/implementation/hooks/product-brand.ts
 new file mode 100644
-index 000000000..bc1956cb2
+index 00000000..bc1956cb
 --- /dev/null
 +++ b/packages/ui/src/implementation/hooks/product-brand.ts
 @@ -0,0 +1,6 @@
@@ -3261,10 +3819,11 @@ index 000000000..bc1956cb2
 +/** The deployment's name and logo, as its document was rendered with. */
 +export const useProductBrand = (): ProductBrand => useAtomValue(productBrandAtom);
 diff --git a/packages/utils/package.json b/packages/utils/package.json
-index e9555d936..f77f3e863 100644
+index e9555d93..f77f3e86 100644
 --- a/packages/utils/package.json
 +++ b/packages/utils/package.json
-@@ -14,5 +14,6 @@
+@@ -13,7 +13,8 @@
+     "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
      "./release-version": "./src/release-version.ts",
      "./legacy-keys": "./src/legacy-keys.ts",
 -    "./schema-definitions": "./src/schema-definitions.ts"
@@ -3272,9 +3831,10 @@ index e9555d936..f77f3e863 100644
 +    "./product-brand": "./src/product-brand.ts"
    },
    "dependencies": {
+     "@effect/platform-node": "4.0.1",
 diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
 new file mode 100644
-index 000000000..e51cafadf
+index 00000000..e51cafad
 --- /dev/null
 +++ b/packages/utils/src/product-brand.ts
 @@ -0,0 +1,60 @@
@@ -3337,4 +3897,58 @@ index 000000000..e51cafadf
 +export const CurrentProductBrand = Context.Reference<ProductBrand>(
 +  "@executor-js/utils/CurrentProductBrand",
 +  { defaultValue: () => defaultProductBrand },
++);
+diff --git a/packages/ui/src/implementation/dashboard/add-app.tsx b/packages/ui/src/implementation/dashboard/add-app.tsx
+index dce28a07..37151672 100644
+--- a/packages/ui/src/implementation/dashboard/add-app.tsx
++++ b/packages/ui/src/implementation/dashboard/add-app.tsx
+@@ -1,3 +1,4 @@
++import { useProductBrand } from "../hooks/product-brand.ts";
+ import { useState, type ReactElement, type ReactNode } from "react";
+ import type { CustomAppInput } from "@executor-js/catalog/contracts";
+ import type { DeployedApp } from "@executor-js/sdk";
+@@ -222,6 +223,7 @@ function AddAppDialogs<E>({
+ 
+ /** A custom app starts as a description that the user's agent turns into code. */
+ function CustomAppDialog({ endpoint }: { readonly endpoint: string | undefined }) {
++  const brand = useProductBrand();
+   const [description, setDescription] = useState("");
+   return (
+     <>
+@@ -243,8 +245,8 @@ function CustomAppDialog({ endpoint }: { readonly endpoint: string | undefined }
+       </label>
+       <AgentSetupPrompt
+         title="Send this to your agent"
+-        description="Paste it into Claude Code, Codex, Cursor or any agent connected to Executor."
+-        prompt={newAppPrompt(description, endpoint)}
++        description={`Paste it into Claude Code, Codex, Cursor or any agent connected to ${brand.name}.`}
++        prompt={newAppPrompt(description, endpoint, brand.name)}
+       />
+     </>
+   );
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index 83e946a8..a326c283 100644
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -125,6 +125,7 @@ export const AppViewFromUrl = Schema.Union([
+ ]);
+ /** Assistants with a setup guide, as setup URLs name them. */
+ export const AssistantId = Schema.Literals([
++  "cursor",
+   "claude",
+   "chatgpt",
+   "opencode",
+diff --git a/packages/ui/src/implementation/dashboard/assistant-logos.tsx b/packages/ui/src/implementation/dashboard/assistant-logos.tsx
+index a00cb0f5..c80f94f2 100644
+--- a/packages/ui/src/implementation/dashboard/assistant-logos.tsx
++++ b/packages/ui/src/implementation/dashboard/assistant-logos.tsx
+@@ -75,3 +75,9 @@ export const MuseLogo: Logo = (props) => {
+     </svg>
+   );
+ };
++
++export const CursorLogo: Logo = (props) => (
++  <svg viewBox="0 0 466.73 532.09" fill="currentColor" aria-hidden {...props}>
++    <path d="M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z" />
++  </svg>
 +);

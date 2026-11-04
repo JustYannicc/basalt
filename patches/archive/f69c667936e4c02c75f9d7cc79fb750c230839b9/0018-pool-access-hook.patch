@@ -1,0 +1,1064 @@
+diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
+index d308cab..36ca037 100644
+--- a/apps/hosted/cloud/src/contracts/onboarding.ts
++++ b/apps/hosted/cloud/src/contracts/onboarding.ts
+@@ -185,6 +185,10 @@ export class Onboarding extends Context.Service<
+      * `create`: false only when the account belongs on Executor v1. Fails closed.
+      */
+     readonly allowsOrganization: (userId: string) => Effect.Effect<boolean, OnboardingUnavailable>;
++    /** Ensure a verified member owns a personal team; durable member jobs retry failures. */
++    readonly ensurePersonalOrganization: (
++      userId: string,
++    ) => Effect.Effect<void, OnboardingUnavailable>;
+     /**
+      * The setup order for a team this member created through team setup. The first read for an
+      * enrolled team records the experiment exposure; later reads return the same order.
+diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
+new file mode 100644
+index 0000000..4d34ed7
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
+@@ -0,0 +1,123 @@
++/** Better Auth's Promise boundary for host access notifications and member-only sharing. */
++import type { BetterAuthPlugin } from "better-auth";
++import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
++import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
++import type { OrganizationOptions } from "better-auth/plugins/organization";
++import { Schema } from "effect";
++
++export interface CloudAccessHooks {
++  readonly memberRemoving: (organization: string, member: string) => Promise<void>;
++  /** Grants may already be committed. The host logs failures; lazy key minting repairs them. */
++  readonly membersAdded: (organization: string) => Promise<void>;
++  readonly userDeleting: (user: string) => Promise<void>;
++}
++
++const requireMember = (role: string) => {
++  if (role !== "member")
++    throw new APIError("FORBIDDEN", {
++      message: "People can only join as members. Choose the member role and try again.",
++    });
++};
++
++const beforeRemoval = async (
++  access: CloudAccessHooks | undefined,
++  organization: string,
++  member: string,
++) => {
++  try {
++    await access?.memberRemoving(organization, member);
++  } catch {
++    throw new APIError("SERVICE_UNAVAILABLE", {
++      message: "Pool access could not be updated. No member was removed. Try again.",
++    });
++  }
++};
++
++export const organizationAccessHooks = (access?: CloudAccessHooks) =>
++  ({
++    beforeCreateOrganization: async ({ organization }) => {
++      if (organization.metadata === undefined) return;
++      const { basaltPools: _, ...metadata } = organization.metadata;
++      // Better Auth merges hook data with the request, so override the whole metadata field.
++      return { data: { metadata } };
++    },
++    beforeUpdateOrganization: async ({ organization }) => {
++      // Replacing JSON would erase SQL-owned pools; reading and merging races provisioning.
++      if (organization.metadata !== undefined)
++        throw new APIError("BAD_REQUEST", {
++          message: "Organization metadata cannot be updated through authentication requests.",
++        });
++    },
++    beforeCreateInvitation: async ({ invitation }) => {
++      requireMember(invitation.role);
++    },
++    beforeAcceptInvitation: async ({ invitation }) => {
++      requireMember(invitation.role);
++    },
++    beforeUpdateMemberRole: async ({ newRole }) => {
++      requireMember(newRole);
++    },
++    beforeAddMember: async ({ member, user }) => {
++      // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
++      const creator =
++        tryGetCurrentAuthEndpointContext()?.path === "/organization/create" &&
++        member.role === "owner" &&
++        member.userId === user.id;
++      if (!creator) requireMember(member.role);
++    },
++    beforeRemoveMember: async ({ member, organization }) =>
++      beforeRemoval(access, organization.id, member.id),
++    afterAddMember: async ({ organization }) => {
++      await access?.membersAdded(organization.id);
++    },
++    afterAcceptInvitation: async ({ organization }) => {
++      await access?.membersAdded(organization.id);
++    },
++  }) satisfies NonNullable<OrganizationOptions["organizationHooks"]>;
++
++/** Better Auth 1.7.5's leave route bypasses beforeRemoveMember. Check the departing user here. */
++export const leavingAccessHook = (access?: CloudAccessHooks): BetterAuthPlugin => ({
++  id: "host-access-on-leave",
++  hooks: {
++    before: [
++      {
++        matcher: (context) => context.path === "/organization/leave",
++        handler: createAuthMiddleware(async (context) => {
++          const { organizationId } = Schema.decodeUnknownSync(
++            Schema.Struct({ organizationId: Schema.String }),
++          )(context.body);
++          const session = await getSessionFromCtx(context);
++          if (session === null) return;
++          const member = await context.context.adapter.findOne<{ id: string; role: string }>({
++            model: "member",
++            where: [
++              { field: "organizationId", value: organizationId },
++              { field: "userId", value: session.user.id },
++            ],
++          });
++          if (member === null) return;
++          // Native leave refuses the sole owner after plugin before-hooks have run. Let it refuse
++          // without revoking an audience for a membership that must remain in place.
++          if (member.role.split(",").includes("owner")) {
++            const members = await context.context.adapter.findMany<{ role: string }>({
++              model: "member",
++              where: [{ field: "organizationId", value: organizationId }],
++            });
++            if (members.filter((row) => row.role.split(",").includes("owner")).length <= 1) return;
++          }
++          await beforeRemoval(access, organizationId, member.id);
++        }),
++      },
++    ],
++  },
++});
++
++export const beforeUserDeletion = async (access: CloudAccessHooks | undefined, user: string) => {
++  try {
++    await access?.userDeleting(user);
++  } catch {
++    throw new APIError("SERVICE_UNAVAILABLE", {
++      message: "Pool access could not be revoked. Your account was not deleted. Try again.",
++    });
++  }
++};
+diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
+index d5b450c..ec411d5 100644
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -1,4 +1,10 @@
+ /** Cloud sign-in policy; self-hosted deployments do not need these OAuth credentials. */
++import {
++  beforeUserDeletion,
++  leavingAccessHook,
++  organizationAccessHooks,
++  type CloudAccessHooks,
++} from "./access-hooks.ts";
+ import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
+ import type { BetterAuthOptions } from "better-auth";
+ import { APIError } from "better-auth/api";
+@@ -129,6 +135,7 @@ export const cloudAuthOptions = (
+   onOperation?: (usage: NativeAuthUsage) => Promise<void>,
+   allowsOrganization?: (userId: string) => Promise<boolean>,
+   grants?: GrantObservers,
++  access?: CloudAccessHooks,
+ ) => {
+   const base = authOptions(settings, ipAddressHeaders, grants);
+   // A test stage that signs in through production's proxy uses production's callback, which the
+@@ -204,6 +211,11 @@ export const cloudAuthOptions = (
+         },
+       },
+       user: {
++        delete: {
++          before: async (user) => {
++            await beforeUserDeletion(access, user.id);
++          },
++        },
+         create: {
+           before: async (user, context) =>
+             (await ssoVerifiedEmail(user.email, context))
+@@ -337,7 +349,10 @@ export const cloudAuthOptions = (
+         onNone: () => [],
+       }),
+       ...base.plugins,
++      leavingAccessHook(access),
+       organization({
++        organizationHooks: organizationAccessHooks(access),
++        invitationExpiresIn: 7 * 24 * 60 * 60,
+         ...(billing === undefined
+           ? {}
+           : {
+@@ -365,7 +380,7 @@ export const cloudAuthOptions = (
+       }),
+       ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
+       // The native migrator creates tables in plugin order; SSO references organization.
+-      cloudSso(billing),
++      cloudSso(billing, access),
+       emailOTP({
+         storeOTP: "hashed",
+         expiresIn: emailCodeExpiresIn,
+diff --git a/apps/hosted/cloud/src/implementation/onboarding-store.ts b/apps/hosted/cloud/src/implementation/onboarding-store.ts
+index 90a88bd..6f1e037 100644
+--- a/apps/hosted/cloud/src/implementation/onboarding-store.ts
++++ b/apps/hosted/cloud/src/implementation/onboarding-store.ts
+@@ -84,6 +84,10 @@ export const makeOnboardingStore = Effect.gen(function* () {
+       ),
+     );
+ 
++  const ownsOrganization = (userId: string) =>
++    sql`select 1 from member where "userId" = ${userId} and role = 'owner' limit 1`.pipe(
++      Effect.map((rows) => rows.length > 0),
++    );
+   const create = (userId: string, details: TeamDetails, slug: string) =>
+     Effect.gen(function* () {
+       const id = yield* Effect.sync(() => crypto.randomUUID());
+@@ -99,9 +103,10 @@ export const makeOnboardingStore = Effect.gen(function* () {
+         select ${memberId}, created.id, ${userId}, 'owner', now() from created returning "organizationId"
+     ), setup as (
+       insert into cloud_organization_setup (user_id, organization_id, domain, applied)
+-        select ${userId}, owner."organizationId", null, true from owner returning organization_id
++        select ${userId}, owner."organizationId", null, true from owner
++        on conflict (user_id) do nothing returning organization_id
+     ) select created.id, created.name, created.slug, created.logo
+-      from created join setup on setup.organization_id = created.id
++      from created join owner on owner."organizationId" = created.id
+     `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(OnboardingReady.fields.organizations)));
+     });
+   const company = (domain: string) =>
+@@ -187,6 +192,7 @@ export const makeOnboardingStore = Effect.gen(function* () {
+     setUpTeam,
+     user,
+     lockUser,
++    ownsOrganization,
+     state,
+     create,
+     company,
+diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
+index 6eea460..3aa31a8 100644
+--- a/apps/hosted/cloud/src/implementation/onboarding.ts
++++ b/apps/hosted/cloud/src/implementation/onboarding.ts
+@@ -20,6 +20,7 @@ import {
+   OnboardingUnavailable,
+   CreateTeam,
+   type OnboardingCreated,
++  TeamDetails,
+   TeamIconNotFound,
+   V1Membership,
+   onboardingExperiment,
+@@ -146,6 +147,21 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+       Effect.withSpan("onboarding.prepare"),
+     );
+ 
++  // Both entry paths hold the same user lock and use the same owner/setup writes and slug rules.
++  const createTeam = (userId: string, details: TeamDetails) =>
++    Effect.gen(function* () {
++      const base = teamSlug(details.name);
++      for (let attempt = 0; attempt < 5; attempt++) {
++        const slug =
++          attempt === 0
++            ? base
++            : `${base}-${yield* Effect.sync(() => crypto.randomUUID().slice(0, 6))}`;
++        const organizations = yield* store.create(userId, details, slug);
++        if (organizations.length === 1) return organizations;
++      }
++      return yield* new OnboardingUnavailable();
++    });
++
+   const create: typeof Onboarding.Service.create = (userId, input) =>
+     Effect.gen(function* () {
+       const selected = yield* Schema.decodeUnknownEffect(Schema.toType(CreateTeam))({
+@@ -175,18 +191,11 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+             if (state.invitation !== null)
+               return found({ status: "invitation", invitation: state.invitation });
+             if (state.provisioned) return found({ status: "ready", organizations: [] });
+-            const base = teamSlug(details.name);
+-            for (let attempt = 0; attempt < 5; attempt++) {
+-              const slug =
+-                attempt === 0
+-                  ? base
+-                  : `${base}-${yield* Effect.sync(() => crypto.randomUUID().slice(0, 6))}`;
+-              const organizations = yield* store.create(userId, details, slug);
+-              const [team] = organizations;
+-              if (organizations.length === 1 && team !== undefined)
+-                return { entry: { status: "ready" as const, organizations }, created: team.id };
+-            }
+-            return yield* new OnboardingUnavailable();
++            const organizations = yield* createTeam(userId, details);
++            return {
++              entry: { status: "ready" as const, organizations },
++              created: organizations[0]!.id,
++            };
+           }),
+         )
+         .pipe(recoverSetupConnection);
+@@ -273,5 +282,37 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+       Effect.mapError(() => new OnboardingUnavailable()),
+       Effect.withSpan("onboarding.allowsOrganization"),
+     );
+-  return Onboarding.of({ prepare, create, allowsOrganization, setup, icon });
++  const ensurePersonalOrganization: typeof Onboarding.Service.ensurePersonalOrganization = (
++    userId,
++  ) =>
++    Effect.gen(function* () {
++      const user = yield* store.user(userId);
++      if (!user?.emailVerified || (yield* store.ownsOrganization(userId))) return;
++      // As with the native create endpoint, joining never bypasses the account's v1 check.
++      // Keep external reads outside the transaction. A refusal leaves the member job retryable.
++      if (!(yield* allowsOrganization(userId))) return yield* new OnboardingUnavailable();
++      yield* store
++        .transaction(
++          Effect.gen(function* () {
++            const current = yield* store.lockUser(userId);
++            if (!current?.emailVerified || (yield* store.ownsOrganization(userId))) return;
++            const state = yield* store.state(userId, current.email);
++            if (state.organizations.length === 0) return;
++            const details = yield* Schema.decodeUnknownEffect(TeamDetails)({
++              name: current.name.trim().slice(0, 120) || emailTeamName(current.email),
++              logo: null,
++            });
++            yield* createTeam(userId, details);
++          }),
++        )
++        .pipe(recoverSetupConnection);
++    }).pipe(Effect.mapError(() => new OnboardingUnavailable()));
++  return Onboarding.of({
++    prepare,
++    create,
++    allowsOrganization,
++    ensurePersonalOrganization,
++    setup,
++    icon,
++  });
+ });
+diff --git a/apps/hosted/cloud/src/implementation/sso.ts b/apps/hosted/cloud/src/implementation/sso.ts
+index 64d7e0b..e32e282 100644
+--- a/apps/hosted/cloud/src/implementation/sso.ts
++++ b/apps/hosted/cloud/src/implementation/sso.ts
+@@ -1,3 +1,4 @@
++import type { CloudAccessHooks } from "./access-hooks.ts";
+ import { sso } from "@better-auth/sso";
+ import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "better-auth";
+ import { getCurrentAdapter } from "better-auth";
+@@ -61,7 +62,7 @@ export const ssoVerifiedEmail = async (
+  * configuration. Each auth instance owns its key; nothing survives its scope.
+  * Domain verification is a prerequisite for sign-in and account linking.
+  */
+-export const cloudSso = (billing?: CloudBillingHooks) => {
++export const cloudSso = (billing?: CloudBillingHooks, access?: CloudAccessHooks) => {
+   let secret: AuthContext["secretConfig"] | undefined;
+   let auth: AuthContext | undefined;
+   const configurationTransform = {
+@@ -129,6 +130,7 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
+       // Resolve the external allowance before opening the membership transaction.
+       const limit =
+         billing === undefined ? undefined : await billing.memberLimit(provider.organizationId);
++      let added = false;
+       await auth.adapter.transaction(async (database) => {
+         // All SSO connections for this team share a lock. Updating the primary
+         // key to itself changes no team data and serializes JIT retries.
+@@ -178,7 +180,9 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
+             createdAt: new Date(),
+           },
+         });
++        added = true;
+       });
++      if (added) await access?.membersAdded(provider.organizationId);
+     },
+     saml: {
+       enableInResponseToValidation: true,
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 2f3d3a5..879bcb2 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -1,3 +1,4 @@
++import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
+ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
+ import { authObservability } from "../implementation/auth-observability.ts";
+@@ -38,7 +39,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+ import { RuntimeContext } from "alchemy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
++import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
+ import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import type { SendAuthEmail } from "../contracts/email.ts";
+ import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
+@@ -83,6 +84,11 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+         signal: current.signal,
+       });
+     };
++    const withSql = yield* invocationSql;
++    const access = poolAccessLifecycle(
++      yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++      settings.url,
++    );
+     const observation = authObservability();
+     const options = cloudAuthOptions(
+       settings,
+@@ -154,6 +160,21 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+             ),
+           ),
+       },
++      {
++        memberRemoving: (organization, member) =>
++          runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
++        membersAdded: (organization) =>
++          runCallback(
++            withSql(
++              (access.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
++                Effect.catch(() =>
++                  Effect.logWarning("Pool member provisioning failed; key minting will retry."),
++                ),
++              ),
++            ),
++          ),
++        userDeleting: (user) => runCallback(withSql(access.userDeleting?.(user) ?? Effect.void)),
++      },
+     );
+     const database = yield* AuthDatabase;
+     const makeInstance = (secret: string) =>
+@@ -203,7 +224,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+     );
+     // Bearer authentication reads its rows in one statement on the client this invocation
+     // shares with Better Auth and the executor.
+-    const withSql = yield* invocationSql;
++
+     const identity = Layer.effect(
+       Authentication,
+       Effect.gen(function* () {
+@@ -253,7 +274,15 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+               .pipe(Effect.withSpan("auth.membership")),
+           removeOrganization: (organizationId) =>
+             adapter
+-              .pipe(Effect.flatMap((adapter) => deleteOrganizationRecords(adapter, organizationId)))
++              .pipe(
++                Effect.flatMap((adapter) =>
++                  deleteOrganizationRecords(adapter, organizationId, (id) =>
++                    withSql(access.organizationRemoving?.(id) ?? Effect.void).pipe(
++                      Effect.mapError(() => new AuthenticationUnavailable()),
++                    ),
++                  ),
++                ),
++              )
+               .pipe(Effect.withSpan("auth.removeOrganization")),
+         });
+       }),
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 61f8265..90ef10a 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -3,6 +3,8 @@ import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy"
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { makeRegistryStorage } from "@executor-js/app-registry";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
++import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
++import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import {
+   createExecutor,
+@@ -14,7 +16,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+ import { SqlClient } from "effect/sql";
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Context, Effect, FiberSet, Option } from "effect";
++import { Config, Context, Effect, FiberSet, Option } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+ import { cachedVersionSources } from "../implementation/version-source-cache.ts";
+ import { organizationPublishers } from "../implementation/publishers.ts";
+@@ -26,7 +28,13 @@ import { cloudRuntime } from "./runtime.ts";
+ import { durableDeclarations } from "./durable-declarations.ts";
+ import { InvocationDatabase } from "./invocation-database.ts";
+ import { cloudSecrets } from "./secrets.ts";
+-import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
++import {
++  cloudHosts,
++  cloudOrigin,
++  cloudResourceOrigins,
++  productionStage,
++  stageName,
++} from "./stage.ts";
+ import { cloudEmulators } from "./emulators.ts";
+ import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
+ import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
+@@ -74,6 +82,10 @@ export const cloudExecutor = Effect.fn(function* (
+   // Resolve during initialization so Alchemy binds every value into the Worker environment.
+   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
+   const origin = yield* cloudOrigin.pipe(Effect.orDie);
++  const accessLifecycle = poolAccessLifecycle(
++    yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++    (yield* cloudHosts.pipe(Effect.orDie)).browser,
++  );
+   // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
+   // origin keeps delivering, so existing subscriptions keep the URL they stored.
+   const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
+@@ -113,7 +125,10 @@ export const cloudExecutor = Effect.fn(function* (
+         Effect.suspend(() =>
+           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
+         );
+-      const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
++      const lifecycle = yield* hostedResourceLifecycle.pipe(
++        Effect.provideService(AccessLifecycle, accessLifecycle),
++        Effect.provideContext(services),
++      );
+       const executor = yield* createExecutor({
+         database: storage,
+         secret: key,
+diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+index ac79aed..6cf0c58 100644
+--- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
++++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+@@ -208,6 +208,12 @@ export const cloudOnboarding = Effect.gen(function* () {
+           Effect.provide(RuntimeContext.phantom),
+           Effect.mapError(() => new OnboardingUnavailable()),
+         ),
++      ensurePersonalOrganization: (userId) =>
++        service.pipe(
++          Effect.flatMap((onboarding) => onboarding.ensurePersonalOrganization(userId)),
++          Effect.provide(RuntimeContext.phantom),
++          Effect.mapError(() => new OnboardingUnavailable()),
++        ),
+       create: (userId, details) =>
+         service.pipe(
+           Effect.flatMap((onboarding) => onboarding.create(userId, details)),
+diff --git a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
+index f574b49..99b5b45 100644
+--- a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
++++ b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
+@@ -9,6 +9,8 @@
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Cause, Context, Effect, Option, Schema } from "effect";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { SqlClient } from "effect/sql";
++import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import {
+   Authentication,
+   HostedExecutor,
+@@ -113,6 +115,8 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+   Effect.gen(function* () {
+     const reportErrors = yield* cloudSentry;
+     const encryptionKey = yield* workflowEncryptionKey;
++    const access = yield* AccessLifecycle;
++    const database = yield* GroupDatabase;
+     // The Worker that yields this class supplies the services; Alchemy captures them. Only
+     // these: the Worker's context also holds its own scope, and providing that to a run would
+     // replace the run's scope, so per-execution resources would outlive the run.
+@@ -146,7 +150,13 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+           request.mode === "encrypted"
+             ? yield* workflowResults(`organization-removal:${organization}`, encryptionKey)
+             : undefined;
+-        const work = removeOrganizationDurably(organization, runner(organization, results)).pipe(
++        const work = removeOrganizationDurably(
++          organization,
++          runner(organization, results),
++          (access.organizationRemoving?.(organization) ?? Effect.void).pipe(
++            Effect.provideServiceEffect(SqlClient.SqlClient, database),
++          ),
++        ).pipe(
+           Effect.provide(services),
+           Effect.provideService(OrganizationBilling, cancellation),
+           // The report carries the organization and step; the durable error below stays private.
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index 83b48c2..05269d7 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -4,20 +4,22 @@ import {
+   withDeploySetupWake,
+   withExecutorAnalytics,
+ } from "@executor-js/hosted-server";
++import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
++import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
+ import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
+ import { BlobStore } from "@executor-js/sdk/core";
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+ import { RuntimeContext } from "alchemy";
+ import type * as Cloudflare from "alchemy/Cloudflare";
+-import { Context, Effect, Layer } from "effect";
++import { Config, Context, Effect, Layer } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudBuildAsset } from "../implementation/build-storage.ts";
+ import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+ import { cloudBlobs } from "./blobs.ts";
+ import { cloudExecutor } from "./executor.ts";
+ import type { AppSources } from "./source.ts";
+-import { cloudOrigin } from "./stage.ts";
++import { cloudHosts, cloudOrigin } from "./stage.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
+ 
+ /**
+@@ -51,7 +53,12 @@ export const cloudProductServices = Effect.fn(function* (
+       Effect.flatMap((services) => work.pipe(Effect.provideContext(services))),
+       Effect.provide(RuntimeContext.phantom),
+     );
++  const accessLifecycle = poolAccessLifecycle(
++    yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++    (yield* cloudHosts.pipe(Effect.orDie)).browser,
++  );
+   const services = Layer.mergeAll(
++    Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(
+       HostedExecutor,
+       sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+index ee4c9f3..f68511e 100644
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -14,6 +14,8 @@ import {
+ } from "@executor-js/hosted-server/provisioning";
+ import { SqlClient } from "effect/sql";
+ import { cloudProduct } from "./product.ts";
++import { cloudOnboarding } from "./onboarding.ts";
++import { Onboarding } from "../contracts/onboarding.ts";
+ import { appDataSupervisors } from "./app-data.ts";
+ import { cloudEmail } from "./email.ts";
+ import { cloudWelcomeEmails } from "./welcome-email.ts";
+@@ -50,8 +52,15 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+     // placed handler to, in a step of its own that is retried until the handler has woken it.
+     const jobs = yield* cloudBackgroundJobs;
+     const encryptionKey = yield* workflowEncryptionKey;
++    const onboarding = yield* Onboarding.pipe(
++      Effect.provide(yield* cloudOnboarding.pipe(Effect.orDie)),
++    );
+     const services: ProvisioningServices = {
+       requireVerifiedEmail: true,
++      member: (id) =>
++        onboarding
++          .ensurePersonalOrganization(id)
++          .pipe(Effect.mapError(() => new ProvisioningFailed())),
+       user: (id) =>
+         emails.deliverUser(id).pipe(
+           Effect.provide(RuntimeContext.phantom),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 98b2382..3d1bd3d 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -27,6 +27,8 @@
+     "./browser/contracts": "./src/contracts/browser.ts",
+     "./app-management": "./src/app-management.ts",
+     "./document": "./src/implementation/document.ts",
++    "./access-lifecycle": "./src/contracts/access-lifecycle.ts",
++    "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
+     "./pool-defaults": "./src/implementation/pool-defaults.ts",
+     "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts"
+   },
+diff --git a/apps/hosted/server/src/contracts/access-lifecycle.ts b/apps/hosted/server/src/contracts/access-lifecycle.ts
+new file mode 100644
+index 0000000..4f4da50
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/access-lifecycle.ts
+@@ -0,0 +1,7 @@
++/** Optional host access events. A failure refuses the writing operation. */
++import { Context } from "effect";
++import type { HostAccessLifecycle } from "@executor-js/sdk/core";
++
++export const AccessLifecycle = Context.Reference<HostAccessLifecycle>("hosted/AccessLifecycle", {
++  defaultValue: () => ({}),
++});
+diff --git a/apps/hosted/server/src/implementation/groups.ts b/apps/hosted/server/src/implementation/groups.ts
+index 45e7f9a..afd99cd 100644
+--- a/apps/hosted/server/src/implementation/groups.ts
++++ b/apps/hosted/server/src/implementation/groups.ts
+@@ -1,4 +1,5 @@
+ /** Group writes commit metadata and memberships together, after locking current authority. */
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { Effect, Schema } from "effect";
+ import { SqlClient, SqlError } from "effect/sql";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -140,6 +141,10 @@ const saveGroup = (
+     yield* sql`delete from hosted_group_members where group_id = ${group.id}`;
+     if (input.memberIds.length > 0)
+       yield* sql`insert into hosted_group_members ${sql.insert(input.memberIds.map((member) => ({ group_id: group.id, member_id: member })))}`;
++    const lifecycle = yield* AccessLifecycle;
++    yield* (lifecycle.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
++      Effect.mapError(() => new GroupsUnavailable()),
++    );
+     return { ...group, memberIds: input.memberIds } satisfies Group;
+   });
+ const removeGroup = (id: GroupId, revision: typeof GroupRevision.Type) =>
+@@ -149,6 +154,10 @@ const removeGroup = (id: GroupId, revision: typeof GroupRevision.Type) =>
+     if ((yield* readGroup(id, true)).revision !== revision)
+       return yield* new GroupConflict({ reason: "changed" });
+     yield* sql`delete from hosted_groups where id = ${id} and organization_id = ${organization}`;
++    const lifecycle = yield* AccessLifecycle;
++    yield* (lifecycle.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
++      Effect.mapError(() => new GroupsUnavailable()),
++    );
+     return { id };
+   });
+ 
+diff --git a/apps/hosted/server/src/implementation/organization-records.ts b/apps/hosted/server/src/implementation/organization-records.ts
+index 5a1373e..bcaf729 100644
+--- a/apps/hosted/server/src/implementation/organization-records.ts
++++ b/apps/hosted/server/src/implementation/organization-records.ts
+@@ -37,7 +37,12 @@ const call = <A>(run: () => Promise<A>) =>
+  * organization with zero members, which its own owner could never administer
+  * or delete.
+  */
+-export const deleteOrganizationRecords = (adapter: Adapter, organization: OrganizationId) =>
++export const deleteOrganizationRecords = (
++  adapter: Adapter,
++  organization: OrganizationId,
++  before: (organization: OrganizationId) => Effect.Effect<void, AuthenticationUnavailable> = () =>
++    Effect.void,
++) =>
+   Effect.gen(function* () {
+     const existing = yield* call(() =>
+       adapter.findOne({
+@@ -50,6 +55,7 @@ export const deleteOrganizationRecords = (adapter: Adapter, organization: Organi
+     const saved = yield* Schema.decodeUnknownEffect(Organization)(existing).pipe(
+       Effect.catchTag("SchemaError", () => Effect.fail(new AuthenticationUnavailable())),
+     );
++    yield* before(organization);
+     // Grants outlive membership checks only as dead rows; remove their tokens with them.
+     let after: string | null = null;
+     for (;;) {
+diff --git a/apps/hosted/server/src/implementation/organization-removal.ts b/apps/hosted/server/src/implementation/organization-removal.ts
+index c131267..13537d6 100644
+--- a/apps/hosted/server/src/implementation/organization-removal.ts
++++ b/apps/hosted/server/src/implementation/organization-removal.ts
+@@ -80,9 +80,10 @@ export const beginOrganizationRemoval = Effect.gen(function* () {
+  * missing organization row means an earlier attempt deleted it, and an expired
+  * subscription is already cancelled. Only a genuine outage fails a step.
+  */
+-export const removeOrganizationDurably = <R = never>(
++export const removeOrganizationDurably = <R = never, E = never>(
+   organization: OrganizationId,
+   step: OrganizationRemovalStepRunner<R>,
++  beforeOwnerRemoval: Effect.Effect<void, E> = Effect.void,
+ ) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+@@ -130,7 +131,11 @@ export const removeOrganizationDurably = <R = never>(
+         }
+       }),
+     );
+-    yield* step("purge-owner-store", storeRetries, executor.owners.remove({ owner }));
++    yield* step(
++      "purge-owner-store",
++      storeRetries,
++      beforeOwnerRemoval.pipe(Effect.andThen(executor.owners.remove({ owner }))),
++    );
+     yield* step(
+       "delete-auth-records",
+       storeRetries,
+diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
+new file mode 100644
+index 0000000..86e037d
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
+@@ -0,0 +1,124 @@
++/** Synchronize pool audiences before an access change becomes authoritative. */
++import { StorageError, type HostAccessLifecycle } from "@executor-js/sdk/core";
++import { Clock, Effect, Option, Redacted, Schedule, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
++import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
++import { signEnvelope } from "./pool-token.ts";
++
++const Pool = Schema.Struct({
++  pool: Schema.String,
++  owner: Schema.String,
++  organization: Schema.String,
++  name: Schema.String,
++  users: Schema.Array(Schema.String),
++});
++
++/** The caller supplies the writing transaction's client, never a second connection. */
++export const poolAccessLifecycle = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  origin: string,
++): HostAccessLifecycle => {
++  const send = (change: AccessChange) =>
++    Effect.gen(function* () {
++      if (Option.isNone(key)) {
++        yield* Effect.logWarning(
++          "Pool access synchronization skipped: POOL_APP_SIGNING_KEY is absent.",
++        );
++        return;
++      }
++      const at = yield* Clock.currentTimeMillis;
++      const envelope = yield* Effect.tryPromise(() =>
++        signEnvelope(Redacted.value(key.value), accessPrefix, {
++          ...change,
++          at,
++          expiresAt: at + accessTtl,
++        }),
++      );
++      const client = yield* HttpClient.HttpClient;
++      const response = yield* client.post(new URL(accessPath, origin).href, {
++        body: HttpBody.jsonUnsafe({ envelope }),
++      });
++      if (response.status < 200 || response.status >= 300) return yield* new StorageError();
++    }).pipe(
++      // Deletion is idempotent at the receiver, including an acknowledgement lost after commit.
++      Effect.retry({
++        times: change.action === "pool-deleted" ? 2 : 0,
++        schedule: Schedule.spaced("100 millis"),
++      }),
++      Effect.timeout("10 seconds"),
++      Effect.provide(FetchHttpClient.layer),
++      Effect.catch(() => new StorageError()),
++    );
++
++  const pools = (organization: string, apps?: readonly string[], removing?: string) =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      // JSON expands only this organization's recorded pools; deleted apps stay deleted.
++      const rows = yield* sql`select app.id as pool, entry.key as owner, o.id as organization,
++        app.name, array(select distinct users.id from (
++          select entry.key as id union select m."userId" from member m
++          where m."organizationId" = o.id
++          and ((access.audience = 'private' and access.creator_id = m."userId")
++            or access.audience = 'everyone' or (access.audience = 'groups' and exists (
++              select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
++              where g.app_id = app.id and gm.member_id = m.id)))
++        ) users where not exists (select 1 from member departing
++          where departing.id = ${removing ?? null} and departing."organizationId" = o.id
++            and departing."userId" = users.id) order by users.id) as users
++        from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++        join hosted_app_access access on access.id = app.id and access.organization_id = o.id
++        where o.id = ${organization} ${apps === undefined ? sql`` : sql`and ${sql.in("app.id", apps)}`}`;
++      return yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++    }).pipe(Effect.catch(() => new StorageError()));
++
++  const audience = (organization: string, apps?: readonly string[], removing?: string) =>
++    Effect.gen(function* () {
++      if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
++      const found = yield* pools(organization, apps, removing);
++      if (found.length > 0) yield* send({ action: "audience", pools: found });
++    });
++  return {
++    appAccessChanged: ({ organization, apps }) => audience(organization, apps),
++    memberRemoving: ({ organization, member }) => audience(organization, undefined, member),
++    appRemoving: (app) =>
++      Effect.gen(function* () {
++        if (Option.isNone(key)) return yield* send({ action: "pool-deleted", pool: app });
++        const sql = yield* SqlClient.SqlClient;
++        const found = yield* sql`select o.id from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++        where app.id = ${app}`.pipe(Effect.catch(() => new StorageError()));
++        if (found.length > 0) yield* send({ action: "pool-deleted", pool: app });
++      }),
++    organizationRemoving: (organization) =>
++      Effect.gen(function* () {
++        if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
++        const sql = yield* SqlClient.SqlClient;
++        // Notify before owner-store erasure, while SQL can still prove the pool belongs here.
++        const rows = yield* sql<{
++          pool: string;
++        }>`select app.id as pool from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++        where o.id = ${organization}`.pipe(Effect.catch(() => new StorageError()));
++        for (const row of rows) yield* send({ action: "pool-deleted", pool: row.pool });
++      }),
++    userDeleting: (user) =>
++      Effect.gen(function* () {
++        if (Option.isSome(key)) {
++          const sql = yield* SqlClient.SqlClient;
++          // Membership may be gone; the app must still belong to the organization recording it.
++          const rows = yield* sql<{
++            pool: string;
++          }>`select app.id as pool from organization o
++            join executor_apps app on app.id = o.metadata::jsonb -> 'basaltPools' -> ${user} ->> 'app'
++              and app.owner = 'organization:' || o.id`.pipe(Effect.catch(() => new StorageError()));
++          for (const row of rows) yield* send({ action: "pool-deleted", pool: row.pool });
++        }
++        yield* send({ action: "person-deleted", user });
++      }),
++  };
++};
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index 36cde7f..16f6246 100644
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -33,6 +33,8 @@ export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()
+ /** Optional product services stay owned by the host, not by shared auth or the SDK. */
+ export interface ProvisioningServices {
+   readonly requireVerifiedEmail: boolean;
++  /** Product-owned member setup runs from the durable job, independently of join acceptance. */
++  readonly member?: (id: string) => Effect.Effect<void, ProvisioningFailed>;
+   readonly user: (id: string) => Effect.Effect<void, ProvisioningFailed>;
+   readonly billing: (id: OrganizationId) => Effect.Effect<void, ProvisioningFailed>;
+   readonly domain: Effect.Effect<void, ProvisioningFailed>;
+@@ -185,6 +187,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+         case "member": {
+           const initialize = yield* OrganizationDefaults;
+           const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
++          if (!rotationOnly) yield* services.member?.(job.user_id) ?? Effect.void;
+           const [member] = yield* managers(
+             job.organization_id,
+             services.requireVerifiedEmail,
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index f9328bd..0faaaff 100644
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -1,3 +1,4 @@
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { permittedAppIds } from "@executor-js/authorization";
+ import { AccountGrants } from "./proofs/account-access.ts";
+@@ -129,6 +130,11 @@ export const shareApp = (
+         if (audience.kind === "groups")
+           for (const group of audience.groups)
+             yield* sql`insert into hosted_app_groups (organization_id, app_id, group_id) values (${actor.organization}, ${app}, ${group})`;
++        const lifecycle = yield* AccessLifecycle;
++        yield* (
++          lifecycle.appAccessChanged?.({ organization: actor.organization, apps: [app] }) ??
++          Effect.void
++        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+       }),
+     );
+     return yield* requireAppAccess(app, "read");
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 136acfa..fb840e6 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,4 +1,5 @@
+ /** Product metadata commits with SDK resources using the same SQL transaction context. */
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+   AccountConnectionRefused,
+   AccountConnectionTargetChanged,
+@@ -210,6 +211,7 @@ const noRows = "'[]'::text";
+  * `createExecutor` as `hooks`, then hand the created executor to `attach`.
+  */
+ export const hostedResourceLifecycle = Effect.gen(function* () {
++  const accessLifecycle = yield* AccessLifecycle;
+   const created: { executor?: Executor } = {};
+   const executor = Effect.suspend(() =>
+     created.executor === undefined
+@@ -605,10 +607,12 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       appRemoving: (app) =>
+-        sql`delete from hosted_app_account_links where app = ${app}`.pipe(
+-          Effect.asVoid,
+-          Effect.catchTag("SqlError", () => new StorageError()),
+-        ),
++        Effect.gen(function* () {
++          yield* (accessLifecycle.appRemoving?.(app) ?? Effect.void).pipe(
++            Effect.provideService(SqlClient.SqlClient, sql),
++          );
++          yield* sql`delete from hosted_app_account_links where app = ${app}`;
++        }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       // An account connected for a user requirement is linked for its connecting member; one for
+       // an app requirement is linked for everyone. This runs under the app's lock, with the scope the
+       // active version gives the requirement now; `connectionCompleting` ran before the lock,
+diff --git a/apps/hosted/web/src/implementation/components/organization-members.tsx b/apps/hosted/web/src/implementation/components/organization-members.tsx
+index 534197f..643417d 100644
+--- a/apps/hosted/web/src/implementation/components/organization-members.tsx
++++ b/apps/hosted/web/src/implementation/components/organization-members.tsx
+@@ -146,7 +146,7 @@ export function OrganizationMembers({
+         .filter((row) => matches(`${row.name} ${row.email}`))
+         .sort((a, b) => a.name.localeCompare(b.name) * (descending ? -1 : 1))
+     : [];
+-  const sendInvite = async (email: string, role: "admin" | "member", resent: boolean) => {
++  const sendInvite = async (email: string, role: "member", resent: boolean) => {
+     setError(null);
+     setSent(null);
+     const result = await invite({ email, role });
+@@ -230,11 +230,7 @@ export function OrganizationMembers({
+                       onSubmit={async (event) => {
+                         event.preventDefault();
+                         const form = new FormData(event.currentTarget);
+-                        await sendInvite(
+-                          String(form.get("email")).trim(),
+-                          form.get("role") === "admin" ? "admin" : "member",
+-                          false,
+-                        );
++                        await sendInvite(String(form.get("email")).trim(), "member", false);
+                       }}
+                     >
+                       <label>
+@@ -256,7 +252,6 @@ export function OrganizationMembers({
+                           </SelectTrigger>
+                           <SelectContent>
+                             <SelectItem value="member">Member</SelectItem>
+-                            <SelectItem value="admin">Admin</SelectItem>
+                           </SelectContent>
+                         </Select>
+                       </label>
+@@ -377,7 +372,7 @@ export function OrganizationMembers({
+                               value={member.role}
+                               disabled={changingRole.waiting}
+                               onValueChange={async (role) => {
+-                                if (role !== "admin" && role !== "member") return;
++                                if (role !== "member") return;
+                                 setError(null);
+                                 const result = await changeRole({ memberId: member.id, role });
+                                 if (Exit.isFailure(result))
+@@ -385,11 +380,12 @@ export function OrganizationMembers({
+                               }}
+                             >
+                               <SelectTrigger aria-label={`Role for ${member.user.email}`}>
+-                                <SelectValue />
++                                <SelectValue>
++                                  {member.role === "admin" ? "Admin" : "Member"}
++                                </SelectValue>
+                               </SelectTrigger>
+                               <SelectContent>
+                                 <SelectItem value="member">Member</SelectItem>
+-                                <SelectItem value="admin">Admin</SelectItem>
+                               </SelectContent>
+                             </Select>
+                           ) : member ? (
+@@ -432,10 +428,7 @@ export function OrganizationMembers({
+                                     setError(null);
+                                     setSent(null);
+                                     setInvitationOpen(true);
+-                                  } else if (
+-                                    invitation.role === "admin" ||
+-                                    invitation.role === "member"
+-                                  )
++                                  } else if (invitation.role === "member")
+                                     await sendInvite(invitation.email, invitation.role, true);
+                                 }}
+                               >
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 8f11c8f..23e1f90 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -77,7 +77,37 @@ export interface AccountConnectionCompletion {
+   /** The app requirement the connection links its account to. */
+   readonly target: { readonly app: AppId; readonly requirement: string };
+ }
+-/** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
++/**
++ * Optional host access notifications. The caller supplies its writing transaction's SQL client.
++ * A failure aborts the change. External acknowledgements must be bounded and retry-safe:
++ * a later database failure cannot undo an acknowledgement that already reached another service.
++ */
++export interface HostAccessLifecycle {
++  readonly appAccessChanged?: (input: {
++    readonly organization: string;
++    /** Omitted when group membership or organization membership affects every app. */
++    readonly apps?: readonly string[];
++  }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly memberRemoving?: (input: {
++    readonly organization: string;
++    /** Membership id to exclude while projecting the post-removal audience. */
++    readonly member: string;
++  }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly appRemoving?: (
++    app: string,
++  ) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly organizationRemoving?: (
++    organization: string,
++  ) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly userDeleting?: (
++    user: string,
++  ) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++}
++
++/**
++ * Product metadata participates in the resource transaction. External I/O is limited to the
++ * bounded access acknowledgements described by HostAccessLifecycle.
++ */
+ export interface ResourceLifecycle {
+   /**
+    * The user links a subject has to an app whose accounts they may still use, oldest link first,

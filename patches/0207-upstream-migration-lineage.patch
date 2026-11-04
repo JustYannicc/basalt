@@ -1,0 +1,172 @@
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 42365a19..0bbae979 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -512,7 +512,7 @@ const version4015Schema = schema({
+ /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
+ const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
+ 
+-export const storageSchemas = [
++const applicationSchemas = [
+   version4("4.0.0"),
+   version4("4.0.1", () =>
+     Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
+@@ -826,6 +826,13 @@ export const storageSchemas = [
+   }),
+ ] as const;
+ 
++// The fork's 4.0.16 stores account sites. The upstream queue indexes therefore need a new
++// identity above all released fork schemas; their old upstream number cannot run here.
++export const storageSchemas = [
++  ...applicationSchemas,
++  indexOnlyVersion(applicationSchemas[applicationSchemas.length - 1]!, "4.0.29", queueReadIndexes),
++] as const;
++
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+ export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
+ 
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index f0ba5336..6c14d77c 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -287,6 +287,27 @@ export const migrateSetupSkipAssignments = Effect.gen(function* () {
+   )`;
+ }).pipe(Effect.mapError(migrationFailed("product")));
+ 
++/** Ordered Cloud product steps, shared by deployment and retained-schema verification. */
++export const cloudMigrationSteps = {
++  "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
++  "2_billing_seats": migrateBillingSeats,
++  "3_app_domain_records": migrateAppDomainRecords,
++  "4_organization_removal_starts": migrateOrganizationRemovalStarts,
++  "5_v1_import_map": migrateV1ImportMap,
++  "6_setup_assignments": migrateSetupAssignments,
++  "7_v1_import_orgs": migrateV1ImportOrgs,
++  "8_production_ops_receipts": migrateProductionOps,
++  "9_production_ops_database_identity": migrateProductionOpsDatabaseIdentity,
++  "10_tool_policies": migrateToolPolicies,
++  "14_v1_session_handoffs": migrateV1SessionHandoffs,
++  "15_v1_import_allowed": migrateV1ImportAllowed,
++  "16_setup_skip_assignments": migrateSetupSkipAssignments,
++  "17_v1_import_billing": migrateV1ImportBilling,
++  "18_v1_import_displacement": migrateV1ImportDisplacement,
++  "19_v1_import_into": migrateV1ImportInto,
++
++};
++
+ /** One run with its own sessions: Better Auth and product migrations, then close both pools. */
+ const migrateCloudDatabaseOnce = Effect.scoped(
+   Effect.gen(function* () {
+@@ -302,24 +323,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+       yield* migrationPhase("run the cloud product steps");
+       const registry = yield* makeRegistryStorage(yield* organizationPublishers);
+       yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
+-      yield* migrateProductSteps("private_cloud_migrations", {
+-        "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
+-        "2_billing_seats": migrateBillingSeats,
+-        "3_app_domain_records": migrateAppDomainRecords,
+-        "4_organization_removal_starts": migrateOrganizationRemovalStarts,
+-        "5_v1_import_map": migrateV1ImportMap,
+-        "6_setup_assignments": migrateSetupAssignments,
+-        "7_v1_import_orgs": migrateV1ImportOrgs,
+-        "8_production_ops_receipts": migrateProductionOps,
+-        "9_production_ops_database_identity": migrateProductionOpsDatabaseIdentity,
+-        "10_tool_policies": migrateToolPolicies,
+-        "14_v1_session_handoffs": migrateV1SessionHandoffs,
+-        "15_v1_import_allowed": migrateV1ImportAllowed,
+-        "16_setup_skip_assignments": migrateSetupSkipAssignments,
+-        "17_v1_import_billing": migrateV1ImportBilling,
+-        "18_v1_import_displacement": migrateV1ImportDisplacement,
+-        "19_v1_import_into": migrateV1ImportInto,
+-      });
++      yield* migrateProductSteps("private_cloud_migrations", cloudMigrationSteps);
+     });
+     yield* Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+index 32d04174..588d3433 100644
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+@@ -188,7 +188,7 @@ export const retirementReader = (
+               Schema.Struct({
+                 database: Identifier,
+                 snapshot: Identifier,
+-                version: Schema.Literal("4.0.27"),
++                version: Schema.Literal("4.0.29"),
+               }),
+             ),
+           ),
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 8be69ecf..72656016 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -57,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+         expect(afterInput.slice(0, retainedTables.length)).toEqual(
+           beforeInput.slice(0, retainedTables.length),
+         );
+-        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.27" }]);
++        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.29" }]);
+         expect(afterInput[retainedTables.length + 1]).toEqual([
+           { table_name: "executor_workflow_inputs" },
+         ]);
+@@ -89,7 +89,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index b449418d..682de211 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -136,7 +136,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.27" }]);
++  expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index e788afd3..7188fbcd 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -57,7 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.27" }]]);
++        expect(storage).toEqual([[{ value: "4.0.29" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index 0c51ad1f..dfadc170 100644
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+         expect(credentials).toEqual([
+           { client: ids.a },
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index dbae4501..3dbd581e 100644
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.29" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),

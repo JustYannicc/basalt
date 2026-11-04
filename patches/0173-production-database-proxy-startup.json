@@ -1,9 +1,11 @@
 {
   "identity": "basalt-production-database-proxy-startup",
   "file": "0173-production-database-proxy-startup.patch",
-  "content_sha256": "8f394c7230e236ed64a278319052a6aff895bde7fb8914892f03eb40c80761cf",
+  "content_sha256": "4c99a1bd7d111da4e8b56d0006af4555f098cc5eea5c6b29ad1bed34dcb9effd",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "8f394c7230e236ed64a278319052a6aff895bde7fb8914892f03eb40c80761cf",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/server/src/implementation/account-removal-lock.ts b/apps/hosted/server/src/implementation/account-removal-lock.ts
 new file mode 100644
-index 0000000..383b379
+index 00000000..383b3795
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-removal-lock.ts
 @@ -0,0 +1,40 @@
@@ -45,10 +45,10 @@ index 0000000..383b379
 +    );
 +};
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index c06e63e..b0b8335 100644
+index bfb16c50..f3654dd8 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -227,7 +227,7 @@ export const disconnectAccount = Effect.gen(function* () {
+@@ -229,7 +229,7 @@ export const disconnectAccount = Effect.gen(function* () {
    const executor = yield* Effect.flatten(HostedExecutor);
    yield* executor.accounts.get({ owner, account });
    const sql = yield* policyDatabase;
@@ -58,7 +58,7 @@ index c06e63e..b0b8335 100644
    const binding = yield* executor[InteractiveHost].binding({ owner, account });
    if (first !== undefined && binding === undefined)
 diff --git a/apps/hosted/server/src/implementation/contributed-account-policy.ts b/apps/hosted/server/src/implementation/contributed-account-policy.ts
-index 99f65f7..f8fc377 100644
+index 99f65f77..f8fc3779 100644
 --- a/apps/hosted/server/src/implementation/contributed-account-policy.ts
 +++ b/apps/hosted/server/src/implementation/contributed-account-policy.ts
 @@ -63,7 +63,11 @@ export const requireLinkRemovalAs = (
@@ -89,10 +89,10 @@ index 99f65f7..f8fc377 100644
      for (const link of links) {
        const permitted = yield* sql`select m.id from member m
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 3e1bb80..f2e8ff0 100644
+index cc50e5ef..04c2da0c 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -3,6 +3,7 @@ import { GroupDatabase } from "../contracts/groups.ts";
+@@ -4,6 +4,7 @@ import { GroupDatabase } from "../contracts/groups.ts";
  import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
  import { checkConnection } from "./connection-policy.ts";
  import { isContributed, checkContributedAccountRemoval } from "./contributed-account-policy.ts";
@@ -100,7 +100,7 @@ index 3e1bb80..f2e8ff0 100644
  /** Product metadata commits with SDK resources using the same SQL transaction context. */
  import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
  import {
-@@ -710,6 +711,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -712,6 +713,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
              ),
            );
          }),
@@ -109,10 +109,10 @@ index 3e1bb80..f2e8ff0 100644
          Effect.gen(function* () {
            const organization = yield* organizationOf(account.owner);
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index fcd83e2..3d91bd0 100644
+index 62a2c34c..0e8182b7 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -129,7 +129,7 @@ const jobs = {
+@@ -131,7 +131,7 @@ const jobs = {
      runner: 2,
  
      pattern:
@@ -123,7 +123,7 @@ index fcd83e2..3d91bd0 100644
    // stall every other scenario that reads accounts.
 diff --git a/e2e/support/account-delete-contention.ts b/e2e/support/account-delete-contention.ts
 new file mode 100644
-index 0000000..19ecf6a
+index 00000000..19ecf6a7
 --- /dev/null
 +++ b/e2e/support/account-delete-contention.ts
 @@ -0,0 +1,80 @@
@@ -208,10 +208,10 @@ index 0000000..19ecf6a
 +    return { request, app, observer: membership, deleting: deleting!, holder: holder! };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 844b24b..1c678f9 100644
+index 256ba922..2d87e465 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -190,6 +190,59 @@ export const scenarios = plan({
+@@ -196,6 +196,59 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -273,7 +273,7 @@ index 844b24b..1c678f9 100644
      file: "contributed-app-requirements.spec.ts",
 diff --git a/e2e/tests/contributed-account-delete-contention.spec.ts b/e2e/tests/contributed-account-delete-contention.spec.ts
 new file mode 100644
-index 0000000..067ed18
+index 00000000..067ed18b
 --- /dev/null
 +++ b/e2e/tests/contributed-account-delete-contention.spec.ts
 @@ -0,0 +1,175 @@
@@ -454,7 +454,7 @@ index 0000000..067ed18
 +);
 diff --git a/e2e/tests/contributed-account-delete-lock-set.spec.ts b/e2e/tests/contributed-account-delete-lock-set.spec.ts
 new file mode 100644
-index 0000000..9140c58
+index 00000000..9140c589
 --- /dev/null
 +++ b/e2e/tests/contributed-account-delete-lock-set.spec.ts
 @@ -0,0 +1,166 @@
@@ -626,7 +626,7 @@ index 0000000..9140c58
 +});
 diff --git a/e2e/tests/contributed-account-delete-oauth.spec.ts b/e2e/tests/contributed-account-delete-oauth.spec.ts
 new file mode 100644
-index 0000000..9e62936
+index 00000000..9e629367
 --- /dev/null
 +++ b/e2e/tests/contributed-account-delete-oauth.spec.ts
 @@ -0,0 +1,165 @@
@@ -796,7 +796,7 @@ index 0000000..9e62936
 +  );
 +});
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index f18d3f0..6f6520d 100644
+index 2a9d3bd2..00c41a13 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -270,6 +270,10 @@ export interface ResourceLifecycle {
@@ -811,10 +811,10 @@ index f18d3f0..6f6520d 100644
    readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
    /**
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 727b9b1..c15b7eb 100644
+index 247327a7..870d48a1 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -240,22 +240,28 @@ export const makeAccounts = (
+@@ -293,22 +293,28 @@ export const makeAccounts = (
      Effect.gen(function* () {
        const removed = yield* transaction(db, (tx) =>
          Effect.gen(function* () {
@@ -852,6 +852,6 @@ index 727b9b1..c15b7eb 100644
 +            // A reconnect may commit while lock preparation waits. Remove its current grant.
 +            const row = yield* read();
 +            if (row === null) return undefined;
-             const linked = yield* query(() =>
-               tx.findFirst("webhookAccounts", { where: (b) => b("account", "=", row.id) }),
-             );
+             // Every holder refuses the deletion; products narrow only which ones the refusal names.
+             const dependents = yield* webhookDependents(tx, row.id);
+             if (dependents.length > 0)

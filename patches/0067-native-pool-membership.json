@@ -1,9 +1,11 @@
 {
   "identity": "basalt-native-pool-membership",
   "file": "0067-native-pool-membership.patch",
-  "content_sha256": "8476564fa6112f415ef9fa2c2b0c3c43d47d5cbc83eef00f62ec7c6eaebb8b70",
+  "content_sha256": "60271de56a839bef3d7373059ce8c829b7976e170d54b6de3373f23a67b45ff5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
-  "workflow_sensitive": false
+  "workflow_sensitive": false,
+  "rebased_from": "8476564fa6112f415ef9fa2c2b0c3c43d47d5cbc83eef00f62ec7c6eaebb8b70",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

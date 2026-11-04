@@ -1,0 +1,10 @@
+{
+  "identity": "basalt-member-pools",
+  "file": "0010-member-pools.patch",
+  "content_sha256": "bdd83e4b29c1388bfa784b2c19a12610dc69d4e1334aff782cc42ce78ed88f03",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false,
+  "upstream_issue": 2362
+}

@@ -1,10 +1,12 @@
 {
   "identity": "executor-provider-identity-display-fields",
   "file": "0031-provider-identity-display-fields.patch",
-  "content_sha256": "d5ee1c68d4f662b287a4000df140ac040b9f747fe863cfe76fe3c9df540394a3",
+  "content_sha256": "5dd0caf87e1470cc89881cc2d5788e3c05f9f809ac223e95628b526e2c255909",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
   "workflow_sensitive": false,
-  "upstream_issue": 2416
+  "upstream_issue": 2416,
+  "rebased_from": "d5ee1c68d4f662b287a4000df140ac040b9f747fe863cfe76fe3c9df540394a3",
+  "rebased_from_pin": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
 }

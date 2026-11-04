@@ -1,0 +1,9 @@
+{
+  "identity": "executor-hosted-connectors",
+  "file": "0011-hosted-connectors.patch",
+  "content_sha256": "d0670382457c38692a847c9ad96449988369a090f66bb65e02bde6c3e582a4a3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
