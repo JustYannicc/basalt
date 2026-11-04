@@ -60,7 +60,9 @@ const poolRecordKey = (sql: SqlClient.SqlClient, owner = "person-a") =>
   sql`(select entry.key from jsonb_each(metadata::jsonb -> 'basaltPools') entry
     where coalesce(entry.value ->> 'owner', entry.key) = ${owner})`;
 const ownedRecord = <T extends object>(pools: Record<string, T>, owner = "person-a") =>
-  Object.entries(pools).find(([key, value]) => ("owner" in value ? value.owner : key) === owner)?.[1];
+  Object.entries(pools).find(
+    ([key, value]) => ("owner" in value ? value.owner : key) === owner,
+  )?.[1];
 
 const providerCrypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
@@ -383,8 +385,10 @@ test("installs an owner's private app and personal linked account with a verifia
       const accounts = yield* sql<{ token: string }>`select * from executor_accounts`;
       assert.equal(apps.length, 1);
       assert.equal(apps[0]!.name, "Alex's pool");
-      const [record]: readonly any[] =
-        yield* sql`select ${poolRecordKey(sql)} as key, metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} as pool from organization where id = ${organization}`;
+      const [record] = yield* sql<{
+        key: string;
+        pool: { app: string; owner: string; primary: boolean };
+      }>`select ${poolRecordKey(sql)} as key, metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} as pool from organization where id = ${organization}`;
       assert.equal(
         record!.pool.app,
         apps[0]!.id,
@@ -437,61 +441,86 @@ test("deleted pools stay deleted; unverified members and missing keys create not
 });
 
 test("pool reconciliation and key rotation preserve native authorization and sibling metadata", async () => {
-  await fixture(({ sql, setup }) => Effect.gen(function* () {
-    yield* setup();
-    yield* setup("person-b");
-    yield* sql`update organization set metadata = jsonb_set(jsonb_set(metadata::jsonb,
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* setup("person-b");
+      yield* sql`update organization set metadata = jsonb_set(jsonb_set(metadata::jsonb,
       array['basaltPools', ${poolRecordKey(sql)}, 'authorization'], '"executor-app-v1"'::jsonb),
       array['basaltPools', ${poolRecordKey(sql, "person-b")}, 'authorization'], '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
-    const [before] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    yield* setup();
-    const [reconciled] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    assert.deepEqual(reconciled!.pools, before!.pools);
-    yield* setup("person-a", Redacted.make("d1".repeat(32)));
-    const [rotated] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    assert.equal(ownedRecord(rotated!.pools)!.authorization, "executor-app-v1");
-    assert.notEqual(ownedRecord(rotated!.pools)!.tokenKeyVersion, ownedRecord(before!.pools)!.tokenKeyVersion);
-    assert.deepEqual(ownedRecord(rotated!.pools, "person-b"), ownedRecord(before!.pools, "person-b"));
-  }));
+      const [before] = yield* sql<{
+        pools: Record<string, Record<string, unknown>>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+      yield* setup();
+      const [reconciled] = yield* sql<{
+        pools: Record<string, Record<string, unknown>>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+      assert.deepEqual(reconciled!.pools, before!.pools);
+      yield* setup("person-a", Redacted.make("d1".repeat(32)));
+      const [rotated] = yield* sql<{
+        pools: Record<string, Record<string, unknown>>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+      assert.equal(ownedRecord(rotated!.pools)!.authorization, "executor-app-v1");
+      assert.notEqual(
+        ownedRecord(rotated!.pools)!.tokenKeyVersion,
+        ownedRecord(before!.pools)!.tokenKeyVersion,
+      );
+      assert.deepEqual(
+        ownedRecord(rotated!.pools, "person-b"),
+        ownedRecord(before!.pools, "person-b"),
+      );
+    }),
+  );
 });
 
 test("reconciliation retains a legacy user-key default and every unknown policy field", async () => {
-  await fixture(({ sql, setup }) => Effect.gen(function* () {
-    yield* setup();
-    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}',
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}',
       jsonb_build_object('person-a', ((metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)})
         - 'owner' - 'primary') || '{"authorization":"executor-app-v1","membership":"executor-links-v1","futurePolicy":{"keep":true}}'::jsonb))::text
       where id = ${organization}`;
-    const [before] = yield* sql<{ pools: Record<string, unknown> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    yield* setup();
-    yield* setup();
-    const [after] = yield* sql<{ pools: Record<string, unknown> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
-    assert.deepEqual(after, before);
-    assert.deepEqual(Object.keys(after!.pools), ["person-a"]);
-    assert.equal((yield* sql`select id from executor_apps`).length, 1);
-    assert.equal((yield* sql`select id from executor_accounts`).length, 1);
-  }));
+      const [before] = yield* sql<{
+        pools: Record<string, unknown>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+      yield* setup();
+      yield* setup();
+      const [after] = yield* sql<{
+        pools: Record<string, unknown>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+      assert.deepEqual(after, before);
+      assert.deepEqual(Object.keys(after!.pools), ["person-a"]);
+      assert.equal((yield* sql`select id from executor_apps`).length, 1);
+      assert.equal((yield* sql`select id from executor_accounts`).length, 1);
+    }),
+  );
 });
 
 test("an additional pool created before onboarding does not replace the default", async () => {
-  await fixture(({ sql, setup }) => Effect.gen(function* () {
-    yield* setup();
-    const [additional] = yield* sql`select id from executor_apps`;
-    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [additional] = yield* sql`select id from executor_apps`;
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
       array['basaltPools', ${poolRecordKey(sql)}, 'primary'], 'false')::text where id = ${organization}`;
-    yield* setup();
-    yield* setup();
-    const records = yield* sql`select entry.key, entry.value ->> 'app' as app,
+      yield* setup();
+      yield* setup();
+      const records = yield* sql`select entry.key, entry.value ->> 'app' as app,
       entry.value ->> 'owner' as owner, entry.value -> 'primary' as primary
       from organization team cross join lateral jsonb_each(team.metadata::jsonb -> 'basaltPools') entry
       where team.id = ${organization} order by entry.key`;
-    assert.equal(records.length, 2);
-    assert.equal(records.filter(record => record.primary === true).length, 1);
-    assert.equal(records.find(record => record.app === additional!.id)?.primary, false);
-    assert.equal(records.every(record => record.key === record.app && record.owner === "person-a"), true);
-    assert.equal((yield* sql`select id from executor_accounts`).length, 2);
-    assert.equal((yield* sql`select app from hosted_app_account_links`).length, 2);
-  }));
+      assert.equal(records.length, 2);
+      assert.equal(records.filter((record) => record.primary === true).length, 1);
+      assert.equal(records.find((record) => record.app === additional!.id)?.primary, false);
+      assert.equal(
+        records.every((record) => record.key === record.app && record.owner === "person-a"),
+        true,
+      );
+      assert.equal((yield* sql`select id from executor_accounts`).length, 2);
+      assert.equal((yield* sql`select app from hosted_app_account_links`).length, 2);
+    }),
+  );
 });
 
 test("two owners get distinct pools and names under concurrent setup", async () => {
@@ -567,7 +596,9 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       const [beforeOwnerDeployment] = yield* sql<{ version: string; bundle: string }>`select
         metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
         metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'bundle' as bundle from organization`;
-      const [currentApp] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+      const [currentApp] = yield* sql<{
+        active_deployment: string;
+      }>`select active_deployment from executor_apps`;
       const [currentDeployment] = yield* sql<{ requirements: unknown }>`select requirements
         from executor_deployments where id = ${currentApp!.active_deployment}`;
       yield* sql`insert into executor_deployments (id, requirements, app, files)
@@ -1364,8 +1395,14 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
     ({ sql, executor, setup, changeProvider }) =>
       Effect.gen(function* () {
         yield* setup();
-        const [before] = yield* sql<{ id: string; active_deployment: string }>`select id, active_deployment from executor_apps`;
-        const [oldAccount] = yield* sql<{ id: string; provider: string }>`select id, provider from executor_accounts`;
+        const [before] = yield* sql<{
+          id: string;
+          active_deployment: string;
+        }>`select id, active_deployment from executor_apps`;
+        const [oldAccount] = yield* sql<{
+          id: string;
+          provider: string;
+        }>`select id, provider from executor_accounts`;
         assert.equal(oldAccount!.provider, oldPoolProvider);
         poolBundle = "current-bundle";
         poolFiles = poolAppFiles;
@@ -1379,12 +1416,17 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           );
 
         assert.equal((yield* Effect.exit(job()))._tag, "Failure");
-        const [deployed] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+        const [deployed] = yield* sql<{
+          active_deployment: string;
+        }>`select active_deployment from executor_apps`;
         assert.notEqual(deployed!.active_deployment, before!.active_deployment);
         const [failed] = yield* sql<{ status: string }>`select status from hosted_provisioning
           where id = 'pool-post-deploy-retry'`;
         assert.equal(failed!.status, "queued", "the failed member job remains retryable");
-        const [oldLink] = yield* sql<{ account: string; provider: string }>`select l.account, a.provider
+        const [oldLink] = yield* sql<{
+          account: string;
+          provider: string;
+        }>`select l.account, a.provider
           from hosted_app_account_links l join executor_accounts a on a.id = l.account`;
         assert.equal(oldLink!.account, oldAccount!.id);
         assert.equal(oldLink!.provider, oldPoolProvider);
@@ -1422,7 +1464,11 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         assert.equal(repaired!.provider, provisionedPoolProvider);
         assert.deepEqual(
           yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), repaired!.token)),
-          { pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id, owner: "person-a", organization },
+          {
+            pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id,
+            owner: "person-a",
+            organization,
+          },
         );
         const [adopted] = yield* sql<{ version: string; bundle: string }>`select
           metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
@@ -1451,7 +1497,9 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           accessRepaired: 0,
           tokenRepaired: false,
         });
-        const [following] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+        const [following] = yield* sql<{
+          active_deployment: string;
+        }>`select active_deployment from executor_apps`;
         assert.notEqual(following!.active_deployment, adopted!.version);
         const [followingRecord] = yield* sql<{ version: string; bundle: string }>`select
           metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)} ->> 'version' as version,
