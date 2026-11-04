@@ -5,10 +5,12 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
@@ -43,6 +45,315 @@ def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class OutputPrivacyTests(unittest.TestCase):
+    @staticmethod
+    def home_log(message: str, level: str = "fatal") -> str:
+        return ("[CLIProxyAPIHome] [2026-11-04 12:00:00] [--------] "
+            f"[{level}] [main.go:123] {message}")
+
+    def home_exit(self, lines: list[str], secret: str = "fixture!", stream: str = "stdout"):
+        program = "import sys; " + "; ".join(
+            f"print({line!r}, file=sys.{stream}, flush=True)" for line in lines
+        ) + "; sys.exit(1)"
+        return self.home_exit_command([sys.executable, "-c", program], secret)
+
+    def home_exit_command(self, command: list[str], secret: str = "fixture!"):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            child = supervisor.Child("home", command,
+                {**os.environ, "MANAGEMENT_PASSWORD": secret}, pathlib.Path.cwd())
+            try:
+                child.process.wait(timeout=5)
+                child._reader.join(timeout=1)
+                self.assertFalse(child._reader.is_alive(), "child output was not drained")
+                self.assertIsNotNone(child.diagnostics)
+                snapshot = child.diagnostics.snapshot() if child.diagnostics is not None else []
+                with self.assertRaises(StartupError):
+                    supervisor.wait_for_home(child, secret, threading.Event())
+            finally:
+                if child.process.stdout is not None:
+                    child.process.stdout.close()
+        marker, payload = stderr.getvalue().strip().split(" ", 1)
+        self.assertEqual(marker, "POOL_CHILD_EXIT")
+        return snapshot, json.loads(payload), stdout.getvalue(), stderr.getvalue()
+
+    def test_home_stdout_and_recognized_startup_errors_survive_projection(self) -> None:
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                message = "failed to open database: connection refused"
+                snapshot, receipt, stdout, _ = self.home_exit([self.home_log(message)], stream=stream)
+                self.assertIn("POOL_HOME_INIT_FAILURE", stdout)
+                self.assertEqual(snapshot, ["fatal: failed to open database: conn_refused"])
+                self.assertEqual(receipt["output_tail"], snapshot)
+
+    def test_real_home_child_drops_cookie_nested_and_quoted_credentials(self) -> None:
+        payloads = [
+            '{"cookie":"session=short-cookie"}',
+            '{"credentials":{"value":"short-pass!"}}',
+            r'{\"credentials\":{\"value\":\"escaped-short-pass!\"}}',
+            'credential rejected: "quoted-short-pass!"',
+            "credential rejected: 'single-quoted-pass!'",
+            "credential rejected: `backtick-pass!`",
+            "credential rejected: “curly-quoted-pass!”",
+            "credential rejected: ‘curly-single-pass!’",
+            "cookie=session=short-cookie",
+            "credentials = short-pass!",
+            "%7b%22cookie%22%3a%22session%3dshort-cookie%22%7d",
+        ]
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                reason = "cluster coordinator error: connection refused"
+                lines = [payload, self.home_log(payload), self.home_log(reason)]
+                snapshot, receipt, stdout, stderr = self.home_exit(lines)
+                for value in ("short-cookie", "short-pass!", "quoted-short-pass!", "backtick-pass!", "curly-quoted-pass!", "curly-single-pass!"):
+                    self.assertNotIn(value, json.dumps(snapshot))
+                    self.assertNotIn(value, stdout + stderr)
+                self.assertEqual(snapshot, ["fatal: unrecognized", "fatal: cluster coordinator error: conn_refused"])
+                self.assertEqual(receipt["output_tail"], snapshot)
+
+    def test_real_home_child_redacts_short_known_secret_encodings(self) -> None:
+        import base64
+        from urllib.parse import quote
+
+        for secret in ("fixture!", "~~~!", "tiny+/!"):
+            raw = secret.encode("utf-8")
+            forms = {
+                secret,
+                base64.b64encode(raw).decode("ascii"),
+                base64.b64encode(raw).decode("ascii").rstrip("="),
+                base64.urlsafe_b64encode(raw).decode("ascii"),
+                base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+                quote(secret, safe=""),
+                quote(secret, safe="").lower(),
+                "".join(f"%{byte:02x}" for byte in raw),
+                "".join(f"%{byte:02X}" if index % 2 else f"%{byte:02x}" for index, byte in enumerate(raw)),
+            }
+            for encoded in forms:
+                for message, expected in (
+                    ("credential decode failed: " + encoded, "fatal: unrecognized"),
+                    ("failed to init runtime: " + encoded, "fatal: failed to init runtime: other"),
+                ):
+                    with self.subTest(secret=secret, encoded=encoded, message=message):
+                        snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], secret)
+                        for value in forms:
+                            self.assertNotIn(value, json.dumps(snapshot))
+                            self.assertNotIn(value, json.dumps(receipt["output_tail"]))
+                            self.assertNotIn(value, stdout + stderr)
+                        self.assertEqual(snapshot, [expected])
+                        self.assertEqual(receipt["output_tail"], snapshot)
+
+    def test_home_error_tail_is_bounded_and_rejects_other_output(self) -> None:
+        lines = [self.home_log(f"cluster coordinator error: connection refused {index}") for index in range(20)] + [
+            "panic: unformatted output",
+            self.home_log("ordinary informational message", "info "),
+            self.home_log("é" * 700),
+            self.home_log("x" * 8192 + "secret-in-oversized-line"),
+            "-----BEGIN PRIVATE KEY-----",
+            "private-key-body",
+            "-----END PRIVATE KEY-----",
+            self.home_log("database connection refused", "error"),
+        ]
+        snapshot, receipt, stdout, stderr = self.home_exit(lines)
+        self.assertEqual(len(snapshot), 8)
+        self.assertEqual(snapshot[-1], "error: unrecognized")
+        self.assertEqual(receipt["output_tail"], snapshot)
+        self.assertEqual(stdout, "")
+        for value in ("unformatted output", "informational", "private-key-body", "secret-in-oversized-line"):
+            self.assertNotIn(value, json.dumps(snapshot))
+            self.assertNotIn(value, stderr)
+        self.assertTrue(all(len(line.encode("utf-8")) <= 512 for line in snapshot))
+
+    def test_real_home_child_replaces_entire_large_error_slot(self) -> None:
+        message = "failed to start HTTPS server: " + "permission " * 100 + "/run/unknown-secret"
+        snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)])
+        self.assertEqual(receipt["output_tail"], snapshot)
+        self.assertEqual(len(snapshot), 1)
+        self.assertLessEqual(len(snapshot[0].encode("utf-8")), 512)
+        self.assertEqual(snapshot, ["fatal: failed to start HTTPS server: other"])
+        self.assertNotIn("unknown-secret", json.dumps(snapshot))
+        self.assertNotIn("unknown-secret", stdout + stderr)
+
+    def test_real_home_child_projects_unknown_colon_values_and_paths(self) -> None:
+        cases = [
+            ("failed to init runtime: access_token: short-pass!",
+                "fatal: failed to init runtime: other"),
+            ("failed to start HTTPS server: open /run/a!b: permission denied",
+                "fatal: failed to start HTTPS server: permission_denied"),
+        ]
+        for stream in ("stdout", "stderr"):
+            for message, expected in cases:
+                with self.subTest(stream=stream, message=message):
+                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)], stream=stream)
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for value in ("access_token", "short-pass!", "/run/a!b", "a!b"):
+                        self.assertNotIn(value, json.dumps(snapshot))
+                        self.assertNotIn(value, stdout + stderr)
+
+    def test_real_home_child_projects_hex_base32_nested_and_split_encodings(self) -> None:
+        import base64
+
+        raw = b"fixture!"
+        encoded = base64.b64encode(raw)
+        unpadded = encoded.decode("ascii").rstrip("=")
+        fragments = [unpadded[index:index + 4] for index in range(0, len(unpadded), 4)]
+        forms = [
+            raw.hex(),
+            raw.hex().upper(),
+            base64.b32encode(raw).decode("ascii").rstrip("="),
+            base64.b64encode(encoded).decode("ascii"),
+            base64.b64encode(encoded).decode("ascii").rstrip("="),
+            " ".join(fragments),
+        ]
+        for prefix, expected in (
+            ("credential decode failed: ", "fatal: unrecognized"),
+            ("failed to init runtime: ", "fatal: failed to init runtime: other"),
+        ):
+            for value in forms:
+                with self.subTest(value=value, prefix=prefix):
+                    snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(prefix + value)])
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for fragment in value.split():
+                        self.assertNotIn(fragment, json.dumps(snapshot))
+                        self.assertNotIn(fragment, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(fragment, stdout + stderr)
+            for pieces in (["fix", "ture!"], fragments):
+                with self.subTest(pieces=pieces, prefix=prefix):
+                    snapshot, receipt, stdout, stderr = self.home_exit([
+                        self.home_log(prefix + piece) for piece in pieces
+                    ])
+                    self.assertEqual(snapshot, [expected] * len(pieces))
+                    self.assertEqual(receipt["output_tail"], snapshot)
+                    for piece in pieces:
+                        self.assertNotIn(piece, json.dumps(snapshot))
+                        self.assertNotIn(piece, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(piece, stdout + stderr)
+
+    def test_real_home_child_removes_dictionary_credentials_from_entire_slots(self) -> None:
+        secret = "open network connection"
+        payloads = [
+            "access_token: " + secret,
+            '{"credentials":{"value":"alpha ' + secret + ' omega"}}',
+            '"alpha ' + secret + ' omega"',
+            r'{\"credentials\":{\"value\":\"alpha ' + secret + r' omega\"}}',
+            "/run/alpha " + secret + " omega: permission denied",
+            "access_token: " + secret + ".,;:",
+        ]
+        for stream in ("stdout", "stderr"):
+            for payload in payloads:
+                with self.subTest(stream=stream, payload=payload):
+                    snapshot, receipt, stdout, stderr = self.home_exit([
+                        self.home_log("failed to init runtime: " + payload)
+                    ], secret, stream)
+                    label = "permission_denied" if "permission denied" in payload else "other"
+                    expected = "fatal: failed to init runtime: " + label
+                    self.assertEqual(snapshot, [expected])
+                    self.assertEqual(receipt["output_tail"], [expected])
+                    for value in (secret, "open", "network", "connection", "alpha", "omega"):
+                        self.assertNotIn(value, json.dumps(snapshot))
+                        self.assertNotIn(value, json.dumps(receipt["output_tail"]))
+                        self.assertNotIn(value, stdout + stderr)
+
+    def test_real_home_child_removes_split_dictionary_and_punctuation_slots(self) -> None:
+        prefix = "fatal: failed to init runtime: "
+        for pieces in (["open", "connect", "read"], [".", ":", ";", ","], [".,;:"]):
+            with self.subTest(pieces=pieces):
+                snapshot, receipt, _, _ = self.home_exit([
+                    self.home_log("failed to init runtime: " + piece) for piece in pieces
+                ], "".join(pieces))
+                self.assertEqual(snapshot, [prefix + "other"] * len(pieces))
+                self.assertEqual(receipt["output_tail"], snapshot)
+                for records in (snapshot, receipt["output_tail"]):
+                    slots = [record.removeprefix(prefix) for record in records]
+                    for piece in pieces:
+                        self.assertTrue(all(piece not in slot for slot in slots))
+
+    def test_real_home_child_classifies_entire_slots_with_fixed_priority(self) -> None:
+        cases = [
+            ("retired: connection refused", "fenced_or_retired"),
+            ("context canceled: deadline exceeded", "context_canceled"),
+            ("context deadline exceeded: connection refused", "deadline_exceeded"),
+            ("dial tcp: connection refused", "conn_refused"),
+            ("unexpected EOF", "eof"),
+            ("x509: certificate is not valid", "tls"),
+            ("lookup hidden-host: no such host", "dns"),
+            ("open hidden-file: permission denied", "permission_denied"),
+            ("open hidden-file: no such file or directory", "no_such_file"),
+            ("SQLSTATE 08006: hidden-database", "sql"),
+            ("unclassified hidden-value.,;:", "other"),
+        ]
+        for error, label in cases:
+            with self.subTest(label=label):
+                snapshot, receipt, stdout, stderr = self.home_exit([
+                    self.home_log("cluster event watcher error: " + error, "error")
+                ])
+                expected = ["error: cluster event watcher error: " + label]
+                self.assertEqual(snapshot, expected)
+                self.assertEqual(receipt["output_tail"], expected)
+                for hidden in ("hidden-host", "hidden-file", "hidden-database", "hidden-value"):
+                    self.assertNotIn(hidden, json.dumps(snapshot))
+                    self.assertNotIn(hidden, stdout + stderr)
+
+    def test_real_home_child_matches_templates_and_replaces_listen_address(self) -> None:
+        cases = [
+            ("failed to listen on /run/open network connection: permission denied",
+                "fatal: failed to listen on redacted: permission_denied"),
+            ("failed to start HTTPS server: tls.cert or tls.key is empty",
+                "fatal: failed to start HTTPS server: tls"),
+            ("failed to init runtime", "fatal: failed to init runtime"),
+            ("http server error: unexpected EOF.,;:", "fatal: http server error: eof"),
+            ("listener accept error: context canceled", "fatal: listener accept error: context_canceled"),
+            ("prefix failed to init runtime: connection refused", "fatal: unrecognized"),
+            ("failed to init runtime.", "fatal: unrecognized"),
+            ("credential decode failed: open network connection.,;:", "fatal: unrecognized"),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message):
+                snapshot, receipt, stdout, stderr = self.home_exit([self.home_log(message)])
+                self.assertEqual(snapshot, [expected])
+                self.assertEqual(receipt["output_tail"], [expected])
+                self.assertNotIn("open network connection", json.dumps(snapshot))
+                self.assertNotIn("open network connection", stdout + stderr)
+
+    @unittest.skipUnless(os.environ.get("POOL_HOME_LOG_FIXTURE"), "the image build supplies the real Home formatter")
+    def test_real_home_formatter_records_are_single_physical_lines(self) -> None:
+        header = "[CLIProxyAPIHome] [2026-11-04 12:00:00] [--------] [error] [main.go:500] "
+        injected = "failed to open database: connection refused"
+        fixture = os.environ["POOL_HOME_LOG_FIXTURE"]
+        for separator in ("\n", "\r", "\r\n", "\\n", ""):
+            for count in (1, 12):
+                with self.subTest(separator=repr(separator), count=count):
+                    error = separator.join([
+                        "open /run/fixture",
+                        *([header + injected] * count),
+                        "trailer: no such file or directory",
+                    ])
+                    records = [{"message": "failed to start HTTPS server: " + error}]
+                    snapshot, receipt, stdout, stderr = self.home_exit_command([fixture, json.dumps(records)])
+                    expected = ["error: failed to start HTTPS server: conn_refused"]
+                    self.assertEqual(snapshot, expected)
+                    self.assertEqual(receipt["output_tail"], expected)
+                    self.assertEqual(len(snapshot), 1)
+                    for forbidden in ("failed to open database", "open /run/fixture", "trailer", header):
+                        self.assertNotIn(forbidden, json.dumps(snapshot))
+                        self.assertNotIn(forbidden, json.dumps(receipt))
+                        self.assertNotIn(forbidden, stdout + stderr)
+        records = [{"message": "cluster coordinator error: EOF"}] * 12
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps(records)])
+        expected = ["error: cluster coordinator error: eof"] * 8
+        self.assertEqual(snapshot, expected)
+        self.assertEqual(receipt["output_tail"], expected)
+        record = {"message": "cluster coordinator error: permission denied",
+            "fields": {"error": "\n" + header + injected}}
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps([record])])
+        expected = ["error: cluster coordinator error: conn_refused"]
+        self.assertEqual(snapshot, expected)
+        self.assertEqual(receipt["output_tail"], expected)
+        record["fields"]["request_id"] = "\r\n" + header + injected
+        snapshot, receipt, _, _ = self.home_exit_command([fixture, json.dumps([record])])
+        self.assertEqual(snapshot, [])
+        self.assertNotIn("output_tail", receipt)
+
     def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
         lines = stdout.splitlines()
         self.assertEqual(len(lines), len(expected), "unexpected supervisor stdout line count")
