@@ -218,6 +218,7 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
         const receipt = poolImageReceipt(JSON.parse(readFileSync(receiptPath, "utf8")), imageEnvironment.GITHUB_SHA ?? "");
         console.log(JSON.stringify({ poolImagePublication: {
           candidate: receipt.candidate, platform: receipt.platform, inputHash: receipt.inputHash, digest: receipt.digest,
+          configDigest: receipt.configDigest, capabilityLabel: receipt.capabilityLabel,
         } }));
       } catch {
         // The assertion reports a missing or invalid receipt and stops recovery.

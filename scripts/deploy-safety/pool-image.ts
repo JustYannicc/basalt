@@ -8,7 +8,7 @@ class PoolImagePending extends SafetyGateError {}
 export function poolImageReceipt(value: unknown, candidate: string) {
   const receipt = record(value, "Pool image publication receipt");
   if (!/^[a-f0-9]{40}$/.test(candidate) || receipt.candidate !== candidate ||
-      receipt.platform !== "linux/amd64" || receipt.capability !== "oauth-completion-receipts-v1")
+      receipt.platform !== "linux/amd64" || receipt.capabilityLabel !== "1")
     throw new SafetyGateError("Pool image receipt does not identify this candidate and runtime capability");
   const applicationId = stringField(receipt.applicationId, "Pool application id");
   const accountId = stringField(receipt.accountId, "Pool account id");
@@ -17,7 +17,9 @@ export function poolImageReceipt(value: unknown, candidate: string) {
   if (!/^[a-f0-9]{16}$/.test(inputHash)) throw new SafetyGateError("Pool image input hash is invalid");
   const digest = stringField(receipt.digest, "Pool publication digest");
   if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new SafetyGateError("Pool publication digest is invalid");
-  return { candidate, platform: "linux/amd64", applicationId, accountId, workerName, inputHash, digest };
+  const configDigest = stringField(receipt.configDigest, "Pool image config digest");
+  if (!/^sha256:[a-f0-9]{64}$/.test(configDigest)) throw new SafetyGateError("Pool image config digest is invalid");
+  return { candidate, platform: "linux/amd64", capabilityLabel: "1", configDigest, applicationId, accountId, workerName, inputHash, digest };
 }
 
 export async function assertPoolImage(

@@ -11,4 +11,5 @@ const result = await waitForPoolImage(receipt, candidate, requireCloudflareEnvir
 console.log(JSON.stringify({ poolImageVerified: {
   candidate: result.candidate, platform: result.platform, inputHash: result.inputHash,
   digest: result.digest, activeInstances: result.instances.length,
+  configDigest: result.configDigest, capabilityLabel: result.capabilityLabel,
 } }));
