@@ -13,18 +13,18 @@ index 9856d93..f536c84 100644
            // This graph is covered by the workerd MCP and app-UI tests; keep source maps for diagnostics.
            strictExecutionOrder: false,
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-index a4387f7..bc2a476 100644
+index 10c8bac..b0612cd 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-@@ -21,6 +21,7 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
- import { OAuthClientsDialog } from "./oauth-clients.tsx";
- import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
- import { inventoryAtom } from "../../contracts/organization.ts";
+@@ -4,6 +4,7 @@ import { identifyAccountsAtom } from "../../contracts/accounts.ts";
+ import { IdentityAppPicker } from "@executor-js/ui/dashboard/identity-app-picker";
+ import { AppConnectionDialogContent } from "./app-accounts.tsx";
+ import { useState } from "react";
 +import { catalogAtom } from "../../contracts/api.ts";
- 
- import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
- 
-@@ -88,7 +89,7 @@ export function AccountsPage({
+ import type { AccountId } from "@executor-js/sdk";
+ import {
+   HostedAccountActions,
+@@ -92,7 +93,7 @@ export function AccountsPage({
              ready !== undefined && (
                <IdentityAppPicker bindings={bindings} inventory={inventory}>
                  {({ app, requirement, slot, method, account, onDone, onPendingChange }) => (
@@ -33,7 +33,7 @@ index a4387f7..bc2a476 100644
                      key={`${app.id}:${slot}`}
                      app={app}
                      scope={requirement.scope}
-@@ -182,3 +183,11 @@ export function AccountsPage({
+@@ -188,3 +189,11 @@ export function AccountsPage({
      </>
    );
  }
