@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-maps-emulator-compatibility",
+  "file": "0191-maps-emulator-compatibility.patch",
+  "content_sha256": "a349ff4e0192318fc85192369b4cfd932a5ba56350876f59a9dfe76a22d6d7d1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
