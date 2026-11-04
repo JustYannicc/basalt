@@ -136,6 +136,34 @@ test("only directly evaluated synchronous suite registrations count", () => {
   }
 });
 
+test("registrations allow only two arguments or a literal numeric timeout", () => {
+  const registration = (extra: string) =>
+    `it.effect(scenarios.accountRows.title, context => runBrowser(context)${extra});`;
+  const suite = (body: string) => `layer(Live)("rows", (it) => { ${body} });`;
+  for (const extra of ["", ", 1000"]) {
+    const f = fixture();
+    f.write(".upstream/e2e/tests/account-rows.spec.ts", suite(registration(extra)));
+    expect(f.errors()).toEqual([]);
+  }
+  for (const broken of [
+    ...[", { skip: true }", ", { todo: true }", ", {}", ", options", ", timeout", ", 1000, {}"].map(
+      (extra) => suite(registration(extra)),
+    ),
+    ...["skip", "todo", "only", "fails"].flatMap((modifier) => [
+      suite(implementation.replace("it.effect", `it.${modifier}.effect`)),
+      suite(implementation.replace("it.effect", `it.effect.${modifier}`)),
+      `describe.${modifier}("rows", () => { ${implementation} });`,
+    ]),
+    `describe("rows", () => { ${implementation} }, { skip: true });`,
+  ]) {
+    const f = fixture();
+    f.write(".upstream/e2e/tests/account-rows.spec.ts", broken);
+    expect(f.errors()).toContain(
+      "approved-rows/phone-layout/accountRows/self-host: behavioral scenario implementation is missing",
+    );
+  }
+});
+
 test("aggregate gate invocation and exact inputs must unconditionally propagate failures", () => {
   for (const broken of [
     workflow.replace("run: node scripts/ci/gate.ts", "run: echo ignored"),

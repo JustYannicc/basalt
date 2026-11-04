@@ -57,7 +57,8 @@ export function implementsScenario(source: string, key: string) {
         ts.isPropertyAccessExpression(call.expression) &&
         call.expression.name.text === "effect" &&
         call.expression.expression.getText(file) === "it" &&
-        call.arguments.length >= 2 &&
+        (call.arguments.length === 2 ||
+          (call.arguments.length === 3 && ts.isNumericLiteral(call.arguments[2]!))) &&
         call.arguments[0]!.getText(file) === `scenarios.${key}.title` &&
         (ts.isArrowFunction(call.arguments[1]!) || ts.isFunctionExpression(call.arguments[1]!))
       )
@@ -69,6 +70,7 @@ export function implementsScenario(source: string, key: string) {
       const callback = call.arguments[1];
       if (
         !suite ||
+        call.arguments.length !== 2 ||
         !callback ||
         (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) ||
         callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) ||

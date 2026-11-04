@@ -20,13 +20,11 @@
     {
       "id": "desktop-phone-surfaces",
       "text": "Accounts and app-account rows keep their identity and Add app action usable at desktop and 390 px in light and dark mode.",
-      "proofs": [
-        {
-          "scenario": "accountCompactRows",
-          "target": "self-host",
-          "job": "account-acquisition"
-        }
-      ]
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "The bound accountCompactRows scenario asserts identity and Add app geometry only on Accounts. App-account rows have a reading wait and screenshots, without these usability assertions at either width or theme."
+      }
     },
     {
       "id": "row-menu-recovery",
