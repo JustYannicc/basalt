@@ -329,7 +329,44 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^Pool creation preserves retained pools|^catalog instances keep every service family reachable|^app model bindings delegate one pool|^app model requests preserve refusals|^native pool usage (renders|preserves)|^Catalog OAuth deferrals"
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^Hosted operator-client partial consent retains|^account rows show retained usage and health|^Apps check a shared account their own way and report its identity$|^app-acquired account checks publish bounded status|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load"
+          --workers 1
+      - name: Collect bounded E2E evidence
+        if: always()
+        run: |
+          node --test scripts/ci/collect-e2e-evidence.test.mjs
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-managed-accounts-self-host-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+  host-managed-accounts-pool:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'host-managed-accounts-pool')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify retained pool accounts and usage behavior
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^an open account row shows newly retained usage|^the signed usage publish request refreshes native usage reports|^Pool creation preserves retained pools|^catalog instances keep every service family reachable|^app model bindings delegate one pool|^app model requests preserve refusals|^native pool usage (renders|preserves)|^Catalog OAuth deferrals"
           --workers 1
       - name: Keep listed account actions usable during the detail read
         working-directory: .upstream
@@ -348,7 +385,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: host-managed-accounts-self-host-e2e
+          name: host-managed-accounts-pool-self-host-e2e
           path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
@@ -1549,7 +1586,7 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:

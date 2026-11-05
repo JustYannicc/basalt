@@ -1,5 +1,6 @@
 const accounts = [
   "host-managed-accounts",
+  "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
   "oauth-account-regressions",
@@ -31,6 +32,7 @@ export const heavyJobs = [
   "client-native-product",
   "slack-health",
   "host-managed-accounts",
+  "host-managed-accounts-pool",
   "host-managed-accounts-local",
   "host-managed-accounts-cloud",
   "oauth-account-regressions",

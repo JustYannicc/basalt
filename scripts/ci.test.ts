@@ -37,6 +37,7 @@ test("a client change selects its real product and platform jobs without cloud o
   ]).jobs;
   for (const job of [
     "host-managed-accounts",
+    "host-managed-accounts-pool",
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
     "google-account-recovery",
