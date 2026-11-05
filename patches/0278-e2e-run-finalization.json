@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-run-finalization",
+  "file": "0278-e2e-run-finalization.patch",
+  "content_sha256": "f81b2bdca3f7409e5e6ce70e632af36ddcfc68136d4e4649a8051362258c758d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
