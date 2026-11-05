@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Claude Desktop setup downloads the documented static configuration without embedding a stored tools token and preserves manual setup recovery."
+    }
+  }
+}

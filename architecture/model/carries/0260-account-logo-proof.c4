@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Account family logo evidence uses the actual provider fixtures at both desktop and phone viewport widths."
+    }
+  }
+}
