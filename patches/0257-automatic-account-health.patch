@@ -63,7 +63,8 @@ diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/host
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,5 @@
+ import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
 +import { AccountRecheckStatus } from "./account-rechecks.ts";
  import { AccountSelectionInvalid } from "@executor-js/sdk/core";
  import { VersionNotFound } from "@executor-js/sdk/core";
@@ -531,7 +532,8 @@ new file mode 100644
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,5 @@
+ import { requireProviderConnectionTarget } from "./provider-account-policy.ts";
 +import { accountRecheckStatus } from "./account-rechecks.ts";
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { getAccountObservations, refreshAccountObservations } from "./account-observations.ts";
