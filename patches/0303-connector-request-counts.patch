@@ -377,10 +377,10 @@ index 2e2cf23..94a6142 100644
      : undefined;
    const windowTokens =
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 1b0b6da..de68719 100644
+index 8a12ea9..f3f9430 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9607,6 +9607,17 @@ export const scenarios = plan({
+@@ -9798,6 +9798,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows and native pool usage."),
      },
    },
@@ -622,7 +622,7 @@ index 0000000..69c6666
 +  }) => Effect.Effect<readonly AccountTrafficRecord[], StorageError>;
 +}
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 76c44e5..20be136 100644
+index 29000f0..ac73f6d 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -15,6 +15,7 @@ import type { ExecutorApi } from "./http.ts";
@@ -633,7 +633,7 @@ index 76c44e5..20be136 100644
  import { PrefetchHost } from "./tools.ts";
  import { SavedOAuthClientsHost } from "./oauth-clients.ts";
  import { OwnerMovesHost } from "./owner.ts";
-@@ -566,6 +567,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -568,6 +569,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [AccountAcquisitionHost]: AccountAcquisitionHost;
    readonly [PrefetchHost]: PrefetchHost;
    readonly [AppViewsHost]: AppViewsHost;
@@ -641,7 +641,7 @@ index 76c44e5..20be136 100644
    readonly [AppSourceHost]: AppSourceHost;
    readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
    readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-@@ -600,6 +602,7 @@ export type PromiseExecutor = Promisify<
+@@ -602,6 +604,7 @@ export type PromiseExecutor = Promisify<
      | typeof PersonalDataReportingHost
      | typeof PrefetchHost
      | typeof AppViewsHost
@@ -650,10 +650,10 @@ index 76c44e5..20be136 100644
      | typeof SavedOAuthClientsHost
      | typeof OwnerMovesHost
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index d5c0cda..c756900 100644
+index 1dd0178..9fa3256 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -63,6 +63,7 @@ export { asciiJson } from "./implementation/ascii-json.ts";
+@@ -67,6 +67,7 @@ export { asciiJson } from "./implementation/ascii-json.ts";
  export * from "./contracts/account-target.ts";
  
  export * from "./contracts/app-views.ts";
@@ -797,10 +797,10 @@ index 0000000..24ab26d
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5676d61..d5533ad 100644
+index bfb78ec..d377672 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -29,6 +29,7 @@ import { RepositoryHost } from "../contracts/source.ts";
+@@ -30,6 +30,7 @@ import { RepositoryHost } from "../contracts/source.ts";
  import { StorageHost } from "../contracts/storage.ts";
  import { makeAppViews } from "./app-views.ts";
  import { AppViewsHost, AppSourceHost } from "../contracts/app-views.ts";
@@ -808,7 +808,7 @@ index 5676d61..d5533ad 100644
  import { PrefetchHost } from "../contracts/tools.ts";
  import { OAuthGrantImport } from "../contracts/oauth.ts";
  import { gitSourceStorage } from "./git-sources.ts";
-@@ -599,6 +600,7 @@ export const createExecutor = (
+@@ -600,6 +601,7 @@ export const createExecutor = (
        [PersonalDataReportingHost]: personalDataReporting,
        [PrefetchHost]: { invocation: tools.prefetchInvocation },
        [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
@@ -816,29 +816,29 @@ index 5676d61..d5533ad 100644
        [AppSourceHost]: { dispatch: tools.mcpAppSource },
        [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
          ...(options.oauth?.savedClientCallbacks ?? []),
-diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 1943dc6..4f095d2 100644
---- a/packages/sdk/src/implementation/storage.ts
-+++ b/packages/sdk/src/implementation/storage.ts
-@@ -13,6 +13,7 @@ import {
-   trailingStorageIndexVersions,
- } from "./storage-migrations.ts";
- import { storageMigrationFailed } from "./storage-migration-error.ts";
+diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
+index 0db8e3e..c2d0b31 100644
+--- a/packages/sdk/src/implementation/storage-runtime.ts
++++ b/packages/sdk/src/implementation/storage-runtime.ts
+@@ -7,6 +7,7 @@ import { makeReactiveStore } from "@executor-js/reactivity";
+ import { StorageError } from "../contracts/shared.ts";
+ import { bindOrm } from "./reactive-orm.ts";
+ import { currentStorageSchema } from "./storage-current.ts";
 +import { makeAccountTrafficStore } from "./account-traffic-store.ts";
  import { makeAppViewStorage } from "./app-view-storage.ts";
  import { makeToolSearchStore } from "./tool-search-store.ts";
  
-@@ -89,6 +90,8 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -32,6 +33,8 @@ export const makeExecutorRuntimeStorage = (options: { readonly provider: SqlProv
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
        appViews: makeAppViewStorage(sql),
 +      // Tool-call counts per account; the table creates itself, so it takes no schema version.
 +      accountTraffic: makeAccountTrafficStore(sql),
-       checkMigration,
-       migrateTables,
-       migrate,
+     };
+   });
+ 
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index ea518b8..5357143 100644
+index 257b1ed..41f8a6c 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -19,6 +19,7 @@ import {
@@ -849,10 +849,10 @@ index ea518b8..5357143 100644
    Redacted,
    Result,
    Schema,
-@@ -766,6 +767,14 @@ const summarizeTool = ({
+@@ -765,6 +766,14 @@ const summarizeTool = ({
+   ...summary
  }: Tool): ToolSummary => summary;
  
- /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 +/** Failures that count against the accounts a call used: its app's code or its service failed. */
 +const accountFailures = [
 +  "ToolCallFailed",
@@ -861,9 +861,9 @@ index ea518b8..5357143 100644
 +  "OAuthRenewalFailed",
 +] as const;
 +
+ /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
  export const makeTools = (
-   storage: ExecutorDatabase,
-   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+   storage: ExecutorRuntimeDatabase,
 @@ -800,6 +809,43 @@ export const makeTools = (
    };
    const resolveAccount = oauth.resolveSelected;
@@ -925,7 +925,7 @@ index ea518b8..5357143 100644
                  }).pipe(
                    // The request is consumed, so its caller receives the call's own failure.
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 587cafc..061d8e2 100644
+index 5fed6b6..f37e098 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -239,7 +239,7 @@ function AccountsList({
