@@ -63,7 +63,8 @@ export function Usage({
 }) {
   const { summary, error, read } = useUsage(load, poll);
   const [metric, setMetric] = useState<Metric>("tokens");
-  if (providers === undefined) return null;
+  // Usage renders from its own read. Provider names come from the capacity read, so only the parts
+  // that name a provider wait for it; a raw provider ID is never shown in their place.
   const mine = summary?.scope === "you";
   return (
     <section aria-labelledby="usage-heading" className="grid gap-5 pt-12">
@@ -96,7 +97,7 @@ export function Usage({
       ) : (
         <>
           {summary.cap && <CapLine cap={summary.cap} now={now} />}
-          {summary.accountsNeeded && summary.accountsNeeded.length > 0 && (
+          {providers && summary.accountsNeeded && summary.accountsNeeded.length > 0 && (
             <Needed entries={summary.accountsNeeded} providers={providers} />
           )}
           <Headline summary={summary} metric={metric} />
@@ -286,7 +287,7 @@ export function Models({
 }: {
   summary: Breakdown;
   metric: Metric;
-  providers: readonly Provider[];
+  providers: readonly Provider[] | undefined;
 }) {
   const total = value(summary.total, metric);
   return (
@@ -304,8 +305,9 @@ export function Models({
                 <span className="block truncate font-medium" title={model.model}>
                   {model.model}
                 </span>
+                {/* Holds the line's height until names arrive, so rows don't shift. */}
                 <span className="block text-xs text-muted-foreground">
-                  {providerName(providers, model.provider)}
+                  {providers ? providerName(providers, model.provider) : "\u00a0"}
                 </span>
               </div>
               <div
