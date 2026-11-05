@@ -7,54 +7,120 @@ import { importAccounts, ImportFailure, type ImportConfig } from "./cutover/impo
 import { loadImportConfig } from "./cutover/files.ts";
 
 const config: ImportConfig = {
-  origin: "https://pool.example.invalid", poolToken: "private-pool-token", owner: "fixture-owner", apiKey: "private-computer-key",
-  accounts: [{ file: { type: "fixture", access_token: "private-login-token" }, model: "fixture-model" }], attempts: 2,
+  origin: "https://pool.example.invalid",
+  poolToken: "private-pool-token",
+  owner: "fixture-owner",
+  apiKey: "private-computer-key",
+  organization: "org_fixture",
+  poolApp: "app_pool",
+  cookie: "fixture-cookie",
+  accounts: [
+    {
+      providerApp: "app_provider",
+      creation: "00000000-0000-4000-8000-000000000001",
+      file: { type: "codex", access_token: "private-login-token" },
+      model: "fixture-model",
+    },
+  ],
+  attempts: 2,
 };
 function stream(): Response {
   return new Response('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n', {
     headers: { "Content-Type": "text/event-stream" },
   });
 }
-function fixture(options: { owner?: boolean; wrong?: boolean; error?: boolean; late?: boolean } = {}) {
+function fixture(
+  options: {
+    owner?: boolean;
+    wrong?: boolean;
+    error?: boolean;
+    late?: boolean;
+    failLink?: "provider" | "pool";
+  } = {},
+) {
   const calls: string[] = [];
   let polls = 0;
+  let linkFailed = false;
+  const links = new Map<string, Set<string>>();
+  const imports: { creation: string; id: string }[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     calls.push(url.pathname);
     assert.equal(init?.redirect, "error");
     assert.equal(init?.cache, "no-store");
     if (options.error) throw new Error("private-login-token private-pool-token");
-    if (url.pathname === "/pool/v1/pool") return Response.json({ isOwner: options.owner ?? true, accounts: [] });
-    if (url.pathname === "/pool/v1/login-files") {
-      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer private-pool-token");
-      assert.equal(JSON.parse(String(init?.body)).access_token, "private-login-token");
-      return Response.json({ accountId: "imported" });
+    if (url.pathname === "/pool/v1/pool")
+      return Response.json({ isOwner: options.owner ?? true, accounts: [] });
+    if (url.pathname.endsWith("/import-login-file")) {
+      assert.equal(new Headers(init?.headers).get("cookie"), "fixture-cookie");
+      assert.equal(JSON.parse(String(init?.body)).file.access_token, "private-login-token");
+      imports.push({ creation: JSON.parse(String(init?.body)).creation, id: "acc_imported" });
+      return Response.json({ id: "acc_imported" });
+    }
+    if (init?.method === "PUT") {
+      const app = url.pathname.split("/")[5]!;
+      const account = url.pathname.split("/").at(-1)!;
+      const saved = links.get(app) ?? new Set<string>();
+      saved.add(account);
+      links.set(app, saved);
+      const failing =
+        options.failLink === "provider"
+          ? "app_provider"
+          : options.failLink === "pool"
+            ? "app_pool"
+            : undefined;
+      if (app === failing && !linkFailed) {
+        linkFailed = true;
+        return new Response(null, { status: 503 });
+      }
+      return Response.json(null);
     }
     if (url.pathname === "/v1/chat/completions") {
       assert.equal(new Headers(init?.headers).get("authorization"), "Bearer private-computer-key");
       assert.ok(new Headers(init?.headers).get("X-Session-ID"));
       return stream();
     }
-    if (url.pathname === "/pool/v1/usage") {
-      assert.equal(url.searchParams.get("status"), "success");
-      assert.ok(url.searchParams.get("session"));
-      return Response.json({ records: options.late && polls++ === 0 ? [] : [{
-        account: options.wrong ? "other" : "imported", status: "success", at: new Date().toISOString(),
-      }] });
+    if (url.pathname.endsWith("/pool-usage/last-success")) {
+      const input = JSON.parse(String(init?.body));
+      assert.deepEqual(input.accounts, ["acc_imported"]);
+      assert.ok(input.session);
+      return Response.json({
+        mapping: { proof: "proven" },
+        accounts:
+          options.late && polls++ === 0
+            ? []
+            : [
+                {
+                  account: options.wrong ? "acc_other" : "acc_imported",
+                  lastSuccessAt: new Date(Date.now() + 1).toISOString(),
+                },
+              ],
+      });
     }
     throw new Error("Unexpected fixture request");
   };
-  return { calls, fetch: fetcher, delay: async () => {} };
+  return { calls, imports, links, fetch: fetcher, delay: async () => {} };
 }
 
 test("imports through owner upload and requires exact account usage after a generated stream", async () => {
   const deps = fixture({ late: true });
   assert.deepEqual(await importAccounts(config, deps), { verified: 1 });
-  assert.deepEqual(deps.calls, ["/pool/v1/pool", "/pool/v1/login-files", "/v1/chat/completions", "/pool/v1/usage", "/pool/v1/usage"]);
+  assert.deepEqual(deps.calls, [
+    "/pool/v1/pool",
+    "/api/organizations/org_fixture/apps/app_provider/accounts/app/openai/import-login-file",
+    "/api/organizations/org_fixture/apps/app_provider/accounts/app/openai/acc_imported",
+    "/api/organizations/org_fixture/apps/app_pool/accounts/app/openai/acc_imported",
+    "/v1/chat/completions",
+    "/api/organizations/org_fixture/apps/app_pool/pool-usage/last-success",
+    "/api/organizations/org_fixture/apps/app_pool/pool-usage/last-success",
+  ]);
 });
 test("membership alone and a successful stream from another account never pass", async () => {
   const deps = fixture({ wrong: true });
-  await assert.rejects(importAccounts(config, deps), (error: unknown) => error instanceof ImportFailure && error.stage === "verification");
+  await assert.rejects(
+    importAccounts(config, deps),
+    (error: unknown) => error instanceof ImportFailure && error.stage === "verification",
+  );
   assert.equal(deps.calls.filter((path) => path === "/v1/chat/completions").length, 2);
 });
 test("non-owner never uploads and malformed later files fail before any network request", async () => {
@@ -62,7 +128,16 @@ test("non-owner never uploads and malformed later files fail before any network 
   await assert.rejects(importAccounts(config, deps), /owner/);
   assert.deepEqual(deps.calls, ["/pool/v1/pool"]);
   deps.calls.length = 0;
-  await assert.rejects(importAccounts({ ...config, accounts: [...config.accounts, { file: {}, model: "model" }] }, deps), /inputs/);
+  await assert.rejects(
+    importAccounts(
+      {
+        ...config,
+        accounts: [...config.accounts, { ...config.accounts[0]!, file: {}, model: "model" }],
+      },
+      deps,
+    ),
+    /inputs/,
+  );
   assert.deepEqual(deps.calls, []);
 });
 test("errors contain no raw upstream credentials and insecure origins fail before requests", async () => {
@@ -72,7 +147,11 @@ test("errors contain no raw upstream credentials and insecure origins fail befor
     assert.equal(error.cause, undefined);
     return true;
   });
-  for (const origin of ["http://remote.example.invalid", "https://user:password@example.invalid", "https://example.invalid/subpath"]) {
+  for (const origin of [
+    "http://remote.example.invalid",
+    "https://user:password@example.invalid",
+    "https://example.invalid/subpath",
+  ]) {
     const deps = fixture();
     await assert.rejects(importAccounts({ ...config, origin }, deps), /inputs/);
     assert.deepEqual(deps.calls, []);
@@ -84,7 +163,21 @@ test("private file input rejects exposed permissions, symlinks and invalid JSON 
   const manifest = join(dir, "import.json");
   try {
     await writeFile(login, JSON.stringify(config.accounts[0]!.file), { mode: 0o600 });
-    await writeFile(manifest, JSON.stringify({ ...config, accounts: [{ path: "login.json", model: "fixture-model" }] }), { mode: 0o600 });
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        ...config,
+        accounts: [
+          {
+            path: "login.json",
+            model: "fixture-model",
+            providerApp: config.accounts[0]!.providerApp,
+            creation: config.accounts[0]!.creation,
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
     assert.deepEqual(await loadImportConfig(manifest), config);
     await chmod(login, 0o644);
     await assert.rejects(loadImportConfig(manifest), (error: unknown) => {
@@ -97,5 +190,29 @@ test("private file input rejects exposed permissions, symlinks and invalid JSON 
     await assert.rejects(loadImportConfig(join(dir, "link.json")), /inputs/);
     await writeFile(login, "private-invalid-json");
     await assert.rejects(loadImportConfig(manifest), /inputs/);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
+
+for (const failLink of [undefined, "provider", "pool"] as const)
+  test(`import reruns retain one account and both explicit links after ${failLink ?? "no"} link failure`, async () => {
+    const deps = fixture({ failLink });
+    if (failLink !== undefined)
+      await assert.rejects(
+        importAccounts(config, deps),
+        (error: unknown) => error instanceof ImportFailure && error.stage === "upload",
+      );
+    assert.deepEqual(await importAccounts(config, deps), { verified: 1 });
+    assert.deepEqual(await importAccounts(config, deps), { verified: 1 });
+    assert.deepEqual(
+      [...deps.links.entries()].map(([app, ids]) => [app, [...ids]]),
+      [
+        ["app_provider", ["acc_imported"]],
+        ["app_pool", ["acc_imported"]],
+      ],
+    );
+    assert.equal(new Set(deps.imports.map((item) => item.creation)).size, 1);
+    assert.equal(deps.imports[0]!.creation, config.accounts[0]!.creation);
+    assert.deepEqual([...new Set(deps.imports.map((item) => item.id))], ["acc_imported"]);
+  });

@@ -3,7 +3,20 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { servedFrameworkVersion } from "../framework-release.ts";
 
-export const providerAppLabs = ["openai", "anthropic"] as const;
+export const providerAppLabs = [
+  "openai",
+  "anthropic",
+  "gemini",
+  "vertex",
+  "antigravity",
+  "kimi",
+  "xai",
+  "devin",
+  "meta",
+  "jev",
+  "cloudflare",
+  "openrouter",
+] as const;
 
 /** Copy the canonical declaration unchanged so apps, saved accounts and pools share an identity. */
 export function providerAppSource(root: string, lab: (typeof providerAppLabs)[number]) {
@@ -33,6 +46,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const content = `${JSON.stringify(providerAppSource(root, lab), null, 2)}\n`;
     if (process.argv.includes("--write")) writeFileSync(file, content);
     else if (readFileSync(file, "utf8") !== content)
-      throw new Error(`Regenerate ${lab} provider app with node scripts/provider-app-source.ts --write`);
+      throw new Error(
+        `Regenerate ${lab} provider app with node scripts/provider-app-source.ts --write`,
+      );
   }
 }

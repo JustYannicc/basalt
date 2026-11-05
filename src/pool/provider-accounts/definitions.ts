@@ -1,4 +1,18 @@
-import { defineProvider, interactive, oauth2, object, secrets, string } from "apps";
+import {
+  defineProvider,
+  interactive,
+  oauth2,
+  object,
+  secrets,
+  string,
+  type AuthMethods,
+} from "apps";
+
+const modelProvider = <const Auth extends AuthMethods>(
+  options: Omit<Parameters<typeof defineProvider<Auth>>[0], "name" | "family"> & {
+    readonly family: NonNullable<Parameters<typeof defineProvider<Auth>>[0]["family"]>;
+  },
+) => defineProvider({ ...options, name: options.family.name });
 
 const token = (label = "API key") =>
   secrets({
@@ -7,52 +21,51 @@ const token = (label = "API key") =>
   });
 const subscription = (label: string) => interactive({ label, acquisition: "host" });
 
+const apiKeyMethod = { mechanism: "api-key" } as const;
+const subscriptionMethod = { mechanism: "interactive", offering: "subscription" } as const;
+
 // These definitions are shared by provider apps, native pools and the trusted host registry.
 // Changing a method or its fields changes the provider identity and requires explicit adoption.
-export const providers = {
-  openai: defineProvider({
+export const acquisitionProviders = {
+  openai: modelProvider({
     family: {
       id: "openai",
       name: "OpenAI",
       methods: {
-        codex: { mechanism: "interactive", offering: "subscription" },
-        apiKey: { mechanism: "api-key" },
+        codex: subscriptionMethod,
+        apiKey: apiKeyMethod,
       },
     },
-    name: "OpenAI",
     hosts: ["api.openai.com", "chatgpt.com"],
     auth: { codex: subscription("ChatGPT subscription"), apiKey: token("OpenAI API key") },
   }),
-  anthropic: defineProvider({
+  anthropic: modelProvider({
     family: {
       id: "anthropic",
       name: "Anthropic",
       methods: {
-        claude: { mechanism: "interactive", offering: "subscription" },
-        apiKey: { mechanism: "api-key" },
+        claude: subscriptionMethod,
+        apiKey: apiKeyMethod,
       },
     },
-    name: "Anthropic",
     hosts: ["api.anthropic.com"],
     auth: { claude: subscription("Claude subscription"), apiKey: token("Anthropic API key") },
   }),
-  gemini: defineProvider({
+  gemini: modelProvider({
     family: {
       id: "gemini",
       name: "Gemini",
-      methods: { geminiCli: { mechanism: "interactive" }, apiKey: { mechanism: "api-key" } },
+      methods: { geminiCli: { mechanism: "interactive" }, apiKey: apiKeyMethod },
     },
-    name: "Gemini",
     hosts: ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com"],
     auth: { geminiCli: subscription("Gemini CLI"), apiKey: token("Gemini API key") },
   }),
-  vertex: defineProvider({
+  vertex: modelProvider({
     family: {
       id: "vertex",
       name: "Google Vertex AI",
-      methods: { serviceAccount: { mechanism: "other" }, apiKey: { mechanism: "api-key" } },
+      methods: { serviceAccount: { mechanism: "other" }, apiKey: apiKeyMethod },
     },
-    name: "Google Vertex AI",
     hosts: ["*.aiplatform.googleapis.com", "aiplatform.googleapis.com"],
     auth: {
       serviceAccount: secrets({
@@ -62,27 +75,25 @@ export const providers = {
       apiKey: token("Vertex AI API key"),
     },
   }),
-  antigravity: defineProvider({
+  antigravity: modelProvider({
     family: {
       id: "antigravity",
       name: "Antigravity",
-      methods: { antigravity: { mechanism: "interactive", offering: "subscription" } },
+      methods: { antigravity: subscriptionMethod },
     },
-    name: "Antigravity",
     hosts: ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"],
     auth: { antigravity: subscription("Google subscription") },
   }),
-  kimi: defineProvider({
+  kimi: modelProvider({
     family: {
       id: "kimi",
       name: "Kimi",
       methods: {
-        kimi: { mechanism: "interactive", offering: "subscription" },
-        "kimi-ai": { mechanism: "interactive", offering: "subscription" },
-        apiKey: { mechanism: "api-key" },
+        kimi: subscriptionMethod,
+        "kimi-ai": subscriptionMethod,
+        apiKey: apiKeyMethod,
       },
     },
-    name: "Kimi",
     hosts: ["api.kimi.com", "api.kimi.ai", "api.moonshot.ai"],
     auth: {
       kimi: subscription("Kimi.com subscription"),
@@ -90,60 +101,55 @@ export const providers = {
       apiKey: token("Moonshot API key"),
     },
   }),
-  xai: defineProvider({
+  xai: modelProvider({
     family: {
       id: "xai",
       name: "xAI",
       methods: {
-        xai: { mechanism: "interactive", offering: "subscription" },
-        apiKey: { mechanism: "api-key" },
+        xai: subscriptionMethod,
+        apiKey: apiKeyMethod,
       },
     },
-    name: "xAI",
     hosts: ["api.x.ai", "grok.com"],
     auth: { xai: subscription("Grok subscription"), apiKey: token("xAI API key") },
   }),
-  devin: defineProvider({
+  devin: modelProvider({
     family: {
       id: "devin",
       name: "Devin",
-      methods: { devin: { mechanism: "interactive", offering: "subscription" } },
+      methods: { devin: subscriptionMethod },
     },
-    name: "Devin",
     hosts: ["api.devin.ai"],
     auth: { devin: subscription("Devin subscription") },
   }),
-  meta: defineProvider({
+  meta: modelProvider({
     family: {
       id: "meta",
       name: "Meta",
       methods: {
-        meta: { mechanism: "interactive", offering: "subscription" },
-        apiKey: { mechanism: "api-key" },
+        meta: subscriptionMethod,
+        apiKey: apiKeyMethod,
       },
     },
-    name: "Meta",
     hosts: ["api.llama.com", "meta.ai"],
     auth: { meta: subscription("Meta subscription"), apiKey: token("Meta API key") },
   }),
   // Match the published tool apps exactly. Placement declarations would change these identities.
-  jev: defineProvider({
-    family: { id: "jev", name: "Jev", methods: { apiKey: { mechanism: "api-key" } } },
-    name: "Jev",
+  jev: modelProvider({
+    family: { id: "jev", name: "Jev", methods: { apiKey: apiKeyMethod } },
     hosts: ["api.typesafe.ai"],
     auth: { apiKey: token("TypeSafe API key") },
   }),
-  cloudflare: defineProvider({
+  cloudflare: modelProvider({
     family: {
       id: "cloudflare",
       name: "Cloudflare",
       methods: {
         oauth: { mechanism: "oauth" },
-        apiToken: { mechanism: "api-key" },
-        accountToken: { mechanism: "api-key" },
+        apiToken: apiKeyMethod,
+        accountToken: apiKeyMethod,
       },
     },
-    name: "Cloudflare",
     hosts: ["mcp.cloudflare.com", "api.cloudflare.com"],
     auth: {
       oauth: oauth2({ discover: "https://mcp.cloudflare.com/mcp" }),
@@ -154,28 +160,29 @@ export const providers = {
       }),
     },
   }),
-  openrouter: defineProvider({
-    family: { id: "openrouter", name: "OpenRouter", methods: { apiKey: { mechanism: "api-key" } } },
-    name: "OpenRouter",
+  openrouter: modelProvider({
+    family: { id: "openrouter", name: "OpenRouter", methods: { apiKey: apiKeyMethod } },
     hosts: ["openrouter.ai"],
     auth: { apiKey: token("OpenRouter API key") },
   }),
-  qwen: defineProvider({
+};
+
+export const providers = {
+  ...acquisitionProviders,
+  qwen: modelProvider({
     family: {
       id: "qwen",
       name: "Qwen",
-      methods: { subscription: { mechanism: "interactive", offering: "subscription" } },
+      methods: { subscription: subscriptionMethod },
     },
-    name: "Qwen",
     auth: { subscription: subscription("Qwen subscription") },
   }),
-  iflow: defineProvider({
+  iflow: modelProvider({
     family: {
       id: "iflow",
       name: "iFlow",
-      methods: { subscription: { mechanism: "interactive", offering: "subscription" } },
+      methods: { subscription: subscriptionMethod },
     },
-    name: "iFlow",
     auth: { subscription: subscription("iFlow subscription") },
   }),
 };
