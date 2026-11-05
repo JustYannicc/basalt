@@ -181,6 +181,7 @@ export const areas = [
       ".upstream/**/*dashboard*",
       ".upstream/**/*batch*",
       ".upstream/**/*prefetch*",
+      ".upstream/e2e/tests/cached-account-controls.spec.ts",
       ".upstream/**/*route*",
       ".upstream/**/*loading*",
     ],

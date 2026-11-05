@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Known sign-in methods and catalog metadata remain usable during background reads and retained failures. Retained app details keep an active credential draft mounted. Reads with no value retain loading, failure and retry behavior. Reusing the same saved authorization for an already-connected target preserves its existing account binding."
+    }
+  }
+}

@@ -1,0 +1,436 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -96,7 +96,7 @@
+     return saved === undefined ? undefined : accountRowFromSaved(saved);
+   };
+   const reported = methodQuery.data;
+-  const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
++  const methodsReady = Option.isSome(reported);
+   const methods: RequirementMethods | undefined = Option.isSome(reported)
+     ? {
+         unavailable: (requirement, method) =>
+@@ -112,11 +112,7 @@
+   const copiedPackage = app.copiedFrom?.name;
+   const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
+   const catalogEntry = catalogEntries?.find((entry) => entry.package === copiedPackage);
+-  const catalogUnavailable =
+-    copiedPackage !== undefined &&
+-    (catalogEntries === undefined ||
+-      catalog.result.waiting ||
+-      AsyncResult.isFailure(catalog.result));
++  const catalogUnavailable = copiedPackage !== undefined && catalogEntries === undefined;
+   const registry = useContext(RegistryContext);
+   const revalidate = (account: AccountSummary["id"]) => {
+     const check = checkAppAccountAtom({ organization, app: app.id, account });
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -166,16 +166,11 @@
+   const navigate = useNavigate();
+   const appQuery = useQuery(appAtom({ organization, app: connection.target.app }));
+   const app = Option.getOrUndefined(appQuery.data);
+-  const appUnavailable =
+-    app === undefined || appQuery.result.waiting || AsyncResult.isFailure(appQuery.result);
++  const appUnavailable = app === undefined;
+   const catalog = useQuery(catalogAtom);
+   const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
+   const catalogEntry = catalogEntries?.find((entry) => entry.package === app?.copiedFrom?.name);
+-  const catalogUnavailable =
+-    app?.copiedFrom?.name !== undefined &&
+-    (catalogEntries === undefined ||
+-      catalog.result.waiting ||
+-      AsyncResult.isFailure(catalog.result));
++  const catalogUnavailable = app?.copiedFrom?.name !== undefined && catalogEntries === undefined;
+ 
+   return (
+     <>
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -111,6 +111,88 @@
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({
++  initialCatalogControlsDesktop: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Initial catalog failure recovers connection controls 1440",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  initialCatalogControlsPhone: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Initial catalog failure recovers connection controls 390",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  initialCatalogDraftDesktop: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Initial catalog failure recovers credential form 1440",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  initialCatalogDraftPhone: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Initial catalog failure recovers credential form 390",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++
++  cachedMethodsDesktop: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Known methods stay usable 1440",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  cachedMethodsPhone: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Known methods stay usable 390",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  cachedDraftDesktop: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Credential draft survives app refresh 1440",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++  cachedDraftPhone: {
++    fixtures: "actors",
++    file: "cached-account-controls.spec.ts",
++    title: "Credential draft survives app refresh 390",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Local has no hosted connection modal."),
++    },
++  },
++
+   savedAccountProjection: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/cached-account-controls.spec.ts b/e2e/tests/cached-account-controls.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/cached-account-controls.spec.ts
+@@ -0,0 +1,292 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { officialApps } from "../support/public-catalogs.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const fixture = Effect.gen(function* () {
++  const api = yield* Api;
++  const actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++    entry: officialApps.mail.id,
++    name: "Retained connection controls",
++  });
++  expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++  const app = yield* body(Resource, installed);
++  yield* Effect.addFinalizer(() =>
++    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++  );
++  return { prefix, app };
++});
++
++const retainedRefresh = <E, R>(path: RegExp, check: (phase: string) => Effect.Effect<void, E, R>) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    for (const outcome of ["undeclared", "continue"] as const) {
++      yield* Effect.scoped(
++        Effect.gen(function* () {
++          const held = yield* holdQuery(path, outcome, { allRequests: true });
++          const settled = yield* browser.use("Watch the refresh finish", (page) =>
++            Promise.resolve({
++              done: page
++                .waitForResponse((response) => path.test(new URL(response.url()).pathname))
++                .then((response) => response.finished().then(() => response.status())),
++            }),
++          );
++          yield* refreshVisiblePage;
++          yield* held.requested;
++          yield* check(`${outcome}: pending`);
++          yield* browser.checkpoint(`Retained controls during ${outcome}`);
++          yield* held.release;
++          const status = yield* browser.use(
++            "The refresh response has completed",
++            () => settled.done,
++          );
++          expect(status).toBe(outcome === "undeclared" ? 599 : 200);
++          yield* browser.use("Commit the completed refresh", (page) =>
++            page.evaluate(
++              () =>
++                new Promise<void>((resolve) =>
++                  requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                ),
++            ),
++          );
++          yield* check(`${outcome}: completed`);
++          yield* browser.checkpoint(`Retained controls after ${outcome}`);
++        }),
++      );
++    }
++  });
++
++const initialCatalog = <E, R>(
++  open: Effect.Effect<void, E, R>,
++  check: (ready: boolean) => Effect.Effect<void, E, R>,
++) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const path = /\/api\/catalog$/;
++    yield* Effect.scoped(
++      Effect.gen(function* () {
++        const held = yield* holdQuery(path, "undeclared", { allRequests: true });
++        yield* open;
++        yield* held.requested;
++        yield* check(false);
++        yield* held.release;
++        yield* browser.use("The first catalog failure offers retry", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).last().waitFor(),
++        );
++        yield* check(false);
++      }),
++    );
++    yield* Effect.scoped(
++      Effect.gen(function* () {
++        const held = yield* holdQuery(path, "continue", { allRequests: true });
++        const completed = yield* browser.use("Watch catalog recovery", (page) =>
++          Promise.resolve({
++            done: page
++              .waitForResponse(
++                (response) => path.test(new URL(response.url()).pathname) && response.ok(),
++              )
++              .then((response) => response.finished()),
++          }),
++        );
++        yield* browser.use("Retry the initial catalog read", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).last().click(),
++        );
++        yield* held.requested;
++        yield* check(false);
++        yield* held.release;
++        yield* browser.use("Catalog recovery completes", () => completed.done);
++        yield* browser.use("The catalog error clears", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).waitFor({ state: "hidden" }),
++        );
++        yield* check(true);
++      }),
++    );
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Retained connection controls", (it) => {
++  for (const width of [1440, 390]) {
++    for (const source of ["methods"] as const) {
++      const scenario =
++        width === 1440 ? scenarios.cachedMethodsDesktop : scenarios.cachedMethodsPhone;
++      it.effect(scenario.title, (context) =>
++        withHostedCase(
++          context,
++          Effect.gen(function* () {
++            const actors = yield* Actors;
++            const browser = yield* Browser;
++            const { app } = yield* fixture;
++            yield* browser.login(actors.owner);
++            yield* browser.use("Open the installed app's account choices", (page) =>
++              page
++                .setViewportSize({ width, height: 960 })
++                .then(() =>
++                  page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
++                ),
++            );
++            yield* browser.use("Known connection choices are enabled", (page) =>
++              page.waitForFunction(() =>
++                [...document.querySelectorAll<HTMLButtonElement>("button")].some(
++                  (button) =>
++                    button.textContent?.trim() === "Connect new account" && !button.disabled,
++                ),
++              ),
++            );
++            const path = new RegExp(`/apps/${app.id}/accounts/methods$`);
++            yield* retainedRefresh(path, (phase) =>
++              Effect.gen(function* () {
++                const enabled = yield* browser.use(`${phase}: Connect stays available`, (page) =>
++                  page
++                    .getByRole("button", { name: "Connect new account", exact: true })
++                    .isEnabled(),
++                );
++                expect(enabled, `${source} ${phase}: known connection choices remain usable`).toBe(
++                  true,
++                );
++              }),
++            );
++          }),
++        ),
++      );
++    }
++    for (const source of ["app"] as const) {
++      const scenario = width === 1440 ? scenarios.cachedDraftDesktop : scenarios.cachedDraftPhone;
++      it.effect(scenario.title, (context) =>
++        withHostedCase(
++          context,
++          Effect.gen(function* () {
++            const actors = yield* Actors;
++            const api = yield* Api;
++            const browser = yield* Browser;
++            const { prefix, app } = yield* fixture;
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              connectionsPath(`${prefix}/apps/${app.id}`, "user", "mail"),
++              {},
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const connection = yield* body(Resource, response);
++            yield* browser.login(actors.owner);
++            yield* browser.use("Open the saved connection", (page) =>
++              page
++                .setViewportSize({ width, height: 960 })
++                .then(() =>
++                  page.goto(`/org/${actors.organization.slug}/connections/${connection.id}`),
++                ),
++            );
++            yield* browser.use("Write an unfinished credential", (page) =>
++              page.getByLabel("Token", { exact: true }).fill("synthetic-draft"),
++            );
++            const path = new RegExp(`/apps/${app.id}$`);
++            yield* retainedRefresh(path, (phase) =>
++              Effect.gen(function* () {
++                const state = yield* browser.use(
++                  `${phase}: the credential draft remains mounted`,
++                  (page) => {
++                    const field = page.getByLabel("Token", { exact: true });
++                    return field
++                      .count()
++                      .then<{ count: number; value: string | null }>((count) =>
++                        count === 0
++                          ? { count, value: null }
++                          : field.inputValue().then((value) => ({ count, value })),
++                      );
++                  },
++                );
++                expect(state, `${source} ${phase}: the typed draft survives`).toEqual({
++                  count: 1,
++                  value: "synthetic-draft",
++                });
++              }),
++            );
++          }),
++        ),
++      );
++    }
++    for (const draft of [false, true]) {
++      const scenario = draft
++        ? width === 1440
++          ? scenarios.initialCatalogDraftDesktop
++          : scenarios.initialCatalogDraftPhone
++        : width === 1440
++          ? scenarios.initialCatalogControlsDesktop
++          : scenarios.initialCatalogControlsPhone;
++      it.effect(scenario.title, (context) =>
++        withHostedCase(
++          context,
++          Effect.gen(function* () {
++            const actors = yield* Actors;
++            const api = yield* Api;
++            const browser = yield* Browser;
++            const { prefix, app } = yield* fixture;
++            const connection = draft
++              ? yield* api
++                  .request(
++                    actors.owner,
++                    "POST",
++                    connectionsPath(`${prefix}/apps/${app.id}`, "user", "mail"),
++                    {},
++                  )
++                  .pipe(Effect.flatMap((response) => body(Resource, response)))
++              : undefined;
++            yield* browser.login(actors.owner);
++            const open = browser.use("Open with no catalog value", (page) =>
++              page
++                .setViewportSize({ width, height: 960 })
++                .then(() =>
++                  page.goto(
++                    connection === undefined
++                      ? `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`
++                      : `/org/${actors.organization.slug}/connections/${connection.id}`,
++                  ),
++                )
++                .then(() => {}),
++            );
++            yield* initialCatalog(open, (ready) =>
++              browser.use("Unknown catalog data stays unavailable until recovery", (page) => {
++                if (draft) {
++                  const field = page.getByLabel("Token", { exact: true });
++                  return (ready ? field.fill("recovered-draft") : Promise.resolve())
++                    .then(() => field.count())
++                    .then((count) => {
++                      expect(count).toBe(ready ? 1 : 0);
++                    });
++                }
++                const connect = page.getByRole("button", {
++                  name: "Connect new account",
++                  exact: true,
++                });
++                return connect
++                  .waitFor()
++                  .then(() =>
++                    ready
++                      ? page.waitForFunction(() =>
++                          [...document.querySelectorAll<HTMLButtonElement>("button")].some(
++                            (button) =>
++                              button.textContent?.trim() === "Connect new account" &&
++                              !button.disabled,
++                          ),
++                        )
++                      : undefined,
++                  )
++                  .then(() => connect.isEnabled())
++                  .then((enabled) => {
++                    expect(enabled).toBe(ready);
++                  });
++              }),
++            );
++          }),
++        ),
++      );
++    }
++  }
++});
