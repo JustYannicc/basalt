@@ -1,10 +1,11 @@
 diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
 --- a/e2e/support/cloud-pool-gateway.ts
 +++ b/e2e/support/cloud-pool-gateway.ts
-@@ -1,8 +1,20 @@
+@@ -1,8 +1,21 @@
  import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
--import { Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
+-import { Deferred, Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
 +import {
++  Deferred,
 +  Effect,
 +  Fiber,
 +  FileSystem,

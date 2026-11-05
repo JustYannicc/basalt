@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountRechecks {
     metadata {
-      constraint "Account health rechecks use bounded cron dispatch with authority-checked leases and provider cooldowns. Hosted migration 17 adds the persistent queue and provider deadlines. Legacy hosted fixtures remove these objects and the journal row together before replaying earlier migrations; an upgrade recreates them once and keeps its receipts across restarts."
+      constraint "Account health checks refresh stale saved accounts through bounded persisted dispatch. Concurrent reads share the pending check, cooldowns preserve definitive health, and background failures remain visible without repeated backend requests."
     }
   }
 }
