@@ -1,3 +1,4 @@
+import { servedFrameworkVersion } from "../../framework-release.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, test } from "node:test";
@@ -12,7 +13,10 @@ import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const upstream = process.env.CONNECTORS_UPSTREAM ?? join(root, ".upstream");
 const pin = JSON.parse(await readFile(join(root, "upstream.json"), "utf8"));
-const upstreamHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" }).trim();
+const upstreamHead = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: upstream,
+  encoding: "utf8",
+}).trim();
 assert.equal(upstreamHead, pin.commit, "Catalog helper checkout must match upstream.json");
 const evidenceRoot = join(root, ".generated/connectors-proof");
 await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
@@ -41,6 +45,9 @@ test("Zendesk source comes from the catalog Worker and carries pinned provenance
     marketplace,
   });
 
+  const manifest = source.files.find((file) => file.path === "package.json");
+  assert.ok(manifest);
+  assert.equal(JSON.parse(manifest.content).dependencies.apps, servedFrameworkVersion);
   assert.deepEqual(injectedHeaders, metadata);
   assert.deepEqual(Object.keys(injectedHeaders).sort(), [...marketplaceHeaderNames].sort());
   assert.equal(provenance.package, "zendesk");
@@ -50,14 +57,27 @@ test("Zendesk source comes from the catalog Worker and carries pinned provenance
   assert.equal(provenance.testOverrides.siteSubdomainOf.from, "zendesk.com");
   assert.equal(provenance.testOverrides.siteSubdomainOf.to, "localhost");
   assert.deepEqual(provenance.testOverrides.providerHosts.to, [fixtures.sites[0].host]);
-  assert.equal(provenance.testOverrides.urlPolicy.exactAllowedOriginsEnvironment, "EXECUTOR_URL_ALLOW_HTTP_ORIGINS");
-  assert.equal(provenance.testOverrides.urlPolicy.allowLoopbackHttpEnvironment, "EXECUTOR_URL_ALLOW_LOOPBACK_HTTP");
-  assert.deepEqual(provenance.testOverrides.urlPolicy.exactAllowedOrigins, fixtures.sites.map(({ origin }) => origin).sort());
+  assert.equal(
+    provenance.testOverrides.urlPolicy.exactAllowedOriginsEnvironment,
+    "EXECUTOR_URL_ALLOW_HTTP_ORIGINS",
+  );
+  assert.equal(
+    provenance.testOverrides.urlPolicy.allowLoopbackHttpEnvironment,
+    "EXECUTOR_URL_ALLOW_LOOPBACK_HTTP",
+  );
+  assert.deepEqual(
+    provenance.testOverrides.urlPolicy.exactAllowedOrigins,
+    fixtures.sites.map(({ origin }) => origin).sort(),
+  );
   assert.equal(provenance.testOverrides.urlPolicy.allowLoopbackHttp, true);
 
   const index = source.files.find((file) => file.path === "index.ts");
   assert.ok(index);
-  assert.ok(index.content.includes(`const declarationOrigin = ${JSON.stringify(fixtures.sites[0].origin)};`));
+  assert.ok(
+    index.content.includes(
+      `const declarationOrigin = ${JSON.stringify(fixtures.sites[0].origin)};`,
+    ),
+  );
   assert.ok(index.content.includes(`hosts: ${JSON.stringify([fixtures.sites[0].host])}`));
   assert.equal(index.content.includes(JSON.stringify(fixtures.sites[1].host)), false);
   assert.ok(index.content.includes('subdomainOf: "localhost"'));

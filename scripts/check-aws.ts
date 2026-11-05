@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { onServedFramework } from "../src/catalog/framework.ts";
 import { verifyConnectorsSource } from "./connectors-source.ts";
 import { awsFailureSummary } from "../e2e/aws/diagnostics.ts";
 
@@ -14,7 +15,7 @@ const upstream = join(root, ".upstream");
 const sourcePath = join(root, "src/catalog/aws/source.json");
 const sourceBytes = await readFile(sourcePath);
 const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
-const source = JSON.parse(sourceBytes.toString("utf8")) as {
+const source = JSON.parse(onServedFramework(sourceBytes.toString("utf8"))) as {
   package: string;
   files: Array<{ path: string; content: string }>;
 };
@@ -63,7 +64,7 @@ const frameworkManifest = JSON.parse(framework["package.json"] ?? "{}") as { ver
 assert.equal(
   manifest.dependencies?.apps,
   frameworkManifest.version,
-  "AWS source must use the exact built framework release; the proof does not rewrite the manifest",
+  "Catalog-served AWS source must use the exact built framework release",
 );
 for (const path of [
   ".local/test-runtime/host.json",
