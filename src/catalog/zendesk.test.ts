@@ -53,7 +53,7 @@ test("Zendesk source carries the full Support API router and the Z mark from its
   assert.match(readme, /`read`, `write` and `impersonate`/);
   assert.match(openapi, /allowedOrigin: site/);
   assert.match(openapi, /baseUrl: site/);
-  assert.match(openapi, /oauth: \[\{ scheme: "basicAuth"/);
+  assert.match(openapi, /oauth: \[\s*\{ scheme: "basicAuth"/);
   assert.match(index, /const scopes = \["read", "write", "impersonate"\]/);
   assert.match(index, /withApprovals\(/);
   assert.match(index, /tool\.kind === "mutation" \? always\(\) : undefined/);
