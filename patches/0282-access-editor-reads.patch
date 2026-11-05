@@ -129,7 +129,7 @@ new file mode 100644
 +      if (via === undefined) return;
 +      count += 1;
 +      // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright request listeners are plain callbacks
-+      Effect.runSync(Deferred.succeed(arrived, { via, request }));
++      Effect.runSync(Deferred.succeed(arrived, { via, request } as const));
 +    };
 +    const label = `${read.group}.${read.endpoint}`;
 +    yield* browser.use(`Observe ${label} reads`, (page) =>

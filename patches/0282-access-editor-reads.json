@@ -1,7 +1,7 @@
 {
   "identity": "basalt-access-editor-reads",
   "file": "0282-access-editor-reads.patch",
-  "content_sha256": "09bfbe7d43b37f5b605ccdf37fa038683e6e64316b1f2019b4e2e43695ba23ab",
+  "content_sha256": "db5d60319dab861c50169f38a8f2875e4d8784328eadfa53c2e41369c754d157",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
