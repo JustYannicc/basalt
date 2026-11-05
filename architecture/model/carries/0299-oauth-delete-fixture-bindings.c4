@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The OAuth deletion race fixture uses distinct provider bindings sharing one grant, so deleting a contributed account still proves the source account survives and the shared grant remains usable."
+    }
+  }
+}
