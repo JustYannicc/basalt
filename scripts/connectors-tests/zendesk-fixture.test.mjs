@@ -67,8 +67,11 @@ async function readCurrentUser(site, token) {
 test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-client JSON PKCE", async () => {
   assert.equal(fixture.sites.length, 2);
   assert.notEqual(fixture.sites[0].origin, fixture.sites[1].origin);
-  assert.equal(new URL(fixture.sites[0].origin).port, new URL(fixture.sites[1].origin).port,
-    "The two loopback site labels must share the issuer template port");
+  assert.equal(
+    new URL(fixture.sites[0].origin).port,
+    new URL(fixture.sites[1].origin).port,
+    "The two loopback site labels must share the issuer template port",
+  );
 
   const issued = [];
   for (const site of fixture.sites) {
@@ -90,22 +93,36 @@ test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-
       const second = await refreshed.json();
       assert.notEqual(second.access_token, first.access_token);
       assert.notEqual(second.refresh_token, first.refresh_token);
-      assert.equal((await readCurrentUser(site, first.access_token)).status, 401, "Rotation invalidates the old access token");
+      assert.equal(
+        (await readCurrentUser(site, first.access_token)).status,
+        401,
+        "Rotation invalidates the old access token",
+      );
       assert.equal((await readCurrentUser(site, second.access_token)).status, 200);
       issued.push({ site, mode, token: second.access_token, client, first, second });
     }
   }
 
   // Refreshed responses advertise one hour, so they must outlive the original one-second grant.
-  await new Promise((resolve) => setTimeout(resolve, 1100));
+  fixture.advanceClock(1100);
   for (const { site, second } of issued) {
     assert.equal(second.expires_in, 3600);
-    assert.equal((await readCurrentUser(site, second.access_token)).status, 200,
-      "A refreshed token must stay active for its advertised lifetime");
+    assert.equal(
+      (await readCurrentUser(site, second.access_token)).status,
+      200,
+      "A refreshed token must stay active for its advertised lifetime",
+    );
   }
 
-  const wrongSite = await readCurrentUser(issued[0].site === fixture.sites[0] ? fixture.sites[1] : fixture.sites[0], issued[0].token);
-  assert.equal(wrongSite.status, 401, "A token issued for one mock site cannot be placed at its peer");
+  const wrongSite = await readCurrentUser(
+    issued[0].site === fixture.sites[0] ? fixture.sites[1] : fixture.sites[0],
+    issued[0].token,
+  );
+  assert.equal(
+    wrongSite.status,
+    401,
+    "A token issued for one mock site cannot be placed at its peer",
+  );
   assert.deepEqual(fixture.failures(), []);
 
   const events = fixture.observations();
@@ -122,33 +139,61 @@ test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-
     assert.equal(event.contentType, "application/json");
     assert.equal(event.basicAuthPresent, false);
   }
-  assert.deepEqual(tokenEvents.map((event) => event.authMethod).sort(), [
-    "client_secret_post", "client_secret_post", "client_secret_post", "client_secret_post",
-    "client_secret_post", "client_secret_post", "client_secret_post", "client_secret_post",
-    "none", "none", "none", "none",
-  ].sort());
+  assert.deepEqual(
+    tokenEvents.map((event) => event.authMethod).sort(),
+    [
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "client_secret_post",
+      "none",
+      "none",
+      "none",
+      "none",
+    ].sort(),
+  );
   for (const site of fixture.sites) {
     const hosted = events.filter((event) => event.flowMode === "hosted" && event.site === site.id);
     assert.ok(hosted.some((event) => event.phase === "token_exchange" && event.clientSecretInJson));
-    assert.ok(hosted.some((event) => event.phase === "token_refresh" && event.clientSecretInJson && event.rotated));
+    assert.ok(
+      hosted.some(
+        (event) => event.phase === "token_refresh" && event.clientSecretInJson && event.rotated,
+      ),
+    );
   }
-  for (const event of events.filter((entry) => entry.phase === "api" && entry.credentialSiteMatches)) {
+  for (const event of events.filter(
+    (entry) => entry.phase === "api" && entry.credentialSiteMatches,
+  )) {
     assert.equal(event.marketplaceHeadersMatched, true);
     assert.deepEqual(event.marketplaceHeaderNames, [...marketplaceHeaderNames]);
   }
   assert.ok(events.some((event) => event.phase === "api" && !event.credentialSiteMatches));
-  const peerPlacement = events.findLast((event) => event.phase === "api" && !event.credentialSiteMatches);
+  const peerPlacement = events.findLast(
+    (event) => event.phase === "api" && !event.credentialSiteMatches,
+  );
   assert.equal(peerPlacement?.bearerPresent, true);
-  assert.equal(peerPlacement?.tokenActive, true,
-    "The fixture must identify an active peer-site token without recording the token value");
-  assert.deepEqual(fixture.rotations().map(({ site, mode, generation, rotated }) => ({ site, mode, generation, rotated })), [
-    { site: "site-a", mode: "public", generation: 1, rotated: true },
-    { site: "site-a", mode: "confidential", generation: 1, rotated: true },
-    { site: "site-a", mode: "hosted", generation: 1, rotated: true },
-    { site: "site-b", mode: "public", generation: 1, rotated: true },
-    { site: "site-b", mode: "confidential", generation: 1, rotated: true },
-    { site: "site-b", mode: "hosted", generation: 1, rotated: true },
-  ]);
+  assert.equal(
+    peerPlacement?.tokenActive,
+    true,
+    "The fixture must identify an active peer-site token without recording the token value",
+  );
+  assert.deepEqual(
+    fixture
+      .rotations()
+      .map(({ site, mode, generation, rotated }) => ({ site, mode, generation, rotated })),
+    [
+      { site: "site-a", mode: "public", generation: 1, rotated: true },
+      { site: "site-a", mode: "confidential", generation: 1, rotated: true },
+      { site: "site-a", mode: "hosted", generation: 1, rotated: true },
+      { site: "site-b", mode: "public", generation: 1, rotated: true },
+      { site: "site-b", mode: "confidential", generation: 1, rotated: true },
+      { site: "site-b", mode: "hosted", generation: 1, rotated: true },
+    ],
+  );
 
   const safeEvidence = JSON.stringify({ events, failures: fixture.failures() });
   for (const { client, first, second } of issued) {

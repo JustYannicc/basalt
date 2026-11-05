@@ -56,11 +56,11 @@ test("Zendesk source carries the full Support API router and the Z mark from its
   const openapi = served.files.find((file) => file.path === "openapi.ts")!.content;
   const iconModule = served.files.find((file) => file.path === "icon.ts")!.content;
   assert.match(readme, /official Support API v2/);
-  assert.match(readme, /`read`, `write` and `impersonate`/);
+  assert.match(readme, /`read` and `write`/);
   assert.match(openapi, /allowedOrigin: site/);
   assert.match(openapi, /baseUrl: site/);
   assert.match(openapi, /oauth: \[\s*\{ scheme: "basicAuth"/);
-  assert.match(index, /const scopes = \["read", "write", "impersonate"\]/);
+  assert.match(index, /const scopes = \["read", "write"\]/);
   assert.match(index, /withApprovals\(/);
   assert.match(index, /tool\.kind === "mutation" \? always\(\) : undefined/);
   assert.match(iconModule, /data:image\/png;base64,/);
