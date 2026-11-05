@@ -1,7 +1,7 @@
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -55,6 +55,18 @@
+@@ -55,8 +55,20 @@
    scopes: Schema.Array(Schema.String),
    /** Signing in uses the instance's own OAuth client, named here; see `FirstPartyOAuthClient`. */
    firstParty: Schema.optionalKey(Schema.Struct({ label: Schema.NonEmptyString })),
@@ -18,8 +18,11 @@ diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oa
 +    ),
 +  ),
  };
- /** Safe form metadata resolved from provider code and discovery. Never contains client IDs or secrets. */
+-/** Safe form metadata resolved from provider code and discovery. Never contains client IDs or secrets. */
++/** Public sign-in setup metadata resolved from provider code and discovery. Secrets remain on the host. */
  export const OAuthClientSetup = Schema.Union([
+   Schema.Struct({
+     ...clientSetup,
 @@ -439,6 +451,23 @@
    setupInstructions: Schema.optionalKey(Schema.NonEmptyString),
    /** Check a public client's authorization URL without cookies before sending the person there. */
