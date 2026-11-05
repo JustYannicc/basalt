@@ -1,0 +1,2133 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+index 2378d1b..a669950 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -1,5 +1,14 @@
+ import { createFileRoute } from "@tanstack/react-router";
++import { parseAddAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { AddAppPage } from "@executor-js/hosted-web/pages/add-app";
+ 
+ /** App selection and installation belong to Apps, as in local. */
+-export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({ component: AddAppPage });
++export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
++  validateSearch: parseAddAppSearch,
++  component: Page,
++});
++
++function Page() {
++  const { entry } = Route.useSearch();
++  return <AddAppPage entry={entry} />;
++}
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+index 2378d1b..a669950 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -1,5 +1,14 @@
+ import { createFileRoute } from "@tanstack/react-router";
++import { parseAddAppSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { AddAppPage } from "@executor-js/hosted-web/pages/add-app";
+ 
+ /** App selection and installation belong to Apps, as in local. */
+-export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({ component: AddAppPage });
++export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
++  validateSearch: parseAddAppSearch,
++  component: Page,
++});
++
++function Page() {
++  const { entry } = Route.useSearch();
++  return <AddAppPage entry={entry} />;
++}
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+index cf582b6..6c3bb54 100644
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -23,6 +23,7 @@ import {
+   type OAuthClientSelection,
+   type ToolName,
+   type Json,
++  type JsonObject,
+   type ApprovalRequestId,
+ } from "@executor-js/sdk";
+ import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
+@@ -246,6 +247,59 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
+   renameApp(new AppKey(key));
+ export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+   removeApp(new AppKey(key));
++/** The importer's frozen wire methods; the host's `importMethods` decide which a form offers. */
++const ImportMethod = Schema.Literals(["codex", "claude"]);
++
++/**
++ * Import an exported login file as a saved account, then link it to this app, as a new key is. One
++ * creation id per dialog: a retry after an uncertain answer returns the account the host already
++ * saved instead of a second one, and a failed link retries only the link.
++ */
++export function importLoginFileAtoms(key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly version: VersionId | null;
++  readonly requirement: string;
++}) {
++  const creation = globalThis.crypto.randomUUID();
++  const created = Atom.make<Account | undefined>(undefined);
++  return HostedClient.runtime.fn(
++    (
++      input: {
++        readonly method: string;
++        readonly file: Redacted.Redacted<JsonObject>;
++        readonly label?: string | undefined;
++      },
++      get,
++    ) =>
++      Effect.gen(function* () {
++        const client = yield* HostedClient;
++        const method = yield* Schema.decodeUnknownEffect(ImportMethod)(input.method);
++        const params = {
++          organization: key.organization,
++          app: key.app,
++          requirement: key.requirement,
++        };
++        const account =
++          get(created) ??
++          (yield* client.appAccounts.appImportLoginFile({
++            params,
++            payload: {
++              creation,
++              method,
++              file: input.file,
++              ...(input.label === undefined ? {} : { label: input.label }),
++            },
++          }));
++        get.set(created, account);
++        yield* client.appAccounts.appLink({ params: { ...params, account: account.id } });
++        accountSavedForApp(get, key.organization, account, key.app);
++        refreshAppDiscovery(get, key);
++        return account;
++      }),
++  );
++}
++
+ /**
+  * A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its
+  * connection. Completing a connection started from the app saves the account and links it to the
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index b4612a3..26cd124 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -24,6 +24,8 @@ const errorMessage = Match.type<HostedError>().pipe(
+     PoolUsageUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,
+     AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
++    ProviderAppConnectionRequired: () =>
++      "This app only picks accounts that are already connected. Connect the account in its provider app, then pick it here.",
+     AccountAcquisitionUnavailable: () =>
+       "This account connection is temporarily unavailable. Retry after the host restores it.",
+     AccessConflict: ({ reason }) =>
+diff --git a/apps/hosted/web/src/contracts/navigation.ts b/apps/hosted/web/src/contracts/navigation.ts
+index 282af23..78855a9 100644
+--- a/apps/hosted/web/src/contracts/navigation.ts
++++ b/apps/hosted/web/src/contracts/navigation.ts
+@@ -41,6 +41,15 @@ export function parseAccountsSearch(search: Record<string, unknown>): {
+   };
+ }
+ 
++/** Add app can open on one catalog entry, such as the provider app a pool points to. */
++export function parseAddAppSearch(search: Record<string, unknown>): {
++  readonly entry?: string | undefined;
++} {
++  return {
++    entry: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.entry)),
++  };
++}
++
+ /** History marks only automatic root restoration; explicit links keep their own targets. */
+ export const OrganizationResume = Schema.Struct({
+   organization: OrganizationId,
+diff --git a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
+index efa60d9..58686b2 100644
+--- a/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
++++ b/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx
+@@ -1,15 +1,17 @@
+ import { AppProviderFailed } from "@executor-js/sdk";
+-import { Cause, Option, Schema } from "effect";
++import { Cause, Match, Option, Schema } from "effect";
+ import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
+ import { CompactFailure, ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
+ import { ConnectionFailed, hasConnectionFailure } from "@executor-js/utils/connection-failure";
+-import type { ReactNode } from "react";
++import { createContext, useContext, useEffect, type ReactNode } from "react";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
+ import { Link } from "@tanstack/react-router";
+ import { DashboardProvider } from "@executor-js/ui/dashboard/context";
+ import type {
+   AppLinkProps,
+   AccountLinkProps,
++  CatalogLinkProps,
+   FailureProps,
+ } from "@executor-js/ui/contracts/dashboard";
+ import { Alert } from "@executor-js/ui/components/alert";
+@@ -21,6 +23,7 @@ import { useOrganizationRoute } from "./organization.tsx";
+ import { appError } from "../../contracts/apps.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { ProviderDestination } from "@executor-js/ui/dashboard/provider-accounts";
+ 
+ const catalogIcons = catalogIconsAtom(catalogAtom);
+ /** Organization-aware atoms stay inside the hosted product. */
+@@ -52,10 +55,52 @@ const AccountLink = ({ account, children, ...props }: AccountLinkProps) => {
+     </Link>
+   );
+ };
++const CatalogLink = ({ entry, ...props }: CatalogLinkProps) => {
++  const { slug: organizationSlug } = useOrganizationRoute();
++  return (
++    <Link
++      to="/org/$organizationSlug/apps/add"
++      params={{ organizationSlug }}
++      search={{ entry }}
++      {...props}
++    />
++  );
++};
++const connectElsewhere = Match.type<HostedError>().pipe(
++  Match.tag("ProviderAppConnectionRequired", (error) => Option.some(error)),
++  Match.orElse(() => Option.none()),
++);
++/**
++ * Set by a connection flow: the host refused it for good because the account belongs on a provider
++ * app. The flow closes its form and shows where to go instead.
++ */
++export const ConnectionRefusedContext = createContext<
++  ((destination: ProviderAccountDestination) => void) | undefined
++>(undefined);
++/** Where to connect instead, when the host refused a connection because it belongs elsewhere. */
++export const refusedDestination = (cause: Cause.Cause<HostedError>) =>
++  Option.getOrUndefined(Option.flatMap(Cause.findErrorOption(cause), connectElsewhere))
++    ?.destination;
+ /** Hosted failures keep auth and transport details out of display components. */
+ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<HostedError>) {
+   const brand = useProductBrand();
++  const refused = useContext(ConnectionRefusedContext);
+   const error = Cause.findErrorOption(cause);
++  // A form opened before this app stopped connecting accounts can never succeed here: its flow
++  // closes, and wherever the error shows it offers the provider app, never a retry.
++  const elsewhere = refusedDestination(cause);
++  useEffect(() => {
++    if (elsewhere !== undefined) refused?.(elsewhere);
++  }, [elsewhere, refused]);
++  if (elsewhere !== undefined)
++    return (
++      <CompactFailure title="Connect this account in its provider app">
++        <div>
++          This app only picks accounts that are already connected.{" "}
++          <ProviderDestination destination={elsewhere} provider="provider" verb="Connect" />
++        </div>
++      </CompactFailure>
++    );
+   if (Option.isSome(error) && Schema.is(AppProviderFailed)(error.value))
+     return (
+       <ProviderErrorNotice
+@@ -115,8 +160,15 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
+ }
+ /** Shared views bind independently of access checks and sidebar metadata. */
+ export function HostedDashboard({ children }: { readonly children: ReactNode }) {
++  const { slug } = useOrganizationRoute();
+   return (
+-    <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>
++    <DashboardProvider
++      catalogIcons={catalogIcons}
++      AppLink={AppLink}
++      AccountLink={AccountLink}
++      CatalogLink={CatalogLink}
++      workspace={slug}
++    >
+       {children}
+     </DashboardProvider>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
+index 8aa97a2..41d1692 100644
+--- a/apps/hosted/web/src/implementation/pages/add-app.tsx
++++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
+@@ -8,13 +8,14 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ /** Catalog apps install into the same organization-owned app records. */
+-export function AddAppPage() {
++export function AddAppPage({ entry }: { readonly entry?: string | undefined } = {}) {
+   const atoms = useDashboardAtoms();
+   useAtomMount(atoms.catalog);
+   const { slug: organizationSlug } = useOrganizationRoute();
+   const navigate = useNavigate();
+   return (
+     <Catalog
++      entry={entry}
+       query={atoms.catalog}
+       Failure={HostedFailure}
+       mutation={atoms.install}
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 7105f19..5853e11 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -21,9 +21,22 @@ import {
+   type LinkEditing,
+   type ScopeAccounts,
+ } from "@executor-js/ui/dashboard/app-accounts";
+-import type { RequirementLink, RequirementMethods } from "@executor-js/ui/contracts/app-accounts";
++import {
++  retiresOnUnlink,
++  type RequirementConnections,
++  type RequirementLink,
++  type RequirementMethods,
++} from "@executor-js/ui/contracts/app-accounts";
++import {
++  ProviderDestination,
++  ProviderAccountUsage,
++  ProviderReturnLink,
++} from "@executor-js/ui/dashboard/provider-accounts";
++import { ImportLoginFile } from "./import-login-file.tsx";
++import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+-import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import type { AccountSummary, Inventory } from "@executor-js/ui/contracts/dashboard";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
+ import {
+@@ -34,7 +47,9 @@ import {
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+ import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { ConnectionRefusedContext, HostedFailure } from "../components/dashboard-bindings.tsx";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
++import { DialogDescription, DialogFooter, DialogTitle } from "@executor-js/ui/components/dialog";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+ import { HostedAccountForm, OAuthReturnContext } from "./connect-account.tsx";
+ import { useOAuthHandoff } from "./loopback-oauth.tsx";
+@@ -69,6 +84,7 @@ export function AppAccounts({
+   userLinks,
+   canManage,
+   accounts,
++  inventory,
+   redirectUri,
+ }: {
+   readonly app: App;
+@@ -80,6 +96,8 @@ export function AppAccounts({
+   readonly canManage: boolean;
+   /** Every account the caller can use in this organization. */
+   readonly accounts: readonly AccountSummary[];
++  /** The visible inventory, which says where a provider app's accounts are used. */
++  readonly inventory?: Inventory | undefined;
+   readonly redirectUri: string;
+ }) {
+   const { organization } = useOrganizationRoute();
+@@ -107,6 +125,21 @@ export function AppAccounts({
+           reported.value.native.find((entry) => entry.requirement === requirement)?.name,
+       }
+     : undefined;
++  // Only a settled read counts: while it loads again, or after it failed, a cached answer offers
++  // no connection.
++  const connections: RequirementConnections =
++    methodsReady && Option.isSome(reported)
++      ? {
++          state: "ready",
++          of: (requirement) =>
++            reported.value.connections.find((entry) => entry.requirement === requirement),
++        }
++      : { state: "pending" };
++  // The host marks provider apps; nothing is assumed while its read loads or after it failed.
++  const providerApp = methodsReady && Option.isSome(reported) ? reported.value.providerApp : null;
++  const connectsHere = (slot: string) =>
++    connections.state === "ready" && connections.of(slot)?.canConnect === true;
++  const brand = useProductBrand();
+   const viewer = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)))?.user.id;
+   const deployed = app.activeVersion !== null;
+   const copiedPackage = app.copiedFrom?.name;
+@@ -139,9 +172,24 @@ export function AppAccounts({
+     readonly account?: AccountSummary | undefined;
+   }>();
+   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
++  // Set when the host refused the open connection for good; its form gives way to the destination.
++  const [refused, setRefused] = useState<ProviderAccountDestination>();
++  const closeConnection = () => {
++    setConnection(undefined);
++    setRefused(undefined);
++  };
++  const [importing, setImporting] = useState<{
++    readonly slot: string;
++    readonly requirement: AccountRequirement;
++    readonly methods: readonly string[];
++  }>();
+   const [connecting, setConnecting] = useState(false);
+   const connectionDisabled =
+-    connecting || connection !== undefined || catalogUnavailable || !methodsReady;
++    connecting ||
++    connection !== undefined ||
++    importing !== undefined ||
++    catalogUnavailable ||
++    !methodsReady;
+   const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
+     catalogEntry?.connectionNotices?.filter(
+       (notice) => notice.providerName === requirement.definition.name,
+@@ -150,14 +198,25 @@ export function AppAccounts({
+   // account's credentials needs use of the account.
+   const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
+   // An account the app signed in itself can't take new credentials: connect another, remove this.
+-  const appBound = (requirement: AccountRequirement, account: AccountSummary) =>
+-    requirement.definition.auth[account.method]?.type === "interactive";
++  // The host's provenance on the link decides; without it an interactive method is the app's own.
++  const appBound = (
++    links: readonly RequirementLink<AccountSummary>[],
++    slot: string,
++    requirement: AccountRequirement,
++    account: AccountSummary,
++  ) =>
++    retiresOnUnlink(
++      requirement,
++      account.method,
++      links.find((link) => link.requirement === slot && link.account.id === account.id)
++        ?.credentialScope,
++    );
+   const hostProvisioned = (requirement: AccountRequirement, account: AccountSummary) => {
+     const method = requirement.definition.auth[account.method];
+     return method?.type === "secrets" && method.provisioned === true;
+   };
+   const reconnect = (scope: AccountScope, slot: string, account: AccountSummary) => {
+-    if (connectionDisabled) return;
++    if (connectionDisabled || !connectsHere(slot)) return;
+     const requirement = app.requirements.accounts[slot];
+     if (requirement !== undefined)
+       setConnection({ scope, slot, requirement, method: account.method, account });
+@@ -174,13 +233,26 @@ export function AppAccounts({
+     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+     connect: (slot, requirement) => {
+-      if (connectionDisabled) return;
++      if (connectionDisabled || !connectsHere(slot)) return;
+       const preferred = methodsOf(requirement).find(
+         ([method]) => methods?.unavailable(slot, method) === undefined,
+       );
+       if (preferred !== undefined)
+         setConnection({ scope, slot, requirement, method: preferred[0] });
+     },
++    // The host imports login files only into app accounts.
++    ...(scope === "app"
++      ? {
++          importLoginFile: (
++            slot: string,
++            requirement: AccountRequirement,
++            importMethods: readonly string[],
++          ) => {
++            if (connectionDisabled || !connectsHere(slot)) return;
++            setImporting({ slot, requirement, methods: importMethods });
++          },
++        }
++      : {}),
+     connecting: connectionDisabled,
+     onUnlinked: (account) => void unused.check(account),
+   });
+@@ -217,7 +289,7 @@ export function AppAccounts({
+             (usable(account) || removable(links, slot, account)) && (
+               <LinkedAccountMenu
+                 label={account.label || "Unnamed account"}
+-                bound={appBound(requirement, account) ? { app: app.name } : undefined}
++                bound={appBound(links, slot, requirement, account) ? { app: app.name } : undefined}
+                 unlink={
+                   removable(links, slot, account)
+                     ? unlinkAccountAtom({
+@@ -236,7 +308,8 @@ export function AppAccounts({
+                   </DropdownMenuItem>
+                 )}
+                 {usable(account) &&
+-                  !appBound(requirement, account) &&
++                  connectsHere(slot) &&
++                  !appBound(links, slot, requirement, account) &&
+                   !hostProvisioned(requirement, account) && (
+                     <DropdownMenuItem
+                       disabled={connectionDisabled}
+@@ -249,24 +322,46 @@ export function AppAccounts({
+                   )}
+               </LinkedAccountMenu>
+             ),
+-          reconnectAction: (account, slot, requirement) =>
+-            usable(account) &&
+-            !appBound(requirement, account) &&
+-            !hostProvisioned(requirement, account) && (
+-              <Button
+-                variant="outline"
+-                size="sm"
+-                disabled={connectionDisabled}
+-                onClick={() => reconnect(scope, slot, account)}
+-              >
+-                Reconnect
+-              </Button>
+-            ),
++          reconnectAction: (account, slot, requirement) => {
++            if (!usable(account) || hostProvisioned(requirement, account)) return undefined;
++            const connection = connections.state === "ready" ? connections.of(slot) : undefined;
++            // Where this app only selects accounts, repair happens in the provider's app and keeps
++            // every link; an app-owned legacy sign-in has nothing to repair there.
++            if (connection !== undefined && !connection.canConnect)
++              return (
++                !appBound(links, slot, requirement, account) && (
++                  <span className="text-xs">
++                    <ProviderDestination
++                      destination={connection.destination}
++                      provider={requirement.definition.name}
++                      verb="Reconnect"
++                      origin={{ app: app.id, name: appDisplayName(app, brand) }}
++                    />
++                  </span>
++                )
++              );
++            return (
++              connectsHere(slot) &&
++              !appBound(links, slot, requirement, account) && (
++                <Button
++                  variant="outline"
++                  size="sm"
++                  disabled={connectionDisabled}
++                  onClick={() => reconnect(scope, slot, account)}
++                >
++                  Reconnect
++                </Button>
++              )
++            );
++          },
+         }
+       : { links, viewer, readOnly, accountRow };
+   const notDeployed = "Deploy this app to link accounts.";
+   return (
+     <>
++      <div className="mb-4 empty:hidden">
++        <ProviderReturnLink app={app} />
++      </div>
+       {!methodsReady && (
+         <div className="mb-4">
+           {AsyncResult.isFailure(methodQuery.result) ? (
+@@ -308,10 +403,23 @@ export function AppAccounts({
+               ))
+           : [],
+       )}
++      {providerApp !== null &&
++        inventory !== undefined &&
++        providerApp.requirements.flatMap((slot) => {
++          const requirement = app.requirements.accounts[slot];
++          return requirement === undefined
++            ? []
++            : [
++                <div key={slot} className="mb-8">
++                  <ProviderAccountUsage app={app} requirement={requirement} inventory={inventory} />
++                </div>,
++              ];
++        })}
+       <SharedAccounts
+         app={app}
+         accounts={accounts}
+         methods={methods}
++        connections={connections}
+         Failure={HostedFailure}
+         appAccounts={scopeAccounts(
+           "app",
+@@ -322,32 +430,77 @@ export function AppAccounts({
+         )}
+         yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
+       />
++      {importing && (
++        <ConnectionModal
++          open
++          busy={connecting}
++          onClose={() => {
++            if (!connecting) setImporting(undefined);
++          }}
++        >
++          <ImportLoginFile
++            app={app}
++            slot={importing.slot}
++            requirement={importing.requirement}
++            methods={importing.methods}
++            onPendingChange={setConnecting}
++            onDone={() => setImporting(undefined)}
++          />
++        </ConnectionModal>
++      )}
+       {unused.prompt}
+       <ConnectionModal
+         open={connection !== undefined}
+-        busy={connecting}
+-        onClose={() => setConnection(undefined)}
++        busy={connecting && refused === undefined}
++        onClose={closeConnection}
+       >
+-        {connection && (
+-          <AppConnectionDialogContent
+-            app={app}
+-            scope={connection.scope}
+-            slot={connection.slot}
+-            requirement={connection.requirement}
+-            method={connection.method}
+-            connectionNotices={noticesFor(connection.requirement)}
+-            oauthDeferrals={catalogEntry?.oauthDeferrals}
+-            redirectUri={redirectUri}
+-            account={connection.account}
+-            unavailable={(method) =>
+-              methodsReady
+-                ? methods?.unavailable(connection.slot, method)
+-                : "Sign-in methods are unavailable. Retry loading them."
+-            }
+-            onPendingChange={setConnecting}
+-            onSaved={() => setConnection(undefined)}
+-          />
+-        )}
++        {connection && refused !== undefined ? (
++          <>
++            <DialogTitle>Connect this account in its provider app</DialogTitle>
++            <DialogDescription>
++              {appDisplayName(app, brand)} only picks accounts that are already connected.
++            </DialogDescription>
++            <p className="text-sm">
++              <ProviderDestination
++                destination={refused}
++                provider={connection.requirement.definition.name}
++                verb="Connect"
++                origin={{ app: app.id, name: appDisplayName(app, brand) }}
++              />
++            </p>
++            <DialogFooter>
++              <Button variant="outline" onClick={closeConnection}>
++                Close
++              </Button>
++            </DialogFooter>
++          </>
++        ) : connection ? (
++          <ConnectionRefusedContext
++            value={(destination) => {
++              setConnecting(false);
++              setRefused(destination);
++            }}
++          >
++            <AppConnectionDialogContent
++              app={app}
++              scope={connection.scope}
++              slot={connection.slot}
++              requirement={connection.requirement}
++              method={connection.method}
++              connectionNotices={noticesFor(connection.requirement)}
++              oauthDeferrals={catalogEntry?.oauthDeferrals}
++              redirectUri={redirectUri}
++              account={connection.account}
++              unavailable={(method) =>
++                methodsReady
++                  ? methods?.unavailable(connection.slot, method)
++                  : "Sign-in methods are unavailable. Retry loading them."
++              }
++              onPendingChange={setConnecting}
++              onSaved={closeConnection}
++            />
++          </ConnectionRefusedContext>
++        ) : null}
+       </ConnectionModal>
+       {renaming && (
+         <HostedAccountDialog id={renaming} dialog="edit" onClose={() => setRenaming(undefined)} />
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index 84a59f1..becf70d 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -144,6 +144,7 @@ const withSummaries = (
+     requirement: link.requirement,
+     linkedBy: link.linkedBy,
+     canRemove: link.canRemove,
++    credentialScope: link.credentialScope,
+     account: {
+       ...link.account,
+       ...summaries.find((summary) => summary.id === link.account.id),
+@@ -567,6 +568,7 @@ export function AppDetailPage({
+                   userLinks={linked.user}
+                   canManage={canManage}
+                   accounts={inventory.accounts}
++                  inventory={inventory}
+                   redirectUri={inventory.accountSetup.redirectUri}
+                 />
+               </div>
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index cd2813a..ff7774b 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -22,7 +22,12 @@ import { Cause, Match, Option, Exit, Schema } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+ import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
+ import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { ConnectionRefusedContext, HostedFailure } from "../components/dashboard-bindings.tsx";
++import type { ProviderAccountDestination } from "@executor-js/ui/contracts/app-accounts";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { ProviderDestination } from "@executor-js/ui/dashboard/provider-accounts";
++import { AsyncResult } from "effect/reactivity";
++import { appMethodsAtom } from "../../contracts/app-accounts.ts";
+ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+ import {
+   InteractiveSignIn,
+@@ -48,7 +53,9 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+ import { RegisterServiceClient } from "./oauth-clients.tsx";
+ 
+ // The dialog owns catalog guidance; both normal and loopback forms read the same value.
+-export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(undefined);
++export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(
++  undefined,
++);
+ 
+ /**
+  * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
+@@ -91,6 +98,63 @@ export function ConnectionFields({
+     leave: () => (started.current ? cancel() : Promise.resolve()),
+   };
+   const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
++  // A connection started before its app stopped connecting accounts, such as a pool's, must not
++  // reopen its form: until the target app's policy says it connects here, none is shown.
++  const policy = useQuery(appMethodsAtom({ organization, app: connection.target.app }));
++  const target = Option.getOrUndefined(policy.data)?.connections.find(
++    (entry) => entry.requirement === connection.target.requirement,
++  );
++  // Set when the host refused this connection for good; the form gives way to the destination.
++  const [refused, setRefused] = useState<ProviderAccountDestination>();
++  const back = (
++    <Button asChild variant="outline">
++      <Link
++        to="/org/$organizationSlug/apps/$appId"
++        params={{ organizationSlug, appId: connection.target.app }}
++        search={{ view: "accounts" }}
++      >
++        Back to app
++      </Link>
++    </Button>
++  );
++  if (refused !== undefined)
++    return (
++      <>
++        <p className="text-sm">
++          This app only picks accounts that are already connected.{" "}
++          <ProviderDestination
++            destination={refused}
++            provider={connection.provider.definition.name}
++            verb="Connect"
++          />
++        </p>
++        {back}
++      </>
++    );
++  if (connection.state.status === "pending" && !handoff.active && target?.canConnect !== true)
++    return AsyncResult.isFailure(policy.result) ? (
++      <HostedFailure cause={policy.result.cause} retry={policy.refresh} layout="compact" />
++    ) : Option.isNone(policy.data) ? (
++      <p role="status" className="text-sm text-muted-foreground">
++        Checking where this account connects…
++      </p>
++    ) : (
++      <>
++        <p className="text-sm">
++          This app only picks accounts that are already connected.{" "}
++          {target === undefined ? (
++            "Connect the account in its provider app instead."
++          ) : (
++            <ProviderDestination
++              destination={target.destination}
++              provider={connection.provider.definition.name}
++              verb="Connect"
++            />
++          )}
++        </p>
++        {back}
++      </>
++    );
+   if (connection.state.status !== "pending" && !handoff.active)
+     return (
+       <>
+@@ -99,19 +163,12 @@ export function ConnectionFields({
+             ? "Account connected."
+             : "This connection has expired. Start a new connection from the app."}
+         </p>
+-        <Button asChild variant="outline">
+-          <Link
+-            to="/org/$organizationSlug/apps/$appId"
+-            params={{ organizationSlug, appId: connection.target.app }}
+-            search={{ view: "accounts" }}
+-          >
+-            Back to app
+-          </Link>
+-        </Button>
++        {back}
+       </>
+     );
+   return (
+-    <>
++    // A refusal from the loopback step or the form closes both.
++    <ConnectionRefusedContext value={setRefused}>
+       {handoff.step}
+       {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
+       <div className={handoff.active ? "hidden" : "contents"}>
+@@ -147,7 +204,7 @@ export function ConnectionFields({
+           }
+         />
+       </div>
+-    </>
++    </ConnectionRefusedContext>
+   );
+ }
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
+new file mode 100644
+index 0000000..8090e5d
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
+@@ -0,0 +1,211 @@
++import { useEffect, useId, useMemo, useRef, useState } from "react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
++import { AsyncResult } from "effect/reactivity";
++import { Exit, Option, Redacted, Schema } from "effect";
++import { JsonObject, type AccountRequirement, type App } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { Input } from "@executor-js/ui/components/input";
++import { Textarea } from "@executor-js/ui/components/textarea";
++import { DialogDescription, DialogFooter, DialogTitle } from "@executor-js/ui/components/dialog";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@executor-js/ui/components/select";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { importLoginFileAtoms } from "../../contracts/apps.ts";
++
++/** The host refuses larger files; checking first saves an upload that can't succeed. */
++const maxBytes = 1_048_576;
++const decodeFile = Schema.decodeUnknownOption(Schema.fromJsonString(JsonObject));
++
++const readable = (text: string, oversized: boolean) => {
++  if (!oversized && text.trim() === "") return { problem: undefined };
++  if (oversized || new TextEncoder().encode(text).length > maxBytes)
++    return { problem: "This login file is larger than 1 MiB. Export it again and use that file." };
++  const file = decodeFile(text);
++  return Option.isSome(file)
++    ? { file: file.value }
++    : { problem: "This isn't a login file. Choose the JSON file you exported." };
++};
++
++const methodLabel = (requirement: AccountRequirement, name: string) => {
++  const auth = requirement.definition.auth[name];
++  return auth !== undefined && "label" in auth && typeof auth.label === "string"
++    ? auth.label
++    : name;
++};
++
++/**
++ * Import a login file exported from a subscription's own tool as a new saved account. The file
++ * stays in this form: it is never shown back, put in chat or kept by the app. The host checks that
++ * it matches the chosen method.
++ */
++export function ImportLoginFile({
++  app,
++  slot,
++  requirement,
++  methods,
++  onPendingChange,
++  onDone,
++}: {
++  readonly app: App;
++  readonly slot: string;
++  readonly requirement: AccountRequirement;
++  /** The methods the host can import for this requirement. */
++  readonly methods: readonly string[];
++  readonly onPendingChange: (pending: boolean) => void;
++  readonly onDone: () => void;
++}) {
++  const { organization } = useOrganizationRoute();
++  const [run] = useState(() =>
++    importLoginFileAtoms({
++      organization,
++      app: app.id,
++      version: app.activeVersion,
++      requirement: slot,
++    }),
++  );
++  const submit = useAtomSet(run, { mode: "promiseExit" });
++  const result = useAtomValue(run);
++  const pending = AsyncResult.isWaiting(result);
++  useEffect(() => onPendingChange(pending), [onPendingChange, pending]);
++  // Closing the form never leaves the page waiting on it.
++  useEffect(() => () => onPendingChange(false), [onPendingChange]);
++  const [method, setMethod] = useState(methods[0]);
++  const [text, setText] = useState("");
++  const [label, setLabel] = useState("");
++  const [fileName, setFileName] = useState<string>();
++  const [oversized, setOversized] = useState(false);
++  const [unreadable, setUnreadable] = useState(false);
++  // Only the latest chosen file may fill the form.
++  const picked = useRef(0);
++  const ids = { file: useId(), paste: useId(), label: useId() };
++  const state = useMemo(() => readable(text, oversized), [text, oversized]);
++  const ready = method !== undefined && "file" in state && !pending;
++  return (
++    <form
++      className="flex flex-col gap-4"
++      onSubmit={(event) => {
++        event.preventDefault();
++        if (!ready || !("file" in state)) return;
++        void submit({
++          method,
++          file: Redacted.make(state.file),
++          label: label.trim() === "" ? undefined : label.trim(),
++        }).then((exit) => {
++          if (Exit.isSuccess(exit)) {
++            onPendingChange(false);
++            onDone();
++          }
++        });
++      }}
++    >
++      <div className="grid gap-1.5">
++        <DialogTitle>Import {requirement.definition.name} login file</DialogTitle>
++        <DialogDescription>
++          Use the login file your {requirement.definition.name} tool exported. It's saved as a new
++          account here, and pools can pick it like any other.
++        </DialogDescription>
++      </div>
++      {methods.length > 1 && (
++        <Select value={method ?? ""} onValueChange={setMethod} disabled={pending}>
++          <SelectTrigger aria-label="Sign-in method">
++            <SelectValue />
++          </SelectTrigger>
++          <SelectContent>
++            {methods.map((name) => (
++              <SelectItem key={name} value={name}>
++                {methodLabel(requirement, name)}
++              </SelectItem>
++            ))}
++          </SelectContent>
++        </Select>
++      )}
++      <label htmlFor={ids.file} className="grid gap-2 text-[13px] font-medium">
++        Login file
++        <Input
++          id={ids.file}
++          type="file"
++          accept="application/json,.json"
++          disabled={pending}
++          onChange={(event) => {
++            const file = event.currentTarget.files?.[0];
++            if (file === undefined) return;
++            const turn = (picked.current += 1);
++            setFileName(file.name);
++            setOversized(file.size > maxBytes);
++            setUnreadable(false);
++            setText("");
++            if (file.size <= maxBytes)
++              void file.text().then(
++                (content) => turn === picked.current && setText(content),
++                () => turn === picked.current && setUnreadable(true),
++              );
++          }}
++        />
++      </label>
++      {fileName !== undefined && (
++        <div>
++          <Button
++            type="button"
++            variant="link"
++            size="xs"
++            disabled={pending}
++            onClick={() => {
++              picked.current += 1;
++              setFileName(undefined);
++              setOversized(false);
++              setUnreadable(false);
++              setText("");
++            }}
++          >
++            Paste the contents instead
++          </Button>
++        </div>
++      )}
++      {fileName === undefined && (
++        <label htmlFor={ids.paste} className="grid gap-2 text-[13px] font-medium">
++          Or paste its contents
++          <Textarea
++            id={ids.paste}
++            rows={4}
++            spellCheck={false}
++            autoComplete="off"
++            disabled={pending}
++            value={text}
++            onChange={(event) => setText(event.currentTarget.value)}
++          />
++        </label>
++      )}
++      <label htmlFor={ids.label} className="grid gap-2 text-[13px] font-medium">
++        Name (optional)
++        <Input
++          id={ids.label}
++          autoComplete="off"
++          placeholder="Work subscription"
++          disabled={pending}
++          value={label}
++          onChange={(event) => setLabel(event.currentTarget.value)}
++        />
++      </label>
++      {(unreadable || state.problem !== undefined) && (
++        <p role="alert" className="text-sm text-destructive">
++          {unreadable ? "This file couldn't be read. Choose it again." : state.problem}
++        </p>
++      )}
++      {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} layout="compact" />}
++      <DialogFooter>
++        <Button type="button" variant="outline" disabled={pending} onClick={onDone}>
++          Cancel
++        </Button>
++        <Button type="submit" loading={pending} disabled={!ready}>
++          Import
++        </Button>
++      </DialogFooter>
++    </form>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+index 7b25a2f..b02ac1d 100644
+--- a/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
++++ b/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx
+@@ -2,11 +2,15 @@ import type { HostedError } from "../../contracts/errors.ts";
+ import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
+ import type { Account, Provider } from "@executor-js/sdk";
+ import { useAtomSet } from "@effect/atom-react";
+-import { useEffect, useState, type ReactNode } from "react";
++import { useContext, useEffect, useState, type ReactNode } from "react";
+ import { Cause, Exit, Redacted } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
+-import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import {
++  ConnectionRefusedContext,
++  HostedFailure,
++  refusedDestination,
++} from "../components/dashboard-bindings.tsx";
+ import { accountToNameAtom } from "../../contracts/accounts.ts";
+ import { completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
+ 
+@@ -94,6 +98,7 @@ function LoopbackOAuthStep({
+     { mode: "promiseExit" },
+   );
+   const requestName = useAtomSet(accountToNameAtom);
++  const refused = useContext(ConnectionRefusedContext);
+   const [value, setValue] = useState("");
+   const [busy, setBusy] = useState(false);
+   const [invalid, setInvalid] = useState(false);
+@@ -132,7 +137,12 @@ function LoopbackOAuthStep({
+     void complete({ callbackUrl: Redacted.make(pasted), app: pending.app }).then((exit) => {
+       setBusy(false);
+       onPendingChange?.(false);
+-      if (Exit.isFailure(exit)) return setError(exit.cause);
++      if (Exit.isFailure(exit)) {
++        // Reported straight from the result: an expiry view showing now would hide the failure.
++        const destination = refusedDestination(exit.cause);
++        if (destination !== undefined) refused?.(destination);
++        return setError(exit.cause);
++      }
+       sessionStorage.removeItem(pendingKey);
+       // Reconnects keep their name; a new account is named once saved, as the redirect path does.
+       if (pending.reconnect !== true)
+diff --git a/e2e/support/provider-apps-ui.ts b/e2e/support/provider-apps-ui.ts
+index e2dbddf..7a9158f 100644
+--- a/e2e/support/provider-apps-ui.ts
++++ b/e2e/support/provider-apps-ui.ts
+@@ -23,11 +23,12 @@ export const providerMethodsUi = (app: string) =>
+     yield* browser.use("The capability read visibly waits", (page) =>
+       page.getByText("Loading sign-in methods…", { exact: true }).waitFor({ state: "visible" }),
+     );
++    // Until the host's connection policy is read, no connection control is offered at all.
+     expect(
+       yield* browser.use("The capability read blocks connection", (page) =>
+-        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++        page.getByRole("button", { name: "Connect new account", exact: true }).count(),
+       ),
+-    ).toBe(false);
++    ).toBe(0);
+     yield* browser.checkpoint("OpenAI waits for host sign-in methods");
+     yield* first.release;
+     yield* browser.use("A failed capability read offers retry", (page) =>
+@@ -35,9 +36,9 @@ export const providerMethodsUi = (app: string) =>
+     );
+     expect(
+       yield* browser.use("The failed read keeps connection blocked", (page) =>
+-        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++        page.getByRole("button", { name: "Connect new account", exact: true }).count(),
+       ),
+-    ).toBe(false);
++    ).toBe(0);
+     yield* browser.checkpoint("OpenAI method failure stays actionable");
+     const retry = yield* holdQuery(paths, "continue");
+     yield* browser.use("Retry host sign-in methods", (page) =>
+@@ -46,9 +47,9 @@ export const providerMethodsUi = (app: string) =>
+     yield* retry.requested;
+     expect(
+       yield* browser.use("Retry still blocks new connections", (page) =>
+-        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++        page.getByRole("button", { name: "Connect new account", exact: true }).count(),
+       ),
+-    ).toBe(false);
++    ).toBe(0);
+     yield* retry.release;
+     yield* browser.use("Only the successful host response enables connection", (page) =>
+       page
+@@ -82,3 +83,60 @@ export const providerMethodsUi = (app: string) =>
+       `/org/${actors.organization.slug}/connect`,
+     );
+   });
++
++/**
++ * A registered pool selects saved accounts and sends connecting to the provider app, whose Accounts
++ * tab shows where its accounts are used and the way back to the pool. Expects the pool to have
++ * nothing of this provider linked yet and exactly one provider app installed.
++ */
++export const poolSelectionUi = (input: {
++  readonly pool: string;
++  readonly poolName: string;
++  readonly providerName: string;
++}) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors;
++    const browser = yield* Browser;
++    const apps = `/org/${actors.organization.slug}/apps`;
++    yield* browser.login(actors.owner);
++    yield* openThroughBrowser("Open the pool's accounts", `${apps}/${input.pool}?view=accounts`);
++    const destination = `Connect in the ${input.providerName} app`;
++    yield* browser.use("The pool points to the provider app", (page) =>
++      page
++        .getByRole("region", { name: input.providerName, exact: true })
++        .getByRole("link", { name: destination })
++        .waitFor({ state: "visible" }),
++    );
++    expect(
++      yield* browser.use("The pool offers no way to connect an account itself", (page) =>
++        page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++      ),
++    ).toBe(0);
++    yield* browser.checkpoint("Pool selects accounts and links to the provider app");
++    yield* browser.use("Go to the provider app", (page) =>
++      page.getByRole("link", { name: destination }).click(),
++    );
++    yield* browser.use("The provider app connects accounts", (page) =>
++      page
++        .getByRole("button", { name: "Connect new account", exact: true })
++        .waitFor({ state: "visible" }),
++    );
++    yield* browser.use("The provider app shows where its accounts are used", (page) =>
++      page
++        .getByRole("heading", { name: `Where your ${input.providerName} accounts are used` })
++        .waitFor({ state: "visible" }),
++    );
++    yield* browser.checkpoint("Provider app connects, lists account usage and offers the way back");
++    yield* browser.use("Return to the pool", (page) =>
++      page.getByRole("link", { name: `Back to ${input.poolName} to pick accounts` }).click(),
++    );
++    yield* browser.use("The pool's accounts are open again", (page) =>
++      page
++        .getByRole("region", { name: input.providerName, exact: true })
++        .waitFor({ state: "visible" }),
++    );
++    yield* openInApp(
++      "Leave the pool before the account lifecycle continues",
++      `/org/${actors.organization.slug}/connect`,
++    );
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 6e703cb..129a404 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3569,6 +3569,18 @@ export const scenarios = plan({
+       local: na("Uses hosted organization account policies."),
+     },
+   },
++  poolSelectOnlyUi: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-select-only-ui.spec.ts",
++    title:
++      "Pools pick accounts saved on provider apps and send every connection to the provider app",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned loopback catalog for the provider apps."),
++      local: na("Uses hosted organization account policies."),
++    },
++  },
+   serviceInstallIdentity: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-select-only-ui.spec.ts
+@@ -0,0 +1,221 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { poolSelectionUi } from "../support/provider-apps-ui.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const poolName = "Pool picks provider accounts";
++
++layer(HostedLive, { excludeTestServices: true })("Pools select provider accounts", (it) => {
++  it.effect(scenarios.poolSelectOnlyUi.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          catalog = yield* providerAppsCatalog;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++        const canonical = catalog.sources
++          .get("openai")!
++          .files.find((file) => file.path === "providers.ts")!;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: poolName,
++          files: [
++            appsManifest,
++            canonical,
++            {
++              path: "index.ts",
++              content: `import { defineApp } from "apps";
++import { providers } from "./providers.ts";
++export default defineApp({ app: { accounts: { openai: providers.openai.many() } } }, {});`,
++            },
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const pool = (yield* body(Resource, deployed)).id;
++        apps.push(pool);
++        // Register it the way the host recognises a pool, so it reads as selection-only.
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++            params: [
++              JSON.stringify({ fixture: { app: pool, membership: "executor-links-v1" } }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("start");
++        const install = (name: string) =>
++          Effect.gen(function* () {
++            const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++              entry: "provider-openai",
++              name,
++              newInstance: true,
++            });
++            expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++            const app = (yield* body(Resource, installed)).id;
++            apps.push(app);
++            return app;
++          });
++        const openai = yield* install("OpenAI");
++
++        yield* poolSelectionUi({ pool, poolName, providerName: "OpenAI" });
++
++        // A cached policy being read again is not an answer: Connect waits for the settled read.
++        yield* openThroughBrowser(
++          "Open the OpenAI app's accounts",
++          `/org/${actors.organization.slug}/apps/${openai}?view=accounts`,
++        );
++        yield* browser.use("The settled policy offers Connect", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++        );
++        const refresh = yield* holdQuery(
++          [actors.organization.slug, actors.organization.id].map(
++            (organization) => `/api/organizations/${organization}/apps/${openai}/accounts/methods`,
++          ),
++          "continue",
++        );
++        yield* refreshVisiblePage;
++        yield* refresh.requested;
++        expect(
++          yield* browser.use("A policy being read again offers no Connect", (page) =>
++            page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* refresh.release;
++        yield* browser.use("Connect returns once the read settles", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++        );
++        yield* browser.checkpoint("Connect waits for a settled policy read");
++
++        // A key saved on the provider app is offered in the pool, and unticking it keeps it saved.
++        const created = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${openai}/accounts/app/openai`,
++          {
++            creation: crypto.randomUUID(),
++            method: "apiKey",
++            fields: { token: "synthetic-pool-select-key" },
++            label: "Work key",
++          },
++        );
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const key = (yield* body(Resource, created)).id;
++        accounts.push(key);
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PUT",
++            `${prefix}/apps/${openai}/accounts/app/openai/${key}`,
++          )).status,
++        ).toBe(200);
++        yield* openThroughBrowser(
++          "Open the pool's accounts with a saved key",
++          `/org/${actors.organization.slug}/apps/${pool}?view=accounts`,
++        );
++        yield* browser.use("Pick the saved key", (page) =>
++          page.getByRole("checkbox", { name: "Work key", checked: false }).click(),
++        );
++        yield* browser.use("The key is linked without a sign-in", (page) =>
++          page.getByRole("checkbox", { name: "Work key", checked: true }).waitFor(),
++        );
++        yield* browser.checkpoint("Pool picks a key saved on the provider app");
++        yield* browser.use("Untick the key", (page) =>
++          page.getByRole("checkbox", { name: "Work key", checked: true }).click(),
++        );
++        yield* browser.use("Unticking says the key stays saved", (page) =>
++          page.getByText(`Removed from ${poolName}`, { exact: true }).waitFor(),
++        );
++        // A retiring unlink would ask first; a saved key goes straight back to an unticked row.
++        yield* browser.use("Unticking a saved key asks for no deletion", (page) =>
++          page.getByRole("checkbox", { name: "Work key", checked: false }).waitFor(),
++        );
++        expect((yield* api.request(actors.owner, "GET", `${prefix}/accounts/${key}`)).status).toBe(
++          200,
++        );
++        yield* browser.checkpoint("Unticking keeps the saved key");
++
++        // Two provider apps for one lab are both offered; none is picked for the person.
++        yield* install("OpenAI (work)");
++        yield* openThroughBrowser(
++          "Open the pool with two OpenAI apps",
++          `/org/${actors.organization.slug}/apps/${pool}?view=accounts`,
++        );
++        yield* browser.use("The pool asks which OpenAI app", (page) =>
++          page.getByText("Connect in one of your OpenAI apps:", { exact: true }).waitFor(),
++        );
++        for (const name of ["OpenAI", "OpenAI (work)"])
++          expect(
++            yield* browser.use(`${name} is offered`, (page) =>
++              page.getByRole("link", { name, exact: true }).count(),
++            ),
++          ).toBe(1);
++        yield* browser.checkpoint("Pool offers every OpenAI app");
++
++        // With no provider app left, the pool points to the catalog to add one.
++        for (const app of apps.splice(1))
++          expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++            200,
++          );
++        yield* openThroughBrowser(
++          "Open the pool with no OpenAI app",
++          `/org/${actors.organization.slug}/apps/${pool}?view=accounts`,
++        );
++        yield* browser.use("The pool offers to add the OpenAI app", (page) =>
++          page.getByRole("link", { name: "Add the OpenAI app to connect accounts" }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Still no way to connect inside the pool", (page) =>
++            page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("Pool without a provider app links to the catalog");
++        yield* browser.use("Go to the catalog for the OpenAI app", (page) =>
++          page.getByRole("link", { name: "Add the OpenAI app to connect accounts" }).click(),
++        );
++        yield* browser.use("The catalog opens on the OpenAI entry", (page) =>
++          page.getByRole("button", { name: "Show all apps", exact: true }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Only the OpenAI entry is listed", (page) =>
++            Promise.all([
++              page.getByText("OpenAI", { exact: true }).count(),
++              page.getByText("Anthropic", { exact: true }).count(),
++            ]),
++          ),
++        ).toEqual([1, 0]);
++        yield* browser.checkpoint("Catalog opens on the provider app the pool named");
++        yield* openInApp(
++          "Leave the pool before cleanup",
++          `/org/${actors.organization.slug}/connect`,
++        );
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/contracts/app-accounts.ts b/packages/ui/src/contracts/app-accounts.ts
+index a6abe76..89fb7fa 100644
+--- a/packages/ui/src/contracts/app-accounts.ts
++++ b/packages/ui/src/contracts/app-accounts.ts
+@@ -28,6 +28,8 @@ export interface RequirementLink<A> {
+   readonly linkedBy?: { readonly id: string; readonly name: string | null } | undefined;
+   /** Whether the caller may unlink it: they linked it, or they can edit the app. */
+   readonly canRemove?: boolean | undefined;
++  /** From hosts that report it; without it an interactive method counts as the app's own. */
++  readonly credentialScope?: CredentialScope | undefined;
+ }
+ 
+ /** One account a requirement lists: linked to it, or one the caller could link. */
+@@ -36,8 +38,22 @@ export interface RequirementChoice<A> {
+   readonly linked: boolean;
+   /** The caller's own default host credential, offered without its label or details. */
+   readonly automatic?: true | undefined;
++  readonly credentialScope?: CredentialScope | undefined;
+ }
+ 
++/**
++ * Whether unlinking this account retires it. The host's provenance decides; a host without it
++ * treats every interactive method as the app's own sign-in, as before.
++ */
++export const retiresOnUnlink = (
++  requirement: AccountRequirement,
++  method: string,
++  scope: CredentialScope | undefined,
++) =>
++  scope === undefined
++    ? requirement.definition.auth[method]?.type === "interactive"
++    : scope === "app";
++
+ /**
+  * One requirement with its linked accounts, oldest first, and the ones the app runs with: the one
+  * of a plain requirement, or every one of a many() requirement. A plain requirement with none is
+@@ -113,6 +129,51 @@ export interface RequirementMethods {
+   readonly native: (requirement: string) => string | undefined;
+ }
+ 
++/**
++ * Where a person connects accounts for a requirement that only selects them: the provider apps
++ * they can open, the catalog entry that installs one, or the host's reason there is none.
++ */
++export type ProviderAccountDestination =
++  | {
++      readonly kind: "apps";
++      readonly apps: readonly {
++        readonly app: AppId;
++        readonly name: string;
++        readonly requirement: string;
++      }[];
++    }
++  | { readonly kind: "catalog"; readonly entry: string }
++  | { readonly kind: "unavailable"; readonly reason: string };
++
++/**
++ * The host's word on one requirement: whether the caller may connect or reconnect accounts here,
++ * whether it accepts saved-account selection, and where connecting happens otherwise.
++ */
++export interface RequirementConnection {
++  readonly canConnect: boolean;
++  readonly canSelect: boolean;
++  readonly destination: ProviderAccountDestination;
++  /** Methods whose exported login file the host can import here; empty everywhere else. */
++  readonly importMethods: readonly string[];
++}
++
++/**
++ * The host's connection policy for an app's requirements. `pending` while the read loads or after
++ * it failed, which offers no connection control. A host that states no policy passes none.
++ */
++export type RequirementConnections =
++  | { readonly state: "pending" }
++  | {
++      readonly state: "ready";
++      readonly of: (requirement: string) => RequirementConnection | undefined;
++    };
++
++/**
++ * Whether a credential is the app's own sign-in (`app`), which unlinking retires, or a saved
++ * account any app can reuse (`saved`). The host reads it from the persisted binding.
++ */
++export type CredentialScope = "saved" | "app";
++
+ /** A requirement's methods people can pick, OAuth first, without the host's own credentials. */
+ export const requirementMethods = (requirement: AccountRequirement) =>
+   Object.entries(requirement.definition.auth)
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index a2c5898..1eea39b 100644
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -191,6 +191,17 @@ export interface DashboardBindings {
+   readonly catalogIcons: Atom.Atom<CatalogIcons>;
+   readonly AppLink: ComponentType<AppLinkProps>;
+   readonly AccountLink: ComponentType<AccountLinkProps>;
++  /** Opens where the catalog entry installs. Hosts without one name the app in words instead. */
++  readonly CatalogLink?: ComponentType<CatalogLinkProps> | undefined;
++  /** The organization or workspace these links route within, so tab hand-offs never cross one. */
++  readonly workspace?: string | undefined;
++}
++
++/** A catalog entry by its id, such as a provider app a pool points people to. */
++export interface CatalogLinkProps {
++  readonly entry: string;
++  readonly className?: string;
++  readonly children: ReactNode;
+ }
+ 
+ /** Token expiry needs user action only when the host cannot refresh it. */
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 5a22555..51e8e92 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -9,7 +9,10 @@ import { RadioGroup } from "radix-ui";
+ import type { Account, AccountScope, App, AccountId, AccountRequirement } from "@executor-js/sdk";
+ import {
+   requirementMethods,
++  retiresOnUnlink,
+   type RequirementChoice,
++  type RequirementConnection,
++  type RequirementConnections,
+   type RequirementLink,
+   type RequirementMethods,
+ } from "../../contracts/app-accounts.ts";
+@@ -62,6 +65,8 @@ import {
+ import { cn } from "../lib/utils.ts";
+ import { methodLabels } from "./method-labels.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { useToast } from "../components/toast.tsx";
++import { ProviderDestination } from "./provider-accounts.tsx";
+ 
+ const provisionedOnly = (requirement: AccountRequirement) =>
+   Object.keys(requirement.definition.auth).length > 0 &&
+@@ -415,6 +420,40 @@ const noMethodOpen = (
+   return states.length > 0 && states.every((state) => state.reason !== undefined);
+ };
+ 
++/**
++ * The host's policy for one requirement. Without a stated policy connecting stays as before; while
++ * it loads, after it failed, or for a requirement it left out, nothing offers a connection.
++ */
++const connectionOf = (
++  connections: RequirementConnections | undefined,
++  slot: string,
++): RequirementConnection | "pending" | undefined =>
++  connections === undefined
++    ? undefined
++    : connections.state === "pending"
++      ? "pending"
++      : (connections.of(slot) ?? "pending");
++
++/** Accounts are connected elsewhere, such as a pool's provider apps; this requirement selects. */
++const selectionOnly = (
++  connection: RequirementConnection | "pending" | undefined,
++): connection is RequirementConnection => typeof connection === "object" && !connection.canConnect;
++
++/**
++ * Kept links of an earlier sign-in: they keep serving, but nothing new joins them. Only a caller
++ * who may change this requirement's links can tell; for anyone else the flags just mean read-only.
++ */
++const retained = <E,>(
++  connection: RequirementConnection | "pending" | undefined,
++  data: ScopeAccounts<E>,
++  requirement: AccountRequirement,
++) =>
++  typeof connection === "object" &&
++  !connection.canConnect &&
++  !connection.canSelect &&
++  !provisionedOnly(requirement) &&
++  editingFor(data, requirement) !== undefined;
++
+ /**
+  * Who may change one requirement's links: an editor's `edit` covers the scope, `contribute` only
+  * an app collection that opts in to member contributions.
+@@ -457,6 +496,13 @@ export interface LinkEditing<E> {
+   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   /** Connect a new account for the requirement; saving it links it. */
+   readonly connect: (slot: string, requirement: AccountRequirement) => void;
++  /**
++   * Import an exported login file as a new account for the requirement, for the methods the host
++   * lists as importable here. Hosts without an importer leave it out.
++   */
++  readonly importLoginFile?:
++    | ((slot: string, requirement: AccountRequirement, methods: readonly string[]) => void)
++    | undefined;
+   /** A connection is open or saving, so the other changes wait for it. */
+   readonly connecting?: boolean | undefined;
+   readonly onUnlinked?: ((account: AccountId) => void) | undefined;
+@@ -512,6 +558,7 @@ export function AppAccounts<E>({
+   yourAccounts,
+   accounts,
+   methods,
++  connections,
+   Failure,
+ }: {
+   readonly app: App;
+@@ -524,6 +571,11 @@ export function AppAccounts<E>({
+    * method is offered, and the host still refuses one it can't run.
+    */
+   readonly methods?: RequirementMethods | undefined;
++  /**
++   * The host's word on where each requirement's accounts are connected. Without it every
++   * requirement connects here; a requirement that only selects links to its provider apps.
++   */
++  readonly connections?: RequirementConnections | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   useRevalidateChecks(
+@@ -573,6 +625,7 @@ export function AppAccounts<E>({
+           data={appAccounts}
+           accounts={accounts}
+           methods={methods}
++          connections={connections}
+           showProvisionedProblems={repairs.app}
+           Failure={Failure}
+         />
+@@ -587,6 +640,7 @@ export function AppAccounts<E>({
+           data={yourAccounts}
+           accounts={accounts}
+           methods={methods}
++          connections={connections}
+           showProvisionedProblems={repairs.user}
+           Failure={Failure}
+         />
+@@ -602,6 +656,7 @@ interface ScopeProps<E> {
+   readonly data: ScopeAccounts<E>;
+   readonly accounts: readonly AccountSummary[];
+   readonly methods?: RequirementMethods | undefined;
++  readonly connections?: RequirementConnections | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }
+ 
+@@ -615,16 +670,22 @@ function LinkScope<E>({
+   readonly description: string;
+   readonly requirements: readonly RequirementEntry[];
+ }) {
+-  const { data, methods, accounts } = props;
++  const { data, methods, accounts, connections } = props;
++  const linkedTo = (slot: string) => data.links.some((link) => link.requirement === slot);
++  // A retained requirement shows only while it still has links; nothing new can join it.
++  const shown = requirements.filter(
++    ([slot, requirement]) =>
++      !retained(connectionOf(connections, slot), data, requirement) || linkedTo(slot),
++  );
+   // A requirement the host can connect no method of, with nothing linked and no saved account of
+   // its provider to show, moves to one list at the end instead of an empty block.
+-  const closed = requirements.filter(
++  const closed = shown.filter(
+     ([slot, requirement]) =>
+       noMethodOpen(methods, slot, requirement) &&
+-      !data.links.some((link) => link.requirement === slot) &&
++      !linkedTo(slot) &&
+       !accounts.some((account) => account.provider === requirement.provider),
+   );
+-  const open = requirements.filter((entry) => !closed.includes(entry));
++  const open = shown.filter((entry) => !closed.includes(entry));
+   const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+@@ -732,6 +793,7 @@ function RequirementView<E>({
+   const managed = provisionedOnly(requirement);
+   const label = requirement.definition.name.trim() || undefined;
+   const native = props.methods?.native(slot);
++  const kept = retained(connectionOf(props.connections, slot), data, requirement);
+   const states = methodStates(props.methods, slot, requirement);
+   const open = states.filter((state) => state.reason === undefined);
+   const blocked = states.length - open.length;
+@@ -757,6 +819,11 @@ function RequirementView<E>({
+           {label !== undefined && (
+             <p className="flex min-w-0 items-center gap-2 font-medium">
+               <span className="truncate">{label}</span>
++              {kept && (
++                <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
++                  Retained
++                </span>
++              )}
+               {native !== undefined && (
+                 <span
+                   className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
+@@ -768,9 +835,13 @@ function RequirementView<E>({
+             </p>
+           )}
+           <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
+-            {managed ? "Set up automatically" : requirementNote(requirement, linked.length)}
++            {managed
++              ? "Set up automatically"
++              : kept
++                ? "Kept from earlier sign-ins in this app. They keep working; new accounts are connected in provider apps."
++                : requirementNote(requirement, linked.length)}
+           </p>
+-          {!managed && methodsLine !== undefined && (
++          {!managed && !kept && methodsLine !== undefined && (
+             <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">
+               {methodsLine}
+             </p>
+@@ -1026,6 +1097,7 @@ function EditableChoices<E>({
+   edit,
+   accounts,
+   methods,
++  connections,
+   Failure,
+ }: ScopeProps<E> & {
+   readonly edit: LinkEditing<E>;
+@@ -1033,8 +1105,14 @@ function EditableChoices<E>({
+   readonly requirement: AccountRequirement;
+   readonly linked: readonly AccountSummary[];
+ }) {
++  const brand = useProductBrand();
+   const { result, data: loaded, refresh } = useQuery(edit.choices(slot));
+   const plain = requirement.cardinality === "one";
++  const connection = connectionOf(connections, slot);
++  // New selections wait for the host's policy and need its yes; what is linked always shows.
++  const selectable = connection === undefined || (connection !== "pending" && connection.canSelect);
++  const scopeOf = (choice: RequirementChoice<AccountSummary>) =>
++    linkOf(data, slot, choice.account.id)?.credentialScope ?? choice.credentialScope;
+   // A choice shows the page's own view of the account: its link's details, with sign-in state and
+   // checks, or the caller's account list, which renames and reconnects keep current.
+   const summarize = (account: Account): AccountSummary =>
+@@ -1058,13 +1136,21 @@ function EditableChoices<E>({
+                 },
+               ]
+             : choice.linked || accounts.some((item) => item.id === choice.account.id)
+-              ? [{ account: summarize(choice.account), linked: choice.linked }]
++              ? [
++                  {
++                    account: summarize(choice.account),
++                    linked: choice.linked,
++                    credentialScope: choice.credentialScope,
++                  },
++                ]
+               : [],
+         ),
+     }),
+   ).filter(
+     (choice) =>
+-      choice.linked || choice.automatic === true || !provisionedMethod(requirement, choice.account),
++      choice.linked ||
++      (selectable &&
++        (choice.automatic === true || !provisionedMethod(requirement, choice.account))),
+   );
+   // The host's read decides contribution; until it arrives no control acts.
+   const allowed = Option.isSome(loaded) && loaded.value.canContribute !== false;
+@@ -1075,8 +1161,7 @@ function EditableChoices<E>({
+   const bound = plain
+     ? choices.find(
+         (choice) =>
+-          choice.linked &&
+-          requirement.definition.auth[choice.account.method]?.type === "interactive",
++          choice.linked && retiresOnUnlink(requirement, choice.account.method, scopeOf(choice)),
+       )
+     : undefined;
+   // The only unlinked host choice left is the caller's own default credential: its row is the way
+@@ -1108,6 +1193,9 @@ function EditableChoices<E>({
+       edit={edit}
+       data={data}
+       blockedReason={methodBlocked(methods, slot, choice.account.method)}
++      credentialScope={scopeOf(choice)}
++      saved={accounts.some((item) => item.id === choice.account.id)}
++      selectionOnly={selectionOnly(connection)}
+       Failure={Failure}
+     />
+   ));
+@@ -1154,6 +1242,19 @@ function EditableChoices<E>({
+         ))}
+       {provisionedOnly(requirement) ? (
+         <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
++      ) : connection === "pending" ? null : selectionOnly(connection) ? (
++        // Accounts for this requirement are connected and repaired in their provider's app.
++        <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-elsewhere>
++          {Option.isSome(loaded) &&
++            shown.length === 0 &&
++            `No saved ${requirement.definition.name} accounts yet. `}
++          <ProviderDestination
++            destination={connection.destination}
++            provider={requirement.definition.name}
++            verb="Connect"
++            origin={{ app: app.id, name: appDisplayName(app, brand) }}
++          />
++        </p>
+       ) : closedReasons.length > 0 ? (
+         <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-unavailable>
+           {closedReasons.join(" ")}
+@@ -1172,6 +1273,21 @@ function EditableChoices<E>({
+           Connect new account
+         </Button>
+       )}
++      {typeof connection === "object" &&
++        connection.canConnect &&
++        connection.importMethods.length > 0 &&
++        edit.importLoginFile !== undefined && (
++          <div className="px-2 py-1.5">
++            <Button
++              variant="ghost"
++              size="sm"
++              disabled={edit.connecting === true || !allowed}
++              onClick={() => edit.importLoginFile?.(slot, requirement, connection.importMethods)}
++            >
++              Import login file
++            </Button>
++          </div>
++        )}
+       {replacingWithNew && bound !== undefined && (
+         <RemoveAppBoundAccount
+           name={accountName(bound.account)}
+@@ -1202,7 +1318,16 @@ function ChoiceRow<E>({
+   Failure,
+   replaces,
+   blockedReason,
++  credentialScope,
++  selectionOnly: selecting,
++  saved,
+ }: {
++  /** The account is one of the caller's own, which stays listed after unlinking. */
++  readonly saved: boolean;
++  /** The host's provenance for this account here, when it reports one. */
++  readonly credentialScope?: RequirementChoice<AccountSummary>["credentialScope"];
++  /** Accounts are connected elsewhere, so unlinking one only stops this app using it. */
++  readonly selectionOnly: boolean;
+   /** The app-bound account that selecting this one would retire. */
+   readonly replaces?: string | undefined;
+   /**
+@@ -1240,14 +1365,24 @@ function ChoiceRow<E>({
+   const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
+   const unusable = !linked && blockedReason !== undefined;
+   // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
+-  const appBound = requirement.definition.auth[account.method]?.type === "interactive";
++  const appBound = retiresOnUnlink(requirement, account.method, credentialScope);
+   const [confirming, setConfirming] = useState(false);
++  const toast = useToast();
++  const brand = useProductBrand();
+   const change = async (next: boolean) => {
+     if (hostProvisioned) return;
+     setError(undefined);
+     const exit = await (next ? runLink() : runUnlink());
+     if (Exit.isFailure(exit)) setError(exit.cause);
+-    else if (!next) edit.onUnlinked?.(account.id);
++    else if (!next) {
++      // The row stays listed unticked, so ticking it again is the undo.
++      if (selecting && saved && !appBound)
++        toast({
++          title: `Removed from ${appDisplayName(app, brand)}`,
++          description: `${name} stays saved in your accounts. Tick it to add it back.`,
++        });
++      edit.onUnlinked?.(account.id);
++    }
+     return exit;
+   };
+   return (
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 972f42b..1e4b219 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -83,7 +83,10 @@ export function CatalogPage<E, IE>({
+   inventory,
+   open,
+   onInstalled,
++  entry: initialEntry,
+ }: QueryProps<readonly CatalogEntry[], E> & {
++  /** Opens on this one catalog entry, such as the provider app a pool sent the person to add. */
++  readonly entry?: string | undefined;
+   /** The install command for one catalog entry; each row has its own. */
+   readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
+   readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
+@@ -159,9 +162,11 @@ export function CatalogPage<E, IE>({
+   const renaming = conflict !== undefined && adding.has(conflict.entry.id);
+   const retry = useAtomRefresh(query);
+   const [search, setSearch] = useState("");
++  const [only, setOnly] = useState(initialEntry);
++  const focused = only === undefined ? undefined : all.find((entry) => entry.id === only);
+   const term = search.trim().toLowerCase();
+   // Name matches come first; the rest keep the feed's order.
+-  const entries = all
++  const matches = all
+     .filter((entry) =>
+       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
+         .toLowerCase()
+@@ -171,6 +176,7 @@ export function CatalogPage<E, IE>({
+       (a, b) =>
+         Number(!a.name.toLowerCase().includes(term)) - Number(!b.name.toLowerCase().includes(term)),
+     );
++  const entries = focused === undefined ? matches : [focused];
+   const visible = useIncrementalList(entries.length, term, 50);
+   return (
+     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
+@@ -185,10 +191,23 @@ export function CatalogPage<E, IE>({
+         {action}
+       </div>
+       <div className="list-toolbar flex flex-wrap items-center gap-[10px_16px] mb-4">
+-        <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
++        <SearchInput
++          autoFocus
++          value={search}
++          onChange={(value) => {
++            setOnly(undefined);
++            setSearch(value);
++          }}
++          placeholder="Search apps…"
++        />
+         <span className="muted text-muted-foreground">
+           {entries.length.toLocaleString("en-US")} apps
+         </span>
++        {focused !== undefined && (
++          <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
++            Show all apps
++          </Button>
++        )}
+       </div>
+       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
+       {failure && conflict === undefined && <InstallFailure cause={failure} />}
+diff --git a/packages/ui/src/implementation/dashboard/provider-accounts.tsx b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
+new file mode 100644
+index 0000000..3009a60
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
+@@ -0,0 +1,226 @@
++import { useEffect, useId, useState } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowLeft02Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
++import { Option, Schema } from "effect";
++import { AppId, type AccountRequirement, type App } from "@executor-js/sdk";
++import {
++  requirementMethods,
++  type ProviderAccountDestination,
++} from "../../contracts/app-accounts.ts";
++import type { Inventory } from "../../contracts/dashboard.ts";
++import {
++  accountMethodKindLabel,
++  accountTitle,
++  bindingApps,
++} from "../../contracts/account-identities.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { useDashboard } from "./context.tsx";
++import { methodLabels } from "./method-labels.ts";
++
++const linkClass =
++  "inline-flex items-center gap-1 font-medium text-foreground underline-offset-4 hover:underline";
++
++/**
++ * The app a person left to connect an account, so the provider app can send them back once. Kept
++ * per tab; storage that throws or is empty just drops the way back.
++ */
++const originKey = "executor:provider-accounts:origin";
++const Origin = Schema.Struct({ app: AppId, name: Schema.String });
++type Origin = typeof Origin.Type;
++// Stored with the workspace it was left from; app ids mean nothing in another one.
++const Stored = Schema.Struct({ ...Origin.fields, workspace: Schema.NullOr(Schema.String) });
++const decodeOrigin = Schema.decodeUnknownOption(Schema.fromJsonString(Stored));
++const rememberOrigin = (origin: Origin, workspace: string | undefined) => {
++  try {
++    sessionStorage.setItem(originKey, JSON.stringify({ ...origin, workspace: workspace ?? null }));
++  } catch {
++    // Without storage the provider app shows no way back; the browser's own Back still works.
++  }
++};
++const readOrigin = (workspace: string | undefined): Origin | undefined => {
++  try {
++    const stored = Option.getOrUndefined(decodeOrigin(sessionStorage.getItem(originKey)));
++    return stored !== undefined && stored.workspace === (workspace ?? null)
++      ? { app: stored.app, name: stored.name }
++      : undefined;
++  } catch {
++    return undefined;
++  }
++};
++const forgetOrigin = () => {
++  try {
++    sessionStorage.removeItem(originKey);
++  } catch {
++    // Nothing was stored, so there is nothing to forget.
++  }
++};
++
++/**
++ * The way back to the app that sent the person here to connect an account. It shows on the first
++ * visit after that hand-off, in the same workspace, so a later visit never offers it.
++ */
++export function ProviderReturnLink({ app }: { readonly app: App }) {
++  const { AppLink, workspace } = useDashboard();
++  const [origin] = useState(() => {
++    const value = readOrigin(workspace);
++    return value !== undefined && value.app !== app.id ? value : undefined;
++  });
++  useEffect(forgetOrigin, []);
++  if (origin === undefined) return null;
++  return (
++    <p className="text-[13px] text-muted-foreground">
++      <AppLink app={origin.app} view="accounts" className={linkClass}>
++        <HugeiconsIcon icon={ArrowLeft02Icon} size={12} strokeWidth={2} aria-hidden />
++        Back to {origin.name} to pick accounts
++      </AppLink>
++    </p>
++  );
++}
++
++/**
++ * Where to connect or repair accounts for a requirement that only selects them. One provider app
++ * opens directly; several are each offered, never one picked for the person.
++ */
++export function ProviderDestination({
++  destination,
++  provider,
++  verb,
++  origin,
++}: {
++  readonly destination: ProviderAccountDestination;
++  /** The requirement's provider, such as OpenAI, for copy that names no app. */
++  readonly provider: string;
++  readonly verb: "Connect" | "Reconnect";
++  /** The app the person is in, remembered so the provider app can send them back. */
++  readonly origin?: Origin | undefined;
++}) {
++  const { AppLink, CatalogLink, workspace } = useDashboard();
++  const remember = () => origin && rememberOrigin(origin, workspace);
++  const arrow = <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={2} aria-hidden />;
++  if (destination.kind === "unavailable") return <>{destination.reason}</>;
++  if (destination.kind === "catalog")
++    return CatalogLink === undefined ? (
++      <>
++        Add the {provider} app, then {verb.toLowerCase()} the account there.
++      </>
++    ) : (
++      <span onClickCapture={remember}>
++        <CatalogLink entry={destination.entry} className={linkClass}>
++          Add the {provider} app to {verb.toLowerCase()} {verb === "Connect" ? "accounts" : "it"}
++          {arrow}
++        </CatalogLink>
++      </span>
++    );
++  const [only, ...more] = destination.apps;
++  if (only === undefined) return <>No {provider} app is available to you.</>;
++  const link = (entry: typeof only, label: string) => (
++    <span key={entry.app} onClickCapture={remember}>
++      <AppLink app={entry.app} view="accounts" className={linkClass}>
++        {label}
++        {arrow}
++      </AppLink>
++    </span>
++  );
++  if (more.length === 0) return link(only, `${verb} in the ${only.name} app`);
++  return (
++    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
++      <span>
++        {verb} in one of your {provider} apps:
++      </span>
++      {destination.apps.map((entry) => link(entry, entry.name))}
++    </span>
++  );
++}
++
++/**
++ * A provider app's own view of its accounts: each of the caller's accounts for its provider, with
++ * its kind and the other apps and pools that use it. Reads the visible inventory only.
++ */
++export function ProviderAccountUsage({
++  app,
++  requirement,
++  inventory,
++}: {
++  readonly app: App;
++  readonly requirement: AccountRequirement;
++  readonly inventory: Inventory;
++}) {
++  const brand = useProductBrand();
++  const { AppLink } = useDashboard();
++  const accounts = inventory.accounts.filter(
++    (account) => account.provider === requirement.provider,
++  );
++  const name = requirement.definition.name;
++  const labels = methodLabels(name, requirementMethods(requirement));
++  const heading = useId();
++  return (
++    <section aria-labelledby={heading} className="space-y-3">
++      <div>
++        <h2 id={heading} className="text-sm font-medium">
++          Where your {name} accounts are used
++        </h2>
++        <p className="text-xs text-muted-foreground">
++          The same accounts every app sees. Pools pick them in their own Accounts tab.
++        </p>
++      </div>
++      <div className="overflow-hidden rounded-lg border">
++        <table className="w-full table-fixed text-left text-[13px]">
++          <thead className="text-xs text-muted-foreground">
++            <tr className="border-b">
++              <th scope="col" className="px-3.5 py-2 font-normal">
++                Account
++              </th>
++              <th scope="col" className="px-3.5 py-2 font-normal">
++                Used by
++              </th>
++            </tr>
++          </thead>
++          <tbody className="divide-y divide-border/50">
++            {accounts.length === 0 ? (
++              <tr>
++                <td colSpan={2} className="px-3.5 py-2.5 text-muted-foreground">
++                  No accounts yet.
++                </td>
++              </tr>
++            ) : (
++              accounts.map((account) => {
++                const used = bindingApps(inventory, [account]).filter((item) => item.id !== app.id);
++                return (
++                  <tr key={account.id} className="align-top">
++                    <td className="min-w-0 px-3.5 py-2.5">
++                      <span className="block truncate font-medium">{accountTitle(account)}</span>
++                      <span className="block truncate text-xs text-muted-foreground">
++                        {labels.get(account.method) ??
++                          accountMethodKindLabel(requirement.definition, account.method) ??
++                          account.method}
++                      </span>
++                    </td>
++                    <td className="min-w-0 px-3.5 py-2.5">
++                      {used.length === 0 ? (
++                        <span className="text-muted-foreground">No other app</span>
++                      ) : (
++                        <span className="flex flex-wrap gap-x-3 gap-y-1">
++                          {used.map((item) => (
++                            <AppLink
++                              key={item.id}
++                              app={item.id}
++                              view="accounts"
++                              className={linkClass}
++                            >
++                              {appDisplayName(item, brand)}
++                            </AppLink>
++                          ))}
++                        </span>
++                      )}
++                    </td>
++                  </tr>
++                );
++              })
++            )}
++          </tbody>
++        </table>
++      </div>
++    </section>
++  );
++}
