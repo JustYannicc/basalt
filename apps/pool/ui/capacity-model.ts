@@ -203,10 +203,15 @@ export function lineFacts(line: CapacityLine, to: number): LineFacts {
   };
 }
 
-/** Which window opens first: one that is out now, then the earlier projected run-out. */
+/**
+ * Which window opens first: one that is out now, then the earlier projected run-out, then the one
+ * with less left at its latest reading. `withheld` marks an incomplete read: its forecasts are not
+ * used, and the note never blames a forecast for that.
+ */
 export function pressing(
   lab: CapacityLab,
   asOf = lab.readAt,
+  { withheld = false }: { readonly withheld?: boolean } = {},
 ): { readonly key: string; readonly text: string | null } {
   const weeklyLines = lab.lines.filter((line) => line.windowSeconds === 604_800);
   const fiveLines = lab.lines.filter((line) => line.windowSeconds === 18_000);
@@ -232,7 +237,7 @@ export function pressing(
     );
   };
   const forecastReady = (line: CapacityLine) =>
-    line.forecast?.status === "estimated" && line.forecast.points.length > 0;
+    !withheld && line.forecast?.status === "estimated" && line.forecast.points.length > 0;
   const projectedRunOut = (line: CapacityLine) =>
     forecastReady(line) ? line.forecast!.runsOutAt : null;
   const readyLines = lab.lines.filter(forecastReady);
@@ -255,8 +260,9 @@ export function pressing(
       exhaustedNow(line) ||
       (projectedRunOut(line) !== null && line.forecast!.runsOutAt! <= line.forecast!.points[0]!.at);
     const runOut = projectedRunOut(line);
-    const missing =
-      !line.forecast || line.forecast.status === "learning"
+    const missing = withheld
+      ? "forecast withheld"
+      : !line.forecast || line.forecast.status === "learning"
         ? "forecast learning"
         : "forecast unavailable";
     return nowOut
@@ -291,6 +297,7 @@ export function pressing(
       text: `${chosen.label} is more pressing: ${percent(Math.min(weeklyLeft, fiveLeft))} ${when} vs ${percent(Math.max(weeklyLeft, fiveLeft))}`,
     };
   }
+  if (withheld) return { key: weekly.key, text: null };
   const bothForecastsReady = weeklyLines.every(forecastReady) && fiveLines.every(forecastReady);
   const stillLearning = [weekly, five].some(
     (line) => !line.forecast || line.forecast.status === "learning",
@@ -518,7 +525,11 @@ export const amount = (value: number) => (Math.abs(value) >= 10 ? whole : units)
 
 /** "6h", "16.8h", "1.5d": gaps end at a reading time, not on the hour, so hours arrive fractional. */
 export const duration = (hours: number) =>
-  hours >= 48 ? `${units.format(hours / 24)}d` : `${units.format(hours)}h`;
+  hours >= 48
+    ? `${units.format(hours / 24)}d`
+    : hours > 0 && hours < 0.05
+      ? "<0.1h"
+      : `${units.format(hours)}h`;
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

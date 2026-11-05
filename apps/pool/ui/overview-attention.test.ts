@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Account, PoolView } from "../contract.ts";
-import { accountProblems, accountsWithProblems, bankedResetCount } from "./overview-attention.ts";
+import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
 
 const account = (id: string, overrides: Partial<Account> = {}): Account => ({
   id,
@@ -44,12 +44,14 @@ test("attention keeps overlapping symptoms visible and only totals actual availa
   assert.deepEqual(accountProblems(view([account("healthy")])), []);
 });
 
-test("an account with several symptoms counts once toward accounts needing someone", () => {
+test("an account with several symptoms counts once; a stale or first reading alone needs nobody", () => {
   const pool = view([
     account("a", { credentialFailure: "unauthorized", readingFailed: true, freshness: "stale" }),
     account("b", { state: "disabled" }),
-    account("c"),
+    account("c", { freshness: "stale" }),
+    account("d", { freshness: "never" }),
+    account("e"),
   ]);
-  assert.equal(accountsWithProblems(pool), 2);
-  assert.equal(accountsWithProblems(view([account("d")])), 0);
+  assert.equal(accountsNeedingSomeone(pool), 2);
+  assert.equal(accountsNeedingSomeone(view([account("f")])), 0);
 });

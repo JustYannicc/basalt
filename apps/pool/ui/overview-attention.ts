@@ -51,13 +51,15 @@ export function accountProblems(view: PoolView): AccountProblem[] {
   ].filter((problem) => problem.count > 0);
 }
 
-/** Distinct accounts behind any problem above, so overlapping symptoms count each account once. */
-export const accountsWithProblems = (view: PoolView) =>
+/**
+ * Distinct accounts a person has to act on, each counted once. A stale or first reading alone
+ * isn't one: it stays a pool-level note until a check actually fails.
+ */
+export const accountsNeedingSomeone = (view: PoolView) =>
   view.accounts.filter(
     (account) =>
       account.credentialFailure !== undefined ||
       account.readingFailed ||
-      account.freshness !== "fresh" ||
       account.state !== "active",
   ).length;
 

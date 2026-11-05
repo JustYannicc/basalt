@@ -15,7 +15,7 @@ import { LabMark } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { moneyList, rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
-import { accountProblems, accountsWithProblems, bankedResetCount } from "./overview-attention.ts";
+import { accountProblems, accountsNeedingSomeone, bankedResetCount } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 
 // The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
@@ -199,6 +199,10 @@ function Answers({
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
   const learning = labs.find((entry) => entry.verdict.tone === "learn");
   const allLearning = labs.length > 0 && labs.every((entry) => entry.verdict.tone === "learn");
+  // "Every lab" means every lab the pool has accounts in, including ones with no readings yet.
+  const unread = [...new Set(view?.accounts.map((account) => account.provider))].filter(
+    (provider) => !labs.some((entry) => entry.lab.provider === provider),
+  );
   const enough: { tone: Tone; text: string } =
     view?.accounts.length === 0
       ? { tone: "learn", text: "No accounts yet" }
@@ -218,17 +222,19 @@ function Answers({
                         ? `${name(worst.lab.provider)} runs short`
                         : `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
                   }
-                : learning
-                  ? {
-                      tone: "learn",
-                      text:
-                        learning.verdict.short === "Unavailable"
-                          ? "Forecast unavailable"
-                          : allLearning
-                            ? "Too early to say"
-                            : "Learning the weekly pattern",
-                    }
-                  : { tone: "ok", text: "Yes, every lab" };
+                : unread.length
+                  ? { tone: "learn", text: `${name(unread[0]!)}: no readings yet` }
+                  : learning
+                    ? {
+                        tone: "learn",
+                        text:
+                          learning.verdict.short === "Unavailable"
+                            ? "Forecast unavailable"
+                            : allLearning
+                              ? "Too early to say"
+                              : "Learning the weekly pattern",
+                      }
+                    : { tone: "ok", text: "Yes, every lab" };
   const usage = data.usage?.ok ? data.usage.value : null;
   const read = data.people?.ok ? data.people.value : null;
   const people = read
@@ -250,7 +256,7 @@ function Answers({
         )
       : 0;
   const failedShare = sum && sum.requests ? (sum.failed / sum.requests) * 100 : null;
-  const needYou = view ? accountsWithProblems(view) : 0;
+  const needYou = view ? accountsNeedingSomeone(view) : 0;
   const billed =
     usage?.metrics.apiBilled.status === "available" && usage.metrics.apiBilled.amount !== null
       ? usage.metrics.apiBilled.amount
@@ -263,8 +269,8 @@ function Answers({
   const unpriced = usage
     ? usage.metrics.apiBilled.excluded.unpriced + usage.metrics.subscriptionValue.excluded.unpriced
     : 0;
-  // Until requests can be split into billed and subscription, the price recorded with each
-  // request is the one figure that exists; Settings shows the same total.
+  // Without a billed estimate, the price recorded with each request is the one figure that exists;
+  // Settings shows the same total. It is labelled as recorded because it includes flat-rate use.
   const recorded = billed === null && sum && sum.imported.length ? moneyList(sum.imported) : null;
   return (
     <nav
@@ -311,14 +317,14 @@ function Answers({
             : billed !== null
               ? `${usd(billed)} billed est.`
               : recorded
-                ? `${recorded} at API prices`
+                ? `${recorded} recorded API price`
                 : "Estimate unavailable"
         }
       >
         {sum && (
           <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
             {billed === null && recorded
-              ? "Recorded with each request. Not yet split into billed and subscription."
+              ? "Priced with each request, as in Settings; includes flat-rate requests. No billed estimate yet."
               : `Separate: ${subscription === null ? "subscription value unavailable" : `${usd(subscription)} subscription value at API prices`}${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
           </span>
         )}

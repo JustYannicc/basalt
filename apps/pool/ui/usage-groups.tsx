@@ -202,6 +202,12 @@ const cells = (
 ) => {
   const totals = row.totals;
   const moneyRows = rowMoney(row, slices);
+  const apiUnavailable =
+    personal?.metrics.apiBilled.status === "unavailable"
+      ? (personal.metrics.apiBilled.reason ?? null)
+      : overview?.metrics.apiBilled.status === "unavailable"
+        ? (overview.metrics.apiBilled.reason ?? null)
+        : null;
   return (
     <>
       <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">
@@ -225,18 +231,17 @@ const cells = (
         />
       </td>
       <td className="py-2.5 text-right tabular-nums max-[540px]:hidden">
-        <MoneyCell
-          list={moneyRows.apiBilled}
-          priced={moneyRows.apiCount}
-          excluded={moneyRows.apiExcluded}
-          title={
-            personal?.metrics.apiBilled.status === "unavailable"
-              ? personal.metrics.apiBilled.reason
-              : overview?.metrics.apiBilled.status === "unavailable"
-                ? overview.metrics.apiBilled.reason
-                : undefined
-          }
-        />
+        {apiUnavailable && totals.imported.length ? (
+          // Same fallback as the API cost figure, so the rows add up to it.
+          <span title={`Recorded API price. ${apiUnavailable}`}>{moneyList(totals.imported)}</span>
+        ) : (
+          <MoneyCell
+            list={moneyRows.apiBilled}
+            priced={moneyRows.apiCount}
+            excluded={moneyRows.apiExcluded}
+            title={apiUnavailable ?? undefined}
+          />
+        )}
       </td>
     </>
   );
@@ -333,7 +338,12 @@ export function WhoUses({
           No requests through this pool in the last {days} days.
         </p>
       ) : (
-        <div className="min-w-0 overflow-x-auto">
+        <div
+          className="min-w-0 overflow-x-auto"
+          role="region"
+          aria-label="Usage by group"
+          tabIndex={0}
+        >
           <table className="w-full border-collapse text-[13px]">
             <thead>
               <tr className="text-left text-xs whitespace-nowrap text-muted-foreground [&>th]:border-b [&>th]:border-border [&>th]:py-2 [&>th]:pr-2 [&>th]:font-medium">
@@ -523,7 +533,9 @@ export function Money({
       </div>
       <div className="grid grid-cols-2 rounded-lg border border-border max-[540px]:grid-cols-1">
         <Figure
-          label="API cost"
+          label={
+            api?.status !== "available" && recorded.length ? "API cost, recorded price" : "API cost"
+          }
           value={
             api?.status === "available"
               ? overviewAmount(api.amount)
@@ -534,7 +546,7 @@ export function Money({
           days={days}
           body={
             api?.status !== "available" && recorded.length
-              ? "At the API price recorded with each request, as in Settings. It isn't split into billed and subscription until this pool's accounts are mapped."
+              ? `${metricBody(api, "No billed estimate is available.")} Shown instead: the API price recorded with each request, the figure Settings shows. It includes flat-rate requests.`
               : metricBody(api, "Waiting for current USD provider prices.")
           }
         />

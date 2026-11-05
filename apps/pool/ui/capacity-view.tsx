@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
@@ -161,10 +161,7 @@ function Panel({
   onChoose: (key: string) => void;
 }) {
   // An incomplete read keeps its measured readings, so the window choice still uses them.
-  const press = pressing(
-    coherent ? lab : { ...lab, lines: lab.lines.map((entry) => ({ ...entry, forecast: null })) },
-    history.to,
-  );
+  const press = pressing(lab, history.to, { withheld: !coherent });
   const line =
     lab.lines.find((entry) => entry.key === (chosen ?? press.key)) ??
     lab.lines.find((entry) => entry.key === press.key) ??
@@ -292,10 +289,11 @@ function Panel({
             ))}
           </ul>
         )}
-        {coherent ? (
-          <ForecastCaption line={displayLine} onlyReporting={onlyReporting} />
-        ) : (
-          <IncompleteCaption />
+        {!coherent && <IncompleteCaption />}
+        {coherent && onlyReporting && (
+          <p className="col-start-2 col-end-[-1] m-0 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+            Only accounts reporting a five-hour window are in this chart.
+          </p>
         )}
       </div>
       <CapacityChart
@@ -309,7 +307,13 @@ function Panel({
       />
       <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
         <Legend color={color} facts={facts} line={displayLine} />
-        <Daily line={displayLine} from={history.from} to={history.to} />
+        {/* The verdict above says what matters; how the forecast got there stays one click down. */}
+        <Daily
+          line={displayLine}
+          from={history.from}
+          to={history.to}
+          forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
+        />
       </div>
     </article>
   );
@@ -324,7 +328,7 @@ function IncompleteCaption() {
   );
 }
 
-function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyReporting: boolean }) {
+function ForecastCaption({ line }: { line: CapacityLine }) {
   const forecast = line.forecast;
   const weekly = line.windowSeconds === 604_800;
   const ordinary = forecast?.ordinary;
@@ -404,7 +408,6 @@ function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyRepo
     forecast?.status === "estimated"
       ? `Banked resets remain unspent${forecast.bankedAvailable === null ? "" : ` (${forecast.bankedAvailable} available)`}.${weekly ? " Recorded use appears as a refill." : ""}`
       : null,
-    onlyReporting ? "Only accounts reporting a five-hour window are included." : null,
     forecast?.status === "estimated"
       ? `Based on ${forecast.history.completedWeeks} completed weeks, ${Math.round(forecast.history.coverage * 100)}% observed exposure.`
       : null,
@@ -419,7 +422,7 @@ function ForecastCaption({ line, onlyReporting }: { line: CapacityLine; onlyRepo
       : null,
   ].filter((value): value is string => value !== null);
   return (
-    <div className="col-start-2 col-end-[-1] mt-2.5 grid gap-1 text-[13px] text-muted-foreground text-pretty max-[540px]:col-span-full">
+    <div className="mt-2 grid gap-1 text-[13px] text-muted-foreground text-pretty">
       <span className="flex items-start gap-1.5">
         <StateIcon
           tone={
@@ -510,7 +513,17 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   );
 }
 
-function Daily({ line, from, to }: { line: CapacityLine; from: number; to: number }) {
+function Daily({
+  line,
+  from,
+  to,
+  forecast,
+}: {
+  line: CapacityLine;
+  from: number;
+  to: number;
+  forecast: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const end = Math.max(to, ...(line.forecast?.points.map((point) => point.at + 3_600_000) ?? []));
   const refills = line.refills.filter((event) => event.at >= from && event.at <= end);
@@ -534,8 +547,9 @@ function Daily({ line, from, to }: { line: CapacityLine; from: number; to: numbe
             strokeLinejoin="round"
           />
         </svg>
-        Measured and projected data
+        Forecast details and daily table
       </summary>
+      {open && forecast}
       {open && (
         <table className="mt-2 w-full border-collapse text-[13px]">
           <caption className="sr-only">

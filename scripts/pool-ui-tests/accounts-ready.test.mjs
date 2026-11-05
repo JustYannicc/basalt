@@ -568,7 +568,18 @@ test(
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {
-        viewResult = { ok: true, value: { ...empty, providers } };
+        // A current Codex account, so the held capacity reading becomes a real lab verdict.
+        const codexSeat = poolView(Date.now(), {
+          source: "live",
+          observedAgo: minute,
+          savedAgo: minute,
+          left: [
+            [0.5, 0.8],
+            [0.5, 0.8],
+            [0.5, 0.8],
+          ],
+        }).value.accounts[0];
+        viewResult = { ok: true, value: { ...empty, providers, accounts: [codexSeat] } };
         const total = {
           ...emptyUsage.value.total,
           requests: 1,
@@ -707,27 +718,17 @@ test(
             );
             assert.deepEqual(await accepted(), [], "Capacity alone does not report accounts ready");
             release();
-            await frame.getByText("Pick your first account", { exact: true }).waitFor();
+            await frame.getByText("1 subscription account across 1 lab", { exact: true }).waitFor();
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
             await frame
               .getByRole("radio", { name: "Models", exact: true, checked: true })
               .waitFor();
             await frame.getByText("Synthetic model", { exact: true }).waitFor();
             await frame.getByText("Codex", { exact: true }).first().waitFor();
-            // The pool has no accounts, so a leftover Codex reading is not current capacity.
             await frame
               .getByRole("link", { name: /Enough accounts\?/ })
-              .getByText("No accounts yet", { exact: true })
+              .getByText(/^Codex:/)
               .waitFor();
-            assert.equal(
-              await frame.locator("#capacity article").count(),
-              0,
-              "A lab with no current account shows no capacity panel",
-            );
-            assert.match(
-              await frame.locator("#capacity").innerText(),
-              /No accounts in this pool, so there is no capacity to show/,
-            );
             assert.deepEqual(
               await who.evaluate((section) => {
                 const table = section.querySelector("table").getBoundingClientRect();
@@ -1019,7 +1020,17 @@ test(
             );
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
+            // The pool has no accounts, so any reading it still has is not current capacity.
             await enough.getByText("No accounts yet", { exact: true }).waitFor();
+            assert.equal(
+              await frame.locator("#capacity article").count(),
+              0,
+              "A lab with no current account shows no capacity panel",
+            );
+            assert.match(
+              await frame.locator("#capacity").innerText(),
+              /No accounts in this pool, so there is no capacity to show/,
+            );
             assert.equal(
               await frame.getByText(/This read is incomplete/).count(),
               0,
