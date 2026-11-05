@@ -401,8 +401,8 @@ test("Google recovery provisions Chromium before its bounded offline verificatio
     verification >= 0,
     "The one-minute step must launch the prepared engine without downloading it",
   );
-  const preparation = job.steps.findIndex((step: { run?: string }) =>
-    step.uses === "./.github/actions/setup-browser",
+  const preparation = job.steps.findIndex(
+    (step: { uses?: string }) => step.uses === "./.github/actions/setup-browser",
   );
   assert.ok(
     preparation >= 0 && preparation < verification,
