@@ -187,7 +187,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      local: na("Local has no hosted organization removal."),
      },
    },
-   hostedToolPolicyDraft: {
+   hostedToolPolicyRestart: {
 diff --git a/e2e/tests/cloud-pool-callbacks.spec.ts b/e2e/tests/cloud-pool-callbacks.spec.ts
 new file mode 100644
 --- /dev/null

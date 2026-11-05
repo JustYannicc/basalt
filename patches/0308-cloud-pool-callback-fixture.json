@@ -1,7 +1,7 @@
 {
   "identity": "executor-cloud-pool-callback-fixture",
   "file": "0308-cloud-pool-callback-fixture.patch",
-  "content_sha256": "4d99bd1056d81563dbfe7b946b04fd9f60262aed303df185e3e8a95002700f5b",
+  "content_sha256": "420f22f07cf12af80280c4c63efa1c26577486ac62dc27812707b3c0ae9a4c78",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
