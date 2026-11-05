@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Owner approval rules retain identical allow, deny, revoke and history assertions across hosted targets. A separate self-host scenario supplies the process restart before the same persistence assertion; automatic Cloud scenarios import no process-control capability."
+    }
+  }
+}
