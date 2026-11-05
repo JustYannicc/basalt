@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-first-entry-view-readiness",
+  "file": "0277-first-entry-view-readiness.patch",
+  "content_sha256": "487e86e1f3729caa6a0887b544c6c980a3582a95ee98e486237d93a6d9ae0429",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
