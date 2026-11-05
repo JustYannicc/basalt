@@ -1,0 +1,152 @@
+diff --git a/e2e/support/account-row-layout.ts b/e2e/support/account-row-layout.ts
+new file mode 100644
+index 000000000..7e695d72b
+--- /dev/null
++++ b/e2e/support/account-row-layout.ts
+@@ -0,0 +1,45 @@
++import type { Page } from "playwright";
++
++/** Compare the rendered grid contract and action hit boxes in one browser task. */
++export const accountRowLayout = (page: Page) =>
++  page.evaluate(() => {
++    const header = document.querySelector<HTMLElement>(".inventory-header");
++    const rows = [...document.querySelectorAll<HTMLElement>(".inventory-row")];
++    const wide = header !== null && getComputedStyle(header).display !== "none";
++    const columns = header === null ? undefined : getComputedStyle(header).gridTemplateColumns;
++    const type = header?.children[1]?.getBoundingClientRect();
++    return {
++      rows: rows.length,
++      columnsAligned:
++        !wide ||
++        rows.every((row) => {
++          const cell = row.querySelector("[data-account-type]")?.getBoundingClientRect();
++          return (
++            getComputedStyle(row).gridTemplateColumns === columns &&
++            cell !== undefined &&
++            cell.x === type?.x
++          );
++        }),
++      namesUnobscured: rows.every((row) => {
++        const name = row.querySelector("[data-account-name]")?.getBoundingClientRect();
++        return (
++          name !== undefined &&
++          name.width > 0 &&
++          [
++            ...row.querySelectorAll(
++              "[data-account-row-menu] button, [data-account-row-actions] button",
++            ),
++          ].every((button) => {
++            const action = button.getBoundingClientRect();
++            return (
++              action.right <= name.left ||
++              action.left >= name.right ||
++              action.bottom <= name.top ||
++              action.top >= name.bottom
++            );
++          })
++        );
++      }),
++      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
++    };
++  });
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index 8c3ec05ec..5a17a56d7 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -16,2 +16,3 @@ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { accountRowLayout } from "../support/account-row-layout.ts";
+ import { accountRow, openRowMenu } from "../support/account-rows.ts";
+@@ -254,2 +255,10 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+               if (name === "accounts") {
++                const layout = yield* browser.use(
++                  "Account columns share tracks and actions leave names readable",
++                  accountRowLayout,
++                );
++                expect(layout.rows).toBeGreaterThan(0);
++                expect(layout.columnsAligned).toBe(true);
++                expect(layout.namesUnobscured).toBe(true);
++                expect(layout.noHorizontalOverflow).toBe(true);
+                 const [identity, action] = yield* browser.use(
+@@ -271,3 +280,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                   expect(action.width).toBeGreaterThan(0);
+-                  expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
++                  expect(
++                    identity.x + identity.width <= action.x ||
++                      action.y >= identity.y + identity.height,
++                    "the identity and its action do not overlap",
++                  ).toBe(true);
+                 }
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 1d3f84b77..435a57e9b 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -1 +1,2 @@
++import { accountRowLayout } from "../support/account-row-layout.ts";
+ import { expect, layer } from "@effect/vitest";
+@@ -549,2 +550,10 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+           Effect.gen(function* () {
++            const layout = yield* browser.use(
++              `${width}: grouped and ordinary rows share columns without covering names`,
++              accountRowLayout,
++            );
++            expect(layout.rows).toBeGreaterThanOrEqual(4);
++            expect(layout.columnsAligned).toBe(true);
++            expect(layout.namesUnobscured).toBe(true);
++            expect(layout.noHorizontalOverflow).toBe(true);
+             for (const [app, name, domain] of [
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 5d34eb47b..c9bb79f7b 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -247,4 +247,4 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
+       : requests
+-        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
+-        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
++        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
++        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]",
+     lead ? narrow.lead : narrow.plain,
+@@ -256,2 +256,14 @@ export const accountRowBand = (lead: boolean) =>
+
++/** Wide identity actions have their own band, so they never resize columns or cover the name. */
++export function AccountRowActions({ children }: { readonly children?: ReactNode }) {
++  return (
++    <span
++      data-account-row-actions
++      className={cn(accountRowBand(false), "flex flex-wrap items-center gap-2 empty:hidden")}
++    >
++      {children}
++    </span>
++  );
++}
++
+ /** The cells after the name: grid columns on wide lists, one wrapping line on narrow ones. */
+@@ -345,3 +357,3 @@ export function AccountRowHeader({
+         accountRowGrid(false, requests !== undefined),
+-        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
++        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
+       )}
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 113b68921..40bac1dc0 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -5,2 +5,3 @@ import { AccountCheckDot } from "./account-health.tsx";
+ import {
++  AccountRowActions,
+   AccountRowCells,
+@@ -308,6 +309,7 @@ function AccountsList({
+                   <AccountRowMenu>
++                    {bindings.length === 1 && accountActions?.(account, { binding: false })}
++                  </AccountRowMenu>
++                  <AccountRowActions>
+                     {account.identity !== undefined && identityActions?.(bindings, data)}
+-                    {bindings.length === 1 ? (
+-                      accountActions?.(account, { binding: false })
+-                    ) : (
++                    {bindings.length > 1 && (
+                       <OutsideAccountRow>
+@@ -339,3 +341,3 @@ function AccountsList({
+                     )}
+-                  </AccountRowMenu>
++                  </AccountRowActions>
+                   {family !== undefined && (
