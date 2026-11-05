@@ -466,11 +466,12 @@ jobs:
         run: node ../scripts/check-e2e-browser.mjs
       - name: Verify Google recovery through signed Cloud operations
         timeout-minutes: 6
-        working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_PREBOOT_BINDING: "alternate"
-        run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
+          BASALT_ADOPTION_PROOF_WORKERS: "1"
+          BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
+        run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
         if: always()
