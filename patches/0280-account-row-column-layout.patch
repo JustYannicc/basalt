@@ -522,11 +522,11 @@ diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/pack
  import { QueryResult, useQuery, useDashboard } from "./context.tsx";
  import { HugeiconsIcon } from "@hugeicons/react";
  import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
-@@ -48,7 +52,8 @@
+@@ -48,7 +52,9 @@
  } from "../../contracts/account-identities.ts";
  import { RequestedAccess } from "./oauth-scopes.tsx";
  import { Button } from "../components/button.tsx";
--import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 +import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 +import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
