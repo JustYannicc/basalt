@@ -840,3 +840,65 @@ diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client
            <DialogDescription>Use {identity.label} with another app.</DialogDescription>
            {choices.length === 0 && chosen === undefined ? (
              <p className="text-sm text-muted-foreground">
+diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+--- a/packages/ui/src/implementation/dashboard/account-traffic.tsx
++++ b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+@@ -152,7 +152,7 @@
+   return (
+     <span
+       className={cn(
+-        "text-[13px] whitespace-nowrap tabular-nums @max-[640px]/account-rows:text-[12px]",
++        "text-[13px] whitespace-nowrap tabular-nums @max-[880px]/account-rows:text-[12px]",
+         traffic.requests === 0 && "text-muted-foreground",
+       )}
+       title={title}
+@@ -162,7 +162,7 @@
+       <span className={traffic.requests === 0 ? undefined : "font-medium"}>{count}</span>
+       <span
+         aria-hidden
+-        className={cn("text-muted-foreground", !unit && "hidden @max-[640px]/account-rows:inline")}
++        className={cn("text-muted-foreground", !unit && "hidden @max-[880px]/account-rows:inline")}
+         data-requests-unit
+       >
+         {" req"}
+@@ -201,7 +201,7 @@
+     .join(" · ");
+   return (
+     <span
+-      className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[640px]/account-rows:text-[12px]"
++      className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[880px]/account-rows:text-[12px]"
+       title={`${title}${via(traffic.gateways)}${check === undefined ? "" : `\n${check}`}`}
+       data-account-health-cell
+       data-health-state="traffic"
+diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -301,6 +301,28 @@
+           /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
+         );
+ 
++        const intermediate = yield* browser.use("Read request units at 1000px", async (page) => {
++          await page.setViewportSize({ width: 1000, height: 900 });
++          const row = accountRow(page, "Traffic account");
++          const container = page.locator('[class*="@container/account-rows"]').first();
++          return {
++            width: (await container.boundingBox())?.width,
++            header: await page.locator("[data-requests-header]").isVisible(),
++            unit: await row.locator("[data-requests-unit]").isVisible(),
++            count: await row
++              .locator("[data-account-requests]")
++              .getAttribute("data-account-requests"),
++          };
++        });
++        expect(intermediate.width).toBeGreaterThan(640);
++        expect(intermediate.width).toBeLessThanOrEqual(880);
++        expect(intermediate.header).toBe(false);
++        expect(
++          intermediate.unit,
++          "a compact count keeps its request unit at intermediate widths",
++        ).toBe(true);
++        expect(intermediate.count).toBe("41");
++
+         const phone = yield* browser.use("Read the rows at 390px", (page) =>
+           page
+             .setViewportSize({ width: 390, height: 900 })
