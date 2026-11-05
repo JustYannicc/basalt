@@ -126,7 +126,8 @@ const program = Effect.gen(function* () {
     entry: "provider-openai",
     name: "Synthetic openai",
   });
-  h.fixture.prepareAcquisition(null, id, "codex");
+  // Acquisition can start observation collection, so seed every journey credit before it begins.
+  h.fixture.prepareAcquisition(null, id, "codex", 5);
   // Shared from the start, so a member can later see it; a personal account can't be shared.
   const pending = yield* h.request(
     "POST",
@@ -145,8 +146,6 @@ const program = Effect.gen(function* () {
     (response) => response.status === 200,
     "saved account membership did not reach the backend",
   );
-  // Five credits, so each journey below has one to spend.
-  h.fixture.seedReset(pool.id, id, "codex", 5);
   yield* h.request("PATCH", account, { label });
   // The same call the account row's Refresh makes (refreshAccountObservationsAtom).
   diagnostics.refreshed = yield* h.request("POST", `${account}/observations/refresh`);
@@ -160,8 +159,11 @@ const program = Effect.gen(function* () {
       ),
     ),
     (view) =>
-      view.reports.some((report) =>
-        report.result?.observation.balances.some((balance) => balance.unit === "resets"),
+      view.reports.some(
+        (report) =>
+          report.result?.observation.balances
+            .filter((balance) => balance.unit === "resets")
+            .reduce((sum, balance) => sum + balance.available, 0) === 5,
       ),
     "the account's reading has no banked resets",
   ).pipe(

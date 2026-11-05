@@ -58,7 +58,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     if (route === "/oauth/status") {
       const pending = connections.get(url.searchParams.get("state"));
       if (!pending) return Response.json({ status: "error" });
-      fixture.seedReset(pending.pool, pending.id, pending.provider);
+      fixture.seedReset(pending.pool, pending.id, pending.provider, pending.resetCount);
       return Response.json({ status: "ok", auth_id: pending.id });
     }
     if (route === "/users") {
@@ -78,7 +78,12 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     }
     if (route === "/credentials") {
       if (init?.method === "POST" && acquisition) {
-        fixture.seedReset(acquisition.pool, acquisition.id, acquisition.provider);
+        fixture.seedReset(
+          acquisition.pool,
+          acquisition.id,
+          acquisition.provider,
+          acquisition.resetCount,
+        );
         return Response.json({ name: `${acquisition.id}.json` });
       }
       if (init?.method === "DELETE") {
@@ -264,8 +269,8 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const fixture = {
-    prepareAcquisition(pool, id, provider = "codex") {
-      acquisition = { pool, id, provider };
+    prepareAcquisition(pool, id, provider = "codex", resetCount = 2) {
+      acquisition = { pool, id, provider, resetCount };
     },
     origin: `http://127.0.0.1:${server.address().port}`,
     async reconcile(pool) {
