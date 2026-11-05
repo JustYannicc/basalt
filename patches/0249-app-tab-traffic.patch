@@ -697,7 +697,7 @@ diff --git a/e2e/tests/app-account-traffic.spec.ts b/e2e/tests/app-account-traff
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-account-traffic.spec.ts
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,292 @@
 +/** An app's Accounts tab shows what the account's pool counted, beside the app's own check. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -758,6 +758,9 @@ new file mode 100644
 +        if (traffic === undefined || quiet === undefined)
 +          return yield* Effect.die("The pool saved fewer accounts than asked");
 +        const reading = weekly();
++        const [weeklyWindow] = reading.observation.windows;
++        if (weeklyWindow === undefined)
++          return yield* Effect.die("Missing weekly observation window");
 +        yield* observed.answer({ status: 200, body: reading });
 +        expect(
 +          (yield* api.request(
@@ -891,9 +894,7 @@ new file mode 100644
 +        for (const read of tokenReads) {
 +          expect(read.accounts).toEqual([traffic]);
 +          expect(read.from).toBe(
-+            new Date(
-+              Date.parse(reading.observation.windows[0].resetsAt) - 7 * 86_400_000,
-+            ).toISOString(),
++            new Date(Date.parse(weeklyWindow.resetsAt) - 7 * 86_400_000).toISOString(),
 +          );
 +        }
 +        // A linked account the series doesn't name says why its count is missing, never 0.
