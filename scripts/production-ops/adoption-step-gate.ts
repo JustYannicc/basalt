@@ -15,7 +15,7 @@ export async function adoptionStepGate() {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       const step = url.searchParams.get("step");
       const id = url.searchParams.get("id");
-      if (!step || !id || !["organization", "app", "account", "purge", "purged"].includes(step)) {
+      if (!step || !id || !["organization", "app", "account", "purge", "purged", "duplicate-consumers"].includes(step)) {
         response.writeHead(400).end();
         return;
       }

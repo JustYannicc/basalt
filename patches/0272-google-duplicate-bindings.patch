@@ -339,14 +339,209 @@ index 6f6b6ba..baee04e 100644
    executor_accounts: id(
      `${owner} and ${optional("identity_id", owned("executor_account_identities", "identity_id"))} and ${accountGrant}`,
    ),
+diff --git a/e2e/support/google-duplicate-binding-fixture.ts b/e2e/support/google-duplicate-binding-fixture.ts
+new file mode 100644
+index 0000000..831b588
+--- /dev/null
++++ b/e2e/support/google-duplicate-binding-fixture.ts
+@@ -0,0 +1,165 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { appsManifest } from "./apps-release.ts";
++import { productionOpsClient } from "./production-ops-client.ts";
++
++/** Seed retained legacy rows; all operations under test use the real signed HTTP boundary. */
++export const googleDuplicateBindingFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    database = yield* cloudLocks;
++  const client = yield* productionOpsClient;
++  const organization = actors.organization.id,
++    owner = `organization:${organization}`;
++  const rows = (sql: string, params: readonly (string | number | null)[] = []) =>
++    database.run({ sql, params });
++  const remove = `acc_${randomUUID()}`,
++    retain = `acc_${randomUUID()}`;
++  const provider = `prv_${randomUUID()}`,
++    identity = `aid_${randomUUID()}`;
++  const person = (yield* body(
++    Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++    yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++  )).user.id;
++  const deployment = yield* api.request(
++    actors.owner,
++    "POST",
++    `/api/organizations/${organization}/apps/deploy`,
++    {
++      name: `Retirement ${randomUUID()}`,
++      files: [
++        appsManifest,
++        {
++          path: "index.ts",
++          content:
++            'import { defineApp, router } from "apps"; export default defineApp({}, {tools:router({})});',
++        },
++      ],
++    },
++  );
++  expect(deployment.status, JSON.stringify(deployment.body)).toBe(200);
++  const app = (yield* body(Schema.Struct({ id: Schema.String }), deployment)).id;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* rows("delete from executor_workflow_accounts where account=$1", [remove]);
++      for (const id of [remove, retain]) {
++        yield* rows("delete from executor_account_checks where account=$1", [id]);
++        yield* rows("delete from hosted_app_account_links where account=$1", [id]);
++        yield* rows("delete from hosted_account_access where account_id=$1", [id]);
++        yield* rows("delete from executor_accounts where id=$1", [id]);
++        yield* rows("delete from executor_oauth_grants where id=$1", [id]);
++      }
++      yield* rows("delete from executor_account_identities where id=$1", [identity]);
++      yield* rows("delete from executor_providers where id=$1", [provider]);
++      yield* api.request(actors.owner, "DELETE", `/api/organizations/${organization}/apps/${app}`);
++    }).pipe(Effect.orDie),
++  );
++  yield* rows("insert into executor_providers (id,definition) values ($1,$2::jsonb)", [
++    provider,
++    JSON.stringify({
++      name: "Google retirement fixture",
++      auth: {
++        oauth: {
++          type: "oauth2",
++          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
++          tokenUrl: "https://oauth2.googleapis.com/token",
++          scopes: ["openid", "email"],
++          tokenEndpointAuthMethod: "none",
++          response: {
++            type: "object",
++            properties: {
++              access_token: { type: "string" },
++            },
++            required: ["access_token"],
++          },
++        },
++      },
++    }),
++  ]);
++  yield* rows(
++    `insert into executor_account_identities
++        (id,owner,placement,issuer,subject,name,label,verified_at,created_at)
++        values ($1,$2,$3,'https://accounts.google.com',$4,'Google','person@example.test',now(),now())`,
++    [
++      identity,
++      owner,
++      JSON.stringify([organization, "personal", person, null, []]),
++      `subject-${retain}`,
++    ],
++  );
++  for (const id of [remove, retain]) {
++    yield* rows(
++      `insert into executor_accounts
++          (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation,identity_id)
++          values ($1,$2,$3,'oauth','Saved Google',decode('123456','hex'),now(),3,$4)`,
++      [id, owner, provider, id === retain ? identity : null],
++    );
++    yield* rows(
++      `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
++          values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
++      [id, owner],
++    );
++    yield* rows(
++      `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
++          values ($1,$2,$3,'personal',$3)`,
++      [id, organization, person],
++    );
++    yield* rows(
++      `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
++          values ($1,'google',$2,$3,$2)`,
++      [app, person, id],
++    );
++    yield* rows(
++      `insert into executor_account_checks
++          (id,account,app,deployment,credential_generation,status,checked_at)
++          values ($1,$2,$3,'fixture',3,'unknown',now())`,
++      [`check-${id}`, id, app],
++    );
++  }
++  const snapshot = (id: string) =>
++    rows(
++      `select to_jsonb(a) as account,to_jsonb(g) as grant,to_jsonb(h) as access,
++        (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links,
++        (select jsonb_agg(to_jsonb(c) order by c.id) from executor_account_checks c where c.account=a.id) as checks,
++        (select to_jsonb(i) from executor_account_identities i where i.id=$2) as identity,
++        (select to_jsonb(p) from executor_providers p where p.id=a.provider) as provider
++        from executor_accounts a join executor_oauth_grants g on g.id=a.id
++        join hosted_account_access h on h.account_id=a.id where a.id=$1`,
++      [id, identity],
++    );
++  const oldBefore = yield* snapshot(remove),
++    keepBefore = yield* snapshot(retain);
++  const request = { organization, pairs: [{ remove, retain, identity }] };
++  const operation = (action: string, input: unknown = request, extra: object = {}) =>
++    client.request({
++      action,
++      selection: "google-duplicate-bindings-v1",
++      request: input,
++      recipient: client.recipient,
++      ...extra,
++    });
++  return {
++    api,
++    actors,
++    database,
++    client,
++    organization,
++    owner,
++    person,
++    app,
++    provider,
++    remove,
++    retain,
++    identity,
++    rows,
++    snapshot,
++    oldBefore,
++    keepBefore,
++    request,
++    operation,
++  };
++});
+diff --git a/e2e/support/provider-adoption-steps.ts b/e2e/support/provider-adoption-steps.ts
+index f01b928..591e25c 100644
+--- a/e2e/support/provider-adoption-steps.ts
++++ b/e2e/support/provider-adoption-steps.ts
+@@ -13,7 +13,7 @@ export const apply = (operation: unknown, dry: typeof DryRun.Type) => ({
+
+ /** SQL boundaries pause actual HTTP transactions; NOWAIT probes establish their held locks. */
+ export const boundary = (
+-  step: "organization" | "app" | "account" | "purge" | "purged",
++  step: "organization" | "app" | "account" | "purge" | "purged" | "duplicate-consumers",
+   id: string,
+ ) =>
+   Effect.gen(function* () {
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index e7e6278..8e2f79f 100644
+index e7e6278..515e263 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -289,6 +289,17 @@ export const scenarios = plan({
+@@ -289,6 +289,28 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
++  googleDuplicateBindingRace: {
++    fixtures: "actors",
++    file: "google-duplicate-binding-race.spec.ts",
++    title:
++      "Google identity recovery retires exact duplicate bindings during secondary webhook registration",
++    targets: {
++      local: na("Signed operator transactions require managed Cloud."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
 +  googleDuplicateBindings: {
 +    fixtures: "actors",
 +    file: "google-duplicate-bindings.spec.ts",
@@ -361,21 +556,169 @@ index e7e6278..8e2f79f 100644
    googleIdentityMigration: {
      fixtures: "actors",
      file: "google-identity-migration.spec.ts",
+diff --git a/e2e/tests/google-duplicate-binding-race.spec.ts b/e2e/tests/google-duplicate-binding-race.spec.ts
+new file mode 100644
+index 0000000..96ffaaa
+--- /dev/null
++++ b/e2e/tests/google-duplicate-binding-race.spec.ts
+@@ -0,0 +1,144 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { appLinksFixture, keyProvider, LinkRequirement } from "../support/app-links.ts";
++import { blocked, Backends } from "../support/account-delete-contention.ts";
++import { googleDuplicateBindingFixture } from "../support/google-duplicate-binding-fixture.ts";
++import { Artifact } from "../support/production-ops-client.ts";
++import { boundary } from "../support/provider-adoption-steps.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, oauth2, secrets, object, string, router } from "apps";
++const primary = ${keyProvider("Primary webhook source")};
++const secondary = defineProvider({ name: "Secondary Google", auth: { oauth: oauth2({
++  authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
++  tokenUrl: "https://oauth2.googleapis.com/token", scopes: ["openid","email"], tokenEndpointAuthMethod: "none"
++}) } });
++export default defineApp({ user: { accounts: { primary, secondary: secondary.many() } } }, {
++  tools: router({}), webhooks: { primaryHook: { account: { user: "primary" },
++    config: object({}), state: object({}), register: async () => ({}),
++    unregister: async () => {}, handle: async () => new Response("ok") } }
++});`;
++const Subscription = Schema.Struct({ id: Schema.String, status: Schema.String });
++const DryRun = Schema.Struct({ artifact: Artifact, backupSha256: Schema.String });
++
++layer(HostedLive, { excludeTestServices: true })("Duplicate retirement registration race", (it) => {
++  it.effect(scenarios.googleDuplicateBindingRace.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* googleDuplicateBindingFixture;
++        const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++        const { api, actors, path } = f;
++        const primary = yield* f.connect(actors.owner, "user", "primary", "synthetic-primary");
++        const created = yield* api.request(actors.owner, "POST", `${path}/webhooks`, {
++          name: "primaryHook",
++          sourceAccount: primary,
++          key: `race-${randomUUID()}`,
++          config: {},
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const hook = yield* body(Subscription, created);
++        expect(hook.status).toBe("active");
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* p.rows("delete from executor_webhook_accounts where subscription=$1", [hook.id]);
++            yield* p.rows("delete from executor_webhooks where id=$1", [hook.id]);
++          }).pipe(Effect.orDie),
++        );
++        const requirement = yield* body(
++          LinkRequirement,
++          yield* api.request(actors.owner, "GET", `${path}/accounts/user/secondary`),
++        );
++        const otherApp = path.split("/").at(-1)!;
++        for (const id of [p.remove, p.retain]) {
++          yield* p.rows("update executor_accounts set provider=$2 where id=$1", [
++            id,
++            requirement.provider,
++          ]);
++          yield* p.rows(
++            `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
++          values ($1,'secondary',$2,$3,$2)`,
++            [otherApp, p.person, id],
++          );
++        }
++        // Retry an ordinary registration with a different primary and both many() secondary choices.
++        yield* p.rows(
++          "update executor_webhooks set status='pending',lease_until=now() where id=$1",
++          [hook.id],
++        );
++        const before = yield* p.snapshot(p.retain);
++        const dryResponse = yield* p.operation("dry-run");
++        expect(dryResponse.status, JSON.stringify(dryResponse.body)).toBe(200);
++        const dry = yield* body(DryRun, dryResponse);
++        const scan = yield* boundary("duplicate-consumers", p.remove);
++        const applying = yield* p
++          .operation("apply", p.request, {
++            artifact: dry.artifact,
++            planSha256: dry.artifact.sha256,
++            backupSha256: dry.backupSha256,
++            go: `GO ${dry.artifact.sha256}`,
++          })
++          .pipe(Effect.forkChild);
++        yield* Effect.raceFirst(
++          scan.entered,
++          Fiber.join(applying).pipe(
++            Effect.flatMap((response) =>
++              Effect.die(
++                `Apply missed consumer boundary: ${response.status} ${JSON.stringify(response.body)}`,
++              ),
++            ),
++          ),
++        );
++        const applyingBackend = yield* p
++          .rows(`select pid,query from pg_stat_activity
++        where state='idle in transaction' and query ilike '%executor_workflow_accounts%executor_webhook_accounts%'`)
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Backends)));
++        expect(applyingBackend).toHaveLength(1);
++        const registering = yield* api
++          .request(actors.owner, "POST", `${path}/webhooks/${hook.id}/reconcile`)
++          .pipe(Effect.forkChild);
++        const registrationWaited = yield* Effect.raceFirst(
++          blocked(p.database, [applyingBackend[0]!.pid], "%executor_accounts%").pipe(
++            Effect.as(true),
++          ),
++          Fiber.join(registering).pipe(Effect.as(false)),
++        );
++        yield* scan.release;
++        const applied = yield* Fiber.join(applying);
++        const registered = yield* Fiber.join(registering);
++        const orphans = yield* p.rows(
++          `select d.account,d.subscription from executor_webhook_accounts d
++        left join executor_accounts a on a.id=d.account
++        where d.subscription=$1 and a.id is null`,
++          [hook.id],
++        );
++        const registration = yield* p.rows(
++          "select registered_accounts from executor_webhooks where id=$1",
++          [hook.id],
++        );
++        yield* (yield* Evidence).json("duplicate-secondary-registration-race.json", {
++          signedApplyPausedAfterConsumerScan: true,
++          differentPrimary: primary !== p.remove,
++          registrationWaited,
++          applyStatus: applied.status,
++          registerStatus: registered.status,
++          orphanDependencies: orphans,
++          registration,
++        });
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(
++          orphans,
++          "retirement must never leave a committed webhook dependency on a deleted account",
++        ).toEqual([]);
++        expect(registrationWaited).toBe(true);
++        expect(JSON.stringify(registration)).not.toContain(p.remove);
++        expect(yield* p.snapshot(p.remove)).toEqual([]);
++        expect(yield* p.snapshot(p.retain)).toEqual(before);
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/google-duplicate-bindings.spec.ts b/e2e/tests/google-duplicate-bindings.spec.ts
 new file mode 100644
-index 0000000..b87fbf5
+index 0000000..b039fc9
 --- /dev/null
 +++ b/e2e/tests/google-duplicate-bindings.spec.ts
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,152 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
-+import { Api, body } from "../support/api.ts";
-+import { Actors } from "../support/actors.ts";
++import { body } from "../support/api.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
-+import { cloudLocks } from "../support/cloud-locks.ts";
-+import { appsManifest } from "../support/apps-release.ts";
-+import { Artifact, Backup, productionOpsClient } from "../support/production-ops-client.ts";
++import { Artifact, Backup } from "../support/production-ops-client.ts";
++import { googleDuplicateBindingFixture } from "../support/google-duplicate-binding-fixture.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Google duplicate retirement", (it) => {
@@ -383,143 +726,21 @@ index 0000000..b87fbf5
 +    withHostedCase(
 +      context,
 +      Effect.gen(function* () {
-+        const api = yield* Api,
-+          actors = yield* Actors,
-+          database = yield* cloudLocks;
-+        const client = yield* productionOpsClient;
-+        const organization = actors.organization.id,
-+          owner = `organization:${organization}`;
-+        const rows = (sql: string, params: readonly (string | number | null)[] = []) =>
-+          database.run({ sql, params });
-+        const remove = `acc_${randomUUID()}`,
-+          retain = `acc_${randomUUID()}`;
-+        const provider = `prv_${randomUUID()}`,
-+          identity = `aid_${randomUUID()}`;
-+        const person = (yield* body(
-+          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
-+          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
-+        )).user.id;
-+        const deployment = yield* api.request(
-+          actors.owner,
-+          "POST",
-+          `/api/organizations/${organization}/apps/deploy`,
-+          {
-+            name: `Retirement ${randomUUID()}`,
-+            files: [
-+              appsManifest,
-+              {
-+                path: "index.ts",
-+                content:
-+                  'import { defineApp, router } from "apps"; export default defineApp({}, {tools:router({})});',
-+              },
-+            ],
-+          },
-+        );
-+        expect(deployment.status, JSON.stringify(deployment.body)).toBe(200);
-+        const app = (yield* body(Schema.Struct({ id: Schema.String }), deployment)).id;
-+        yield* Effect.addFinalizer(() =>
-+          Effect.gen(function* () {
-+            yield* rows("delete from executor_workflow_accounts where account=$1", [remove]);
-+            for (const id of [remove, retain]) {
-+              yield* rows("delete from executor_account_checks where account=$1", [id]);
-+              yield* rows("delete from hosted_app_account_links where account=$1", [id]);
-+              yield* rows("delete from hosted_account_access where account_id=$1", [id]);
-+              yield* rows("delete from executor_accounts where id=$1", [id]);
-+              yield* rows("delete from executor_oauth_grants where id=$1", [id]);
-+            }
-+            yield* rows("delete from executor_account_identities where id=$1", [identity]);
-+            yield* rows("delete from executor_providers where id=$1", [provider]);
-+            yield* api.request(
-+              actors.owner,
-+              "DELETE",
-+              `/api/organizations/${organization}/apps/${app}`,
-+            );
-+          }).pipe(Effect.orDie),
-+        );
-+        yield* rows("insert into executor_providers (id,definition) values ($1,$2::jsonb)", [
-+          provider,
-+          JSON.stringify({
-+            name: "Google retirement fixture",
-+            auth: {
-+              oauth: {
-+                type: "oauth2",
-+                authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-+                tokenUrl: "https://oauth2.googleapis.com/token",
-+                scopes: ["openid", "email"],
-+                tokenEndpointAuthMethod: "none",
-+                response: {
-+                  type: "object",
-+                  properties: {
-+                    access_token: { type: "string" },
-+                  },
-+                  required: ["access_token"],
-+                },
-+              },
-+            },
-+          }),
-+        ]);
-+        yield* rows(
-+          `insert into executor_account_identities
-+        (id,owner,placement,issuer,subject,name,label,verified_at,created_at)
-+        values ($1,$2,$3,'https://accounts.google.com',$4,'Google','person@example.test',now(),now())`,
-+          [
-+            identity,
-+            owner,
-+            JSON.stringify([organization, "personal", person, null, []]),
-+            `subject-${retain}`,
-+          ],
-+        );
-+        for (const id of [remove, retain]) {
-+          yield* rows(
-+            `insert into executor_accounts
-+          (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation,identity_id)
-+          values ($1,$2,$3,'oauth','Saved Google',decode('123456','hex'),now(),3,$4)`,
-+            [id, owner, provider, id === retain ? identity : null],
-+          );
-+          yield* rows(
-+            `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
-+          values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
-+            [id, owner],
-+          );
-+          yield* rows(
-+            `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
-+          values ($1,$2,$3,'personal',$3)`,
-+            [id, organization, person],
-+          );
-+          yield* rows(
-+            `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
-+          values ($1,'google',$2,$3,$2)`,
-+            [app, person, id],
-+          );
-+          yield* rows(
-+            `insert into executor_account_checks
-+          (id,account,app,deployment,credential_generation,status,checked_at)
-+          values ($1,$2,$3,'fixture',3,'unknown',now())`,
-+            [`check-${id}`, id, app],
-+          );
-+        }
-+        const snapshot = (id: string) =>
-+          rows(
-+            `select to_jsonb(a) as account,to_jsonb(g) as grant,to_jsonb(h) as access,
-+        (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links,
-+        (select jsonb_agg(to_jsonb(c) order by c.id) from executor_account_checks c where c.account=a.id) as checks,
-+        (select to_jsonb(i) from executor_account_identities i where i.id=$2) as identity,
-+        (select to_jsonb(p) from executor_providers p where p.id=a.provider) as provider
-+        from executor_accounts a join executor_oauth_grants g on g.id=a.id
-+        join hosted_account_access h on h.account_id=a.id where a.id=$1`,
-+            [id, identity],
-+          );
-+        const oldBefore = yield* snapshot(remove),
-+          keepBefore = yield* snapshot(retain);
-+        const request = { organization, pairs: [{ remove, retain, identity }] };
-+        const operation = (action: string, input: unknown = request, extra: object = {}) =>
-+          client.request({
-+            action,
-+            selection: "google-duplicate-bindings-v1",
-+            request: input,
-+            recipient: client.recipient,
-+            ...extra,
-+          });
++        const {
++          rows,
++          remove,
++          retain,
++          identity,
++          person,
++          app,
++          client,
++          organization,
++          snapshot,
++          oldBefore,
++          keepBefore,
++          request,
++          operation,
++        } = yield* googleDuplicateBindingFixture;
 +        for (const invalid of [
 +          { ...request, pairs: [{ remove, retain: remove, identity }] },
 +          { ...request, pairs: [...request.pairs, ...request.pairs] },
@@ -643,3 +864,22 @@ index 0000000..b87fbf5
 +    ),
 +  );
 +});
+diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+index 5354ea9..6fdabef 100644
+--- a/packages/sdk/src/implementation/webhooks.ts
++++ b/packages/sdk/src/implementation/webhooks.ts
+@@ -211,6 +211,14 @@ export const makeWebhooks = (
+         );
+         for (const account of dependencies(row.sourceAccount, accounts))
+           if (!existing.has(account)) {
++            const currentAccount = yield* storedAccount(db, account);
++            // Serialize captured secondary dependencies with account retirement, then reread existence.
++            yield* query(() =>
++              db.updateMany("accounts", {
++                where: (b) => b("id", "=", account),
++                set: { createdAt: currentAccount.createdAt },
++              }),
++            );
+             yield* storedAccount(db, account);
+             yield* query(() =>
+               db.create("webhookAccounts", {

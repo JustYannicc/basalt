@@ -128,7 +128,9 @@ Use `google-duplicate-bindings-v1` with
 Select at most 20 disjoint pairs. The verified replacement must already cover
 every app selection with the same provider, method, host policy and placement.
 The operation refuses active workflow or webhook consumers, acquisitions,
-pending connections and shared legacy grants. Labels never establish identity.
+pending connections and shared legacy grants. Webhook registration also locks and
+rereads newly referenced accounts before recording secondary dependencies, so a
+concurrent retirement cannot leave an orphaned selection. Labels never establish identity.
 
 Review every deletion in the signed dry run and retain its complete affected-table
 backup. The ordinary `accounts` backup does not cover all retired check and source
