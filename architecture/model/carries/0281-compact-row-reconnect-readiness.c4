@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Compact-row recovery assertions wait for the row's real Reconnect control because health and sign-in methods resolve independently. The exact control count, health assertions and existing deadlines remain unchanged."
+    }
+  }
+}
