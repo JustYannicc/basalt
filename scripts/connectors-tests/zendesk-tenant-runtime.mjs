@@ -20,6 +20,7 @@ import { provisionSelfHostActors } from "./test-accounts.mjs";
 import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 import { startZendeskCatalogWorker } from "./zendesk-catalog.mjs";
 import { proveTenantPublic } from "./zendesk-tenant-public.mjs";
+import { proveOperatorChoices } from "./zendesk-operator-choices.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");
@@ -112,7 +113,9 @@ const program = Effect.gen(function* () {
     );
     assert.deepEqual(
       productionClients.map((value) => value.id),
-      global ? ["zendesk", "zendesk-tenant"] : ["zendesk-tenant"],
+      global
+        ? ["zendesk", "zendesk-tenant", "zendesk-tenant-paste"]
+        : ["zendesk-tenant", "zendesk-tenant-paste"],
     );
     const environment = {};
     const definitions = productionClients.map((client) => {
@@ -217,10 +220,37 @@ const program = Effect.gen(function* () {
       fixtures,
       global,
     });
+    const choices = yield* proveOperatorChoices({
+      Effect,
+      request,
+      checked,
+      actors,
+      prefix,
+      app,
+      callback,
+      fixtures,
+      global,
+      advanceClock: (milliseconds) =>
+        Effect.promise(async () => {
+          const response = await fetch(`${server.controlOrigin}/clock/advance`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ milliseconds }),
+          });
+          assert.equal(
+            response.status,
+            200,
+            "The isolated product clock must advance before checking expiry",
+          );
+        }),
+    });
     yield* Effect.promise(() =>
       writeFile(
         join(directory, global ? "global.json" : "tenant.json"),
-        JSON.stringify(result, null, 2),
+        JSON.stringify({ ...result, choices }, null, 2),
         { mode: 0o600 },
       ),
     );
@@ -234,10 +264,14 @@ try {
     ),
   );
   console.log(
-    "Zendesk tenant proof passed: global preference, per-user PKCE, revocation, and missing-client refusal.",
+    "Zendesk tenant proof passed: method order, callback paste, state/redirect/expiry/replay refusal, per-user PKCE, refresh and revocation.",
   );
 } catch (error) {
-  await writeFile(join(directory, "failure.txt"), String(error), { mode: 0o600 });
+  await writeFile(
+    join(directory, "failure.txt"),
+    error instanceof Error ? error.stack : String(error),
+    { mode: 0o600 },
+  );
   console.error(`Zendesk tenant proof failed during ${phase}; private evidence retained.`);
   process.exitCode = 1;
 }
