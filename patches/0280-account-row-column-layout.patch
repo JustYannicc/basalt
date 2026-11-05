@@ -176,7 +176,7 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
  import { expect, layer } from "@effect/vitest";
  import { Effect, Schema } from "effect";
  import type { Page } from "playwright";
-@@ -220,12 +221,13 @@
+@@ -220,12 +221,35 @@
            page.getByRole("status").filter({ hasText: "5 sign-ins verified." }).waitFor(),
          );
          yield* browser.use("The refreshed inventory groups all five retained bindings", (page) => {
@@ -186,17 +186,67 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
 -              has: page.getByRole("link", { name: `Connected app ${index + 1}` }),
 -            });
 -          return row.waitFor();
-+          const row = page.locator(".inventory-row").filter({ hasText: "same@example.test" }).first();
-+          return row.getByRole("link", { name: "Connected app 1", exact: true }).waitFor()
-+            .then(() => row.getByRole("button", { name: "Used by 4 more apps", exact: true }).click())
-+            .then(() => Promise.all([2, 3, 4, 5].map((index) =>
-+              page.locator("[data-used-by-list]").getByRole("link", { name: `Connected app ${index}`, exact: true }).waitFor(),
-+            )))
++          const row = page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first();
++          return row
++            .getByRole("link")
++            .filter({ hasText: /^Connected app [1-5]$/ })
++            .first()
++            .waitFor()
++            .then(() =>
++              row.getByRole("button", { name: "Used by 4 more apps", exact: true }).click(),
++            )
++            .then(() =>
++              Promise.all(
++                [1, 2, 3, 4, 5].map((index) =>
++                  row
++                    .getByRole("link")
++                    .filter({ hasText: new RegExp(`^Connected app ${index}$`) })
++                    .or(
++                      page
++                        .locator("[data-used-by-list]")
++                        .getByRole("link")
++                        .filter({ hasText: new RegExp(`^Connected app ${index}$`) }),
++                    )
++                    .waitFor(),
++                ),
++              ),
++            )
 +            .then(() => page.keyboard.press("Escape"));
          });
          expect(
            yield* browser.use(
-@@ -312,7 +314,15 @@
+@@ -261,14 +285,26 @@
+             page.locator(".inventory-row").filter({ hasText: "same@example.test" }).count(),
+           ),
+         ).toBe(1);
++        yield* browser.use("Open every retained app reference", (page) =>
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("button", { name: "Used by 4 more apps", exact: true })
++            .click(),
++        );
+         for (let index = 0; index < 5; index++)
+           yield* browser.use("Each retained app remains linked", (page) =>
+             page
+               .locator(".inventory-row")
+               .filter({ hasText: "same@example.test" })
+-              .getByRole("link", { name: `Connected app ${index + 1}` })
++              .getByRole("link")
++              .or(page.locator("[data-used-by-list]").getByRole("link"))
++              .filter({ hasText: new RegExp(`^Connected app ${index + 1}$`) })
+               .waitFor(),
+           );
++        yield* browser.use("Close retained app references", (page) =>
++          page.keyboard.press("Escape"),
++        );
+         yield* browser.use(
+           "The verified group shows its issuer rather than its first app",
+           (page) =>
+@@ -312,7 +348,15 @@
            page.getByPlaceholder("Search accounts…").fill(""),
          );
          yield* browser.use("Add a later app from the saved account", (page) =>
@@ -213,7 +263,69 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
          );
          yield* browser.use("Choose the later app", (page) =>
            page
-@@ -406,7 +416,13 @@
+@@ -362,10 +406,15 @@
+             page
+               .locator(".inventory-row")
+               .filter({ hasText: "same@example.test" })
+-              .getByRole("link", { includeHidden: true })
+-              .filter({ hasText: /^Later app$/ })
++              .getByRole("button", {
++                name: "Used by 6 more apps",
++                exact: true,
++                includeHidden: true,
++              })
+               .waitFor(),
+         );
++        expect((yield* product.read(later)).status).toBe(200);
++        expect((yield* product.read(additional)).status).toBe(200);
+         yield* browser.checkpoint("The covered app is connected at phone width");
+         yield* browser.use("Finish the confirmed connection", (page) =>
+           page
+@@ -376,23 +425,32 @@
+         yield* browser.use("Return to desktop width", (page) =>
+           page.setViewportSize({ width: 1280, height: 900 }),
+         );
+-        yield* browser.use("The added app appears on the same identity row", (page) =>
++        yield* browser.use("The added app appears on the same identity row", (page) => {
++          const row = page.locator(".inventory-row").filter({ hasText: "same@example.test" });
++          return row
++            .getByRole("button", { name: "Used by 6 more apps", exact: true })
++            .click()
++            .then(() =>
++              row
++                .getByRole("link")
++                .or(page.locator("[data-used-by-list]").getByRole("link"))
++                .filter({ hasText: /^Later app$/ })
++                .waitFor(),
++            );
++        });
++        expect((yield* issuer.metrics).authorizations).toBe(5);
++        expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
++        yield* browser.use("Both selected apps refresh on the same row", (page) =>
+           page
+             .locator(".inventory-row")
+             .filter({ hasText: "same@example.test" })
+             .getByRole("link")
+-            .filter({ hasText: /^Later app$/ })
+-            .waitFor(),
+-        );
+-        expect((yield* issuer.metrics).authorizations).toBe(5);
+-        expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
+-        yield* browser.use("Both selected apps refresh on the same row", (page) =>
+-          page
+-            .locator(".inventory-row")
+-            .filter({ hasText: "same@example.test" })
+-            .getByRole("link")
++            .or(page.locator("[data-used-by-list]").getByRole("link"))
+             .filter({ hasText: /^Another later app$/ })
+             .waitFor(),
++        );
++        yield* browser.use("Close the connected app references", (page) =>
++          page.keyboard.press("Escape"),
+         );
+         expect((yield* product.read(later)).status).toBe(200);
+         expect((yield* product.read(additional)).status).toBe(200);
+@@ -406,7 +464,13 @@
            ).toBe(retainedBinding.account);
          }
          yield* browser.use("Inspect each binding's independent actions", (page) =>
@@ -228,7 +340,7 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
          );
          yield* browser.checkpoint("Every binding remains independently manageable");
          yield* browser.use("Close binding actions and inspect the phone layout", (page) =>
-@@ -518,9 +534,9 @@
+@@ -518,9 +582,9 @@
              .then(() => page.getByRole("heading", { name: /^Accounts/ }).waitFor()),
          );
          const row = (page: Page, app: string) =>
@@ -241,7 +353,7 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
          const mark = (page: Page, app: string) =>
            row(page, app)
              .getByRole("img")
-@@ -547,6 +563,45 @@
+@@ -547,6 +611,45 @@
              );
          const expectMarks = (width: string) =>
            Effect.gen(function* () {
@@ -287,7 +399,7 @@ diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-iden
              for (const [app, name, domain] of [
                ["Mail fixture", "Google", "google.com"],
                ["Issues fixture", "Atlassian", "atlassian.com"],
-@@ -616,13 +671,16 @@
+@@ -616,13 +719,16 @@
            page
              .goto("/accounts")
              .then(() =>
@@ -924,16 +1036,22 @@ diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.
 diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
 --- a/e2e/tests/account-identity-reconciliation.spec.ts
 +++ b/e2e/tests/account-identity-reconciliation.spec.ts
-@@ -134,9 +134,9 @@
-           page.goto(`/org/${actors.organization.slug}/accounts`),
+@@ -135,8 +135,16 @@
          );
          yield* browser.use("Add the second app from its saved identity", (page) =>
--          page
+           page
 -            .getByRole("button", { name: "Add Reconciliation identity app", exact: true })
 -            .click(),
-+          page.locator(".inventory-row").filter({ hasText: "same@example.test" })
-+            .getByRole("button", { name: /^Manage / }).click()
-+            .then(() => page.getByRole("menu").getByRole("menuitem", { name: "Add Reconciliation identity app", exact: true }).click()),
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() =>
++              page
++                .getByRole("menu")
++                .getByRole("menuitem", { name: "Add Reconciliation identity app", exact: true })
++                .click(),
++            ),
          );
          yield* browser.use("Choose the target app", (page) =>
            page
