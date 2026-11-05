@@ -45,9 +45,10 @@ const poolAppFiles: SourceFiles = Schema.decodeUnknownSync(sdk.SourceFiles)(
 const { queuePoolAppUpgrades, poolReconcileRevision } = upgrades;
 const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
-const { provision, selfHostProvisioningServices } = await load(
+const { provision, drainProvisioning, selfHostProvisioningServices } = await load(
   "apps/hosted/server/src/implementation/provisioning.ts",
 );
+const { poolBundleJobPrefix } = await load("apps/hosted/server/src/contracts/pool-defaults.ts");
 const { OrganizationDefaults } = await load(
   "apps/hosted/server/src/contracts/organization-defaults.ts",
 );
@@ -727,11 +728,14 @@ test("bundle rollouts queue verified owners once while rotation has its own jour
       const queue = queuePoolAppUpgrades(key);
       yield* Effect.all([queue, queuePoolAppUpgrades(key)], { concurrency: "unbounded" });
       yield* queue;
+      // Bundle jobs name their bundle and wait only a short margin; old servers refuse them.
       const jobs =
-        yield* sql`select user_id, available_at > now() + interval '14 minutes' as delayed from hosted_provisioning order by user_id`;
+        yield* sql`select user_id, id like ${`${poolBundleJobPrefix}${poolAppVersion}:%`} as tagged,
+          available_at > now() + interval '1 minute' and available_at <= now() + interval '2 minutes' as delayed
+        from hosted_provisioning order by user_id`;
       assert.deepEqual(jobs, [
-        { user_id: "person-a", delayed: true },
-        { user_id: "person-b", delayed: true },
+        { user_id: "person-a", tagged: true, delayed: true },
+        { user_id: "person-b", tagged: true, delayed: true },
       ]);
       const markers =
         yield* sql`select name, completed_at is not null as completed from private_hosted_data_steps`;
@@ -747,6 +751,93 @@ test("bundle rollouts queue verified owners once while rotation has its own jour
       ]);
       yield* queuePoolAppUpgrades(key, "next-bundle");
       assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
+    }),
+  );
+});
+
+test("a release with an unchanged bundle queues no rollout and never redeploys a pool", async () => {
+  await fixture(({ sql, executor }) =>
+    Effect.gen(function* () {
+      yield* queuePoolAppUpgrades(key);
+      const queued = (yield* sql`select * from hosted_provisioning`).length;
+      // A later isolate of the next release, carrying the same bundle, adds nothing.
+      yield* queuePoolAppUpgrades(key, poolAppVersion);
+      assert.equal((yield* sql`select * from hosted_provisioning`).length, queued);
+      // A job for the current bundle on a pool already on it settles without deploying.
+      const defaults = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
+      const run = (id: string) =>
+        provision(id, selfHostProvisioningServices).pipe(
+          Effect.provideService(OrganizationDefaults, defaults),
+        );
+      yield* sql`delete from hosted_provisioning`;
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values (${`${poolBundleJobPrefix}${poolAppVersion}:first`}, 'member', ${organization}, 'person-a')`;
+      yield* run(`${poolBundleJobPrefix}${poolAppVersion}:first`);
+      const [installed] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values (${`${poolBundleJobPrefix}${poolAppVersion}:again`}, 'member', ${organization}, 'person-a')`;
+      yield* run(`${poolBundleJobPrefix}${poolAppVersion}:again`);
+      const [after] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+      assert.equal(after!.active_deployment, installed!.active_deployment);
+    }),
+  );
+});
+
+test("a server on another bundle refuses its rollout job, which retries a bounded number of times", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
+      yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+      const [before] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+      let initialized = 0;
+      const defaults = yield* withPoolDefaults(executor, Option.some(key), () =>
+        Effect.sync(() => void initialized++),
+      );
+      const services = selfHostProvisioningServices;
+      const withDefaults = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+        work.pipe(Effect.provideService(OrganizationDefaults, defaults));
+      // This server still runs `poolAppVersion`; the job was queued by a release shipping "next-bundle".
+      const stale = `${poolBundleJobPrefix}next-bundle:job`;
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values (${stale}, 'member', ${organization}, 'person-a')`;
+      const refused = yield* Effect.exit(withDefaults(provision(stale, services)));
+      assert.equal(refused._tag, "Failure");
+      assert.equal(initialized, 0, "A refused rollout runs no setup");
+      const [unchanged] = yield* sql<{
+        active_deployment: string;
+        files: unknown;
+      }>`select * from executor_apps`;
+      assert.equal(unchanged!.active_deployment, before!.active_deployment);
+      assert.deepEqual(unchanged!.files, JSON.parse(old));
+      assert.deepEqual(yield* sql`select status, attempts from hosted_provisioning`, [
+        { status: "queued", attempts: 1 },
+      ]);
+      // A server that never gets the bundle cannot retry forever: the worker gives up after 8.
+      for (let round = 0; round < 12; round++) {
+        yield* sql`update hosted_provisioning set available_at = now() where status = 'queued'`;
+        yield* withDefaults(drainProvisioning(services));
+      }
+      assert.deepEqual(yield* sql`select status, attempts from hosted_provisioning`, [
+        { status: "failed", attempts: 8 },
+      ]);
+      // The same rollout on a server running its bundle upgrades the pool.
+      const current = `${poolBundleJobPrefix}${poolAppVersion}:job`;
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values (${current}, 'member', ${organization}, 'person-a')`;
+      yield* withDefaults(provision(current, services));
+      const [upgraded] = yield* sql<{
+        active_deployment: string;
+        files: unknown;
+      }>`select * from executor_apps`;
+      assert.match(upgraded!.active_deployment, /^dpl_upgrade_/);
+      assert.deepEqual(upgraded!.files, poolAppFiles);
+      const [team] = yield* sql<{
+        metadata: { basaltPools: Record<string, { bundle: string }> };
+      }>`select metadata::jsonb as metadata from organization`;
+      assert.equal(ownedRecord(team!.metadata.basaltPools)!.bundle, poolAppVersion);
     }),
   );
 });
@@ -1611,10 +1702,10 @@ test("rotation jobs wait 15 minutes for the pool Worker, including demoted and u
       assert.equal(ownedRecord(state!.pools, "person-b")!.tokenKeyVersion, version);
       assert.equal(ownedRecord(state!.pools)!.bundle, "previous-bundle");
       assert.deepEqual(ownedRecord(state!.pools, "invited"), deletedRecord!.pool);
-      // A fresh bundle retains its delay and only targets the remaining verified owner.
+      // A fresh bundle keeps its rollout margin and only targets the remaining verified owner.
       yield* queuePoolAppUpgrades(rotated, "next-bundle");
       const delayed = yield* sql`select user_id from hosted_provisioning
-      where available_at > now() + interval '14 minutes'`;
+      where id like ${`${poolBundleJobPrefix}next-bundle:%`} and available_at > now() + interval '1 minute'`;
       assert.deepEqual(delayed, [{ user_id: "invited" }]);
     }),
   );
@@ -1766,10 +1857,21 @@ test("an owner's token-only job preserves source until its bundle job runs", asy
       const [bundle] = yield* sql<{
         id: string;
       }>`select id from hosted_provisioning where user_id = 'person-a'
-      and available_at > now() + interval '14 minutes'`;
+      and id like ${`${poolBundleJobPrefix}next-bundle:%`}`;
       yield* sql`update hosted_provisioning set available_at = now() where id = ${bundle!.id}`;
+      // The bundle job runs on a server that ships "next-bundle"; others refuse it.
+      const nextServer = yield* withPoolDefaults(executor, Option.some(rotated), () =>
+        Effect.sync(() => {
+          ordinarySetupCalls++;
+        }),
+      ).pipe(
+        Effect.provideService(PoolAppSource, {
+          version: "next-bundle",
+          files: Effect.succeed(poolAppFiles),
+        }),
+      );
       yield* provision(bundle!.id, selfHostProvisioningServices).pipe(
-        Effect.provideService(OrganizationDefaults, initialize),
+        Effect.provideService(OrganizationDefaults, nextServer),
       );
       assert.equal(ordinarySetupCalls, 1);
       assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, poolAppFiles);

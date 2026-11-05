@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Each pool bundle rollout job names the bundle it installs, and only a server running that bundle may settle it. A server on another bundle refuses the job before any setup, so the provisioning retry, bounded at eight attempts, reaches a server with the new source instead of recording the old one as current. Rollout jobs wait a two-minute margin for the pool Worker; token rotation keeps its fifteen-minute delay. A release whose pool bundle is unchanged queues no rollout and never redeploys a pool."
+    }
+  }
+}
