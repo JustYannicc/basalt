@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "Account row actions show safe listed identity and local drafts while details load. Saving and deleting require the account read's permission and the authoritative host mutation; listed data never grants write authority. Untouched fields follow fresh metadata, typed fields survive transient read failures and retry, denial or removal clears protected forms, and removing one saved sign-in preserves its siblings. Accounts, app Accounts and setup actions share this behavior."
+    }
+  }
+}

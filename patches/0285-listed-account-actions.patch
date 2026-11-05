@@ -1,0 +1,1383 @@
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -8,6 +8,7 @@
+ import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+ import { Button } from "../components/button.tsx";
+ import { Input } from "../components/input.tsx";
++import { Skeleton } from "../components/skeleton.tsx";
+ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
+ import {
+   DropdownMenu,
+@@ -83,26 +84,72 @@
+   );
+ }
+ 
++/**
++ * What an account's list row already shows. Row actions open on it while the account is read; it
++ * grants no authority and is never what a change is computed against.
++ */
++export interface ListedAccount {
++  readonly label: string;
++  /** Undefined when the row does not know it. */
++  readonly description?: string | null | undefined;
++  readonly providerName?: string | undefined;
++  readonly providerUrl?: string | null | undefined;
++}
++
+ /** The account a dialog acts on, shown the same way in every action. */
+-export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }) {
+-  const { account, provider } = data;
++export function AccountDialogIdentity({
++  data,
++  listed,
++}: {
++  readonly data: AccountDetail | undefined;
++  readonly listed?: ListedAccount | undefined;
++}) {
++  const definition = data?.provider.definition;
++  const name = definition?.name ?? listed?.providerName;
++  const label = data?.account.label ?? listed?.label;
++  // The sign-in method's kind is the provider's to say, so it waits for the account read.
+   return (
+     <div className="flex items-center gap-3 min-w-0">
+-      <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
++      {name === undefined ? (
++        <Skeleton aria-hidden className="size-8.5 shrink-0 rounded-[7px]" />
++      ) : (
++        <ProviderIcon
++          name={name}
++          url={definition ? providerDisplayUrl(definition) : listed?.providerUrl}
++        />
++      )}
+       <div className="min-w-0 wrap-anywhere">
+-        <div className="text-sm font-medium">{account.label || "Unnamed account"}</div>
++        <div className="text-sm font-medium">
++          {label === undefined ? (
++            <Skeleton className="my-0.5 h-4 w-40" />
++          ) : (
++            label || "Unnamed account"
++          )}
++        </div>
+         <div className="text-xs text-muted-foreground">
+-          {provider.definition.name} ·{" "}
+-          {provider.definition.auth[account.method]?.type === "oauth2" ? "OAuth" : account.method}
++          {data ? (
++            <>
++              {data.provider.definition.name} ·{" "}
++              {data.provider.definition.auth[data.account.method]?.type === "oauth2"
++                ? "OAuth"
++                : data.account.method}
++            </>
++          ) : (
++            (name ?? <Skeleton className="my-0.5 h-3 w-24" />)
++          )}
+         </div>
+       </div>
+     </div>
+   );
+ }
+ 
+-/** Edit a saved account's name and agent-visible description; the product owns the mutation. */
++/**
++ * Edit a saved account's name and agent-visible description; the product owns the mutation. It can
++ * open on the row's values and be typed into at once; saving waits for the saved account.
++ */
+ export function EditAccountForm<E>({
+   account,
++  listed,
+   update,
+   Failure,
+   disabledReason,
+@@ -110,7 +157,10 @@
+   onDone,
+   cancel,
+ }: {
+-  readonly account: Pick<Account, "label" | "description">;
++  /** The saved account that changes are computed against; undefined while it is read. */
++  readonly account: Pick<Account, "label" | "description"> | undefined;
++  /** Shown until `account` arrives. */
++  readonly listed?: Pick<ListedAccount, "label" | "description"> | undefined;
+   readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+   readonly disabledReason?: string | undefined;
+@@ -118,10 +168,19 @@
+   readonly onDone: () => void;
+   readonly cancel: ReactNode;
+ }) {
+-  const [label, setLabel] = useState(account.label);
+-  const [description, setDescription] = useState(account.description ?? "");
++  // Undefined until typed into, so an untouched field follows the saved account when it arrives
++  // and a typed one keeps the person's text.
++  const [labelDraft, setLabel] = useState<string>();
++  const [descriptionDraft, setDescription] = useState<string>();
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
++  // A read-only form shows what is saved, not a draft it cannot save.
++  const drafts = disabledReason === undefined;
++  const label = (drafts ? labelDraft : undefined) ?? account?.label ?? listed?.label ?? "";
++  const saved = account === undefined ? listed?.description : account.description;
++  // Undefined while neither the account nor its row knows the description.
++  const description =
++    (drafts ? descriptionDraft : undefined) ?? (saved === undefined ? undefined : (saved ?? ""));
+   const updatePending = (value: boolean) => {
+     setPending(value);
+     onPendingChange?.(value);
+@@ -132,8 +191,8 @@
+       onSubmit={async (event) => {
+         event.preventDefault();
+         const nextLabel = label.trim();
+-        if (disabledReason !== undefined || pending || !nextLabel) return;
+-        const nextDescription = accountDescriptionValue(description);
++        if (disabledReason !== undefined || pending || account === undefined || !nextLabel) return;
++        const nextDescription = accountDescriptionValue(description ?? "");
+         const changes = {
+           ...(nextLabel === account.label ? {} : { label: nextLabel }),
+           ...(nextDescription === account.description ? {} : { description: nextDescription }),
+@@ -161,14 +220,21 @@
+         />
+       </label>
+       <AccountDescriptionField
+-        value={description}
++        value={description ?? ""}
+         onChange={setDescription}
+-        disabled={pending}
++        disabled={pending || description === undefined}
+         disabledReason={disabledReason}
+       />
+       {error && <Failure cause={error} />}
+       <div className="flex items-center gap-5 text-[13px] [&_a]:text-muted-foreground">
+-        <Button type="submit" loading={pending} disabledReason={disabledReason}>
++        <Button
++          type="submit"
++          loading={pending}
++          disabledReason={
++            disabledReason ??
++            (account === undefined ? "Checking who can edit this account." : undefined)
++          }
++        >
+           Save
+         </Button>
+         {cancel}
+@@ -177,9 +243,13 @@
+   );
+ }
+ 
+-/** Show affected apps before deleting credentials, using the host's typed mutation. */
++/**
++ * Show affected apps before deleting credentials, using the host's typed mutation. It can open on
++ * the row's identity; what deleting does, and the button, wait for the account read.
++ */
+ export function DisconnectAccountForm<E>({
+   data,
++  listed,
+   disconnect,
+   onDisconnected,
+   onPendingChange,
+@@ -191,7 +261,10 @@
+ }: {
+   readonly submitLabel?: string;
+   readonly impact?: ReactNode;
+-  readonly data: AccountDetail;
++  /** Undefined while the account is read. */
++  readonly data: AccountDetail | undefined;
++  /** Identifies the account until `data` arrives. */
++  readonly listed?: ListedAccount | undefined;
+   readonly disconnect: () => Promise<Exit.Exit<unknown, E>>;
+   readonly onDisconnected: () => void;
+   readonly onPendingChange?: (pending: boolean) => void;
+@@ -199,13 +272,61 @@
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+   readonly disabledReason?: string | undefined;
+ }) {
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  return (
++    <div className="flex flex-col gap-5">
++      <AccountDialogIdentity data={data} listed={listed} />
++      {data === undefined ? (
++        <div role="status" aria-label="Loading what uses this account" className="space-y-2">
++          <Skeleton className="h-4 w-full" />
++          <Skeleton className="h-4 w-3/5" />
++        </div>
++      ) : (
++        <DisconnectImpact data={data} impact={impact} />
++      )}
++      {error && <Failure cause={error} />}
++      <div className="flex items-center gap-5 text-[13px] [&_a]:text-muted-foreground">
++        <Button
++          variant="destructive"
++          loading={pending}
++          disabledReason={
++            disabledReason ?? (data === undefined ? "Checking what uses this account." : undefined)
++          }
++          onClick={async () => {
++            if (pending || data === undefined) return;
++            setPending(true);
++            onPendingChange?.(true);
++            setError(undefined);
++            const exit = await disconnect();
++            setPending(false);
++            onPendingChange?.(false);
++            if (Exit.isFailure(exit)) {
++              setError(exit.cause);
++              return;
++            }
++            onDisconnected();
++          }}
++        >
++          {submitLabel}
++        </Button>
++        {cancel}
++      </div>
++    </div>
++  );
++}
++
++function DisconnectImpact({
++  data,
++  impact,
++}: {
++  readonly data: AccountDetail;
++  readonly impact: ReactNode;
++}) {
+   const brand = useProductBrand();
+   const { provider, apps } = data;
+-  const [pending, setPending] = useState(false);
+-  const [error, setError] = useState<Cause.Cause<E>>();
+-  return (
+-    <div className="flex flex-col gap-5">
+-      <AccountDialogIdentity data={data} />
++  return (
++    <>
+       <p className="text-sm text-muted-foreground">
+         {data.revocation === "automatic"
+           ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
+@@ -227,32 +348,7 @@
+           )}
+         </section>
+       )}
+-      {error && <Failure cause={error} />}
+-      <div className="flex items-center gap-5 text-[13px] [&_a]:text-muted-foreground">
+-        <Button
+-          variant="destructive"
+-          loading={pending}
+-          disabledReason={disabledReason}
+-          onClick={async () => {
+-            if (pending) return;
+-            setPending(true);
+-            onPendingChange?.(true);
+-            setError(undefined);
+-            const exit = await disconnect();
+-            setPending(false);
+-            onPendingChange?.(false);
+-            if (Exit.isFailure(exit)) {
+-              setError(exit.cause);
+-              return;
+-            }
+-            onDisconnected();
+-          }}
+-        >
+-          {submitLabel}
+-        </Button>
+-        {cancel}
+-      </div>
+-    </div>
++    </>
+   );
+ }
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -5,6 +5,8 @@
+ import { useAtomSet } from "@effect/atom-react";
+ import type { AccountId } from "@executor-js/sdk";
+ import { useState, type ReactNode } from "react";
++import { Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
+ import {
+   AccountActionsMenu,
+   AccountDialog,
+@@ -12,7 +14,7 @@
+   DisconnectAccountForm,
+   EditAccountForm,
+ } from "@executor-js/ui/dashboard/account-actions";
+-import { QueryView } from "@executor-js/ui/dashboard/context";
++import { QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+ import { AccountHealthPanel } from "@executor-js/ui/dashboard/account-health";
+ import { Button } from "@executor-js/ui/components/button";
+ import { DropdownMenuItem, DropdownMenuSeparator } from "@executor-js/ui/components/dropdown-menu";
+@@ -24,11 +26,21 @@
+   updateAccountAtom,
+ } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
++import { retainProtectedFailure } from "../../contracts/protected-query.ts";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ /** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
+ export type AccountDialogKind = "edit" | "health" | "access" | "delete";
++
++/**
++ * The row a dialog opened from. Edit and delete show it while the account is read; saving and
++ * deleting still wait for the read's own permission. `canManage` is the row's access, when listed.
++ */
++export interface ListedRow {
++  readonly account: AccountSummary;
++  readonly canManage?: boolean | undefined;
++}
+ 
+ /**
+  * Row actions replace the account page: name, health, access and deletion, in place. Credentials
+@@ -74,11 +86,13 @@
+   dialog,
+   onClose,
+   binding = false,
++  listed,
+ }: {
+   readonly id: AccountId;
+   readonly dialog: AccountDialogKind;
+   readonly onClose: () => void;
+   readonly binding?: boolean | undefined;
++  readonly listed?: ListedRow | undefined;
+ }) {
+   const title = binding && dialog === "delete" ? "Remove saved sign-in?" : titles[dialog];
+   const { organization } = useOrganizationRoute();
+@@ -90,35 +104,90 @@
+       busy={busy}
+       onClose={onClose}
+     >
+-      <QueryView
+-        pending={<DetailSkeleton label="Loading account" />}
+-        query={accountAtom({ organization, account: id })}
+-        Failure={HostedFailure}
+-      >
+-        {(data) =>
+-          dialog === "edit" ? (
+-            <EditDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
+-          ) : dialog === "health" ? (
+-            <HealthDialogBody data={data} onClose={onClose} />
+-          ) : dialog === "access" ? (
+-            <>
+-              <AccountDialogIdentity data={data} />
+-              <AccountAccessSettings account={id} />
+-              {data.canManage && <AccountUsageSettings account={id} />}
+-            </>
+-          ) : (
+-            <DeleteDialogBody
+-              data={data}
+-              binding={binding}
+-              onPendingChange={setBusy}
+-              onClose={onClose}
+-            />
+-          )
+-        }
+-      </QueryView>
++      {dialog === "edit" || dialog === "delete" ? (
++        <ListedAccountRead id={id} listed={listed}>
++          {(data) =>
++            dialog === "edit" ? (
++              <EditDialogBody
++                id={id}
++                data={data}
++                listed={listed}
++                onPendingChange={setBusy}
++                onClose={onClose}
++              />
++            ) : (
++              <DeleteDialogBody
++                id={id}
++                data={data}
++                listed={listed}
++                binding={binding}
++                onPendingChange={setBusy}
++                onClose={onClose}
++              />
++            )
++          }
++        </ListedAccountRead>
++      ) : (
++        <QueryView
++          pending={<DetailSkeleton label="Loading account" />}
++          query={accountAtom({ organization, account: id })}
++          Failure={HostedFailure}
++        >
++          {(data) =>
++            dialog === "health" ? (
++              <HealthDialogBody data={data} onClose={onClose} />
++            ) : (
++              <>
++                <AccountDialogIdentity data={data} />
++                <AccountAccessSettings account={id} />
++                {data.canManage && <AccountUsageSettings account={id} />}
++              </>
++            )
++          }
++        </QueryView>
++      )}
+     </AccountDialog>
+   );
+ }
++
++/**
++ * Read the account beside a form that opened on its row. A transient failure keeps the form and
++ * its draft beside the retry; a denial or removal shows only the failure, as the read does
++ * elsewhere. Without a row, it waits for the read like any other dialog.
++ */
++function ListedAccountRead({
++  id,
++  listed,
++  children,
++}: {
++  readonly id: AccountId;
++  readonly listed: ListedRow | undefined;
++  readonly children: (data: AccountDetail | undefined) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const { result, data, refresh } = useQuery(accountAtom({ organization, account: id }));
++  const detail = Option.getOrUndefined(data);
++  const failure = AsyncResult.isFailure(result) ? result : undefined;
++  const content =
++    detail !== undefined
++      ? children(detail)
++      : listed === undefined
++        ? failure === undefined && <DetailSkeleton label="Loading account" />
++        : (failure === undefined || retainProtectedFailure(failure.cause)) && children(undefined);
++  // The failure and the form keep separate positions, so a failure never remounts the draft.
++  return (
++    <>
++      {failure && (
++        <HostedFailure cause={failure.cause} retry={refresh} retrying={failure.waiting} />
++      )}
++      {content}
++    </>
++  );
++}
++
++/** A row's own access can show a read-only form at once; only the account read permits saving. */
++const canManage = (data: AccountDetail | undefined, listed: ListedRow | undefined) =>
++  data?.canManage ?? listed?.canManage;
+ 
+ const cancelButton = (onClose: () => void): ReactNode => (
+   <Button variant="ghost" onClick={onClose}>
+@@ -152,27 +221,32 @@
+ }
+ 
+ function EditDialogBody({
++  id,
+   data,
++  listed,
+   onPendingChange,
+   onClose,
+ }: {
+-  readonly data: AccountDetail;
++  readonly id: AccountId;
++  readonly data: AccountDetail | undefined;
++  readonly listed: ListedRow | undefined;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onClose: () => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+-  const update = useAtomSet(updateAccountAtom({ organization, account: data.account.id }), {
++  const update = useAtomSet(updateAccountAtom({ organization, account: id }), {
+     mode: "promiseExit",
+   });
+   return (
+     <EditAccountForm<HostedError>
+-      account={data.account}
++      account={data?.account}
++      listed={listed?.account}
+       update={update}
+       Failure={HostedFailure}
+       disabledReason={
+-        data.canManage
+-          ? undefined
+-          : "Only the account creator and organization admins can manage this shared account."
++        canManage(data, listed) === false
++          ? "Only the account creator and organization admins can manage this shared account."
++          : undefined
+       }
+       onPendingChange={onPendingChange}
+       onDone={onClose}
+@@ -182,18 +256,22 @@
+ }
+ 
+ function DeleteDialogBody({
++  id,
+   data,
++  listed,
+   binding,
+   onPendingChange,
+   onClose,
+ }: {
+-  readonly data: AccountDetail;
++  readonly id: AccountId;
++  readonly data: AccountDetail | undefined;
++  readonly listed: ListedRow | undefined;
+   readonly binding: boolean;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onClose: () => void;
+ }) {
+   const { organization } = useOrganizationRoute();
+-  const disconnect = useAtomSet(disconnectAccountAtom({ organization, account: data.account.id }), {
++  const disconnect = useAtomSet(disconnectAccountAtom({ organization, account: id }), {
+     mode: "promiseExit",
+   });
+   return (
+@@ -205,11 +283,12 @@
+         </p>
+       }
+       data={data}
++      listed={listed?.account}
+       Failure={HostedFailure}
+       disabledReason={
+-        data.canManage
+-          ? undefined
+-          : "Only the account creator and organization admins can delete this shared account."
++        canManage(data, listed) === false
++          ? "Only the account creator and organization admins can delete this shared account."
++          : undefined
+       }
+       disconnect={() => disconnect()}
+       onPendingChange={onPendingChange}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -10,6 +10,7 @@
+   HostedAccountActions,
+   HostedAccountDialog,
+   type AccountDialogKind,
++  type ListedRow,
+ } from "./account-actions.tsx";
+ import { Option } from "effect";
+ import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
+@@ -59,6 +60,7 @@
+     account: AccountId;
+     kind: AccountDialogKind;
+     binding: boolean;
++    listed: ListedRow;
+   }>();
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+@@ -132,7 +134,14 @@
+               account={account}
+               access={entry?.access}
+               binding={binding}
+-              open={(kind) => setDialog({ account: account.id, kind, binding })}
++              open={(kind) =>
++                setDialog({
++                  account: account.id,
++                  kind,
++                  binding,
++                  listed: { account, canManage: entry?.access.canManage },
++                })
++              }
+             />
+           );
+         }}
+@@ -201,6 +210,7 @@
+           id={dialog.account}
+           dialog={dialog.kind}
+           binding={dialog.binding}
++          listed={dialog.listed}
+           onClose={() => setDialog(undefined)}
+         />
+       )}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+@@ -331,7 +331,7 @@
+   const [connection, setConnection] = useState<Connection>();
+   const [pending, setPending] = useState(false);
+   const [dialog, setDialog] = useState<{
+-    readonly id: Account["id"];
++    readonly account: Account;
+     readonly kind: AccountDialogKind;
+   }>();
+   // Apps connected from the full list or a search join the top list only when the list is shown
+@@ -397,7 +397,7 @@
+       item={item}
+       busy={connection?.entry === item.entry.id}
+       onConnect={() => void connect(item)}
+-      onAccountAction={(id, kind) => setDialog({ id, kind })}
++      onAccountAction={(account, kind) => setDialog({ account, kind })}
+     />
+   );
+   return (
+@@ -470,8 +470,10 @@
+       </ConnectionModal>
+       {dialog && (
+         <HostedAccountDialog
+-          id={dialog.id}
++          key={`${dialog.account.id}:${dialog.kind}`}
++          id={dialog.account.id}
+           dialog={dialog.kind}
++          listed={{ account: dialog.account }}
+           onClose={() => setDialog(undefined)}
+         />
+       )}
+@@ -505,7 +507,7 @@
+   readonly item: SetupApp;
+   readonly busy: boolean;
+   readonly onConnect: () => void;
+-  readonly onAccountAction: (account: Account["id"], kind: AccountDialogKind) => void;
++  readonly onAccountAction: (account: Account, kind: AccountDialogKind) => void;
+ }) {
+   const { entry, accounts } = item;
+   const [first] = accounts;
+@@ -600,7 +602,7 @@
+   readonly accounts: readonly Account[];
+   readonly busy: boolean;
+   readonly onAdd: () => void;
+-  readonly onAccountAction: (account: Account["id"], kind: AccountDialogKind) => void;
++  readonly onAccountAction: (account: Account, kind: AccountDialogKind) => void;
+ }) {
+   const [open, setOpen] = useState(false);
+   return (
+@@ -631,7 +633,7 @@
+                 access={undefined}
+                 open={(kind) => {
+                   setOpen(false);
+-                  onAccountAction(account.id, kind);
++                  onAccountAction(account, kind);
+                 }}
+               />
+             </li>
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -171,7 +171,7 @@
+     /** Set when replacing this account's credentials rather than adding an account. */
+     readonly account?: AccountSummary | undefined;
+   }>();
+-  const [renaming, setRenaming] = useState<AccountSummary["id"]>();
++  const [renaming, setRenaming] = useState<AccountSummary>();
+   // Set when the host refused the open connection for good; its form gives way to the destination.
+   const [refused, setRefused] = useState<ProviderAccountDestination>();
+   const closeConnection = () => {
+@@ -303,7 +303,7 @@
+                 onUnlinked={() => void unused.check(account.id)}
+               >
+                 {usable(account) && (
+-                  <DropdownMenuItem onSelect={() => setRenaming(account.id)}>
++                  <DropdownMenuItem onSelect={() => setRenaming(account)}>
+                     Edit details
+                   </DropdownMenuItem>
+                 )}
+@@ -503,7 +503,13 @@
+         ) : null}
+       </ConnectionModal>
+       {renaming && (
+-        <HostedAccountDialog id={renaming} dialog="edit" onClose={() => setRenaming(undefined)} />
++        <HostedAccountDialog
++          key={renaming.id}
++          id={renaming.id}
++          dialog="edit"
++          listed={{ account: renaming }}
++          onClose={() => setRenaming(undefined)}
++        />
+       )}
+     </>
+   );
+diff --git a/e2e/tests/listed-account-actions.spec.ts b/e2e/tests/listed-account-actions.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/listed-account-actions.spec.ts
+@@ -0,0 +1,358 @@
++/** Edit details and Delete account open on their row while the account itself is read. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Locator, Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { accountRow, openRowDetails } from "../support/account-rows.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Account = Schema.Struct({
++  id: Schema.String,
++  label: Schema.String,
++  description: Schema.NullOr(Schema.String),
++});
++const Detail = Schema.Struct({ account: Account });
++const provider = "Listed actions fixture";
++const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({name:"${provider}",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
++export default defineApp({user: { accounts:{service:service.many()} }},{tools: router({ hello:query({input:object({})},async()=>"Hello") })});`;
++
++/** The owner's app and personal account named `label`, removed when the case ends. */
++const ownedAccount = (label: string, description: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const app = yield* body(
++      App,
++      yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: `App for ${label}`,
++        files: [{ path: "index.ts", content: source }, appsManifest],
++      }),
++    );
++    const accounts: string[] = [];
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
++        ).toBe(200);
++        for (const id of accounts)
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`)).status,
++          ).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const connection = yield* body(
++      Resource,
++      yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++        { destination: { kind: "personal" } },
++      ),
++    );
++    const account = yield* body(
++      Resource,
++      yield* api.request(actors.owner, "POST", `${prefix}/connections/${connection.id}/submit`, {
++        method: "key",
++        label,
++        fields: { token: "synthetic" },
++      }),
++    );
++    accounts.push(account.id);
++    expect(
++      (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, {
++        description,
++      })).status,
++    ).toBe(200);
++    return {
++      id: account.id,
++      app: app.id,
++      path: `${prefix}/accounts/${account.id}`,
++      // The browser may name the organization by ID or slug; batches are split by the hold.
++      detailPaths: [actors.organization.id, actors.organization.slug].map(
++        (organization) => `/api/organizations/${organization}/accounts/${account.id}`,
++      ),
++      deleted: () => accounts.splice(accounts.indexOf(account.id), 1),
++    };
++  });
++
++/** Open a fresh Accounts document at `width` and wait for the row's menu button. */
++const openAccounts = (label: string, width: number, app?: string) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      browser = yield* Browser;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Use the scenario width", (page) =>
++      page.setViewportSize({ width, height: 900 }),
++    );
++    yield* browser.use("Open Accounts in a new document", (page) =>
++      page.goto(
++        app === undefined
++          ? `/org/${actors.organization.slug}/accounts`
++          : `/org/${actors.organization.slug}/apps/${app}?view=accounts`,
++      ),
++    );
++    yield* browser.use("The account row is listed", (page) =>
++      page.getByRole("button", { name: `Manage ${label}`, exact: true }).waitFor(),
++    );
++  });
++
++const openRowAction = (page: Page, label: string, item: string, dialog: Locator) =>
++  page
++    .getByRole("button", { name: `Manage ${label}`, exact: true })
++    .click()
++    .then(() => page.getByRole("menuitem", { name: item, exact: true }).click())
++    .then(() => dialog.waitFor({ state: "visible" }));
++
++const editDialog = (page: Page) => page.getByRole("dialog", { name: "Edit account", exact: true });
++const nameField = (dialog: Locator) =>
++  dialog.getByRole("textbox", { name: "Account name", exact: true });
++
++/** The edit form as it stands, without waiting for controls that are not there. */
++const editState = (dialog: Locator) => {
++  const name = nameField(dialog);
++  const save = dialog.getByRole("button", { name: "Save", exact: true });
++  return Promise.all([name.count(), save.count()]).then(([names, saves]) =>
++    Promise.all([
++      names === 1 ? name.isVisible() : false,
++      names === 1 ? name.inputValue() : undefined,
++      names === 1 ? name.isEditable() : false,
++      saves === 1 ? save.isDisabled() : undefined,
++    ]).then(([visible, value, editable, saveDisabled]) => ({
++      visible,
++      value,
++      editable,
++      saveDisabled,
++    })),
++  );
++};
++
++/** Wait for the account read to permit saving; the hold has been released by then. */
++const saveEnabled = (page: Page) =>
++  page.waitForFunction(() => {
++    const dialog = document.querySelector('[role="dialog"]');
++    const save = Array.from(dialog?.querySelectorAll("button") ?? []).find(
++      (button) => button.textContent?.trim() === "Save",
++    );
++    return save !== undefined && !save.disabled;
++  });
++
++const deleteDialog = (page: Page) =>
++  page.getByRole("dialog", { name: "Delete account?", exact: true });
++const impactText = /^This deletes the saved credentials from /;
++
++/** The delete dialog as it stands, without waiting for controls that are not there. */
++const deleteState = (dialog: Locator, label: string) => {
++  const button = dialog.getByRole("button", { name: "Delete account", exact: true });
++  return Promise.all([
++    dialog.getByText(label, { exact: true }).count(),
++    dialog.getByText(impactText).count(),
++    button.count(),
++  ]).then(([named, impact, buttons]) =>
++    Promise.resolve(buttons === 1 ? button.isDisabled() : undefined).then((disabled) => ({
++      named,
++      impact,
++      disabled,
++    })),
++  );
++};
++
++layer(HostedLive, { excludeTestServices: true })("Listed account actions", (it) => {
++  for (const [scenario, width, entry] of [
++    [scenarios.listedAccountEdit, 1440, "list"],
++    [scenarios.listedAccountEditMobile, 390, "list"],
++    [scenarios.listedAppAccountEdit, 1440, "app"],
++    [scenarios.listedAppAccountEditMobile, 390, "app"],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser;
++          const label = `Listed edit ${randomUUID().slice(0, 8)}`;
++          const typed = `${label} renamed`;
++          const listedDescription = "Row description, read with the list.";
++          const savedDescription = "Saved description, read with the account.";
++          const fixture = yield* ownedAccount(label, listedDescription);
++          yield* openAccounts(label, width, entry === "app" ? fixture.app : undefined);
++          if (entry === "list")
++            yield* browser.use("The row shows its description in Details", (page) =>
++              openRowDetails(page, accountRow(page, label), label).then(() =>
++                page.getByText(listedDescription, { exact: true }).waitFor(),
++              ),
++            );
++          // Keep the list's older snapshot stable while the independent detail returns new metadata.
++          yield* holdQuery(
++            [actors.organization.id, actors.organization.slug].flatMap((organization) => [
++              `/api/organizations/${organization}/resources`,
++              `/api/organizations/${organization}/resources/accounts`,
++              `/api/organizations/${organization}/inventory`,
++              `/api/organizations/${organization}/apps/${fixture.app}/accounts/app`,
++              `/api/organizations/${organization}/apps/${fixture.app}/accounts/user`,
++            ]),
++            "continue",
++            { allRequests: true },
++          );
++          // The row now lags the saved account, as any listed value can.
++          expect(
++            (yield* api.request(actors.owner, "PATCH", fixture.path, {
++              description: savedDescription,
++            })).status,
++          ).toBe(200);
++
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              // The first account read fails, so the draft also has to survive its retry.
++              const held = yield* holdQuery(fixture.detailPaths, "fail");
++              yield* browser.use("Open Edit details from the row", (page) =>
++                openRowAction(page, label, "Edit details", editDialog(page)),
++              );
++              expect(fixture.detailPaths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use("Read the form while the account read is held", (page) =>
++                  editState(editDialog(page)),
++                ),
++                "Edit details shows the row's name, typeable, with Save waiting, while the account read is held",
++              ).toEqual({ visible: true, value: label, editable: true, saveDisabled: true });
++              expect(
++                yield* browser.use("The held editor has the list's older description", (page) =>
++                  editDialog(page)
++                    .getByRole("textbox", { name: "Description for agents", exact: true })
++                    .inputValue(),
++                ),
++              ).toBe(listedDescription);
++              yield* browser.use("Type a new name before the account arrives", (page) =>
++                nameField(editDialog(page)).fill(typed),
++              );
++              yield* browser.checkpoint(`${width} edit details while the account is read`);
++              yield* held.release;
++              yield* browser.use("The failed account read offers a retry", (page) =>
++                editDialog(page).getByRole("button", { name: "Try again", exact: true }).waitFor(),
++              );
++              expect(
++                yield* browser.use("Read the form after the failed read", (page) =>
++                  editState(editDialog(page)),
++                ),
++                "A failed account read keeps the typed name and keeps Save waiting",
++              ).toEqual({ visible: true, value: typed, editable: true, saveDisabled: true });
++              yield* browser.use("Retry the account read", (page) =>
++                editDialog(page).getByRole("button", { name: "Try again", exact: true }).click(),
++              );
++            }),
++          );
++
++          yield* browser.use("The account read permits saving", saveEnabled);
++          expect(
++            yield* browser.use("Read the form after the account arrives", (page) =>
++              Promise.all([
++                editState(editDialog(page)),
++                editDialog(page)
++                  .getByRole("textbox", { name: "Description for agents", exact: true })
++                  .inputValue(),
++              ]),
++            ),
++            "The typed name stays and the untouched description follows the saved account",
++          ).toEqual([
++            { visible: true, value: typed, editable: true, saveDisabled: false },
++            savedDescription,
++          ]);
++          yield* browser.checkpoint(`${width} edit details after the account arrives`);
++          yield* browser.use("Save the account details", (page) =>
++            editDialog(page)
++              .getByRole("button", { name: "Save", exact: true })
++              .click()
++              .then(() => editDialog(page).waitFor({ state: "hidden" })),
++          );
++          const saved = yield* api
++            .request(actors.owner, "GET", fixture.path)
++            .pipe(Effect.flatMap((response) => body(Detail, response)));
++          expect(saved.account, "Saving changes only the typed name").toEqual({
++            id: fixture.id,
++            label: typed,
++            description: savedDescription,
++          });
++        }),
++      ),
++    );
++
++  for (const [scenario, width] of [
++    [scenarios.listedAccountDelete, 1440],
++    [scenarios.listedAccountDeleteMobile, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser;
++          const label = `Listed delete ${randomUUID().slice(0, 8)}`;
++          const fixture = yield* ownedAccount(label, "Delete fixture description.");
++          yield* openAccounts(label, width);
++
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(fixture.detailPaths, "continue");
++              yield* browser.use("Open Delete account from the row", (page) =>
++                openRowAction(page, label, "Delete account", deleteDialog(page)),
++              );
++              expect(fixture.detailPaths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use("Read the dialog while the account read is held", (page) =>
++                  deleteState(deleteDialog(page), label),
++                ),
++                "Delete account? names the row's account and holds its button while the account read is held",
++              ).toEqual({ named: 1, impact: 0, disabled: true });
++              yield* browser.checkpoint(`${width} delete account while the account is read`);
++              yield* held.release;
++            }),
++          );
++
++          yield* browser.use("What deleting does arrives with the account", (page) =>
++            deleteDialog(page).getByText(impactText).waitFor(),
++          );
++          expect(
++            yield* browser.use("Read the dialog after the account arrives", (page) =>
++              Promise.all([
++                deleteState(deleteDialog(page), label),
++                deleteDialog(page).getByText(`${provider} · key`, { exact: true }).count(),
++              ]),
++            ),
++            "The account read adds the provider's method and what deleting does, then allows it",
++          ).toEqual([{ named: 1, impact: 1, disabled: false }, 1]);
++          yield* browser.checkpoint(`${width} delete account after the account arrives`);
++          const deleted = yield* browser.use("Delete the account", (page) =>
++            Promise.all([
++              page.waitForResponse(
++                (response) =>
++                  response.request().method() === "DELETE" &&
++                  fixture.detailPaths.includes(new URL(response.url()).pathname),
++              ),
++              deleteDialog(page)
++                .getByRole("button", { name: "Delete account", exact: true })
++                .click(),
++            ]).then(([response]) => response.status()),
++          );
++          expect(deleted).toBe(200);
++          yield* browser.use("Deleting closes the dialog", (page) =>
++            deleteDialog(page).waitFor({ state: "hidden" }),
++          );
++          fixture.deleted();
++          expect([403, 404]).toContain(
++            (yield* api.request(actors.owner, "GET", fixture.path)).status,
++          );
++        }),
++      ),
++    );
++});
+diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/listed-account-bindings.spec.ts
+@@ -0,0 +1,235 @@
++/** Removing one verified sign-in opens on that binding and preserves its sibling. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { IdentityAccount } from "../support/account-identity-product.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const verifiedBindings = Effect.gen(function* () {
++  const api = yield* Api;
++  const actors = yield* Actors;
++  const issuer = yield* accountIdentityIssuer;
++  const http = yield* HttpClient.HttpClient;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const apps: string[] = [];
++  const accounts = new Set<string>();
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const app of apps)
++        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++          200,
++        );
++      for (const account of accounts)
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  const bindings = [];
++  for (const label of ["First saved sign-in", "Other saved sign-in"]) {
++    const config = {
++      authorizationUrl: issuer.origin + "/authorize",
++      tokenUrl: issuer.origin + "/token",
++      scopes: ["read"],
++      tokenEndpointAuthMethod: "none",
++      identity: { issuer: issuer.origin, name: "Fixture identity" },
++    };
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: `App for ${label}`,
++      files: [
++        appsManifest,
++        {
++          path: "index.ts",
++          content: `import {defineApp,defineProvider,oauth2,router} from "apps";
++const service=defineProvider({name:${JSON.stringify(`Provider for ${label}`)},auth:{oauth:oauth2(${JSON.stringify(config)})}});
++export default defineApp({user:{accounts:{service}}},{tools:router({})});`,
++        },
++      ],
++    });
++    expect(deployed.status).toBe(200);
++    const app = (yield* body(Resource, deployed)).id;
++    apps.push(app);
++    const connection = yield* body(
++      Resource,
++      yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++        {},
++      ),
++    );
++    const started = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection.id}/oauth/start`,
++      { method: "oauth", client: { clientId: "listed-bindings-client" } },
++    );
++    expect(started.status).toBe(200);
++    const authorization = yield* body(Schema.Struct({ authorizationUrl: Schema.String }), started);
++    const callbackUrl = yield* Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++        const location = response.headers.location;
++        if (location === undefined) return yield* Effect.die("Fixture issuer omitted callback");
++        return location;
++      }),
++    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++    const completed = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection.id}/oauth/complete`,
++      { callbackUrl },
++    );
++    expect(completed.status).toBe(200);
++    const account = yield* body(IdentityAccount, completed);
++    expect(account.identity).toBeDefined();
++    accounts.add(account.id);
++    expect(
++      (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, { label }))
++        .status,
++    ).toBe(200);
++    bindings.push({ ...account, label });
++  }
++  const [first, other] = bindings;
++  if (first === undefined || other === undefined)
++    return yield* Effect.die("Fixture did not create both bindings");
++  expect(first.id).not.toBe(other.id);
++  expect(first.identity?.id).toBe(other.identity?.id);
++  return { first, other, prefix, removed: (account: string) => accounts.delete(account) };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Listed account bindings", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.listedBindingRemove, 1440],
++    [scenarios.listedBindingRemoveMobile, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api;
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const fixture = yield* verifiedBindings;
++          const paths = [actors.organization.id, actors.organization.slug].map(
++            (organization) => `/api/organizations/${organization}/accounts/${fixture.first.id}`,
++          );
++          yield* browser.login(actors.owner);
++          yield* browser.use("Open the grouped sign-ins", (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
++              .then(() => page.getByRole("button", { name: "Manage apps", exact: true }).waitFor()),
++          );
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(paths, "continue");
++              yield* browser.use("Remove the first saved sign-in", (page) =>
++                page
++                  .getByRole("button", { name: "Manage apps", exact: true })
++                  .click()
++                  .then(() =>
++                    page
++                      .getByRole("button", { name: `Manage ${fixture.first.label}`, exact: true })
++                      .click(),
++                  )
++                  .then(() =>
++                    page
++                      .getByRole("menuitem", { name: "Remove saved sign-in", exact: true })
++                      .click(),
++                  )
++                  .then(() =>
++                    page
++                      .getByRole("dialog", { name: "Remove saved sign-in?", exact: true })
++                      .waitFor(),
++                  ),
++              );
++              expect(paths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use(
++                  "Read the binding confirmation while its account is held",
++                  (page) => {
++                    const dialog = page.getByRole("dialog", {
++                      name: "Remove saved sign-in?",
++                      exact: true,
++                    });
++                    const button = dialog.getByRole("button", {
++                      name: "Remove saved sign-in",
++                      exact: true,
++                    });
++                    return Promise.all([
++                      dialog.getByText(fixture.first.label, { exact: true }).count(),
++                      dialog.getByText(/^This deletes the saved credentials from /).count(),
++                      button.count(),
++                    ]).then(([named, impact, buttons]) =>
++                      Promise.resolve(buttons === 1 ? button.isDisabled() : undefined).then(
++                        (disabled) => ({ named, impact, disabled }),
++                      ),
++                    );
++                  },
++                ),
++                "Remove saved sign-in names the selected row and waits for its authoritative account read",
++              ).toEqual({ named: 1, impact: 0, disabled: true });
++              yield* browser.checkpoint(`${width} remove saved sign-in before detail`);
++              yield* held.release;
++            }),
++          );
++          yield* browser.use("The binding's removal impact arrives", (page) =>
++            page
++              .getByRole("dialog", { name: "Remove saved sign-in?", exact: true })
++              .getByText(/^This deletes the saved credentials from /)
++              .waitFor(),
++          );
++          const deleted = yield* browser.use("Confirm removal of only this saved sign-in", (page) =>
++            Promise.all([
++              page.waitForResponse(
++                (response) =>
++                  response.request().method() === "DELETE" &&
++                  paths.includes(new URL(response.url()).pathname),
++              ),
++              page
++                .getByRole("dialog", { name: "Remove saved sign-in?", exact: true })
++                .getByRole("button", { name: "Remove saved sign-in", exact: true })
++                .click(),
++            ]).then(([response]) => response.status()),
++          );
++          expect(deleted).toBe(200);
++          fixture.removed(fixture.first.id);
++          yield* browser.use("The sign-in dialog closes", (page) =>
++            page
++              .getByRole("dialog", { name: "Remove saved sign-in?", exact: true })
++              .waitFor({ state: "hidden" }),
++          );
++          expect([403, 404]).toContain(
++            (yield* api.request(
++              actors.owner,
++              "GET",
++              `${fixture.prefix}/accounts/${fixture.first.id}`,
++            )).status,
++          );
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "GET",
++              `${fixture.prefix}/accounts/${fixture.other.id}`,
++            )).status,
++            "The identity's other saved sign-in survives",
++          ).toBe(200);
++          yield* browser.use("The other sign-in remains manageable", (page) =>
++            page
++              .getByRole("button", { name: `Manage ${fixture.other.label}`, exact: true })
++              .waitFor(),
++          );
++        }),
++      ),
++    );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -4965,6 +4965,94 @@
+       local: na(
+         "The local dashboard shares the naming and edit forms; its API and MCP have their own scenario.",
+       ),
++    },
++  },
++  listedAccountEdit: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "Edit details opens on its row and keeps typed text while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na(
++        "The local dashboard keeps its own account dialogs, which open on the account read.",
++      ),
++    },
++  },
++  listedAccountEditMobile: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "Mobile Edit details opens on its row and keeps typed text while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na(
++        "The local dashboard keeps its own account dialogs, which open on the account read.",
++      ),
++    },
++  },
++  listedAppAccountEdit: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "App Accounts Edit details keeps typed text while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAppAccountEditMobile: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "Mobile App Accounts Edit details keeps typed text while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAccountDelete: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "Delete account opens on its row and holds deletion while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na(
++        "The local dashboard keeps its own account dialogs, which open on the account read.",
++      ),
++    },
++  },
++  listedAccountDeleteMobile: {
++    fixtures: "actors",
++    file: "listed-account-actions.spec.ts",
++    title: "Mobile Delete account opens on its row and holds deletion while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na(
++        "The local dashboard keeps its own account dialogs, which open on the account read.",
++      ),
++    },
++  },
++  listedBindingRemove: {
++    fixtures: "actors",
++    file: "listed-account-bindings.spec.ts",
++    title: "Remove saved sign-in opens on its binding and waits while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedBindingRemoveMobile: {
++    fixtures: "actors",
++    file: "listed-account-bindings.spec.ts",
++    title: "Mobile Remove saved sign-in opens on its binding and waits while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
+     },
+   },
+   localAccountOwners: {
