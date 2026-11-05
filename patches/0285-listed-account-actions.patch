@@ -1072,7 +1072,7 @@ diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-accoun
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/listed-account-bindings.spec.ts
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,241 @@
 +/** Removing one verified sign-in opens on that binding and preserves its sibling. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1199,12 +1199,14 @@ new file mode 100644
 +            (organization) => `/api/organizations/${organization}/accounts/${fixture.first.id}`,
 +          );
 +          const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
-+        yield* browser.login(actors.owner);
++          yield* browser.login(actors.owner);
 +          yield* browser.use("Open the grouped sign-ins", (page) =>
 +            page
 +              .setViewportSize({ width, height: 900 })
 +              .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
-+              .then(() => page.getByRole("button", { name: `Manage ${groupTitle}`, exact: true }).waitFor()),
++              .then(() =>
++                page.getByRole("button", { name: `Manage ${groupTitle}`, exact: true }).waitFor(),
++              ),
 +          );
 +          yield* Effect.scoped(
 +            Effect.gen(function* () {
@@ -1312,6 +1314,7 @@ new file mode 100644
 +      ),
 +    );
 +});
+
 diff --git a/e2e/tests/listed-account-authority.spec.ts b/e2e/tests/listed-account-authority.spec.ts
 new file mode 100644
 --- /dev/null

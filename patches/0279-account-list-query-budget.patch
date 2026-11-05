@@ -295,10 +295,9 @@ index bda20d0..2c64551 100644
  export const accountObservationsAtom = (key: {
 diff --git a/apps/hosted/web/src/contracts/account-polling.ts b/apps/hosted/web/src/contracts/account-polling.ts
 new file mode 100644
-index 0000000..1b0509e
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/account-polling.ts
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,108 @@
 +/** One mounted clock reconciles account views; failures never create a faster polling lane. */
 +import type { AccountHealth } from "@executor-js/sdk";
 +import { Effect } from "effect";
@@ -306,6 +305,7 @@ index 0000000..1b0509e
 +
 +const interval = 30_000;
 +const maximumBackoff = 10;
++const activeInterval = 5_000;
 +const cadence = Atom.readable((get) => {
 +  if (typeof window === "undefined") return 0;
 +  let tick = 0;
@@ -324,6 +324,7 @@ index 0000000..1b0509e
 +  source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
 +  pending?: (value: A) => boolean,
 +  unavailableHealth?: (value: A) => boolean,
++  options: { readonly active?: boolean } = {},
 +): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
 +  Atom.readable(
 +    (get) => {
@@ -338,6 +339,8 @@ index 0000000..1b0509e
 +        (AsyncResult.isSuccess(value) && unavailableHealth?.(value.value) === true);
 +      const unsettled = () =>
 +        unavailable() || (AsyncResult.isSuccess(value) && pending?.(value.value) === true);
++      const active = () =>
++        options.active === true && AsyncResult.isSuccess(value) && pending?.(value.value) === true;
 +      const observe = () => {
 +        if (!unsettled()) {
 +          unsettledAt = undefined;
@@ -351,12 +354,34 @@ index 0000000..1b0509e
 +        observe();
 +        get.setSelf(next);
 +      });
++      if (options.active)
++        get.addFinalizer(
++          Effect.runCallback(
++            Effect.forever(
++              Effect.sleep(activeInterval).pipe(
++                Effect.andThen(() =>
++                  Effect.sync(() => {
++                    if (active() && !value.waiting && document.visibilityState === "visible") {
++                      readAt = tick;
++                      get.refresh(source);
++                    }
++                  }),
++                ),
++              ),
++            ),
++          ),
++        );
 +      get.subscribe(cadence, (next) => {
 +        tick = next;
 +        const age = unsettledAt === undefined ? 0 : tick - unsettledAt;
 +        // Unavailable reads wait two ticks; prolonged pending work uses the same bounded backoff.
 +        const delay = unsettled() && (unavailable() || age >= 1) ? backoff : 1;
-+        if (!value.waiting && document.visibilityState === "visible" && tick - readAt >= delay) {
++        if (
++          !active() &&
++          !value.waiting &&
++          document.visibilityState === "visible" &&
++          tick - readAt >= delay
++        ) {
 +          readAt = tick;
 +          if (unsettled()) backoff = Math.min(maximumBackoff, backoff * 2);
 +          get.refresh(source);
@@ -432,7 +457,6 @@ index 6f5200f..e618d79 100644
    ),
  );
 diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index ff7abf7..f919832 100644
 --- a/apps/hosted/web/src/contracts/resource-access.ts
 +++ b/apps/hosted/web/src/contracts/resource-access.ts
 @@ -2,7 +2,7 @@
@@ -444,7 +468,7 @@ index ff7abf7..f919832 100644
  import { Data, Effect } from "effect";
  import { Atom, AsyncResult } from "effect/reactivity";
  import type { Account, AccountId, AppId } from "@executor-js/sdk";
-@@ -42,7 +42,12 @@ const directory = Atom.family((key: DirectoryKey) =>
+@@ -42,7 +42,13 @@
      }),
    ).pipe(
      revalidated,
@@ -454,6 +478,7 @@ index ff7abf7..f919832 100644
 +        source,
 +        ({ pendingApp }) => pendingApp,
 +        ({ accounts }) => accounts.some(({ health }) => unavailableAccountHealth(health)),
++        { active: true },
 +      ),
      protectedQuery,
    ),
@@ -1297,3 +1322,47 @@ index a506df2..8d37ee0 100644
    const [pending, setPending] = useState(false);
    const [error, setError] = useState<Cause.Cause<E>>();
    const run = async () => {
+diff --git a/e2e/support/team-installation.ts b/e2e/support/team-installation.ts
+--- a/e2e/support/team-installation.ts
++++ b/e2e/support/team-installation.ts
+@@ -18,6 +18,7 @@
+     const browser = yield* Browser;
+     const requested = yield* Deferred.make<void>();
+     let pending = true;
++    let reads = 0;
+     const match = (url: URL) => paths.includes(url.pathname);
+     const release = browser.use("Release team installation responses", (page) =>
+       page.unroute(match),
+@@ -25,12 +26,14 @@
+     yield* Effect.addFinalizer(() => release.pipe(Effect.orDie));
+     yield* browser.use("Hold the missing app while installation runs", (page) =>
+       page.route(match, (route) => {
++        reads++;
+         // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright route handlers are plain callbacks
+         Effect.runSync(Deferred.succeed(requested, undefined));
+         return route.fulfill({ json: { ...directory, apps: [], pendingApp: pending } });
+       }),
+     );
+     return {
++      reads: Effect.sync(() => reads),
+       requested: Deferred.await(requested).pipe(Effect.timeout("30 seconds")),
+       stop: Effect.sync(() => {
+         pending = false;
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -349,6 +349,14 @@
+                 page.getByRole("status", { name: "Installing app", exact: true }).count(),
+               ),
+             ).toBe(0);
++            const stoppedReads = yield* held.reads;
++            yield* browser.use("Settled installation stops active polling", (page) =>
++              page.context().clock.runFor(10_000),
++            );
++            expect(
++              (yield* held.reads) - stoppedReads,
++              "settled directories keep only the bounded idle reconciliation",
++            ).toBeLessThanOrEqual(1);
+             yield* held.resume;
+             // A settled directory learns about the retry at its next idle reconciliation.
+             yield* advanceToReconciliation;
