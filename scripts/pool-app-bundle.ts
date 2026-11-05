@@ -35,18 +35,6 @@ function placeRouterFonts(root: string, upstream: string) {
   for (const file of fontFiles) copyFileSync(join(fonts, file), join(served, file));
 }
 
-// Auth method keys are part of the saved Subscription identity. New methods belong to
-// canonical provider apps and must not change this legacy definition before migration.
-const legacySubscriptionProviders = new Set([
-  "claude", "codex", "antigravity", "kimi", "xai", "devin", "meta",
-]);
-
-type ProviderRow = { id: string; name: string; site?: string };
-function providerTable(root: string): readonly ProviderRow[] {
-  const table: ProviderRow[] = JSON.parse(readFileSync(join(root, "src/pool/providers.json"), "utf8"));
-  return table.filter(({ id }) => legacySubscriptionProviders.has(id)).map(({ id, name, site }) => ({ id, name, ...(site ? { site } : {}) }));
-}
-
 /** Bundle the app after patches choose the host's framework release. */
 export function bundlePoolApp(root: string, upstream: string): readonly PoolAppFile[] {
   const source = join(root, "apps/pool");
@@ -54,7 +42,9 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     readFileSync(join(upstream, "packages/apps/package.json"), "utf8"),
   );
   if (framework.version !== servedFrameworkVersion)
-    throw new Error(`Prepared framework ${framework.version} differs from served release ${servedFrameworkVersion}`);
+    throw new Error(
+      `Prepared framework ${framework.version} differs from served release ${servedFrameworkVersion}`,
+    );
   const files: PoolAppFile[] = [];
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -67,11 +57,11 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         let content = readFileSync(path, "utf8");
         if (name === "deployment.ts")
           content = `export const poolOrigin = ${JSON.stringify(`https://${brand.host}`)};\nexport const productName = ${JSON.stringify(brand.name)};\n`;
-        // The Connect dialog offers one sign-in method per service in the provider table.
-        if (name === "providers.ts")
-          content = `export const providers: readonly { readonly id: string; readonly name: string; readonly site?: string }[] = ${JSON.stringify(providerTable(root))};\n`;
         if (name === "requirements.ts")
-          content = content.replace('"../../src/pool/provider-accounts/definitions.ts"', '"./provider-definitions.ts"');
+          content = content.replace(
+            '"../../src/pool/provider-accounts/definitions.ts"',
+            '"./provider-definitions.ts"',
+          );
         if (name === "package.json") {
           const manifest = JSON.parse(content);
           manifest.dependencies = { ...manifest.dependencies, apps: servedFrameworkVersion };
@@ -82,9 +72,17 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     }
   };
   walk(source);
-  files.push({ path: "provider-definitions.ts", content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8") });
-  files.push({ path: "provider-capabilities.ts", content: readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8")
-    .replace('"./definitions.ts"', '"./provider-definitions.ts"') });
+  files.push({
+    path: "provider-definitions.ts",
+    content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"),
+  });
+  files.push({
+    path: "provider-capabilities.ts",
+    content: readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8").replace(
+      '"./definitions.ts"',
+      '"./provider-definitions.ts"',
+    ),
+  });
   if (files.some((file) => file.path.startsWith("ui/"))) {
     files.push(poolFonts());
     placeRouterFonts(root, upstream);
@@ -112,11 +110,24 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     join(root, "src/pool/access-contract.ts"),
     join(dirname(destination), "pool-access-contract.ts"),
   );
-  copyFileSync(join(root, "src/pool/native-contract.ts"), join(dirname(destination), "native-contract.ts"));
-  copyFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), join(dirname(destination), "pool-provider-definitions.ts"));
-  writeFileSync(join(dirname(destination), "pool-provider-capabilities.ts"),
-    readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8")
-      .replace('"./definitions.ts"', '"./pool-provider-definitions.ts"'));
-  copyFileSync(join(root, "src/pool/account-acquisition-contract.ts"), join(dirname(destination), "pool-account-acquisition-contract.ts"));
+  copyFileSync(
+    join(root, "src/pool/native-contract.ts"),
+    join(dirname(destination), "native-contract.ts"),
+  );
+  copyFileSync(
+    join(root, "src/pool/provider-accounts/definitions.ts"),
+    join(dirname(destination), "pool-provider-definitions.ts"),
+  );
+  writeFileSync(
+    join(dirname(destination), "pool-provider-capabilities.ts"),
+    readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8").replace(
+      '"./definitions.ts"',
+      '"./pool-provider-definitions.ts"',
+    ),
+  );
+  copyFileSync(
+    join(root, "src/pool/account-acquisition-contract.ts"),
+    join(dirname(destination), "pool-account-acquisition-contract.ts"),
+  );
   return files;
 }
