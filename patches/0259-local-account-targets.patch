@@ -115,7 +115,7 @@ index afa502717..7019eb5d0 100644
          "Sign-in did not complete",
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
 new file mode 100644
-index 000000000..cfc2f5c1e
+index 000000000..496284241
 --- /dev/null
 +++ b/e2e/support/account-target-sdk-source.ts
 @@ -0,0 +1,69 @@
@@ -156,7 +156,7 @@ index 000000000..cfc2f5c1e
 +  const setup = Effect.gen(function* () {
 +    const existing = yield* executor.apps.list({owner});
 +    const app = existing[0] ?? (yield* executor.apps.deploy({owner,name:"Account target fixture",files:[
-+      {path:"index.ts",content:'import {defineApp,defineProvider,secrets,query,object,string,router} from "apps"; const service=defineProvider({name:"Target fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}}); export default defineApp({accounts:{local:service}},{tools:router({echo:query({input:object({message:string()})},async(_ctx,input)=>({ran:"cloud",message:input.message}))})});'},input.files[1],
++      {path:"index.ts",content:'import {defineApp,defineProvider,secrets,query,object,string,router} from "apps"; const service=defineProvider({name:"Target fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}}); export default defineApp({user:{accounts:{local:service}}},{tools:router({echo:query({input:object({message:string()})},async(_ctx,input)=>({ran:"cloud",message:input.message}))})});'},input.files[1],
 +    ]})).app;
 +    const saved = yield* executor.accounts.list({owner});
 +    const accounts = saved.length > 0 ? saved : yield* Effect.forEach(["Local", "Cloud"], label=>executor.managedAccounts.add({owner,provider:app.requirements.accounts.local!.provider,method:"key",label,fields:Redacted.make({token:"synthetic"})}));
