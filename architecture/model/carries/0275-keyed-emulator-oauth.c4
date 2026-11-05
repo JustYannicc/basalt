@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Outside-service OAuth fixture provisioning creates one client identity and secret per service before provisioning. Bounded retries reuse identical credentials; returned credentials must match, and persistent failures block setup."
+    }
+  }
+}

@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Duplicate Google binding repair identifies exact redundant bindings while preserving the canonical account and every distinct authorization. Dry runs list exact targets before an authorized apply, and repeated execution is safe."
+    }
+  }
+}

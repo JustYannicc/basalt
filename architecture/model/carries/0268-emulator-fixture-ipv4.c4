@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Local emulator HTTP fixtures bind the exact IPv4 loopback origin they advertise and retain that listener for the fixture scope, preventing competing listeners from claiming the advertised endpoint."
+    }
+  }
+}
