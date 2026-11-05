@@ -406,7 +406,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (
       pathname === managedUsagePath ||
       pathname === managedCapPath ||
-      pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
+      pathname.startsWith("/__setup/v1/")
+    )
+      return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);
       // Connect reads this when it opens; copying a setup prompt next mints a key in Home, so start

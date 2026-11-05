@@ -96,10 +96,17 @@ export async function handleUsageSeries(
       const authority = seriesAuthority(payload.authority);
       const result =
         action === "poolUsageSeries"
-          ? await withHistoryDatabase(access.connectionString, (db) => poolUsageSeries(db, input, authority))
+          ? await withHistoryDatabase(access.connectionString, (db) =>
+              poolUsageSeries(db, input, authority),
+            )
           : input.session !== undefined && access.home !== undefined
-            ? await sessionSuccess(access.home, input, authority, { pool: payload.pool, user: payload.user })
-            : await withHistoryDatabase(access.connectionString, (db) => lastSuccessAt(db, input, authority));
+            ? await sessionSuccess(access.home, input, authority, {
+                pool: payload.pool,
+                user: payload.user,
+              })
+            : await withHistoryDatabase(access.connectionString, (db) =>
+                lastSuccessAt(db, input, authority),
+              );
       return json(result);
     }
     const result =

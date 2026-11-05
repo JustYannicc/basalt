@@ -438,7 +438,10 @@ const program = Effect.gen(function* () {
       .then(() => member.getByText(label, { exact: true }).first().waitFor())
       // The row's own menu renders with its cells, so the counts below read a settled row.
       .then(() =>
-        member.getByRole("button", { name: `Manage ${label}`, exact: true }).first().waitFor(),
+        member
+          .getByRole("button", { name: `Manage ${label}`, exact: true })
+          .first()
+          .waitFor(),
       )
       .catch((error) =>
         member

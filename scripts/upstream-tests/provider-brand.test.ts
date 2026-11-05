@@ -51,7 +51,7 @@ const contrast = (a: string, b: string) => {
   return (high + 0.05) / (low + 0.05);
 };
 const expand = (hex: string) =>
-  hex.length === 4 ? `#${[...hex.slice(1)].map((c) => c + c).join("")}` : hex;
+  hex.length === 4 ? `#${hex.slice(1).replace(/[0-9a-f]/gi, (c) => c + c)}` : hex;
 
 test("every lab shade keeps at least 3:1 against the page on both themes", async () => {
   const globals = await read("globals.css");
