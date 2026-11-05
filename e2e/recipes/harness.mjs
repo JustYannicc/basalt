@@ -121,6 +121,7 @@ export const recipeHarness = (
     );
     return {
       actors,
+      target,
       prefix,
       origin: server.origin,
       request,

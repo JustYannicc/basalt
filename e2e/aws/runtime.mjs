@@ -16,6 +16,7 @@ import { appsVersion } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveAwsPasteUi } from "./browser.mjs";
 import { startAwsFixture } from "./fixture.mjs";
 import { proveAwsOAuth } from "./oauth.mjs";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 import { awsFailureSummary } from "./diagnostics.ts";
 
 const [root, upstream, evidenceDirectory, browserExecutable] = process.argv.slice(2);
@@ -100,7 +101,9 @@ const run = Effect.gen(function* () {
   const prefix = `/api/organizations/${actors.organization.id}`;
 
   const original = JSON.parse(
-    yield* Effect.promise(() => readFile(join(root, "src/catalog/aws/source.json"), "utf8")),
+    onServedFramework(
+      yield* Effect.promise(() => readFile(join(root, "src/catalog/aws/source.json"), "utf8")),
+    ),
   );
   const files = original.files.map((file) => {
     if (file.path === "provider.ts") {
@@ -128,7 +131,7 @@ const run = Effect.gen(function* () {
       equal(
         manifest.dependencies.apps,
         frameworkManifest.version,
-        "The maintained AWS source must pin the exact framework release under test",
+        "Catalog-served AWS source must pin the exact framework release under test",
       );
     }
     return file;
