@@ -40,6 +40,7 @@ export const heavyJobs = [
   ...operations,
   "compiler-diagnostics",
   "human-in-the-loop",
+  "access-editor-reads",
   "contributed-accounts",
   "personal-data-reporting",
   "contributed-account-recipes",
@@ -184,7 +185,7 @@ export const areas = [
       ".upstream/e2e/tests/member-controls.spec.ts",
       ".upstream/e2e/tests/publishing-off.spec.ts",
     ],
-    jobs: ["human-in-the-loop"],
+    jobs: ["access-editor-reads"],
   },
   {
     paths: [

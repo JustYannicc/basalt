@@ -120,12 +120,34 @@ test("app header and member layout changes retain the publishing layout guard", 
     ".upstream/packages/ui/src/implementation/dashboard/app-detail.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/publish-app.tsx",
   ])
-    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+    assert.deepEqual(selectPaths([path]).jobs, heavyJobs, path);
   for (const path of [
     ".upstream/e2e/tests/member-controls.spec.ts",
     ".upstream/e2e/tests/publishing-off.spec.ts",
   ])
-    assert.deepEqual(selectPaths([path]).jobs, ["human-in-the-loop"], path);
+    assert.deepEqual(selectPaths([path]).jobs, ["access-editor-reads"], path);
+});
+
+test("access-editor and publishing proofs have a separate deadline from the approval journey", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const job = workflow.jobs["access-editor-reads"];
+  const approvals = workflow.jobs["human-in-the-loop"];
+  assert.equal(job["timeout-minutes"], 15);
+  assert.equal(approvals["timeout-minutes"], 15);
+  const commands = job.steps
+    .filter((step: { run?: string }) => step.run?.includes("--test-name"))
+    .map((step: { run: string }) => step.run);
+  assert.deepEqual(commands, [
+    'bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1',
+    "bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1",
+    "bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1",
+  ]);
+  for (const command of commands)
+    assert.ok(!approvals.steps.some((step: { run?: string }) => step.run === command));
+  assert.deepEqual(job.steps.slice(0, 6), approvals.steps.slice(0, 6));
+  assert.equal(job.steps.at(-1).with.name, "access-editor-reads-e2e");
 });
 
 test("AWS catalog, proof inputs and loopback carries select the AWS runtime proof", () => {
@@ -238,7 +260,7 @@ test("access editor changes select the public independent-read guards", () => {
     ".upstream/e2e/tests/access-editor-reads.spec.ts",
     ".upstream/e2e/support/read-dispatch.ts",
   ])
-    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+    assert.ok(selectPaths([path]).jobs.includes("access-editor-reads"), path);
 });
 
 test("fast-only and full gates reject missing work and dishonest lane selections", () => {

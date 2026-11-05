@@ -826,18 +826,9 @@ jobs:
           bun run e2e:local --test-name
           "^local Approvals renders|^browser schedule controls enable"
           --workers 1
-      - name: Verify the app overview stays in place as publishing access settles
-        working-directory: .upstream
-        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "^Before a route|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps" --workers 1
-      - name: Verify access editors start independent reads together
-        working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1
-      - name: Verify Cloud access editors start independent reads together
-        working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
       - name: Verify browser analytics after server rendering
         working-directory: .upstream
         run: >-
@@ -848,6 +839,40 @@ jobs:
         if: always()
         with:
           name: human-in-the-loop-e2e
+          path: .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  access-editor-reads:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'access-editor-reads')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify the app overview stays in place as publishing access settles
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
+      - name: Verify access editors start independent reads together
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1
+      - name: Verify Cloud access editors start independent reads together
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: access-editor-reads-e2e
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
@@ -1436,7 +1461,7 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
