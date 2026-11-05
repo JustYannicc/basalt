@@ -2,12 +2,11 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { createRequire } from "node:module";
 
-// The SDK declares this test driver; the repository root resolves only Cloud dependencies.
 const sdkRequire = createRequire(
   new URL("../.upstream/packages/sdk/package.json", import.meta.url),
 );
-const PgLite: typeof import("../.upstream/packages/sdk/node_modules/@effect/sql-pglite/dist/PgLiteClient.js") =
-  sdkRequire("@effect/sql-pglite/PgLiteClient");
+const { pgliteLayer }: typeof import("../.upstream/packages/fumadb-effect/src/pglite.ts") =
+  sdkRequire("fumadb-effect/pglite");
 import { makeAccountRecheckQueue } from "../.upstream/apps/hosted/server/src/implementation/account-recheck-queue.ts";
 import { migrateAccountRechecks } from "../.upstream/apps/hosted/server/src/implementation/account-recheck-schema.ts";
 
@@ -72,4 +71,4 @@ const fixture = Effect.gen(function* () {
 });
 export const runRecheckFixture = <E>(
   body: (f: Effect.Success<typeof fixture>) => Effect.Effect<void, E, SqlClient.SqlClient>,
-) => Effect.runPromise(fixture.pipe(Effect.flatMap(body), Effect.provide(PgLite.layer({}))));
+) => Effect.runPromise(fixture.pipe(Effect.flatMap(body), Effect.provide(pgliteLayer())));
