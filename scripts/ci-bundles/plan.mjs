@@ -88,7 +88,7 @@ export function suitePlan(workflow, ids) {
       const bun = interpolate(setup.with["bun-version"], { env: workflow.env, matrix });
       assert.ok(["1.4.2", "1.4.4"].includes(bun), `${id}: unsupported Bun version ${bun}`);
       for (const step of job.steps) {
-        if (step.uses)
+        if (step.uses && step.uses !== "./.github/actions/setup-browser")
           assert.match(
             step.uses,
             /^(actions\/(checkout|setup-node|upload-artifact)|oven-sh\/setup-bun)@/,

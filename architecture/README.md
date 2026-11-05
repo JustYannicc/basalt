@@ -191,3 +191,9 @@ hook in this carry. Multi-credential Home bindings still have no aggregate obser
 
 External test-service provisioning and cleanup share a four-attempt Effect policy within one 30-second budget; scenario requests stay single-attempt and exhausted failures retain redacted diagnostics.
 The cloud-account connector uses the vendor-managed MCP service and per-person OAuth. Its provider-declared loopback callback is only a browser destination: the person pastes the full landed address into the hosted connection form, and the existing cloud attempt validates its exact destination and one-time state before exchanging its retained PKCE verifier. No local listener or client app participates. Every imported tool requires approval because the service can execute API calls and scripts with write effects. Vendor IAM permissions still bound each call.
+
+CI browser setup keeps Playwright's complete Chromium dependency set and caches only
+its downloaded system packages, keyed by the package list, operating system and
+architecture. Package installation still runs on each clean runner. Browser binaries
+remain tied to the prepared upstream's Playwright version. Mirror fallback bounds
+stalled package downloads without changing any test or job deadline.

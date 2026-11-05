@@ -54,7 +54,8 @@ async function bootstrap() {
     [root, "npm run prepare:upstream"],
     [join(root, ".upstream"), "node e2e/check-boundary.ts"],
     [join(root, ".upstream"), "bun run e2e:prepare"],
-    [join(root, ".upstream"), "bunx playwright install --with-deps chromium"],
+    [root, "bash .github/actions/setup-browser/install-deps.sh"],
+    [join(root, ".upstream"), "bunx playwright install chromium"],
   ];
   for (const [cwd, text] of commands) {
     const result = await command("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", text], {

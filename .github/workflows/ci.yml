@@ -310,8 +310,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs
       - name: Verify app query phase diagnostics
@@ -368,8 +367,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
         run: >-
@@ -404,8 +402,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the private OAuth transport and hosted placement
         working-directory: .upstream
         run: >-
@@ -452,10 +449,9 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 2
-        run: |
-          npm run prepare:upstream
-          cd .upstream
-          bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
       - name: Build the isolated Google recovery test assets
         timeout-minutes: 2
         working-directory: .upstream
@@ -517,8 +513,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify account deletion against concurrent OAuth renewal
         timeout-minutes: 5
         run: node scripts/oauth-removal-tests/prove.ts
@@ -557,8 +552,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify recovery through Cloud's real provisioning queue
         timeout-minutes: 5
         working-directory: .upstream
@@ -599,8 +593,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the SSO journeys
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify OIDC and SAML through the private service binding
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
@@ -632,8 +625,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify runtime database binding with one isolated restart
         working-directory: .upstream
         env:
@@ -683,8 +675,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify exact provider account adoption through signed operations
         timeout-minutes: 5
         run: node scripts/production-ops/prove-provider-adoption.ts
@@ -743,8 +734,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify stable database identity through signed apply verification and replay
         timeout-minutes: 22
         env:
@@ -783,8 +773,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Prepare the production compiler's released framework assets
         working-directory: .upstream
         run: node scripts/build-basalt-framework.ts
@@ -824,8 +813,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify workflow requests and scheduled approvals in the human-in-the-loop tab
         working-directory: .upstream
         run: >-
@@ -880,8 +868,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify contributed account authority and recovery
         working-directory: .upstream
         run: >-
@@ -955,8 +942,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify reporting, retained data and registration isolation
         working-directory: .upstream
         run: >-
@@ -996,8 +982,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the suite's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
@@ -1041,8 +1026,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenario's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
         run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable|^Google OAuth choices keep'
@@ -1106,8 +1090,7 @@ jobs:
           bun run e2e:prepare
           node scripts/build-basalt-framework.ts
       - name: Install Chromium for the hosted AWS paste proof
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Exercise AWS sign-in and tools through the real runtime
         run: |
           node --test e2e/aws/diagnostics.test.mjs
@@ -1143,8 +1126,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the account-site UI proof
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Exercise GitLab accounts against the real runtime
         run: node scripts/check-connectors.ts
         env:
@@ -1178,8 +1160,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the renderer scenario's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
         run: bun run e2e:self-host --test-name '^MCP Apps retain native|^MCP Apps preserve remote source|^MCP Apps render original|^App builds retain their selected npm framework' --workers 1
@@ -1510,8 +1491,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify reusable acquisition, health and retained account compatibility
         working-directory: .upstream
         run: >-
