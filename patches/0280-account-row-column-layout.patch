@@ -877,8 +877,8 @@ diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.
            /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
          );
  
-+        const intermediate = yield* browser.use("Read request units at 1000px", (page) =>
-+          page.setViewportSize({ width: 1000, height: 900 }).then(() => {
++        const intermediate = yield* browser.use("Read request units at 900px", (page) =>
++          page.setViewportSize({ width: 900, height: 900 }).then(() => {
 +            const row = accountRow(page, "Traffic account");
 +            const container = page.locator('[class*="@container/account-rows"]').first();
 +            return Promise.all([
