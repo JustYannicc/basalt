@@ -1,0 +1,178 @@
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -9,7 +9,33 @@
+ const Configuration = Schema.fromJsonString(Schema.Struct({ database: Schema.String }));
+ // Member jobs can retry later steps after creating their accounts. Wait for committed records.
+ const Counts = Schema.Array(
+-  Schema.Struct({ pending: Schema.Number, failed: Schema.Number, completed: Schema.Number }),
++  Schema.Struct({
++    pending: Schema.Number,
++    failed: Schema.Number,
++    completed: Schema.Number,
++    components: Schema.Struct({
++      userJobs: Schema.Number,
++      managerKeys: Schema.Number,
++      primaryPools: Schema.Number,
++      teamDefaults: Schema.Number,
++    }),
++    poolReasons: Schema.Struct({
++      unrecorded: Schema.Number,
++      app: Schema.Number,
++      account: Schema.Number,
++      link: Schema.Number,
++    }),
++    jobs: Schema.Array(
++      Schema.Struct({
++        kind: Schema.Literals(["user", "team", "member", "billing", "domain"]),
++        status: Schema.Literals(["queued", "running", "failed"]),
++        count: Schema.Number,
++        maxAttempts: Schema.Number,
++        oldestUpdateMs: Schema.Number,
++        availableInMs: Schema.Number,
++      }),
++    ),
++  }),
+ );
+ 
+ NodeRuntime.runMain(
+@@ -51,6 +77,40 @@
+           let observedPending = 0;
+           let wake = () => {};
+           let disconnected = false;
++          const started = performance.now();
++          let updated = started,
++            progressed = started;
++          let snapshot: (typeof Counts.Type)[number] | undefined;
++          let signature = "";
++          let emitted = 0;
++          let complete = false;
++          const report = (phase: "waiting" | "complete" | "stopped") => {
++            if (phase === "waiting" && (snapshot === undefined || emitted >= 16)) return;
++            if (phase === "waiting") emitted++;
++            const now = performance.now();
++            process.stderr.write(
++              `[production-ops-provisioning] ${JSON.stringify({
++                phase,
++                elapsedMs: Math.round(now - started),
++                sinceProgressMs: Math.round(now - progressed),
++                snapshotAgeMs: Math.round(now - updated),
++                poolsRequired: process.argv[3] === "--pools",
++                ...(phase === "stopped"
++                  ? {
++                      reason: signal.aborted
++                        ? "aborted"
++                        : disconnected
++                          ? "disconnected"
++                          : "failure",
++                    }
++                  : {}),
++                snapshot,
++              })}\n`,
++            );
++          };
++          // A quiet wait still leaves evidence, without waking readiness or querying the database.
++          const heartbeat = setInterval(() => report("waiting"), 5_000);
++          heartbeat.unref();
+           const changed = () => {
+             revision++;
+             wake();
+@@ -93,7 +153,7 @@
+               missing as (select 1 from expected where not exists (select 1 from executor_accounts account
+                 where account.id = expected.metadata->'executorKeyAccounts'->>expected."userId"
+                   and account.owner = 'organization:' || expected.id)),
+-              missing_pools as (select 1 from expected where expected.role = 'owner' and not exists (
++              missing_pools as (select expected.* from expected where expected.role = 'owner' and not exists (
+                 select 1 from jsonb_each(coalesce(expected.metadata->'basaltPools', '{}'::jsonb)) pool
+                 join executor_apps app on app.id = pool.value->>'app'
+                 join executor_accounts account on account.id = pool.value->>'account'
+@@ -103,30 +163,83 @@
+                   and pool.value->>'version' = app.active_deployment
+                   and app.owner = 'organization:' || expected.id
+                   and account.owner = app.owner and account.method = 'token'
+-                  and link.requirement = 'pool' and link.subject is null))
++                  and link.requirement = 'pool' and link.subject is null)),
++              pool_progress as (
++                select expected.id, expected."userId", count(pool.key) > 0 as recorded,
++                  count(app.id) > 0 as app, count(account.id) > 0 as account
++                from missing_pools expected
++                left join lateral jsonb_each(coalesce(expected.metadata->'basaltPools', '{}'::jsonb)) pool
++                  on coalesce(pool.value->>'owner', pool.key) = expected."userId"
++                    and coalesce((pool.value->>'primary')::boolean, true)
++                left join executor_apps app on app.id = pool.value->>'app'
++                  and app.owner = 'organization:' || expected.id
++                  and pool.value->>'version' = app.active_deployment
++                left join executor_accounts account on app.id is not null
++                  and account.id = pool.value->>'account' and account.owner = app.owner and account.method = 'token'
++                group by expected.id, expected."userId"
++              ),
++              pending_jobs as (
++                select kind, status, count(*)::int as count, max(attempts)::int as "maxAttempts",
++                  greatest(0, extract(epoch from max(now() - updated_at)) * 1000)::double precision as "oldestUpdateMs",
++                  greatest(0, extract(epoch from min(available_at - now())) * 1000)::double precision as "availableInMs"
++                from hosted_provisioning where status <> 'succeeded' group by kind, status
++              )
+               select ((select count(*) from users where status <> 'succeeded') + (select count(*) from missing)
+                 + (case when $1::boolean then (select count(*) from missing_pools) else 0 end)
+                 + (select count(*) from teams where not coalesce((metadata->'executorDefaults'->>'installed')::boolean, false)))::int as pending,
+               (select count(*) from users where status = 'failed')::int as failed,
+-              ((select count(*) from expected) - (select count(*) from missing))::int as completed`,
++              ((select count(*) from expected) - (select count(*) from missing))::int as completed,
++              jsonb_build_object(
++                'userJobs', (select count(*) from users where status <> 'succeeded'),
++                'managerKeys', (select count(*) from missing),
++                'primaryPools', case when $1::boolean then (select count(*) from missing_pools) else 0 end,
++                'teamDefaults', (select count(*) from teams where not coalesce((metadata->'executorDefaults'->>'installed')::boolean, false))
++              ) as components,
++              (select jsonb_build_object(
++                'unrecorded', count(*) filter (where not recorded),
++                'app', count(*) filter (where recorded and not app),
++                'account', count(*) filter (where app and not account),
++                'link', count(*) filter (where account)
++              ) from pool_progress) as "poolReasons",
++              coalesce((select jsonb_agg(to_jsonb(job) order by kind, status) from pending_jobs job), '[]'::jsonb) as jobs`,
+                     [process.argv[3] === "--pools"],
+                   )
+                 ).rows,
+               );
+-              if (counts === undefined || counts.failed !== 0)
+-                throw new ProvisioningFixtureFailed();
++              if (counts === undefined) throw new ProvisioningFixtureFailed();
++              const nextSignature = JSON.stringify({
++                components: counts.components,
++                poolReasons: counts.poolReasons,
++                jobs: counts.jobs.map(({ kind, status, count, maxAttempts }) => ({
++                  kind,
++                  status,
++                  count,
++                  maxAttempts,
++                })),
++              });
++              updated = performance.now();
++              if (nextSignature !== signature) progressed = updated;
++              signature = nextSignature;
++              snapshot = counts;
++              if (emitted === 0) report("waiting");
++              if (counts.failed !== 0) throw new ProvisioningFixtureFailed();
+               if (counts.pending === 0) {
+-                process.stdout.write(`${JSON.stringify({ ...counts, observedPending })}\n`);
++                complete = true;
++                const { pending, failed, completed } = counts;
++                process.stdout.write(
++                  `${JSON.stringify({ pending, failed, completed, observedPending })}\n`,
++                );
+                 return;
+               }
+               observedPending = Math.max(observedPending, counts.pending);
+-              process.stderr.write(`Waiting for ${counts.pending} default provisioning records\n`);
+               if (seen !== revision) continue;
+               await new Promise<void>((resolve) => {
+                 wake = resolve;
+               });
+             }
+           } finally {
++            clearInterval(heartbeat);
++            report(complete ? "complete" : "stopped");
+             client.off("notification", changed);
+             client.off("error", failed);
+             signal.removeEventListener("abort", changed);
