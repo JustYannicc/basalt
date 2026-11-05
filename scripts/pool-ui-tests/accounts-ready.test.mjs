@@ -155,7 +155,11 @@ function instrument() {
       const operation = text === null ? null : JSON.parse(text);
       name =
         operation?.name ??
-        (String(input).endsWith("/pool-usage/overview") ? "overviewUsage" : undefined);
+        (String(input).endsWith("/pool-usage/overview")
+          ? "overviewUsage"
+          : String(input).endsWith("/pool-usage/personal-overview")
+            ? "personalOverview"
+            : undefined);
       if (name) queries.push(name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
       if (operation?.name === "computerContext")
@@ -176,6 +180,11 @@ test(
     const directory = mkdtempSync(join(tmpdir(), "pool-ready-"));
     const servers = [];
     let held = [];
+    let heldCapacity = [];
+    let holdCapacity = false;
+    let member = false;
+    let holdPersonal = false;
+    let heldPersonal = [];
     let views = [];
     let contextReads = 0;
     let browserServer;
@@ -192,7 +201,12 @@ test(
         }
       };
       // Pending view responses are released first so no request outlives the fixture.
-      for (const { response } of held.splice(0)) response.end(JSON.stringify(failed));
+      for (const { response } of [
+        ...held.splice(0),
+        ...heldCapacity.splice(0),
+        ...heldPersonal.splice(0),
+      ])
+        response.end(JSON.stringify(failed));
       if (artifacts && evidenceVideo)
         await step(() => evidenceVideo.saveAs(join(artifacts, `${artifactLabel}-transition.webm`)));
       await step(() => browser?.close());
@@ -301,7 +315,7 @@ test(
     assert.equal(built.status, 0, built.stderr + built.stdout);
     const javascript = readFileSync(join(directory, "dist/main.js"));
     // Screenshots need the real stylesheet, compiled the way scripts/setup-build.ts compiles it.
-    const stylesheet = artifacts ? await compileStyles(app, javascript.toString("utf8")) : null;
+    const stylesheet = await compileStyles(app, javascript.toString("utf8"));
 
     let arrived = () => {};
     let viewResult = failed;
@@ -321,17 +335,71 @@ test(
       } else if (request.url === "/main.css" && stylesheet !== null) {
         response.setHeader("content-type", "text/css");
         response.end(stylesheet);
-      } else if (request.url === "/_executor/api/pool-usage/overview") {
+      } else if (
+        [
+          "/_executor/api/pool-usage/overview",
+          "/_executor/api/pool-usage/personal-overview",
+        ].includes(request.url)
+      ) {
         let body = "";
         for await (const chunk of request) body += chunk;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify(overviewFixture(JSON.parse(body).input, usageResult.value)));
+        const personal = request.url.endsWith("personal-overview");
+        if (!personal && member) {
+          response.writeHead(403).end();
+          return;
+        }
+        if (!usageResult.ok) {
+          response.writeHead(503).end();
+          return;
+        }
+        const value = overviewFixture(JSON.parse(body).input, usageResult.value);
+        const tokens = usageResult.value.total.tokens.total;
+        if (tokens > 0) {
+          value.metrics.apiBilled = {
+            ...value.metrics.apiBilled,
+            status: "available",
+            amount: String(usageResult.value.total.cost),
+            pricedRequests: usageResult.value.total.requests,
+            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 },
+          };
+          value.metrics.requestTokens = {
+            ...value.metrics.requestTokens,
+            status: "available",
+            percentiles: { p50: tokens, p90: tokens, p99: tokens },
+            requests: usageResult.value.total.requests,
+          };
+        }
+        const reply = JSON.stringify(
+          personal
+            ? {
+                from: value.from,
+                to: value.to,
+                asOf: value.asOf,
+                consistency: value.consistency,
+                person: "fixture-caller",
+                series: {
+                  ...value.models,
+                  groups: value.models.groups.map((group) => ({
+                    ...group,
+                    key: { ...group.key, person: "fixture-caller" },
+                  })),
+                },
+                metrics: value.metrics,
+                partial: false,
+              }
+            : value,
+        );
+        if (personal && holdPersonal) heldPersonal.push({ response, reply });
+        else response.end(reply);
       } else if (request.url === "/_executor/api/query") {
         let body = "";
         for await (const chunk of request) body += chunk;
         const { name, input } = JSON.parse(body);
         response.setHeader("content-type", "application/json");
-        if (name === "view") {
+        if (name === "capacity" && holdCapacity) {
+          heldCapacity.push({ response, input });
+        } else if (name === "view") {
           const entry = { response, fresh: input?.fresh === true };
           views.push({ fresh: entry.fresh });
           if (entry.fresh && answerFresh) answer(entry);
@@ -379,6 +447,13 @@ test(
     browser = await chromium.connect(browserServer.wsEndpoint());
 
     const release = (fresh) => {
+      if (fresh === undefined) {
+        holdCapacity = false;
+        holdPersonal = false;
+        for (const entry of heldPersonal.splice(0)) entry.response.end(entry.reply);
+        for (const entry of heldCapacity.splice(0))
+          entry.response.end(JSON.stringify(capacityFixture(entry.input)));
+      }
       const [now, later] = [[], []];
       for (const entry of held)
         (fresh === undefined || entry.fresh === fresh ? now : later).push(entry);
@@ -420,9 +495,20 @@ test(
     };
     const session = async (
       work,
-      { clock = false, viewport = { width: 1100, height: 860 }, usage = emptyUsage } = {},
+      {
+        clock = false,
+        viewport = { width: 1100, height: 860 },
+        usage = emptyUsage,
+        capacityHeld = false,
+        personal = false,
+      } = {},
     ) => {
       usageResult = usage;
+      holdCapacity = capacityHeld;
+      member = personal;
+      heldCapacity = [];
+      holdPersonal = false;
+      heldPersonal = [];
       held = [];
       views = [];
       contextReads = 0;
@@ -523,22 +609,33 @@ test(
             );
             await settled();
             await capture(page, `usage-awaits-provider-names-${width}`);
-            const byModel = frame.getByRole("list", { name: "By model", exact: true });
+            const who = frame.locator("#who");
+            const money = frame.locator("#cost");
+            assert.ok(heldCapacity.length > 0, "Every capacity response stays held");
             assert.deepEqual(
               await Promise.all([
-                frame.getByRole("heading", { name: "Usage", exact: true }).isVisible(),
-                frame
-                  .getByText("tokens · $0.02 at API prices · 1 request", { exact: true })
+                frame.getByRole("heading", { name: "Who uses what", exact: true }).isVisible(),
+                money.getByText("API cost, estimated billed", { exact: true }).isVisible(),
+                money
+                  .getByText(/^\$0\.02/)
+                  .first()
                   .isVisible(),
-                frame
-                  .getByText("100 input · 0 cached · 0 cache writes · 28 output", { exact: true })
+                who
+                  .getByText(/128 tokens/)
+                  .first()
                   .isVisible(),
-                byModel.getByText("Synthetic model", { exact: true }).isVisible(),
-                byModel.getByText("128", { exact: true }).isVisible(),
+                who
+                  .getByText(/1 requests?/)
+                  .first()
+                  .isVisible(),
               ]),
               [true, true, true, true, true],
-              "The completed usage response must be visible while capacity is still held",
+              "The completed usage response must be visible while every capacity response is held",
             );
+            await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            await who.getByText("Synthetic model", { exact: true }).waitFor();
+            assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
+            assert.equal((await who.locator('[title="128 tokens"]').first().count()) > 0, true);
             assert.equal(
               await frame.getByText("codex", { exact: true }).count(),
               0,
@@ -549,13 +646,17 @@ test(
               0,
               "Usage must not guess provider names before capacity supplies them",
             );
+            assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
             assert.equal(
               await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
               0,
               "Account advice waits for provider names instead of naming raw IDs",
             );
             assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
-            const usageReads = queries.filter((name) => name === "overviewUsage").length;
+            const usageReads = await frame.evaluate(
+              () =>
+                Reflect.get(window, "queries").filter((name) => name === "overviewUsage").length,
+            );
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
@@ -570,7 +671,7 @@ test(
               "Receiving capacity must not fetch usage again",
             );
           },
-          { viewport: { width, height: 860 }, usage: populatedUsage },
+          { viewport: { width, height: 860 }, usage: populatedUsage, capacityHeld: true },
         );
       });
     for (const width of [1440, 390])
@@ -582,32 +683,35 @@ test(
             async ({ frame, settled, accepted }) => {
               await frame.waitForFunction(
                 () =>
-                  Reflect.get(window, "completedQueries").filter((name) => name === "usage")
+                  Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
                     .length >= 2,
               );
               await settled();
+              const who = frame.locator("#who");
+              assert.ok(heldCapacity.length > 0);
               assert.equal(
-                await frame.getByText("Synthetic pool failure", { exact: true }).isVisible(),
-                true,
-              );
-              assert.equal(
-                await frame.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
-                true,
-              );
-              const before = await frame.evaluate(
-                () => Reflect.get(window, "queries").filter((name) => name === "usage").length,
-              );
-              usageResult = { ok: true, value: { ...emptyUsage.value, scope: "you" } };
-              await frame.getByRole("button", { name: "Try again", exact: true }).click();
-              await frame.getByRole("heading", { name: "Your usage", exact: true }).waitFor();
-              assert.equal(
-                await frame
-                  .getByText(/^You haven't sent a request through this pool yet\./)
+                await who
+                  .getByText("Overview could not be read. Reload and try again.", { exact: true })
                   .isVisible(),
                 true,
               );
               assert.equal(
-                await frame.getByText("Synthetic pool failure", { exact: true }).count(),
+                await who.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
+                true,
+              );
+              const before = await frame.evaluate(
+                () =>
+                  Reflect.get(window, "queries").filter((name) => name === "overviewUsage").length,
+              );
+              usageResult = emptyUsage;
+              await who.getByRole("button", { name: "Try again", exact: true }).click();
+              await who
+                .getByText("No requests through this pool in the last 7 days.", { exact: true })
+                .waitFor();
+              assert.equal(
+                await who
+                  .getByText("Overview could not be read. Reload and try again.", { exact: true })
+                  .count(),
                 0,
               );
               assert.equal(
@@ -615,7 +719,8 @@ test(
                 0,
               );
               const after = await frame.evaluate(
-                () => Reflect.get(window, "queries").filter((name) => name === "usage").length,
+                () =>
+                  Reflect.get(window, "queries").filter((name) => name === "overviewUsage").length,
               );
               assert.equal(
                 after,
@@ -628,10 +733,194 @@ test(
                 "Usage recovery does not claim capacity is ready",
               );
             },
-            { viewport: { width, height: 860 }, usage: failed },
+            { viewport: { width, height: 860 }, usage: failed, capacityHeld: true },
           );
         },
       );
+    for (const width of [1440, 390])
+      await t.test(
+        `member usage renders only the caller while capacity is held at ${width}px`,
+        async () => {
+          viewResult = { ok: true, value: { ...empty, providers, isOwner: false } };
+          const total = {
+            ...emptyUsage.value.total,
+            requests: 1,
+            cost: 0.02,
+            tokens: { ...emptyUsage.value.total.tokens, input: 100, output: 28, total: 128 },
+          };
+          const usage = {
+            ok: true,
+            value: {
+              ...emptyUsage.value,
+              scope: "you",
+              total,
+              models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+            },
+          };
+          await session(
+            async ({ frame, settled, accepted }) => {
+              await frame.waitForFunction(() =>
+                Reflect.get(window, "completedQueries").includes("personalOverview"),
+              );
+              await settled();
+              const who = frame.locator("#who");
+              assert.ok(heldCapacity.length > 0);
+              assert.equal(
+                await who
+                  .getByText(
+                    "Your requests through this pool in the last 7 days. Nobody else's show here.",
+                    { exact: true },
+                  )
+                  .isVisible(),
+                true,
+              );
+              assert.equal(
+                await who
+                  .getByText(/128 tokens/)
+                  .first()
+                  .isVisible(),
+                true,
+              );
+              await who.getByRole("button", { name: "You", exact: true }).click();
+              await who
+                .getByText(/^Synthetic model/)
+                .first()
+                .waitFor();
+              assert.equal(
+                await who
+                  .getByText(/^Synthetic model/)
+                  .first()
+                  .isVisible(),
+                true,
+              );
+              assert.equal(
+                await frame.getByRole("navigation", { name: "At a glance", exact: true }).count(),
+                0,
+              );
+              assert.equal(
+                await frame.getByRole("radio", { name: "Models", exact: true }).count(),
+                0,
+              );
+              assert.equal(await frame.getByText("codex", { exact: true }).count(), 0);
+              assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
+              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+              assert.deepEqual(await accepted(), []);
+              const reads = await frame.evaluate(
+                () =>
+                  Reflect.get(window, "queries").filter((name) => name === "personalOverview")
+                    .length,
+              );
+              release();
+              await who.getByText(/Codex/).first().waitFor();
+              await settled();
+              assert.equal(
+                await frame.evaluate(
+                  () =>
+                    Reflect.get(window, "queries").filter((name) => name === "personalOverview")
+                      .length,
+                ),
+                reads,
+                "Capacity only fills labels; it never re-reads personal usage",
+              );
+            },
+            { viewport: { width, height: 860 }, usage, capacityHeld: true, personal: true },
+          );
+        },
+      );
+    await t.test(
+      "overview range and authorization changes cannot reuse mismatched pieces",
+      async () => {
+        viewResult = { ok: true, value: { ...empty, providers } };
+        const total = {
+          ...emptyUsage.value.total,
+          requests: 1,
+          cost: 0.02,
+          tokens: { ...emptyUsage.value.total.tokens, total: 128 },
+        };
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total,
+            models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+          },
+        };
+        await session(
+          async ({ frame, settled, clock }) => {
+            const who = frame.locator("#who");
+            await who
+              .getByText(/128 tokens/)
+              .first()
+              .waitFor();
+            const enough = frame.getByRole("link", { name: /Enough accounts\?/ });
+            assert.match(await enough.textContent(), /Reading/);
+            await frame.getByRole("radio", { name: "30 days", exact: true }).click();
+            await who.getByText(/1 request in 30 days/).waitFor();
+            const old = heldCapacity.filter((entry) => entry.input.days === 7);
+            assert.ok(old.length > 0, "The previous range has real capacity reads in flight");
+            heldCapacity = heldCapacity.filter((entry) => entry.input.days !== 7);
+            for (const entry of old)
+              entry.response.end(JSON.stringify(capacityFixture(entry.input)));
+            await settled();
+            assert.match(
+              await enough.textContent(),
+              /Reading/,
+              "Old-range capacity never completes the new overview",
+            );
+            release();
+            await frame.getByText("Pick your first account", { exact: true }).waitFor();
+            await enough.getByText("No readings yet", { exact: true }).waitFor();
+            assert.equal(
+              await frame.getByText(/This read is incomplete/).count(),
+              0,
+              "Only a same-range pair can claim coherence",
+            );
+            // Ordinary view polls must answer: held polls would exhaust the browser's HTTP slots.
+            answerFresh = true;
+            usageResult = failed;
+            holdCapacity = true;
+            await clock.runFor(5 * 60_000 + 50);
+            await who
+              .getByText("Overview could not be read. Reload and try again.", { exact: true })
+              .waitFor();
+            assert.ok(
+              heldCapacity.length > 0,
+              "A new usage error cannot wait for refreshed capacity",
+            );
+            usageResult = usage;
+            await who.getByRole("button", { name: "Try again", exact: true }).click();
+            await who.getByText(/1 request in 30 days/).waitFor();
+            member = true;
+            holdPersonal = true;
+            await clock.runFor(5 * 60_000 + 50);
+            await frame
+              .getByText(
+                "Shared with you. You use its accounts without seeing their credentials.",
+                { exact: true },
+              )
+              .waitFor();
+            assert.ok(
+              heldPersonal.length > 0,
+              "Personal usage stays held after the manager endpoint denies access",
+            );
+            assert.equal(
+              await frame.getByRole("navigation", { name: "At a glance", exact: true }).count(),
+              0,
+              "The old manager snapshot disappears as soon as authorization changes",
+            );
+            holdPersonal = false;
+            for (const entry of heldPersonal.splice(0)) entry.response.end(entry.reply);
+            await who
+              .getByText(
+                "Your requests through this pool in the last 30 days. Nobody else's show here.",
+                { exact: true },
+              )
+              .waitFor();
+          },
+          { viewport: { width: 390, height: 860 }, usage, capacityHeld: true, clock: true },
+        );
+      },
+    );
     for (const width of sourceRef ? [] : [1440, 390])
       await t.test(
         `hidden pool links stop refreshing and resume once overdue at ${width}px`,
@@ -814,6 +1103,7 @@ test(
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
+              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
               assert.deepEqual(await accepted(), []);
               viewResult = { ok: true, value };
               if (recovery === "manual")
@@ -828,6 +1118,7 @@ test(
               release();
               await frame.getByText(visible, { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
+              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
               assert.deepEqual(await accepted(), []);
               return;
             }

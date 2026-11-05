@@ -129,34 +129,31 @@ export function App({ api }: { api: PoolApi }) {
             </Button>
           </div>
         )}
-        {view === undefined ? (
+        {view?.accounts.length === 0 && <Empty view={view} accountsHref={accountsHref} />}
+        {/* Usage renders from its own read; only that read says manager or member. */}
+        {overview.usage === undefined ? (
           !error && <Skeleton />
-        ) : (
+        ) : overview.member ? (
           <>
-            {view.accounts.length === 0 && <Empty view={view} accountsHref={accountsHref} />}
-            {overview.member ? (
-              <>
-                <p className="text-sm text-muted-foreground text-pretty">
-                  Shared with you. You use its accounts without seeing their credentials.
-                </p>
-                <PersonalOverview
-                  data={overview.personal}
-                  days={days}
-                  providers={view.providers}
-                  onRetry={() => void overview.reload()}
-                />
-              </>
-            ) : (
-              <ManagerOverview
-                data={overview}
-                days={days}
-                providers={view.providers}
-                view={view}
-                accountsHref={accountsHref}
-                onRetry={() => void overview.reload()}
-              />
-            )}
+            <p className="text-sm text-muted-foreground text-pretty">
+              Shared with you. You use its accounts without seeing their credentials.
+            </p>
+            <PersonalOverview
+              data={overview.personal}
+              days={days}
+              providers={view?.providers}
+              onRetry={() => void overview.reload()}
+            />
           </>
+        ) : (
+          <ManagerOverview
+            data={overview}
+            days={days}
+            providers={view?.providers}
+            view={view}
+            accountsHref={accountsHref}
+            onRetry={() => void overview.reload()}
+          />
         )}
       </main>
     </div>
