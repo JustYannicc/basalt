@@ -1,0 +1,248 @@
+diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
+--- a/packages/sdk/src/implementation/remote-app-runner.ts
++++ b/packages/sdk/src/implementation/remote-app-runner.ts
+@@ -8,6 +8,9 @@
+ import { Cause, Effect, Redacted, Schema } from "effect";
+ import { withRemoteSpan } from "@executor-js/telemetry";
+ import {
++  AppCallCommand,
++  AppCallFailed,
++  AppCallReply,
+   HostAccounts,
+   WorkflowInput,
+   WorkflowInputCommand,
+@@ -38,12 +41,15 @@
+ } from "./app-runner.ts";
+ import { invocationBuildLoader } from "./app-runtime.ts";
+ import { asciiJson } from "./ascii-json.ts";
++import { AppCallWorkflow } from "./app-call-context.ts";
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ 
+ /** One workflow run's capabilities as RPC callbacks. Each returns an encoded `WorkflowRpcResult`. */
+ export interface RemoteWorkflow {
+   readonly runId: string;
++  readonly name?: string;
++  appCall?(step: unknown, command: unknown): Promise<unknown>;
+   input?(command: unknown): Promise<unknown>;
+   waitForInput?(name: string, id: string, expiresAt: number): Promise<unknown>;
+   do(name: string, options: unknown, run: () => Promise<unknown>): Promise<unknown>;
+@@ -51,7 +57,7 @@
+   sleepUntil(name: string, timestamp: number): Promise<unknown>;
+   /** The run's current accounts, resolved by the host. */
+   context(): Promise<unknown>;
+-  invoke(input: unknown): Promise<unknown>;
++  invoke(input: unknown, step?: unknown): Promise<unknown>;
+ }
+ 
+ /** An invocation's capabilities as RPC callbacks; see {@link AppCapabilities}. */
+@@ -121,6 +127,7 @@
+       remote.workflow.invoke,
+       remote.workflow.input,
+       remote.workflow.waitForInput,
++      remote.workflow.appCall,
+     ])
+       release(callback);
+ };
+@@ -149,6 +156,9 @@
+     ),
+   );
+ 
++const RuntimeStep = Schema.Struct({ step: Schema.NonEmptyString, stepId: Schema.NonEmptyString });
++const AppCallStep = Schema.Struct({ ...RuntimeStep.fields, call: Schema.Int });
++
+ /** The caller's side: callbacks over this invocation's capabilities, released with `signal`. */
+ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortSignal) =>
+   Effect.gen(function* () {
+@@ -161,6 +171,37 @@
+         ? null
+         : {
+             runId: execution.runId,
++            ...(execution.name === undefined ? {} : { name: execution.name }),
++            ...(execution.appCall === undefined
++              ? {}
++              : {
++                  appCall: (step: unknown, command: unknown) =>
++                    Effect.runPromiseWith(services)(
++                      Effect.gen(function* () {
++                        const identity = yield* Schema.decodeUnknownEffect(AppCallStep)(step);
++                        const call = yield* Schema.decodeUnknownEffect(AppCallCommand)(command);
++                        return yield* execution.appCall!(identity, call);
++                      }).pipe(
++                        Effect.matchCause({
++                          onSuccess: (value) => ({ ok: true as const, value }),
++                          onFailure: (cause) => {
++                            const error = Cause.squash(cause);
++                            return {
++                              ok: false as const,
++                              error: Schema.is(AppCallFailed)(error)
++                                ? error
++                                : new AppCallFailed({
++                                    reason: "outcome_unknown",
++                                    retryable: false,
++                                  }),
++                            };
++                          },
++                        }),
++                        Effect.flatMap(Schema.encodeUnknownEffect(AppCallReply)),
++                      ),
++                      { signal },
++                    ),
++                }),
+             input: (command) =>
+               run(
+                 Schema.decodeUnknownEffect(WorkflowInputCommand)(command).pipe(
+@@ -200,7 +241,7 @@
+               run(
+                 execution.resolve().pipe(Effect.map((context) => Redacted.value(context.accounts))),
+               ),
+-            invoke: (input) =>
++            invoke: (input, step) =>
+               run(
+                 Schema.decodeUnknownEffect(
+                   Schema.Struct({
+@@ -210,7 +251,28 @@
+                     stepId: Schema.String,
+                     timeout: Schema.Number,
+                   }),
+-                )(input).pipe(Effect.flatMap(execution.invoke)),
++                )(input).pipe(
++                  Effect.flatMap((command) =>
++                    Effect.gen(function* () {
++                      const identity =
++                        step === undefined
++                          ? undefined
++                          : yield* Schema.decodeUnknownEffect(RuntimeStep)(step);
++                      if (identity !== undefined && identity.stepId !== command.stepId)
++                        return yield* new WorkflowFailure({ reason: "input", retryable: false });
++                      return yield* execution
++                        .invoke(command)
++                        .pipe(
++                          Effect.provideService(
++                            AppCallWorkflow,
++                            identity === undefined || execution.name === undefined
++                              ? undefined
++                              : { run: execution.runId, name: execution.name, ...identity },
++                          ),
++                        );
++                    }),
++                  ),
++                ),
+               ),
+           };
+     return {
+@@ -232,6 +294,27 @@
+         ? undefined
+         : {
+             runId: yield* Schema.decodeUnknownEffect(WorkflowRunId)(workflow.runId),
++            ...(workflow.name === undefined ? {} : { name: workflow.name }),
++            ...(workflow.appCall === undefined
++              ? {}
++              : {
++                  appCall: (step: typeof AppCallStep.Type, command: typeof AppCallCommand.Type) =>
++                    Effect.tryPromise({
++                      try: async () => await workflow.appCall!(step, command),
++                      catch: () =>
++                        new AppCallFailed({ reason: "outcome_unknown", retryable: false }),
++                    }).pipe(
++                      Effect.flatMap(Schema.decodeUnknownEffect(AppCallReply)),
++                      Effect.mapError((error) =>
++                        Schema.is(AppCallFailed)(error)
++                          ? error
++                          : new AppCallFailed({ reason: "outcome_unknown", retryable: false }),
++                      ),
++                      Effect.flatMap((reply) =>
++                        reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
++                      ),
++                    ),
++                }),
+             input: (command) =>
+               workflow.input === undefined
+                 ? Effect.fail(engine())
+@@ -263,7 +346,16 @@
+                 Effect.mapError(engine),
+                 Effect.map((accounts) => ({ accounts: Redacted.make(accounts) })),
+               ),
+-            invoke: (input) => settle(() => workflow.invoke(input)),
++            invoke: (input) =>
++              Effect.gen(function* () {
++                const step = yield* AppCallWorkflow;
++                return yield* settle(() =>
++                  workflow.invoke(
++                    input,
++                    step === undefined ? undefined : { step: step.step, stepId: step.stepId },
++                  ),
++                );
++              }),
+           };
+     return {
+       load,
+diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
+--- a/e2e/tests/tool-policies.spec.ts
++++ b/e2e/tests/tool-policies.spec.ts
+@@ -8,6 +8,7 @@
+ import { Resource } from "../support/contracts.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+ import { serverControl } from "../support/server-control.ts";
++import { Target } from "../support/platform.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Policy = Schema.Struct({ id: Schema.String, revision: Schema.Int, revoked: Schema.Boolean });
+@@ -298,7 +299,8 @@
+         const narrower = yield* body(Policy, specific);
+         expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+         expect((yield* call("write", "outside")).status).toBe(409);
+-        yield* serverControl("restart");
++        // Cloud constructs its executor per event; only the persistent self-host process needs a restart.
++        if ((yield* Target).metadata.target === "self-host") yield* serverControl("restart");
+         expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+         const revoked = yield* api.request(
+           actors.owner,
+diff --git a/e2e/tests/workflow-dependency-tool-policy.spec.ts b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+--- a/e2e/tests/workflow-dependency-tool-policy.spec.ts
++++ b/e2e/tests/workflow-dependency-tool-policy.spec.ts
+@@ -49,7 +49,8 @@
+ const input=object({target:string(),tool:string()});
+ const invoke=query({input},async(ctx,value)=>ctx.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}));
+ const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.do("dependency",{retries:{limit:0,delay:0}},step=>step.apps.call({connection:"remote",target:value.target,tool:value.tool,kind:"query",input:{message:"same arguments"}}))};}catch{return {blocked:true};}});
+-export default defineApp({dependencies:{remote:{scope:"user",tools:{open:{kind:"query"},guarded:{kind:"query"}}}}},{tools:router({invoke}),workflows:{probe,other:probe}});`,
++const nested=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("operation",invoke,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
++export default defineApp({dependencies:{remote:{scope:"user",tools:{open:{kind:"query"},guarded:{kind:"query"}}}}},{tools:router({invoke}),workflows:{probe,other:probe,nested}});`,
+         );
+         expect(
+           (yield* api.request(actors.owner, "PUT", `${prefix}/apps/${source}/connections/remote`, {
+@@ -93,11 +94,11 @@
+             kind: "query",
+             input: { target, tool },
+           });
+-        const policy = (tool: string, mode: string) =>
++        const policy = (tool: string, mode: string, workflow = "probe") =>
+           Effect.gen(function* () {
+             const saved = yield* api.request(actors.owner, "POST", `${prefix}/tool-policies`, {
+               target: { kind: "tool", app: target, tool },
+-              workflow: "probe",
++              workflow,
+               mode,
+             });
+             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+@@ -121,6 +122,20 @@
+         expect(yield* probe("probe", "guarded")).toEqual({ result: { message: "same arguments" } });
+         expect(yield* probe("other", "guarded")).toEqual({ blocked: true });
+         expect((yield* ordinary("guarded")).status).not.toBe(200);
++        expect(yield* probe("nested", "guarded")).toEqual({ blocked: true });
++        const nested = yield* policy("guarded", "never-ask", "nested");
++        expect(yield* probe("nested", "guarded")).toEqual({
++          result: { message: "same arguments" },
++        });
++        expect(yield* probe("other", "guarded")).toEqual({ blocked: true });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${prefix}/tool-policies/${nested.id}?revision=${nested.revision}`,
++          )).status,
++        ).toBe(200);
++        expect(yield* probe("nested", "guarded")).toEqual({ blocked: true });
+       }),
+     ),
+   );
