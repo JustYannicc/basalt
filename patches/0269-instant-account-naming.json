@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-instant-account-naming",
+  "file": "0269-instant-account-naming.patch",
+  "content_sha256": "95ec13fb73c7f33b3e9b1957de8dcd2d0f444b945932a1833a8b0d3a4a702f1e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
