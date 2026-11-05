@@ -32,6 +32,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home escapes embedded CR and LF after formatting all log fields, emits exactly one physical line per record, and passes formatter and real-child snapshot/exit-receipt injection regressions without changing request handling."
           }
+        },
+        {
+          "identity": "cliproxy-home-bounded-db-pool",
+          "file": "0284-home-db-pool.patch",
+          "sha256": "2e064d6b2cae38942551ab376eba6cfed89c6458dddf0f5ce0287b8329cc6910",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home provides validated connection limits, idle and lifetime expiry, preserves direct transport and advisory locks, exposes pool wait counters, and passes bounded concurrent load with config apply and liveness plus maintenance and log writes without changing deadlines."
+          }
         }
       ]
     },

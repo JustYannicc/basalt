@@ -1,0 +1,14 @@
+package cluster
+
+import (
+	"context"
+	"testing"
+)
+
+func TestHomeDBPoolPostgresPrivacyMaintenance(t *testing.T) {
+	t.Setenv("CLIPROXY_DIAGNOSTICS_METADATA_ONLY", "1")
+	testHomeDBPoolMixedWorkload(t, func(ctx context.Context, repo *Repository) error {
+		_, errBatch := repo.RunDiagnosticsPrivacyBatch(ctx)
+		return errBatch
+	})
+}

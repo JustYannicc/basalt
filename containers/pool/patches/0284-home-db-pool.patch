@@ -1,0 +1,603 @@
+diff --git a/cluster.pgsql.example.yaml b/cluster.pgsql.example.yaml
+index 24b5de6..5f1f9d8 100644
+--- a/cluster.pgsql.example.yaml
++++ b/cluster.pgsql.example.yaml
+@@ -15,6 +15,15 @@
+ pgsql:
+   postgres_uri: "postgresql://cliproxy:secret@127.0.0.1:5432/cliproxy_home?sslmode=disable"
+ 
++  # One pool per Home process. Keep the sum within the database server's budget.
++  # Open must be positive; idle may be zero and must not exceed open.
++  max-open-conns: 6
++  max-idle-conns: 6
++  # Positive Go durations. Omitted or zero uses these defaults.
++  # Expiry closes a connection only after its current operation releases it.
++  conn-max-idle-time: "5m"
++  conn-max-lifetime: "30m"
++
+   # Alternative: individual connection fields.
+   # Remove postgres_uri above, then uncomment the fields below.
+   # host: "127.0.0.1"
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 3756e73..bd90639 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -2876,6 +2876,16 @@ Response fields:
+ | `capabilities.credential_in_flight_snapshot_cursor` | boolean | Whether `GET /credentials/in-flight` supports database-backed stable snapshot cursors for multi-page reads. |
+ | `capabilities.credential_concurrency_limits_v2` | boolean | Whether concurrency policy and authoritative admitted-counter APIs are available. |
+ | `capabilities.credential_cooldown_reset` | boolean | Whether `DELETE /credentials/:credential_id/cooldown` supports all-model and model-scoped quota cooldown resets. |
++| `server_info.database_pool` | object or null | Process-local database/sql counters; null if the pool is unavailable. |
++| `server_info.database_pool.max_open_connections` | integer | Configured connection cap. |
++| `server_info.database_pool.open_connections` | integer | Current open connections. |
++| `server_info.database_pool.in_use` | integer | Connections checked out by operations or transactions. |
++| `server_info.database_pool.idle` | integer | Open connections available for reuse. |
++| `server_info.database_pool.wait_count` | integer | Cumulative connection waits since this Home process started. |
++| `server_info.database_pool.wait_duration_ns` | integer | Cumulative time waiting for a connection, in nanoseconds. |
++| `server_info.database_pool.max_idle_closed` | integer | Cumulative connections closed because the idle count exceeded its limit. |
++| `server_info.database_pool.max_idle_time_closed` | integer | Cumulative connections closed because their idle time expired. |
++| `server_info.database_pool.max_lifetime_closed` | integer | Cumulative connections closed because their lifetime expired. |
+ | `server_info.home_version` | string | Home build version. |
+ | `server_info.home_commit` | string | Home build commit. |
+ | `server_info.home_build_date` | string | Home build time. |
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index cc31b78..dc32b00 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -2869,6 +2869,16 @@ Home 管理的 CPA 使用数据库支持的 observation 配置。`credentials.in
+ | `capabilities.credential_in_flight_snapshot_cursor` | boolean | `GET /credentials/in-flight` 是否支持数据库支持的稳定 snapshot cursor 多页读取。 |
+ | `capabilities.credential_concurrency_limits_v2` | boolean | 是否支持 concurrency policy 和权威已准入计数接口。 |
+ | `capabilities.credential_cooldown_reset` | boolean | 是否支持通过 `DELETE /credentials/:credential_id/cooldown` 清除全部模型或指定模型的 quota cooldown。 |
++| `server_info.database_pool` | object or null | 当前 Home 进程的 database/sql 连接池统计；连接池不可用时为 null。 |
++| `server_info.database_pool.max_open_connections` | integer | 配置的最大连接数。 |
++| `server_info.database_pool.open_connections` | integer | 当前打开的连接数。 |
++| `server_info.database_pool.in_use` | integer | 操作或事务正在使用的连接数。 |
++| `server_info.database_pool.idle` | integer | 可供复用的空闲连接数。 |
++| `server_info.database_pool.wait_count` | integer | 当前 Home 进程启动以来等待连接的累计次数。 |
++| `server_info.database_pool.wait_duration_ns` | integer | 等待连接的累计时长，单位为纳秒。 |
++| `server_info.database_pool.max_idle_closed` | integer | 因空闲连接数超出上限而关闭的累计连接数。 |
++| `server_info.database_pool.max_idle_time_closed` | integer | 因空闲时间到期而关闭的累计连接数。 |
++| `server_info.database_pool.max_lifetime_closed` | integer | 因连接生命周期到期而关闭的累计连接数。 |
+ | `server_info.home_version` | string | Home 构建版本。 |
+ | `server_info.home_commit` | string | Home 构建 commit。 |
+ | `server_info.home_build_date` | string | Home 构建时间。 |
+diff --git a/internal/cluster/config.go b/internal/cluster/config.go
+index 914458c..6c5dd35 100644
+--- a/internal/cluster/config.go
++++ b/internal/cluster/config.go
+@@ -22,6 +22,10 @@ type Config struct {
+ }
+ 
+ type PGSQLConfig struct {
++	MaxOpenConns       *int          `yaml:"max-open-conns"`
++	MaxIdleConns       *int          `yaml:"max-idle-conns"`
++	ConnMaxIdleTime    time.Duration `yaml:"conn-max-idle-time"`
++	ConnMaxLifetime    time.Duration `yaml:"conn-max-lifetime"`
+ 	PostgresURI        string        `yaml:"postgres_uri"`
+ 	Host               string        `yaml:"host"`
+ 	Port               int           `yaml:"port"`
+@@ -227,6 +231,9 @@ func (c PGSQLConfig) Configured() bool {
+ 
+ // Validate validates validate.
+ func (c PGSQLConfig) Validate() error {
++	if _, errPool := c.poolSettings(); errPool != nil {
++		return errPool
++	}
+ 	if strings.TrimSpace(c.PostgresURI) != "" {
+ 		if strings.TrimSpace(c.Host) != "" ||
+ 			c.Port != 0 ||
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index 766af7d..35d0dbd 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -38,7 +38,14 @@ func Open(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
+ 		return nil, errDSN
+ 	}
+ 
+-	db, errOpen := gorm.Open(postgres.Open(dsn), databaseGORMConfig(cfg.SlowQueryThreshold))
++	pool, errPool := cfg.poolSettings()
++	if errPool != nil {
++		return nil, errPool
++	}
++	gormConfig := databaseGORMConfig(cfg.SlowQueryThreshold)
++	// Configure the pool before the first connection is opened.
++	gormConfig.DisableAutomaticPing = true
++	db, errOpen := gorm.Open(postgres.Open(dsn), gormConfig)
+ 	if errOpen != nil {
+ 		return nil, errOpen
+ 	}
+@@ -47,6 +54,7 @@ func Open(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
+ 	if errDB != nil {
+ 		return nil, errDB
+ 	}
++	pool.apply(sqlDB)
+ 	if errPing := sqlDB.PingContext(ctx); errPing != nil {
+ 		if errClose := sqlDB.Close(); errClose != nil {
+ 			return nil, fmt.Errorf("ping postgres: %w; close sql db: %v", errPing, errClose)
+diff --git a/internal/cluster/db_pool.go b/internal/cluster/db_pool.go
+new file mode 100644
+index 0000000..052a229
+--- /dev/null
++++ b/internal/cluster/db_pool.go
+@@ -0,0 +1,80 @@
++package cluster
++
++import (
++	"database/sql"
++	"fmt"
++	"time"
++)
++
++type databasePoolSettings struct {
++	maxOpen, maxIdle         int
++	maxIdleTime, maxLifetime time.Duration
++}
++
++func (c PGSQLConfig) poolSettings() (databasePoolSettings, error) {
++	settings := databasePoolSettings{6, 6, 5 * time.Minute, 30 * time.Minute}
++	if c.MaxOpenConns != nil {
++		settings.maxOpen = *c.MaxOpenConns
++		settings.maxIdle = min(settings.maxIdle, settings.maxOpen)
++	}
++	if c.MaxIdleConns != nil {
++		settings.maxIdle = *c.MaxIdleConns
++	}
++	if settings.maxOpen <= 0 {
++		return settings, fmt.Errorf("pgsql.max-open-conns must be greater than 0")
++	}
++	if settings.maxIdle < 0 || settings.maxIdle > settings.maxOpen {
++		return settings, fmt.Errorf("pgsql.max-idle-conns must be between 0 and max-open-conns")
++	}
++	if c.ConnMaxIdleTime < 0 || c.ConnMaxLifetime < 0 {
++		return settings, fmt.Errorf("pgsql connection idle time and lifetime must not be negative")
++	}
++	if c.ConnMaxIdleTime != 0 {
++		settings.maxIdleTime = c.ConnMaxIdleTime
++	}
++	if c.ConnMaxLifetime != 0 {
++		settings.maxLifetime = c.ConnMaxLifetime
++	}
++	return settings, nil
++}
++
++func (s databasePoolSettings) apply(db *sql.DB) {
++	db.SetMaxOpenConns(s.maxOpen)
++	db.SetMaxIdleConns(s.maxIdle)
++	db.SetConnMaxIdleTime(s.maxIdleTime)
++	db.SetConnMaxLifetime(s.maxLifetime)
++}
++
++// DatabasePoolStats contains process-local counters, without connection details.
++type DatabasePoolStats struct {
++	MaxOpenConnections int   `json:"max_open_connections"`
++	OpenConnections    int   `json:"open_connections"`
++	InUse              int   `json:"in_use"`
++	Idle               int   `json:"idle"`
++	WaitCount          int64 `json:"wait_count"`
++	WaitDurationNS     int64 `json:"wait_duration_ns"`
++	MaxIdleClosed      int64 `json:"max_idle_closed"`
++	MaxIdleTimeClosed  int64 `json:"max_idle_time_closed"`
++	MaxLifetimeClosed  int64 `json:"max_lifetime_closed"`
++}
++
++// DatabasePoolStats reads database/sql counters without checking out a connection.
++func (r *Repository) DatabasePoolStats() (DatabasePoolStats, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return DatabasePoolStats{}, errDB
++	}
++	sqlDB, errSQL := db.DB()
++	if errSQL != nil {
++		return DatabasePoolStats{}, errSQL
++	}
++	stats := sqlDB.Stats()
++	return DatabasePoolStats{
++		MaxOpenConnections: stats.MaxOpenConnections,
++		OpenConnections:    stats.OpenConnections,
++		InUse:              stats.InUse, Idle: stats.Idle,
++		WaitCount: stats.WaitCount, WaitDurationNS: int64(stats.WaitDuration),
++		MaxIdleClosed: stats.MaxIdleClosed, MaxIdleTimeClosed: stats.MaxIdleTimeClosed,
++		MaxLifetimeClosed: stats.MaxLifetimeClosed,
++	}, nil
++}
+diff --git a/internal/cluster/db_pool_postgres_test.go b/internal/cluster/db_pool_postgres_test.go
+new file mode 100644
+index 0000000..56ebf09
+--- /dev/null
++++ b/internal/cluster/db_pool_postgres_test.go
+@@ -0,0 +1,247 @@
++package cluster
++
++import (
++	"context"
++	"database/sql"
++	"encoding/json"
++	"runtime"
++	"sync"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++)
++
++// Reuse the isolated schema fixture, but open the runtime pool through production Open.
++func newHomeDBPoolRepository(t *testing.T, maxOpen int) *Repository {
++	t.Helper()
++	fixture := newPostgresQuiescenceRepository(t)
++	dsn := fixture.db.Dialector.(*postgres.Dialector).DSN
++	fixtureSQL, errSQL := fixture.db.DB()
++	if errSQL != nil {
++		t.Fatal(errSQL)
++	}
++	if errClose := fixtureSQL.Close(); errClose != nil {
++		t.Fatal(errClose)
++	}
++	cfg := PGSQLConfig{PostgresURI: dsn}
++	if maxOpen != 0 {
++		cfg.MaxOpenConns = &maxOpen
++	}
++	db, errOpen := Open(t.Context(), cfg)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	t.Cleanup(func() {
++		if errClose := sqlDB.Close(); errClose != nil {
++			t.Error(errClose)
++		}
++	})
++	return NewRepository(db)
++}
++
++func holdHomeDBPoolConnections(t *testing.T, db *sql.DB, count int) func() {
++	t.Helper()
++	held := make([]*sql.Conn, 0, count)
++	var once sync.Once
++	release := func() {
++		once.Do(func() {
++			for _, conn := range held {
++				if errClose := conn.Close(); errClose != nil {
++					t.Error(errClose)
++				}
++			}
++		})
++	}
++	t.Cleanup(release)
++	for range count {
++		conn, errConn := db.Conn(t.Context())
++		if errConn != nil {
++			t.Fatal(errConn)
++		}
++		held = append(held, conn)
++	}
++	return release
++}
++
++// Wait on the pool's queue counter, not elapsed time or an assumed goroutine schedule.
++func waitHomeDBPoolQueue(t *testing.T, db *sql.DB, target int64) {
++	t.Helper()
++	for db.Stats().WaitCount < target {
++		if errContext := t.Context().Err(); errContext != nil {
++			t.Fatal(errContext)
++		}
++		runtime.Gosched()
++	}
++}
++
++func TestHomeDBPoolPostgresCap(t *testing.T) {
++	repo := newHomeDBPoolRepository(t, 0)
++	db, errDB := repo.db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	release := holdHomeDBPoolConnections(t, db, 6)
++	stats, errStats := repo.DatabasePoolStats()
++	if errStats != nil {
++		t.Fatal(errStats)
++	}
++	if stats.MaxOpenConnections != 6 || stats.OpenConnections != 6 || stats.InUse != 6 || stats.Idle != 0 {
++		t.Fatalf("full pool = %+v", stats)
++	}
++	const workers = 32
++	baseline := stats.WaitCount
++	done := make(chan error, workers)
++	for range workers {
++		go func() {
++			_, errExec := db.ExecContext(t.Context(), "SELECT 1")
++			done <- errExec
++		}()
++	}
++	waitHomeDBPoolQueue(t, db, baseline+workers)
++	// Reading diagnostics must work even while every connection is checked out.
++	queued, errQueued := repo.DatabasePoolStats()
++	if errQueued != nil || queued.OpenConnections != 6 || queued.InUse != 6 || queued.WaitCount != baseline+workers {
++		t.Fatalf("queued pool = %+v, %v", queued, errQueued)
++	}
++	release()
++	for range workers {
++		if errWork := <-done; errWork != nil {
++			t.Fatal(errWork)
++		}
++	}
++	final, errFinal := repo.DatabasePoolStats()
++	if errFinal != nil || final.OpenConnections != 6 || final.InUse != 0 || final.Idle != 6 || final.WaitDurationNS <= 0 {
++		t.Fatalf("drained pool = %+v, %v", final, errFinal)
++	}
++}
++
++func TestHomeDBPoolPostgresMixedWorkload(t *testing.T) {
++	testHomeDBPoolMixedWorkload(t, func(ctx context.Context, repo *Repository) error {
++		_, errPurge := repo.PurgeExpiredSessionBindings(ctx, time.Now(), 10)
++		return errPurge
++	})
++}
++
++func testHomeDBPoolMixedWorkload(t *testing.T, maintenance func(context.Context, *Repository) error) {
++	t.Helper()
++	repo := newHomeDBPoolRepository(t, 0)
++	coordinator := newSnapshotTestCoordinator(t, repo)
++	home, _ := coordinator.HomeIncarnation()
++	lifecycle, errLifecycle := repo.EnsureLifecycleConfig(t.Context(), DefaultHeartbeatTimeout())
++	if errLifecycle != nil {
++		t.Fatal(errLifecycle)
++	}
++	member, errMember := repo.SubscribeMembership(t.Context(), SubscribeMembershipRequest{
++		Fingerprint: "pool-test-fingerprint", NodeID: "pool-test-node", Home: home,
++		ProtocolVersion: 1, LifecycleConfigRevision: lifecycle.Revision,
++	})
++	if errMember != nil {
++		t.Fatal(errMember)
++	}
++	lifetime := ConnectionLifetime{Fingerprint: member.CertificateFingerprint, ConnectedAt: member.ConnectedAt, Home: home, Controlled: true}
++	db, errDB := repo.db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	configHeld, releaseConfig := make(chan struct{}), make(chan struct{})
++	var once sync.Once
++	finishConfig := func() { once.Do(func() { close(releaseConfig) }) }
++	t.Cleanup(finishConfig)
++	configDone := make(chan error, 1)
++	go func() {
++		configDone <- repo.MutateConfigSnapshot(t.Context(), DefaultHeartbeatTimeout(), func(root map[string]any) (map[string]any, error) {
++			close(configHeld)
++			<-releaseConfig
++			root["debug"] = true
++			return root, nil
++		})
++	}()
++	select {
++	case <-configHeld:
++	case errConfig := <-configDone:
++		t.Fatalf("config failed before callback: %v", errConfig)
++	}
++	releaseFour := holdHomeDBPoolConnections(t, db, 4)
++	releaseLast := holdHomeDBPoolConnections(t, db, 1)
++	baseline := db.Stats().WaitCount
++	watcher := NewEventWatcher(repo, time.Second, func(context.Context, ClusterEventRecord) error { return nil })
++	jobs := []func() error{
++		func() error { return repo.RefreshCPALiveness(t.Context(), lifetime) },
++		func() error {
++			if errHeartbeat := repo.HeartbeatHomeIncarnation(t.Context(), home); errHeartbeat != nil {
++				return errHeartbeat
++			}
++			return coordinator.heartbeatAndElect(t.Context(), home)
++		},
++		func() error { return watcher.poll(t.Context()) },
++		func() error { return maintenance(t.Context(), repo) },
++		func() error {
++			_, errLog := repo.AppendAppLog(t.Context(), "", "", `{"line":"pool test","level":"info"}`)
++			return errLog
++		},
++	}
++	done := make(chan error, len(jobs))
++	for _, job := range jobs {
++		go func() { done <- job() }()
++	}
++	waitHomeDBPoolQueue(t, db, baseline+int64(len(jobs)))
++	releaseLast()
++	// All five callers must finish using the one available connection while config
++	// retains its transaction and four unrelated callers retain their connections.
++	for range jobs {
++		if errWork := <-done; errWork != nil {
++			t.Fatal(errWork)
++		}
++	}
++	select {
++	case errConfig := <-configDone:
++		t.Fatalf("config finished before release: %v", errConfig)
++	default:
++	}
++	releaseFour()
++	finishConfig()
++	if errConfig := <-configDone; errConfig != nil {
++		t.Fatal(errConfig)
++	}
++	snapshot, errSnapshot := repo.LoadConfigSnapshot(t.Context())
++	if errSnapshot != nil {
++		t.Fatal(errSnapshot)
++	}
++	var debug bool
++	if errDecode := json.Unmarshal(snapshot["debug"], &debug); errDecode != nil || !debug {
++		t.Fatalf("config was not committed: debug = %v, error = %v", debug, errDecode)
++	}
++	if stats := db.Stats(); stats.OpenConnections > 6 || stats.InUse != 0 {
++		t.Fatalf("pool = %+v", stats)
++	}
++}
++
++func TestHomeDBPoolPostgresSingleConnectionTransactions(t *testing.T) {
++	repo := newHomeDBPoolRepository(t, 1)
++	stats, errStats := repo.DatabasePoolStats()
++	if errStats != nil || stats.MaxOpenConnections != 1 {
++		t.Fatalf("single connection pool = %+v, %v", stats, errStats)
++	}
++	if errMigrate := autoMigratePostgresContext(t.Context(), repo.db, true, nil); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	if errConfig := repo.MutateConfigSnapshot(t.Context(), DefaultHeartbeatTimeout(), func(root map[string]any) (map[string]any, error) {
++		root["debug"] = true
++		return root, nil
++	}); errConfig != nil {
++		t.Fatal(errConfig)
++	}
++	coordinator := newSnapshotTestCoordinator(t, repo)
++	home, _ := coordinator.HomeIncarnation()
++	if errHeartbeat := repo.HeartbeatHomeIncarnation(t.Context(), home); errHeartbeat != nil {
++		t.Fatal(errHeartbeat)
++	}
++	if errElect := coordinator.heartbeatAndElect(t.Context(), home); errElect != nil {
++		t.Fatal(errElect)
++	}
++}
+diff --git a/internal/cluster/db_pool_test.go b/internal/cluster/db_pool_test.go
+new file mode 100644
+index 0000000..8de0dee
+--- /dev/null
++++ b/internal/cluster/db_pool_test.go
+@@ -0,0 +1,73 @@
++package cluster
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++func TestHomeDBPoolSettings(t *testing.T) {
++	intPtr := func(n int) *int { return &n }
++	tests := []struct {
++		name    string
++		config  PGSQLConfig
++		want    databasePoolSettings
++		invalid bool
++	}{
++		{name: "defaults", want: databasePoolSettings{6, 6, 5 * time.Minute, 30 * time.Minute}},
++		{name: "smaller open default idle", config: PGSQLConfig{MaxOpenConns: intPtr(1)}, want: databasePoolSettings{1, 1, 5 * time.Minute, 30 * time.Minute}},
++		{name: "explicit", config: PGSQLConfig{MaxOpenConns: intPtr(8), MaxIdleConns: intPtr(0), ConnMaxIdleTime: time.Minute, ConnMaxLifetime: time.Hour}, want: databasePoolSettings{8, 0, time.Minute, time.Hour}},
++		{name: "zero open", config: PGSQLConfig{MaxOpenConns: intPtr(0)}, invalid: true},
++		{name: "negative open", config: PGSQLConfig{MaxOpenConns: intPtr(-1)}, invalid: true},
++		{name: "negative idle", config: PGSQLConfig{MaxIdleConns: intPtr(-1)}, invalid: true},
++		{name: "idle above open", config: PGSQLConfig{MaxOpenConns: intPtr(2), MaxIdleConns: intPtr(3)}, invalid: true},
++		{name: "negative idle time", config: PGSQLConfig{ConnMaxIdleTime: -time.Second}, invalid: true},
++		{name: "negative lifetime", config: PGSQLConfig{ConnMaxLifetime: -time.Second}, invalid: true},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			settings, errSettings := test.config.poolSettings()
++			if (errSettings != nil) != test.invalid {
++				t.Fatalf("settings error = %v, invalid = %v", errSettings, test.invalid)
++			}
++			if !test.invalid && settings != test.want {
++				t.Fatalf("settings = %+v, want %+v", settings, test.want)
++			}
++			test.config.PostgresURI = "postgresql://fixture:fixture@localhost/home"
++			if errValidate := test.config.Validate(); (errValidate != nil) != test.invalid {
++				t.Fatalf("validation = %v, invalid = %v", errValidate, test.invalid)
++			}
++		})
++	}
++}
++
++func TestHomeDBPoolConfigYAML(t *testing.T) {
++	for _, test := range []struct {
++		name, fields string
++		invalid      bool
++	}{
++		{name: "custom", fields: "  max-open-conns: 9\n  max-idle-conns: 4\n  conn-max-idle-time: 2m\n  conn-max-lifetime: 15m\n"},
++		{name: "unlimited rejected", fields: "  max-open-conns: 0\n", invalid: true},
++		{name: "bad duration rejected", fields: "  conn-max-idle-time: forever\n", invalid: true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "cluster.yaml")
++			content := "pgsql:\n  postgres_uri: postgresql://fixture:fixture@localhost/home\n" + test.fields + "node:\n  port: 8327\n"
++			if errWrite := os.WriteFile(path, []byte(content), 0600); errWrite != nil {
++				t.Fatal(errWrite)
++			}
++			cfg, _, errLoad := LoadConfigOptional(path)
++			if (errLoad != nil) != test.invalid {
++				t.Fatalf("load error = %v, invalid = %v", errLoad, test.invalid)
++			}
++			if !test.invalid {
++				settings, errSettings := cfg.PGSQL.poolSettings()
++				want := databasePoolSettings{9, 4, 2 * time.Minute, 15 * time.Minute}
++				if errSettings != nil || settings != want {
++					t.Fatalf("settings = %+v, %v; want %+v", settings, errSettings, want)
++				}
++			}
++		})
++	}
++}
+diff --git a/internal/cluster/management/db_pool_test.go b/internal/cluster/management/db_pool_test.go
+new file mode 100644
+index 0000000..c1db545
+--- /dev/null
++++ b/internal/cluster/management/db_pool_test.go
+@@ -0,0 +1,39 @@
++package management
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestHomeDBPoolCapabilities(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	expected, errStats := handler.repo.DatabasePoolStats()
++	if errStats != nil {
++		t.Fatal(errStats)
++	}
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/capabilities", handler.GetCapabilities)
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/capabilities", nil))
++	if response.Code != http.StatusOK {
++		t.Fatalf("status = %d", response.Code)
++	}
++	var body struct {
++		ServerInfo struct {
++			Pool *cluster.DatabasePoolStats `json:"database_pool"`
++		} `json:"server_info"`
++	}
++	if errDecode := json.Unmarshal(response.Body.Bytes(), &body); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	if body.ServerInfo.Pool == nil || *body.ServerInfo.Pool != expected {
++		t.Fatalf("pool diagnostics = %+v, want %+v", body.ServerInfo.Pool, expected)
++	}
++}
+diff --git a/internal/cluster/management/usage_observability.go b/internal/cluster/management/usage_observability.go
+index 3a01761..9fb76af 100644
+--- a/internal/cluster/management/usage_observability.go
++++ b/internal/cluster/management/usage_observability.go
+@@ -26,7 +26,12 @@ const (
+ 
+ func (h *Handler) GetCapabilities(c *gin.Context) {
+ 	usageTokenBreakdownV2 := false
++	var poolStats *cluster.DatabasePoolStats
+ 	if h != nil && h.repo != nil {
++		stats, errStats := h.repo.DatabasePoolStats()
++		if errStats == nil {
++			poolStats = &stats
++		}
+ 		ctx, cancel := h.requestContext(c)
+ 		usageTokenBreakdownV2, _ = h.repo.UsageTokenBreakdownV2Ready(ctx)
+ 		cancel()
+@@ -76,6 +81,7 @@ func (h *Handler) GetCapabilities(c *gin.Context) {
+ 			"credential_cooldown_reset":            true,
+ 		},
+ 		"server_info": gin.H{
++			"database_pool":   poolStats,
+ 			"home_version":    buildinfo.Version,
+ 			"home_commit":     buildinfo.Commit,
+ 			"home_build_date": buildinfo.BuildDate,

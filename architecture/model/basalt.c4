@@ -223,6 +223,12 @@ model {
     poolRuntime = module "Pool runtime" {
       #basalt #v1 #deep
       description """
+        The supervisor gives each Home process six open and six idle database connections,
+        with five-minute idle expiry and a thirty-minute lifetime. Home validates these limits
+        before opening a connection and retains the direct database transport and lock semantics.
+        Config transactions, liveness, election, event polling, maintenance and log writes share
+        this bounded pool. Process-local diagnostics expose open, in-use, idle and wait counters.
+        Database server capacity must account separately for the gateway, controller and service clients.
         Uses the released node WebSocket session pinning for Home-owned model catalogs.
         Continuations on the same socket retain Home authority without a node-local model registration.
         Metadata-only usage keeps the captured client identity until projection produces its fingerprint,

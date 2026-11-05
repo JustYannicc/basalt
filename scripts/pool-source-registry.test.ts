@@ -40,6 +40,13 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /formatter and real-child snapshot\/exit-receipt injection regressions/,
         );
         assert.match(patch.retirement.requires, /without changing request handling/);
+      } else if (patch.identity === "cliproxy-home-bounded-db-pool") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0284-home-db-pool.patch");
+        assert.match(patch.retirement.requires, /validated connection limits/);
+        assert.match(patch.retirement.requires, /config apply and liveness/);
+        assert.match(patch.retirement.requires, /direct transport and advisory locks/);
+        assert.match(patch.retirement.requires, /pool wait counters/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
