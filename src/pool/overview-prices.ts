@@ -35,7 +35,7 @@ export class OverviewPrices {
     if (this.cached?.key === key && now - this.cached.at < cacheMs)
       return Promise.resolve(this.cached.prices);
     if (this.reading?.key === key) return this.reading.work;
-    const work = this.fetch(unique, now)
+    const work = this.loadPrices(unique, now)
       .then((prices) => {
         this.cached = { key, at: now, prices };
         return prices;
@@ -48,7 +48,7 @@ export class OverviewPrices {
     return work;
   }
 
-  private async fetch(
+  private async loadPrices(
     targets: readonly { provider: string; model: string }[],
     now: number,
   ): Promise<readonly OverviewApiPrice[]> {
