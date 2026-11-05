@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { onServedFramework } from "../../src/catalog/framework.ts";
 import { once } from "node:events";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,7 +28,11 @@ class Storage extends MemoryStorage {
 export async function withProviderProduct(home, work) {
   const sources = await Promise.all(
     ["openai", "anthropic", "gemini"].map(async (lab) =>
-      JSON.parse(await readFile(join(root, "src/catalog/provider-apps", `${lab}.json`), "utf8")),
+      JSON.parse(
+        onServedFramework(
+          await readFile(join(root, "src/catalog/provider-apps", `${lab}.json`), "utf8"),
+        ),
+      ),
     ),
   );
   const control = new PoolControl(new Storage(), {
