@@ -1,0 +1,343 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index 8c3ec05..683233e 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -170,6 +170,32 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             label: "Saved only",
+           })).status,
+         ).toBe(200);
++        // A sign-in saved without a name keeps the generated "Default" label, and its check reports
++        // an email: the email titles the row, without the verified mark.
++        // Its own provider, so its generated label is "Default" whatever was saved before it.
++        const generated = yield* observationFixture({
++          name: "Generated fixture",
++          providerName: "Generated service",
++          observe: false,
++          health: true,
++        });
++        yield* generated.backend.health({
++          status: 200,
++          body: { accountInfo: { email: "generated@example.test" } },
++        });
++        expect((yield* generated.check()).status).toBe(200);
++        // A generated label with nothing reported stays the title.
++        const unreported = yield* observationFixture({
++          name: "Unreported fixture",
++          providerName: "Unreported service",
++          observe: false,
++          health: false,
++        });
++        expect(
++          (yield* unreported.api.request(unreported.actors.owner, "PATCH", unreported.accountPath, {
++            label: "Default 2",
++          })).status,
++        ).toBe(200);
+         for (const [fixture, label] of [
+           [plain, "Plain mail"],
+           [rejected, "Rejected mail"],
+@@ -225,6 +251,10 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
+             accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
+             accountRow(page, "Verified mail").locator("[data-account-verified]").first().waitFor(),
++            accountRow(page, "Default")
++              .locator("[data-account-name]", { hasText: "generated@example.test" })
++              .waitFor(),
++            accountRow(page, "Default 2").locator("[data-account-name]").waitFor(),
+           ]);
+         yield* browser.login(plain.actors.owner);
+         const surfaces = [
+@@ -271,6 +301,21 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                   expect(action.width).toBeGreaterThan(0);
+                   expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
+                 }
++                // Titles at every width: verified identity, then an authored name, then the
++                // reported email, and only then the generated label.
++                expect(
++                  yield* browser.use(`Read the row titles at ${width}px`, (page) =>
++                    Promise.all([
++                      accountRow(page, "Default").locator("[data-account-name]").innerText(),
++                      accountRow(page, "Default").locator("[data-account-verified]").count(),
++                      accountRow(page, "Default 2").locator("[data-account-name]").innerText(),
++                      accountRow(page, "Plain mail").locator("[data-account-name]").innerText(),
++                      accountRow(page, "Verified mail")
++                        .locator("[data-account-name][data-account-verified]")
++                        .count(),
++                    ]),
++                  ),
++                ).toEqual(["generated@example.test", 0, "Default 2", "Plain mail", 1]);
+               }
+               yield* evidence.attach(
+                 `compact-rows-${name}-${width}-${scheme}.png`,
+@@ -281,6 +326,37 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+               );
+             }
+ 
++        // The generated-label account's own app tab uses the same title.
++        const generatedTab = `/org/${plain.actors.organization.slug}/apps/${generated.app.id}?view=accounts`;
++        for (const width of [1280, 390]) {
++          const tabTitle = yield* browser.use(`Read the app tab's title at ${width}px`, (page) => {
++            const name = page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .locator("li")
++              .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
++              .locator("[data-account-name]");
++            return page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.emulateMedia({ colorScheme: "light" }))
++              .then(() => page.goto(generatedTab))
++              .then(() => name.filter({ hasText: "generated@example.test" }).waitFor())
++              .then(() =>
++                Promise.all([
++                  name.innerText(),
++                  name.evaluate((node) => node.hasAttribute("data-account-verified")),
++                ]),
++              );
++          });
++          expect(tabTitle).toEqual(["generated@example.test", false]);
++          yield* evidence.attach(
++            `compact-rows-generated-app-tab-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the generated account's app tab", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++        }
++
+         const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+index 9c24453..52ba9b6 100644
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -457,7 +457,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+           yield* browser.use("The account row shows the reported photo", (page) => {
+             const photo = page
+               .locator(".accounts-section li")
+-              .filter({ hasText: "Default" })
++              // Found by its saved label; the title is what the account's check reported.
++              .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
+               .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
+             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+           }),
+@@ -465,7 +466,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+         yield* browser.use("The outdated result is checked again on view", (page) =>
+           page
+             .locator(".accounts-section li")
+-            .filter({ hasText: "Default" })
++            .filter({ has: page.getByRole("button", { name: "Manage Default", exact: true }) })
+             .locator('[data-check-status="healthy"][data-check-current="true"]')
+             .waitFor(),
+         );
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index ee70b40..1e4c17f 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -34,8 +34,7 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
+  * A verified identity always names its row, so the proven sign-in is never hidden behind a saved
+  * label. Callers may show a differing saved label as metadata.
+  */
+-export const accountTitle = (account: AccountSummary) =>
+-  account.identity?.label ?? (account.label || account.health?.info?.email || "Unnamed account");
++export { accountTitle } from "./account-title.ts";
+ 
+ const accountLinks = (inventory: Inventory) => [...inventory.links, ...(inventory.appLinks ?? [])];
+ 
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+new file mode 100644
+index 0000000..692626d
+--- /dev/null
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -0,0 +1,31 @@
++import type { AccountSummary } from "./dashboard.ts";
++
++/** The label the SDK gives an account saved without a name: "Default", then "Default 2", … */
++const generated = /^Default( \d+)?$/;
++
++/** A label the person gave the account; a generated or blank one is not a name. */
++export const authoredLabel = (label: string) => {
++  const trimmed = label.trim();
++  return trimmed === "" || generated.test(trimmed) ? undefined : label;
++};
++
++/**
++ * What names an account's row on every account list: its verified identity, else the name the
++ * person gave it, else what its own check reported (an email first), else its generated label
++ * ("Default 2" stays distinct), else `fallback`. A reported value never earns the verified mark and
++ * never groups rows; only `account.identity` does.
++ */
++export const accountTitle = (
++  account: Pick<AccountSummary, "label"> & {
++    readonly identity?: AccountSummary["identity"] | undefined;
++    readonly health?: AccountSummary["health"] | undefined;
++  },
++  fallback = "Unnamed account",
++) =>
++  account.identity?.label ??
++  authoredLabel(account.label) ??
++  (account.health?.info?.email ||
++    account.health?.info?.displayName ||
++    account.health?.info?.username ||
++    account.label.trim() ||
++    fallback);
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 5038abb..f1c15bd 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -24,6 +24,7 @@ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import { accountTitle } from "../../contracts/account-title.ts";
+ 
+ /** Account management lives on its list row; products supply the menu items they support. */
+ export function AccountActionsMenu({
+@@ -86,11 +87,13 @@ export function AccountDialog({
+ /** The account a dialog acts on, shown the same way in every action. */
+ export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }) {
+   const { account, provider } = data;
++  // The detail carries the account's checks beside it; the title reads what they reported.
++  const title = accountTitle({ ...account, health: account.health ?? data.health });
+   return (
+     <div className="flex items-center gap-3 min-w-0">
+       <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
+       <div className="min-w-0 wrap-anywhere">
+-        <div className="text-sm font-medium">{account.label || "Unnamed account"}</div>
++        <div className="text-sm font-medium">{title}</div>
+         <div className="text-xs text-muted-foreground">
+           {provider.definition.name} ·{" "}
+           {provider.definition.auth[account.method]?.type === "oauth2" ? "OAuth" : account.method}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 47cef52..accf7b1 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -21,7 +21,7 @@ import {
+   type FailureProps,
+   type Query,
+ } from "../../contracts/dashboard.ts";
+-import { accountMethodKindLabel } from "../../contracts/account-identities.ts";
++import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+ import { AccountCheckResult } from "./account-health.tsx";
+ import {
+@@ -114,13 +114,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+   providerUrl: providerDisplayUrl(requirement.definition),
+ });
+ 
++// The same title as the Accounts list; keyless rows fall back to the provider's name.
+ const accountName = (account: AccountSummary) =>
+-  account.label ||
+-  account.health?.info?.displayName ||
+-  account.health?.info?.username ||
+-  account.health?.info?.email ||
+-  account.providerName ||
+-  "Unnamed account";
++  accountTitle(account, account.providerName || "Unnamed account");
+ 
+ /**
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.
+@@ -299,7 +295,8 @@ function DeleteUnusedAccount<E, A>({
+         <div className="flex min-w-0 items-center gap-2.5 text-sm font-medium">
+           <ProviderIcon name={provider} url={providerDisplayUrl(data.provider.definition)} />
+           <span className="min-w-0 break-words">
+-            {data.account.label || "Unnamed account"} · {provider}
++            {accountTitle({ ...data.account, health: data.account.health ?? data.health })} ·{" "}
++            {provider}
+           </span>
+         </div>
+         <DialogDescription>
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+index 30c804d..2f4e917 100644
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -19,6 +19,7 @@ import { AppIcon, Empty, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import { accountTitle } from "../../contracts/account-title.ts";
+ 
+ /** A card for each configured app and its linked accounts. */
+ export function AppsPage<E>({
+@@ -155,9 +156,7 @@ function AppsList({
+               selected.some((account) => account.signIn?.state === "unavailable") ||
+               hostManaged.some((link) => link.problem === "unavailable");
+             const provider = Object.values(app.requirements.accounts)[0]?.definition;
+-            const userAccounts = selected
+-              .map((account) => account.label || "Unnamed account")
+-              .join(", ");
++            const userAccounts = selected.map((account) => accountTitle(account)).join(", ");
+             const sharedAccounts =
+               appAccountCount === 0
+                 ? ""
+diff --git a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+index 882ca42..73d2ab0 100644
+--- a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
++++ b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+@@ -27,6 +27,7 @@ import { AppIcon } from "./common.tsx";
+ import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import { accountTitle } from "../../contracts/account-title.ts";
+ 
+ /** One way an app can run: as one account the user can use with it. */
+ export interface Choice {
+@@ -80,7 +81,7 @@ export function appChoices(
+     )
+     .toSorted((a, b) => Number(linked.has(b.id)) - Number(linked.has(a.id)))
+     .map((account): Choice => ({
+-      target: { kind: "account", id: account.id, label: account.label || "Unnamed account" },
++      target: { kind: "account", id: account.id, label: accountTitle(account) },
+       description: linked.has(account.id) ? "Linked to this app" : "Links when saved",
+       accounts: [account.id],
+       provider: account.provider,
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+index a875f2c..f029114 100644
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -61,6 +61,7 @@ import { McpInstallInstructions } from "./connect.tsx";
+ import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName, productNamed } from "../../contracts/product-brand.ts";
++import { accountTitle } from "../../contracts/account-title.ts";
+ 
+ /** Each host supplies its existing authorized catalog read of the app's tools. */
+ export interface ConnectionToolPickerProps {
+@@ -509,7 +510,7 @@ function AssignAccount({
+       const existing = options.get(account.id);
+       if (existing === undefined)
+         options.set(account.id, {
+-          label: account.label || "Unnamed account",
++          label: accountTitle(account),
+           description: account.providerName ?? "Connected account",
+           fits: 1,
+         });
+diff --git a/packages/ui/src/implementation/dashboard/tool-runner.tsx b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+index ef913c6..b2d8ffa 100644
+--- a/packages/ui/src/implementation/dashboard/tool-runner.tsx
++++ b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+@@ -28,6 +28,7 @@ import {
+   ToolInputForm,
+ } from "./tool-input-form.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { accountTitle } from "../../contracts/account-title.ts";
+ 
+ const isJson = Schema.is(Json);
+ const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Json));
+@@ -91,11 +92,12 @@ export const runningAs = <A extends AccountSummary>(
+   const accounts = new Map(
+     requirements.flatMap((entry) => entry.using.map((account) => [account.id, account] as const)),
+   );
+-  return [...accounts.values()].map((account) =>
+-    account.providerName === undefined || account.providerName === account.label
+-      ? account.label || "Unnamed account"
+-      : `${account.label || "Unnamed account"} (${account.providerName})`,
+-  );
++  return [...accounts.values()].map((account) => {
++    const title = accountTitle(account);
++    return account.providerName === undefined || account.providerName === title
++      ? title
++      : `${title} (${account.providerName})`;
++  });
+ };
+ 
+ /**
