@@ -1,0 +1,9 @@
+{
+  "identity": "executor-oauth-delete-fixture-bindings",
+  "file": "0299-oauth-delete-fixture-bindings.patch",
+  "content_sha256": "819d400aafc0b98a68aad0e45698537ee09b752a61071edc8c7920f630060a92",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

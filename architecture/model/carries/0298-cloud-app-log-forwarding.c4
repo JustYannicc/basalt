@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Cloud test app-page proxy discovery accepts bare and logger-prefixed AppPages startup announcements while rejecting quoted or unrelated resources."
+    }
+  }
+}
