@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "generic-instances-r1",
+  "artifact": {
+    "name": "generic-instances-r1.html",
+    "sha256": "0f9b52de05cf06f3ff96d7ef4cbbc634ec5ee31a86c77c1ee47c3bdd5cfd7ba8"
+  },
+  "requirements": [
+    {
+      "id": "service-instances",
+      "text": "One service row represents its app and MCP entries. Add reuses an existing instance; Add another explicitly creates a named instance.",
+      "proofs": [
+        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts" }
+      ]
+    },
+    {
+      "id": "open-and-choose",
+      "text": "Open reaches the sole instance directly. Multiple named instances use a desktop chooser and a phone sheet at 390 px.",
+      "proofs": [
+        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts" }
+      ]
+    },
+    {
+      "id": "retained-pools",
+      "text": "Creating an additional pool preserves the earlier pool and its retained accounts.",
+      "proofs": [
+        { "scenario": "poolCreation", "target": "self-host", "job": "host-managed-accounts" }
+      ]
+    }
+  ]
+}

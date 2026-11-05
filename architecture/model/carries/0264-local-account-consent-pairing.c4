@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The local account consent scenario waits until the paired browser exposes the Accounts link before navigating to the existing identity."
+    }
+  }
+}
