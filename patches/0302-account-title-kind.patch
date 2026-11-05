@@ -1,0 +1,589 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+index a531a6f..6a5ef57 100644
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -157,11 +157,17 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                 observe: false,
+                 health: true,
+               }),
++              // An API key saved without a name whose check reports nothing, as most keys are.
+               unreported: observationFixture({
+                 name: "Unreported fixture",
+                 providerName: "Unreported service",
+                 observe: false,
+                 health: false,
++                family: {
++                  id: "compact-unreported",
++                  name: "Compact unreported",
++                  methods: { key: { mechanism: "api-key" } },
++                },
+               }),
+               many: observationFixture({
+                 name: "Many apps first, the shared workspace mail and calendar sync",
+@@ -207,7 +213,8 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+           body: { accountInfo: { email: "generated@example.test" } },
+         });
+         expect((yield* generated.check()).status).toBe(200);
+-        // A generated label with nothing reported stays the title.
++        // A generated label with nothing reported is titled by its provider and kind, keeping its
++        // number: never "Default 2".
+         expect(
+           (yield* unreported.api.request(unreported.actors.owner, "PATCH", unreported.accountPath, {
+             label: "Default 2",
+@@ -449,7 +456,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                   expect(line.inside, JSON.stringify(line)).toBe(true);
+                 }
+                 // Titles at every width: verified identity, then an authored name, then the
+-                // reported email, and only then the generated label.
++                // reported email, and only then the provider and kind in place of the generated label.
+                 expect(
+                   yield* browser.use(`Read the row titles at ${width}px`, (page) =>
+                     Promise.all([
+@@ -462,7 +469,13 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                         .count(),
+                     ]),
+                   ),
+-                ).toEqual(["generated@example.test", 0, "Default 2", "Plain mail", 1]);
++                ).toEqual([
++                  "generated@example.test",
++                  0,
++                  "Unreported service API key 2",
++                  "Plain mail",
++                  1,
++                ]);
+               }
+               yield* evidence.attach(
+                 `compact-rows-${name}-${width}-${scheme}.png`,
+@@ -535,6 +548,39 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+           );
+         }
+ 
++        // The unnamed API key's own app tab uses the same provider-and-kind title.
++        yield* browser.use("Open the unnamed key's app tab", (page) =>
++          page.goto(
++            `/org/${plain.actors.organization.slug}/apps/${unreported.app.id}?view=accounts`,
++          ),
++        );
++        for (const width of [1280, 390]) {
++          const keyTitle = yield* browser.use(
++            `Read the key's app tab title at ${width}px`,
++            (page) => {
++              const name = page
++                .getByRole("region", { name: "Your accounts", exact: true })
++                .locator("li")
++                .filter({
++                  has: page.getByRole("button", { name: "Manage Default 2", exact: true }),
++                })
++                .locator("[data-account-name]");
++              return page
++                .setViewportSize({ width, height: 900 })
++                .then(() => name.filter({ hasText: "Unreported service API key 2" }).waitFor())
++                .then(() => name.innerText());
++            },
++          );
++          expect(keyTitle).toBe("Unreported service API key 2");
++          yield* evidence.attach(
++            `compact-rows-unnamed-key-app-tab-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the unnamed key's app tab", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++        }
++
+         const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index 1e4c17f..5844e33 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -5,6 +5,7 @@ import type {
+   AccountCredentialMechanism,
+   AccountFamily,
+   AccountOffering,
++  AccountRequirement,
+   ProviderDefinition,
+ } from "@executor-js/sdk";
+ import type { AccountSummary, Inventory } from "./dashboard.ts";
+@@ -34,7 +35,8 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
+  * A verified identity always names its row, so the proven sign-in is never hidden behind a saved
+  * label. Callers may show a differing saved label as metadata.
+  */
+-export { accountTitle } from "./account-title.ts";
++import { accountTitle } from "./account-title.ts";
++export { accountTitle };
+ 
+ const accountLinks = (inventory: Inventory) => [...inventory.links, ...(inventory.appLinks ?? [])];
+ 
+@@ -155,6 +157,25 @@ export const accountMethodKindLabel = (
+     methodOffering([definition], method, provider),
+   );
+ 
++/**
++ * An account's title with the kind its own requirement declares for its method, for places that
++ * know an app's requirements but not the inventory, so every list names a key the same way.
++ */
++export const requirementAccountTitle = (
++  account: AccountSummary,
++  requirements: readonly AccountRequirement[],
++  fallback?: string,
++) => {
++  const requirement = requirements.find((entry) => entry.provider === account.provider);
++  return accountTitle(
++    { ...account, providerName: account.providerName ?? requirement?.definition.name },
++    fallback,
++    requirement === undefined
++      ? undefined
++      : accountMethodKindLabel(requirement.definition, account.method, requirement.provider),
++  );
++};
++
+ /** Connection labels describe declarations, never health, permission or current plan. */
+ export const accountKindLabel = (inventory: Inventory, account: AccountSummary) =>
+   connectionKindLabel(accountMechanism(inventory, account), accountOffering(inventory, account));
+diff --git a/packages/ui/src/contracts/account-title.ts b/packages/ui/src/contracts/account-title.ts
+index 692626d..60f8bd9 100644
+--- a/packages/ui/src/contracts/account-title.ts
++++ b/packages/ui/src/contracts/account-title.ts
+@@ -9,23 +9,51 @@ export const authoredLabel = (label: string) => {
+   return trimmed === "" || generated.test(trimmed) ? undefined : label;
+ };
+ 
++/** A generated or blank label's number, such as " 2" for "Default 2"; undefined for a name. */
++const generatedNumber = (label: string) => {
++  const trimmed = label.trim();
++  if (trimmed === "") return "";
++  const match = generated.exec(trimmed);
++  return match === null ? undefined : (match[1] ?? "");
++};
++
++/**
++ * A generated or blank label read as what the account is: its provider and kind, such as
++ * "ElevenLabs API key", keeping the generated number so "Default 2" reads "ElevenLabs API key 2".
++ * A combined kind such as "API key · Metered API" names the row by its first part.
++ */
++const describedLabel = (
++  label: string,
++  providerName: string | undefined,
++  kind: string | undefined,
++) => {
++  const number = generatedNumber(label);
++  const provider = providerName?.trim();
++  if (number === undefined || !provider) return undefined;
++  return `${provider} ${kind?.split(" · ")[0]?.trim() || "account"}${number}`;
++};
++
+ /**
+  * What names an account's row on every account list: its verified identity, else the name the
+- * person gave it, else what its own check reported (an email first), else its generated label
+- * ("Default 2" stays distinct), else `fallback`. A reported value never earns the verified mark and
+- * never groups rows; only `account.identity` does.
++ * person gave it, else what its own check reported (an email first), else its provider and `kind`
++ * in place of a generated label ("Default 2" stays distinct), else `fallback`. A reported value
++ * never earns the verified mark and never groups rows; only `account.identity` does. A generated
++ * label never titles a row.
+  */
+ export const accountTitle = (
+   account: Pick<AccountSummary, "label"> & {
+     readonly identity?: AccountSummary["identity"] | undefined;
+     readonly health?: AccountSummary["health"] | undefined;
++    readonly providerName?: string | undefined;
+   },
+   fallback = "Unnamed account",
++  /** The account's declared kind, such as "API key", when the caller knows it. */
++  kind?: string,
+ ) =>
+   account.identity?.label ??
+   authoredLabel(account.label) ??
+   (account.health?.info?.email ||
+     account.health?.info?.displayName ||
+     account.health?.info?.username ||
+-    account.label.trim() ||
+-    fallback);
++    describedLabel(account.label, account.providerName, kind) ||
++    `${fallback}${generatedNumber(account.label) ?? ""}`);
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 4ebd3ae..7b4d158 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -25,7 +25,7 @@ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+-import { accountTitle } from "../../contracts/account-title.ts";
++import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+ 
+ /**
+  * Account management lives on its list row; products supply the menu items they support. The row's
+@@ -130,8 +130,20 @@ export function AccountDialogIdentity({
+   const definition = data?.provider.definition;
+   const name = definition?.name ?? listed?.providerName;
+   const label = data
+-    ? accountTitle({ ...data.account, health: data.account.health ?? data.health })
+-    : listed?.label;
++    ? accountTitle(
++        {
++          ...data.account,
++          providerName: data.provider.definition.name,
++          health: data.account.health ?? data.health,
++        },
++        undefined,
++        accountMethodKindLabel(
++          data.provider.definition,
++          data.account.method,
++          data.account.provider,
++        ),
++      )
++    : listed && accountTitle(listed);
+   // The sign-in method's kind is the provider's to say, so it waits for the account read.
+   return (
+     <div className="flex items-center gap-3 min-w-0">
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+index 721014a..233f2a0 100644
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -7,6 +7,7 @@ import type { AccountAppHealth, AccountId, AppId } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Tick02Icon } from "@hugeicons/core-free-icons";
+ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
++import { authoredLabel } from "../../contracts/account-title.ts";
+ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
+ import { cn } from "../lib/utils.ts";
+@@ -456,7 +457,7 @@ export function AccountRowName({
+     verified !== undefined && verified !== title
+       ? { text: verified, verified: true }
+       : verified === title
+-        ? account.label.trim() !== "" && account.label !== title
++        ? authoredLabel(account.label) !== undefined && account.label !== title
+           ? { text: account.label, verified: false, authored: true }
+           : undefined
+         : reported === undefined
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 587cafc..5fed6b6 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -200,7 +200,7 @@ function AccountsList({
+   }, [highlight]);
+   const groups = accountGroups(data.accounts).filter(({ bindings }) =>
+     bindings.some((account) =>
+-      `${accountTitle(account)} ${accountKindLabel(data, account) ?? ""} ${account.identity?.name ?? ""} ${account.identity?.label ?? ""} ${account.label} ${account.providerName ?? ""} ${bindingApps(
++      `${accountTitle(account, undefined, accountKindLabel(data, account))} ${accountKindLabel(data, account) ?? ""} ${account.identity?.name ?? ""} ${account.identity?.label ?? ""} ${account.label} ${account.providerName ?? ""} ${bindingApps(
+         data,
+         [account],
+       )
+@@ -287,7 +287,7 @@ function AccountsList({
+                   <AccountRowLogo account={account} identityGroup={apps.length > 1} />
+                   <AccountRowName
+                     account={account}
+-                    title={accountTitle(account)}
++                    title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                     secondaryClassName="row-meta"
+                     tags={accountMeta?.(account)}
+                   />
+@@ -362,7 +362,7 @@ function AccountsList({
+                     {account.identity !== undefined && identityActions?.(bindings, data)}
+                     {bindings.length > 1 ? (
+                       <IdentityRowMenu
+-                        title={accountTitle(account)}
++                        title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                         manage={
+                           <OutsideAccountRow>
+                             <div className="divide-y divide-border rounded-md border border-border">
+@@ -386,7 +386,9 @@ function AccountsList({
+                         }
+                       />
+                     ) : accountActions === undefined ? (
+-                      <IdentityRowMenu title={accountTitle(account)} />
++                      <IdentityRowMenu
++                        title={accountTitle(account, undefined, accountKindLabel(data, account))}
++                      />
+                     ) : (
+                       accountActions(account, { binding: false })
+                     )}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 315f8af..c0a5370 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -121,8 +121,12 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+ });
+ 
+ // The same title as the Accounts list; keyless rows fall back to the provider's name.
+-const accountName = (account: AccountSummary) =>
+-  accountTitle(account, account.providerName || "Unnamed account");
++const accountName = (account: AccountSummary, kind?: string) =>
++  accountTitle(account, account.providerName || "Unnamed account", kind);
++
++/** The account's kind as its requirement declares it, which also names an unnamed account. */
++const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
++  accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+ 
+ /**
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.
+@@ -301,8 +305,20 @@ function DeleteUnusedAccount<E, A>({
+         <div className="flex min-w-0 items-center gap-2.5 text-sm font-medium">
+           <ProviderIcon name={provider} url={providerDisplayUrl(data.provider.definition)} />
+           <span className="min-w-0 break-words">
+-            {accountTitle({ ...data.account, health: data.account.health ?? data.health })} ·{" "}
+-            {provider}
++            {accountTitle(
++              {
++                ...data.account,
++                providerName: data.provider.definition.name,
++                health: data.account.health ?? data.health,
++              },
++              undefined,
++              accountMethodKindLabel(
++                data.provider.definition,
++                data.account.method,
++                data.account.provider,
++              ),
++            )}{" "}
++            · {provider}
+           </span>
+         </div>
+         <DialogDescription>
+@@ -911,17 +927,20 @@ const radioDot = "size-2 rounded-full bg-primary";
+ /** The row's logo and two-line name; clicking either picks the row's choice. */
+ function AccountRowIdentity({
+   account,
++  kind,
+   labelFor,
+   tags,
+ }: {
+   readonly account: AccountSummary;
++  /** The account's declared kind, which names a row whose label was generated. */
++  readonly kind?: string | undefined;
+   readonly labelFor?: string;
+   readonly tags?: ReactNode;
+ }) {
+   const identity = (
+     <>
+       <AccountRowLogo account={account} />
+-      <AccountRowName account={account} title={accountName(account)} tags={tags} />
++      <AccountRowName account={account} title={accountName(account, kind)} tags={tags} />
+     </>
+   );
+   return labelFor === undefined ? (
+@@ -954,11 +973,15 @@ function ProvisionedTag() {
+ }
+ 
+ /** Account names sort the rows, so linking one does not move it. */
+-const byName = <C extends { readonly account: AccountSummary }>(choices: readonly C[]) =>
++const byName = <C extends { readonly account: AccountSummary }>(
++  requirement: AccountRequirement,
++  choices: readonly C[],
++) =>
+   [...choices].sort(
+     (a, b) =>
+-      accountName(a.account).localeCompare(accountName(b.account)) ||
+-      a.account.id.localeCompare(b.account.id),
++      accountName(a.account, kindIn(requirement, a.account)).localeCompare(
++        accountName(b.account, kindIn(requirement, b.account)),
++      ) || a.account.id.localeCompare(b.account.id),
+   );
+ 
+ /** A member's view: the linked accounts with their status, and no controls. */
+@@ -1000,6 +1023,11 @@ function ReadOnlyChoices<E>({
+   const rows = shown.map((account) => {
+     const provisioned = provisionedMethod(requirement, account);
+     const traffic = data.accountTraffic?.(account);
++    const kind = accountMethodKindLabel(
++      requirement.definition,
++      account.method,
++      requirement.provider,
++    );
+     return (
+       <AccountRowProvider key={account.id}>
+         <li className={rowClass}>
+@@ -1007,27 +1035,22 @@ function ReadOnlyChoices<E>({
+             {plain ? (
+               <RadioGroup.Item
+                 value={account.id}
+-                aria-label={accountName(account)}
++                aria-label={accountName(account, kind)}
+                 className={radioClass}
+               >
+                 <RadioGroup.Indicator className={radioDot} />
+               </RadioGroup.Item>
+             ) : (
+-              <Checkbox checked disabled aria-label={accountName(account)} />
++              <Checkbox checked disabled aria-label={accountName(account, kind)} />
+             )}
+             <AccountRowIdentity
+               account={account}
++              kind={kind}
+               tags={provisioned ? <ProvisionedTag /> : undefined}
+             />
+             <AccountRowCells
+               lead
+-              type={accountRowType([
+-                accountMethodKindLabel(
+-                  requirement.definition,
+-                  account.method,
+-                  requirement.provider,
+-                ),
+-              ])}
++              type={accountRowType([kind])}
+               plan={provisioned ? undefined : data.accountPlan?.(account)}
+               {...requestsCell(data, traffic)}
+               health={
+@@ -1148,6 +1171,7 @@ function EditableChoices<E>({
+     accounts.find((item) => item.id === account.id) ??
+     account;
+   const choices = byName(
++    requirement,
+     Option.match(loaded, {
+       onNone: (): RequirementChoice<AccountSummary>[] =>
+         linked.map((account) => ({ account, linked: true })),
+@@ -1208,7 +1232,7 @@ function EditableChoices<E>({
+     <ChoiceRow
+       replaces={
+         bound !== undefined && bound.account.id !== choice.account.id
+-          ? accountName(bound.account)
++          ? accountName(bound.account, kindIn(requirement, bound.account))
+           : undefined
+       }
+       key={choice.account.id}
+@@ -1318,7 +1342,7 @@ function EditableChoices<E>({
+         )}
+       {replacingWithNew && bound !== undefined && (
+         <RemoveAppBoundAccount
+-          name={accountName(bound.account)}
++          name={accountName(bound.account, kindIn(requirement, bound.account))}
+           app={app.name}
+           pending={false}
+           replacement="a new account"
+@@ -1386,7 +1410,8 @@ function ChoiceRow<E>({
+   const pending = AsyncResult.isWaiting(linking) || AsyncResult.isWaiting(unlinking);
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const id = useId();
+-  const name = accountName(account);
++  const kind = accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
++  const name = accountName(account, kind);
+   const row = appAccountRow(app, account, data.accountRow);
+   const traffic = data.accountTraffic?.(account);
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+@@ -1459,14 +1484,13 @@ function ChoiceRow<E>({
+           )}
+           <AccountRowIdentity
+             account={account}
++            kind={kind}
+             labelFor={id}
+             tags={hostProvisioned ? <ProvisionedTag /> : undefined}
+           />
+           <AccountRowCells
+             lead
+-            type={accountRowType([
+-              accountMethodKindLabel(requirement.definition, account.method, requirement.provider),
+-            ])}
++            type={accountRowType([kind])}
+             plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
+             {...requestsCell(data, traffic)}
+             health={
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+index 2f4e917..06b829b 100644
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -19,7 +19,7 @@ import { AppIcon, Empty, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+-import { accountTitle } from "../../contracts/account-title.ts";
++import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+ 
+ /** A card for each configured app and its linked accounts. */
+ export function AppsPage<E>({
+@@ -156,7 +156,11 @@ function AppsList({
+               selected.some((account) => account.signIn?.state === "unavailable") ||
+               hostManaged.some((link) => link.problem === "unavailable");
+             const provider = Object.values(app.requirements.accounts)[0]?.definition;
+-            const userAccounts = selected.map((account) => accountTitle(account)).join(", ");
++            const userAccounts = selected
++              .map((account) =>
++                requirementAccountTitle(account, Object.values(app.requirements.accounts)),
++              )
++              .join(", ");
+             const sharedAccounts =
+               appAccountCount === 0
+                 ? ""
+diff --git a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+index 73d2ab0..950dd7b 100644
+--- a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
++++ b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+@@ -27,7 +27,7 @@ import { AppIcon } from "./common.tsx";
+ import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+-import { accountTitle } from "../../contracts/account-title.ts";
++import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+ 
+ /** One way an app can run: as one account the user can use with it. */
+ export interface Choice {
+@@ -81,7 +81,11 @@ export function appChoices(
+     )
+     .toSorted((a, b) => Number(linked.has(b.id)) - Number(linked.has(a.id)))
+     .map((account): Choice => ({
+-      target: { kind: "account", id: account.id, label: accountTitle(account) },
++      target: {
++        kind: "account",
++        id: account.id,
++        label: requirementAccountTitle(account, requirements),
++      },
+       description: linked.has(account.id) ? "Linked to this app" : "Links when saved",
+       accounts: [account.id],
+       provider: account.provider,
+diff --git a/packages/ui/src/implementation/dashboard/provider-accounts.tsx b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
+index 3009a60..382dc03 100644
+--- a/packages/ui/src/implementation/dashboard/provider-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
+@@ -10,8 +10,8 @@ import {
+ import type { Inventory } from "../../contracts/dashboard.ts";
+ import {
+   accountMethodKindLabel,
+-  accountTitle,
+   bindingApps,
++  requirementAccountTitle,
+ } from "../../contracts/account-identities.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+@@ -189,7 +189,9 @@ export function ProviderAccountUsage({
+                 return (
+                   <tr key={account.id} className="align-top">
+                     <td className="min-w-0 px-3.5 py-2.5">
+-                      <span className="block truncate font-medium">{accountTitle(account)}</span>
++                      <span className="block truncate font-medium">
++                        {requirementAccountTitle(account, [requirement])}
++                      </span>
+                       <span className="block truncate text-xs text-muted-foreground">
+                         {labels.get(account.method) ??
+                           accountMethodKindLabel(requirement.definition, account.method) ??
+diff --git a/packages/ui/src/implementation/dashboard/tool-runner.tsx b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+index b2d8ffa..6db435f 100644
+--- a/packages/ui/src/implementation/dashboard/tool-runner.tsx
++++ b/packages/ui/src/implementation/dashboard/tool-runner.tsx
+@@ -28,7 +28,7 @@ import {
+   ToolInputForm,
+ } from "./tool-input-form.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+-import { accountTitle } from "../../contracts/account-title.ts";
++import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+ 
+ const isJson = Schema.is(Json);
+ const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Json));
+@@ -93,8 +93,12 @@ export const runningAs = <A extends AccountSummary>(
+     requirements.flatMap((entry) => entry.using.map((account) => [account.id, account] as const)),
+   );
+   return [...accounts.values()].map((account) => {
+-    const title = accountTitle(account);
+-    return account.providerName === undefined || account.providerName === title
++    const title = requirementAccountTitle(
++      account,
++      requirements.map((entry) => entry.requirement),
++    );
++    // A title already naming the provider, such as "ElevenLabs API key", needs no suffix.
++    return account.providerName === undefined || title.startsWith(account.providerName)
+       ? title
+       : `${title} (${account.providerName})`;
+   });
