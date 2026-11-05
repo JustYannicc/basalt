@@ -1,0 +1,340 @@
+diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
+index 685c02f..6111866 100644
+--- a/e2e/tests/account-consent.spec.ts
++++ b/e2e/tests/account-consent.spec.ts
+@@ -95,7 +95,47 @@ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) =>
+         expect((yield* product.connectionAccount(fourth)).identity?.id).toBe(read.identity?.id);
+         for (const app of [thirdApp, fourthApp])
+           expect((yield* product.read(app)).status).toBe(200);
++        const saved = (yield* product.request("GET", "/v1/accounts")).body;
++        const thirdAccount = yield* product.connectionAccount(third);
++        const repeated = yield* Effect.all(
++          [product.reuse(thirdApp, read.id), product.reuse(thirdApp, read.id)],
++          { concurrency: 2 },
++        );
++        for (const result of repeated) {
++          expect(result.status).toBe("completed");
++          if (result.status === "completed") expect(result.account.id).toBe(thirdAccount.id);
++        }
++        const reversed = yield* product.reuse(readApp, thirdAccount.id);
++        expect(reversed.status).toBe("completed");
++        if (reversed.status === "completed") expect(reversed.account.id).toBe(read.id);
++        expect((yield* product.request("GET", "/v1/accounts")).body).toEqual(saved);
+         expect((yield* issuer.metrics).authorizations).toBe(1);
++        const sameProviderApps = [
++          yield* product.deploy(issuer.origin, "Repeated reader", ["read"]),
++          yield* product.deploy(issuer.origin, "Second repeated reader", ["read"], {}, undefined, {
++            name: "Repeated reader",
++          }),
++        ];
++        const sameProviderFirst = yield* product.connection(sameProviderApps[0]!);
++        const sameProviderSecond = yield* product.connection(sameProviderApps[1]!);
++        expect(
++          (yield* product.reuseConnection(sameProviderFirst, read.id, [
++            { connection: sameProviderSecond, method: "oauth" },
++          ])).status,
++        ).toBe("completed");
++        const sharedFirst = yield* product.connectionAccount(sameProviderFirst);
++        const sharedSecond = yield* product.connectionAccount(sameProviderSecond);
++        expect(sharedFirst.provider).toBe(sharedSecond.provider);
++        expect(sharedFirst.id).toBe(sharedSecond.id);
++        const independent = yield* product.connect(thirdApp);
++        expect(independent.identity?.id).toBe(thirdAccount.identity?.id);
++        expect(independent.id).not.toBe(thirdAccount.id);
++        const reusedAgain = yield* product.reuse(thirdApp, read.id);
++        expect(reusedAgain.status).toBe("completed");
++        if (reusedAgain.status === "completed")
++          expect(reusedAgain.account.id).toBe(thirdAccount.id);
++        expect((yield* product.request("GET", `/v1/accounts/${independent.id}`)).status).toBe(200);
++        expect((yield* issuer.metrics).authorizations).toBe(2);
+       }),
+     ),
+   );
+diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
+index 9ac49b0..0bebf9d 100644
+--- a/e2e/tests/account-identity-reconciliation.spec.ts
++++ b/e2e/tests/account-identity-reconciliation.spec.ts
+@@ -103,6 +103,15 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
+         expect(source.identity).toBeDefined();
+         const target = yield* deploy("Reconciliation target");
+         yield* browser.login(actors.owner);
++        let observeHeldRead = () => {};
++        let releaseRead = () => {};
++        const heldRead = new Promise<void>((resolve) => {
++          observeHeldRead = resolve;
++        });
++        const readReleased = new Promise<void>((resolve) => {
++          releaseRead = resolve;
++        });
++        yield* Effect.addFinalizer(() => Effect.sync(releaseRead));
+         let committed = false,
+           blocked = true,
+           saves = 0,
+@@ -123,8 +132,11 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
+                 page.route(/\/resources\/accounts(?:\?.*)?$/, (route) => {
+                   projectionReads++;
+                   if (committed && blocked) {
+-                    failedReads++;
+-                    return route.abort("failed");
++                    observeHeldRead();
++                    return readReleased.then(() => {
++                      failedReads++;
++                      return route.abort("failed");
++                    });
+                   }
+                   return route.continue();
+                 }),
+@@ -149,9 +161,15 @@ export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})
+         yield* browser.use("Save once using the covering grant", (page) =>
+           page.getByRole("button", { name: "Add app", exact: true }).click(),
+         );
+-        yield* browser.use("Keep save success visible", (page) =>
+-          page.getByRole("status").filter({ hasText: "Apps connected" }).waitFor(),
++        yield* browser.use("Observe the held post-commit account read", () => heldRead);
++        yield* browser.use(
++          "Show committed success while its account read is still pending",
++          (page) => page.getByRole("status").filter({ hasText: "Apps connected" }).waitFor(),
+         );
++        expect(committed).toBe(true);
++        expect(saves).toBe(1);
++        expect(failedReads).toBe(0);
++        releaseRead();
+         yield* browser.use("Expose the failed account read", (page) =>
+           page
+             .getByRole("alert")
+diff --git a/packages/sdk/src/implementation/oauth-grant-bindings.ts b/packages/sdk/src/implementation/oauth-grant-bindings.ts
+index 926429c..b77b483 100644
+--- a/packages/sdk/src/implementation/oauth-grant-bindings.ts
++++ b/packages/sdk/src/implementation/oauth-grant-bindings.ts
+@@ -1,5 +1,6 @@
+ /** Shared grants keep their encryption identity and renewal lock after individual bindings disappear. */
+ import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
++import { accountMetadata, ownedAccount } from "./accounts.ts";
+ import type { Credentials, StoredAccount } from "../contracts/storage.ts";
+ import { AccountId, JsonObject, StorageError, type ProviderId } from "../contracts/shared.ts";
+ import type { AccountIdentity } from "../contracts/account-identity.ts";
+@@ -61,6 +62,44 @@ export const shareOAuthGrant = (
+     return id;
+   });
+ 
++/** Reuse only the same authorization and destination; matching identity alone is insufficient. */
++export const existingSharedOAuthBinding = (
++  db: Query,
++  lifecycle: ResourceLifecycle | undefined,
++  source: Pick<StoredAccount, "owner" | "identityId" | "site">,
++  placement: string,
++  input: { readonly provider: ProviderId; readonly method: string; readonly grant: AccountId },
++) =>
++  Effect.gen(function* () {
++    const rows = yield* query(() =>
++      db.findMany("accounts", {
++        where: (b) =>
++          b.and(
++            b("owner", "=", source.owner),
++            b("identityId", "=", source.identityId),
++            b("provider", "=", input.provider),
++            b("method", "=", input.method),
++            b("oauthGrantId", "=", input.grant),
++            source.site === null ? b("site", "is", null) : b("site", "=", source.site),
++          ),
++        orderBy: ["id", "asc"],
++      }),
++    );
++    for (const row of rows) {
++      const account = accountMetadata(
++        yield* ownedAccount(db, { account: row.id, owner: source.owner }),
++      );
++      if ((yield* identityPlacement(account, lifecycle)) !== placement) continue;
++      if (
++        lifecycle !== undefined &&
++        !(yield* lifecycle.accountsResolving([account])).has(account.id)
++      )
++        continue;
++      return account;
++    }
++    return undefined;
++  });
++
+ /** A binding stores its own policy and no copied token. Hosts resolve its destination after insertion. */
+ export const createSharedOAuthBinding = (
+   db: Query,
+diff --git a/packages/sdk/src/implementation/oauth-grant-reuse.ts b/packages/sdk/src/implementation/oauth-grant-reuse.ts
+index 4e8620e..d7120d6 100644
+--- a/packages/sdk/src/implementation/oauth-grant-reuse.ts
++++ b/packages/sdk/src/implementation/oauth-grant-reuse.ts
+@@ -1,6 +1,6 @@
+ import { accountMetadata } from "./accounts.ts";
+ /** Reuse creates exact provider bindings only after one grant covers every saved target. */
+-import { type Crypto, Effect } from "effect";
++import { type Crypto, Effect, Schema } from "effect";
+ import { Base64 } from "effect/encoding";
+ import { StorageError } from "../contracts/shared.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+@@ -21,7 +21,14 @@ import {
+ import { requireTargetProvider } from "./connection-target.ts";
+ import { query, transaction, type Query } from "./database.ts";
+ import { inspectOAuthConnection } from "./oauth-connection-plan.ts";
+-import { shareOAuthGrant, createSharedOAuthBinding } from "./oauth-grant-bindings.ts";
++import {
++  shareOAuthGrant,
++  createSharedOAuthBinding,
++  existingSharedOAuthBinding,
++  grantBindings,
++} from "./oauth-grant-bindings.ts";
++
++class OAuthReuseChanged extends Schema.TaggedError<OAuthReuseChanged>()("OAuthReuseChanged", {}) {}
+ 
+ export const makeOAuthGrantReuse =
+   (
+@@ -59,6 +66,16 @@ export const makeOAuthGrantReuse =
+               return { status: "completed" as const, account: locked.state.account };
+             yield* requireOpen({ connection: entry.row.id }, locked);
+           }
++          // Consent and reuse lock the shared bindings in one order before their grant.
++          const bindings = yield* grantBindings(tx, source.grantId);
++          const lockedBindings = new Set(bindings.map((binding) => binding.id));
++          for (const binding of bindings.sort((a, b) => a.id.localeCompare(b.id)))
++            yield* query(() =>
++              tx.updateMany("accounts", {
++                where: (b) => b.and(b("id", "=", binding.id), b("owner", "=", request.owner)),
++                set: { owner: request.owner },
++              }),
++            );
+           const live = yield* ownedAccount(tx, {
+             account: source.account.id,
+             owner: request.owner,
+@@ -131,25 +148,42 @@ export const makeOAuthGrantReuse =
+                 : yield* lifecycle.connectionIdentityPlacement?.(row) ?? Effect.succeed(null);
+             if (placement !== source.proof.placement)
+               return yield* new AccountConnectionRefused(row.target);
++            const existing = yield* existingSharedOAuthBinding(
++              tx,
++              lifecycle,
++              current,
++              source.proof.placement,
++              {
++                provider: row.provider,
++                method: entry.methodName,
++                grant,
++              },
++            );
++            // A concurrent consent can add a binding after our lock set was read. Retry without acquiring it out of order.
++            if (existing !== undefined && !lockedBindings.has(existing.id))
++              return yield* new OAuthReuseChanged();
+             const account =
+               row.provider === current.provider && entry.methodName === current.method
+                 ? { ...accountMetadata(current), identity: source.identity }
+-                : yield* createSharedOAuthBinding(
+-                    tx,
+-                    credentials,
+-                    crypto,
+-                    lifecycle,
+-                    current,
+-                    source.identity,
+-                    source.proof.placement,
+-                    {
+-                      provider: row.provider,
+-                      method: entry.methodName,
+-                      label: input.label ?? source.identity.label,
+-                      grant,
+-                    },
+-                  );
++                : existing === undefined
++                  ? yield* createSharedOAuthBinding(
++                      tx,
++                      credentials,
++                      crypto,
++                      lifecycle,
++                      current,
++                      source.identity,
++                      source.proof.placement,
++                      {
++                        provider: row.provider,
++                        method: entry.methodName,
++                        label: input.label ?? source.identity.label,
++                        grant,
++                      },
++                    )
++                  : { ...existing, identity: source.identity };
+             if (account === undefined) return yield* new AccountConnectionRefused(row.target);
++            lockedBindings.add(account.id);
+             if (lifecycle !== undefined)
+               yield* lifecycle.connectionCompleting({
+                 id: row.id,
+@@ -163,7 +197,7 @@ export const makeOAuthGrantReuse =
+               account,
+               lifecycle,
+               undefined,
+-              account.id === current.id ? "extend" : "replace",
++              account.id === current.id || existing !== undefined ? "extend" : "replace",
+             );
+             accounts.push(account);
+           }
+@@ -171,5 +205,8 @@ export const makeOAuthGrantReuse =
+           if (account === undefined) return yield* new StorageError();
+           return { status: "completed" as const, account };
+         }),
++      ).pipe(
++        Effect.retry({ times: 1, while: (error) => error instanceof OAuthReuseChanged }),
++        Effect.catchTag("OAuthReuseChanged", () => Effect.succeed(consent("busy"))),
+       );
+     }).pipe(Effect.withSpan("sdk.connections.reuseOAuth"));
+diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+index 5c400c7..8da970f 100644
+--- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+@@ -269,10 +269,9 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+                 const result = await props.reuse({ method, ...selected });
+                 if (Exit.isFailure(result)) setError(result.cause);
+                 else if (result.value.status === "completed") {
+-                  const reconciled = await props.reconcile(selected);
+-                  setCompleted({
++                  const saved = {
+                     selection: selected,
+-                    warning: Exit.isFailure(reconciled),
++                    warning: false,
+                     account: result.value.account,
+                     apps: inventory.apps
+                       .filter(
+@@ -281,7 +280,17 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+                           additionalTargets.some((target) => target.app === app.id),
+                       )
+                       .map((app) => app.name),
+-                  });
++                  };
++                  setCompleted(saved);
++                  void props
++                    .reconcile(selected)
++                    .then((reconciled) =>
++                      setCompleted((current) =>
++                        current === saved
++                          ? { ...saved, warning: Exit.isFailure(reconciled) }
++                          : current,
++                      ),
++                    );
+                 } else
+                   setPlanned({
+                     source: planned.source,
+diff --git a/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx b/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx
+index ad2598c..08f5157 100644
+--- a/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx
+@@ -13,7 +13,8 @@ export function IdentityConsentComplete<E>(props: {
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onDone: () => void;
+ }) {
+-  const [warning, setWarning] = useState(props.warning);
++  const [retryWarning, setRetryWarning] = useState<boolean>();
++  const warning = retryWarning ?? props.warning;
+   const [pending, setPending] = useState(false);
+   return (
+     <div className="min-w-0 space-y-4 wrap-anywhere">
+@@ -37,7 +38,7 @@ export function IdentityConsentComplete<E>(props: {
+               setPending(true);
+               props.onPendingChange(true);
+               try {
+-                setWarning(Exit.isFailure(await props.retry()));
++                setRetryWarning(Exit.isFailure(await props.retry()));
+               } finally {
+                 setPending(false);
+                 props.onPendingChange(false);
