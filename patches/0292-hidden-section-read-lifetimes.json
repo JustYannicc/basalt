@@ -1,7 +1,7 @@
 {
   "identity": "basalt-hidden-section-read-lifetimes",
   "file": "0292-hidden-section-read-lifetimes.patch",
-  "content_sha256": "9c56ea5f6052f2a2d22d76f76869ffcbae1dcb910b6c60c867b4fe2c006c12e5",
+  "content_sha256": "6e5229088f074c06441cbc78946fbb611ff79edcf274dc03a419858c8910c1f2",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

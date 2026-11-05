@@ -95,24 +95,38 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-client-loading.spec.ts
 --- a/e2e/tests/dashboard-client-loading.spec.ts
 +++ b/e2e/tests/dashboard-client-loading.spec.ts
-@@ -17,6 +17,7 @@
+@@ -7,6 +7,7 @@
+ import { openInApp } from "../support/in-app-navigation.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
++import { batchedReads, batchPath } from "../support/read-batches.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it) => {
+   it.effect(scenarios.dashboardClientLoading.title, (context) =>
+@@ -17,6 +18,22 @@
            browser = yield* Browser,
            evidence = yield* Evidence;
          yield* browser.login(actors.owner);
++        const operationPaths = yield* browser.use("Read the public operation paths", (page) =>
++          page.request
++            .get("/openapi.json")
++            .then((response) => response.json())
++            .then((document: { paths: Record<string, Record<string, { operationId?: string }>> }) =>
++              Object.entries(document.paths).flatMap(([path, methods]) =>
++                Object.values(methods).flatMap((operation) =>
++                  operation.operationId === undefined
++                    ? []
++                    : [[operation.operationId, path] as const],
++                ),
++              ),
++            ),
++        );
++        const paths = new Map(operationPaths);
 +        const hiddenMembershipReads: (readonly string[])[] = [];
          for (const viewport of [
            { name: "Desktop", width: 1280, height: 800 },
            { name: "Mobile", width: 390, height: 844 },
-@@ -98,7 +99,7 @@
-                     page
-                       .getByText("Saved sign-ins, available to your apps.", { exact: true })
-                       .count(),
--                    page.locator("section.page").count(),
-+                    page.locator("section.page:visible").count(),
-                     page.getByRole("heading", { level: 1 }).evaluateAll((headings) => {
-                       const rect = headings[0]?.getBoundingClientRect();
-                       return rect ? { x: rect.x, y: rect.y } : null;
-@@ -124,6 +125,50 @@
+@@ -124,6 +141,74 @@
                  "Accounts keeps its page frame while its client module is held",
                ).toBe(1);
                expect(before[3]).not.toBeNull();
@@ -134,36 +148,60 @@ diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-cl
 +                "Observe focus reads while the previous frame is hidden",
 +                (page) =>
 +                  page.evaluate(() => {
-+                    const reads: string[] = [];
++                    const reads: Array<{ path: string; body: string | null }> = [];
 +                    const original = window.fetch;
 +                    window.fetch = (...args) => {
-+                      const url = String(args[0]);
-+                      if (url.includes("/api/")) reads.push(url.split("?")[0] ?? url);
++                      const url = new URL(String(args[0]), location.href);
++                      if (url.pathname.startsWith("/api/")) {
++                        const body = args[1]?.body;
++                        reads.push({
++                          path: url.pathname,
++                          body:
++                            url.pathname !== "/api/dashboard/batch"
++                              ? null
++                              : typeof body === "string"
++                                ? body
++                                : body instanceof ArrayBuffer || ArrayBuffer.isView(body)
++                                  ? new TextDecoder().decode(body)
++                                  : null,
++                        });
++                      }
 +                      return original(...args);
 +                    };
 +                    window.dispatchEvent(new Event("visibilitychange"));
-+                    return new Promise<readonly string[]>((resolve) =>
-+                      requestAnimationFrame(() =>
-+                        requestAnimationFrame(() => {
-+                          window.fetch = original;
-+                          resolve(reads);
-+                        }),
-+                      ),
++                    return new Promise<readonly { path: string; body: string | null }[]>(
++                      (resolve) =>
++                        requestAnimationFrame(() =>
++                          requestAnimationFrame(() => {
++                            window.fetch = original;
++                            resolve(reads);
++                          }),
++                        ),
 +                    );
 +                  }),
 +              );
++              const operations = hiddenReads.flatMap((read) =>
++                read.path !== batchPath
++                  ? [read.path]
++                  : batchedReads(read.body).map((operation) => {
++                      const name = `${operation.group}.${operation.endpoint}`;
++                      const path = paths.get(name);
++                      if (path === undefined) throw new Error(`No public path for ${name}`);
++                      return path;
++                    }),
++              );
 +              yield* evidence.json(`${viewport.name.toLowerCase()}-hidden-focus-reads.json`, {
-+                hiddenReads,
++                operations,
 +              });
 +              hiddenMembershipReads.push(
-+                hiddenReads.filter((url) =>
-+                  /\/organization\/list-(?:members|invitations)$/.test(url),
++                operations.filter((path) =>
++                  /\/organization\/list-(?:members|invitations)$/.test(path),
 +                ),
 +              );
                yield* chunk.release;
                yield* browser.use("The account directory replaces the loading rows", (page) =>
                  page
-@@ -173,6 +218,10 @@
+@@ -173,6 +258,10 @@
                );
              }),
            );
@@ -178,7 +216,7 @@ diff --git a/e2e/tests/hidden-section-reads.spec.ts b/e2e/tests/hidden-section-r
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/hidden-section-reads.spec.ts
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,166 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -220,12 +258,20 @@ new file mode 100644
 +          };
 +          yield* browser.login(actors.owner);
 +          yield* browser.use("Observe real queue reads with the browser clock", (page) =>
-+            page.clock.install().then(() => {
-+              page.on("request", (request) => {
-+                reads.push(...queueReads(request));
-+              });
-+              return page.setViewportSize({ width, height: 844 });
-+            }),
++            page.clock
++              .install()
++              .then(() =>
++                page.route(
++                  (url) => queueRead(url.pathname),
++                  (route) => route.fallback(),
++                ),
++              )
++              .then(() => {
++                page.on("request", (request) => {
++                  reads.push(...queueReads(request));
++                });
++                return page.setViewportSize({ width, height: 844 });
++              }),
 +          );
 +          const prefix = `/org/${actors.organization.slug}`;
 +          const loadedQueue = (label: string) =>
