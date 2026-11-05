@@ -121,6 +121,7 @@ function runsScenario(
           match[3]!,
         );
         if (declared) {
+          if (match[2] !== '"') return false;
           const { files, groups } = readDeclarations(root);
           const group = groups[declared[1]!];
           return (

@@ -86,6 +86,7 @@ test("computed selectors cannot change the group, job, target, scenario or failu
   const error =
     "approved-rows/phone-layout/accountRows/self-host: required CI job does not run this scenario";
   for (const broken of [
+    workflow.replace(`"${selector}"`, `'${selector}'`),
     workflow.replace("mock:rows", "mock:other"),
     workflow.replace("e2e-pattern.ts", "unverified.ts"),
     workflow.replace("mock:rows", "${GROUP}"),

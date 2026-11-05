@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, matchesGlob } from "node:path";
 
 export const isRelativeInput = (file: string) =>
@@ -9,13 +10,36 @@ export const isRelativeInput = (file: string) =>
 
 export function carryTargets(patch: string) {
   const diffs = patch.split("\n").filter((line) => line.startsWith("diff --git "));
-  if (!diffs.length) throw new Error("Changed carry has no target files");
-  return diffs.flatMap((line) => {
-    const match = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
-    if (!match || !isRelativeInput(match[1]!) || !isRelativeInput(match[2]!))
-      throw new Error("Unsupported carry target path");
-    return [...new Set([match[1]!, match[2]!])].map((target) => ".upstream/" + target);
-  });
+  const targets = new Set(
+    diffs.flatMap((line) => {
+      const match = /^diff --git a\/(\S+) b\/(\S+)$/.exec(line);
+      if (!match || !isRelativeInput(match[1]!) || !isRelativeInput(match[2]!))
+        throw new Error("Unsupported carry target path");
+      return [match[1]!, match[2]!];
+    }),
+  );
+  // Git parses unified headers and hunk bodies without applying any source changes.
+  const scratch = mkdtempSync(join(tmpdir(), "basalt-carry-inputs-"));
+  try {
+    const file = join(scratch, "carry.patch");
+    writeFileSync(file, patch);
+    const parsed = spawnSync("git", ["apply", "--numstat", "-z", "--allow-empty", file], {
+      cwd: scratch,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    if (parsed.error || parsed.status !== 0) throw new Error("Unsupported carry target path");
+    for (const record of parsed.stdout.split("\0").filter(Boolean)) {
+      const match = /^(?:\d+|-)\t(?:\d+|-)\t(.+)$/.exec(record);
+      if (!match || !isRelativeInput(match[1]!)) throw new Error("Unsupported carry target path");
+      targets.add(match[1]!);
+    }
+    if (!targets.size) throw new Error("Changed carry has no target files");
+    return [...targets].map((target) => ".upstream/" + target);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 export function upstreamInputFiles(root: string) {
@@ -38,22 +62,35 @@ export function upstreamInputFiles(root: string) {
   return snapshot.files;
 }
 
-export function frozenInputMatcher(root: string) {
+const repositoryInputs = new Map<string, Set<string>>();
+
+function frozenRepositoryInputs(root: string) {
   const git = (args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   const head = git(["rev-parse", "--verify", "HEAD^{commit}"]).trim();
+  const key = JSON.stringify([root, head]);
+  const previous = repositoryInputs.get(key);
+  if (previous) return previous;
+  const source = git(["ls-tree", "-r", "--name-only", "-z", head]).split("\0").filter(Boolean);
+  const files = new Set(source);
+  const patches = source.filter((file) => /^patches\/[^/]+\.patch$/.test(file));
+  if (patches.length) {
+    const carried = execFileSync("git", ["show", ...patches.map((file) => head + ":" + file)], {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    for (const target of carryTargets(carried)) files.add(target);
+  }
+  repositoryInputs.set(key, files);
+  return files;
+}
+
+export function frozenInputMatcher(root: string) {
   const files = new Set([
-    ...git(["ls-tree", "-r", "--name-only", "-z", head]).split("\0").filter(Boolean),
+    ...frozenRepositoryInputs(root),
     ...upstreamInputFiles(root).map((file) => ".upstream/" + file),
   ]);
-  const patches = spawnSync(
-    "git",
-    ["grep", "--no-textconv", "-h", "-e", "^diff --git ", head, "--", ":(top,glob)patches/*.patch"],
-    { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
-  );
-  if (patches.error || (patches.status !== 0 && patches.status !== 1))
-    throw new Error("Could not read frozen carry targets");
-  if (patches.stdout.trim()) for (const target of carryTargets(patches.stdout)) files.add(target);
   const patterns = new Map<string, boolean>();
   return (pattern: string) => {
     if (!patterns.has(pattern)) {
