@@ -1,0 +1,2484 @@
+diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
+--- a/packages/sdk/src/contracts/account-connection.ts
++++ b/packages/sdk/src/contracts/account-connection.ts
+@@ -346,177 +346,178 @@
+   AccountAcquisitionUnavailable,
+ ] as const;
+ /** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
+-export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
+-  .add(
+-    HttpApiEndpoint.post("planOAuth", "/v1/account-connections/oauth/plan", {
+-      payload: PlanConnectionOAuth,
+-      success: OAuthConnectionPlan,
+-      error: [
+-        ...errors,
+-        AccountConnectionClosed,
+-        AccountConnectionTargetChanged,
+-        AccountConnectionRefused,
+-        AuthMethodInvalid,
+-        CredentialsError,
+-        OAuthSetupFailed,
+-      ],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("reuseOAuth", "/v1/account-connections/oauth/reuse", {
+-      payload: ReuseConnectionOAuth,
+-      success: OAuthGrantReuseResult,
+-      error: [
+-        ...errors,
+-        AccountConnectionClosed,
+-        AccountConnectionTargetChanged,
+-        AccountConnectionRefused,
+-        CredentialsError,
+-        AuthMethodInvalid,
+-        OAuthSetupFailed,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Use one verified account's existing OAuth grant for a pending connection. Keeps the source's exact client and resource. Completes only when one real grant covers the target scopes and both bindings have the same durable placement; otherwise returns consent-required without saving an account or link. Hosts must authorize use of the source and completion of the target.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("create", "/v1/account-connections", {
+-      payload: CreateAccountConnection,
+-      success: AccountConnection,
+-      error: [
+-        AccountProvisioned,
+-        InteractiveReconnectUnsupported,
+-        AccountSiteInvalid,
+-        StorageError,
+-        ProviderNotFound,
+-        AccountNotFound,
+-        AccountConnectionNotFound,
+-        AppNotFound,
+-        AccountSelectionInvalid,
+-        AccountConnectionTargetChanged,
+-      ],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/account-connections/:connection", {
+-      params: { connection: AccountConnectionId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: AccountConnection,
+-      error: [...errors, AccountConnectionTargetChanged],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Check a connection request: pending, completed with account metadata, cancelled or expired. A pending or expired request whose latest OAuth sign-in failed has state.failure: the error the user saw, with its reason, cause (stage and HTTP status) and serviceError (the service's own error and description, or the bounded text of another error body). A rate_limited failure has retryAfter when the service said when to try again. A sign-in the product refused for the creator's current access records AccountConnectionRefused, and one whose app requirement changed, including its scope, records AccountConnectionTargetChanged; both need a new sign-in. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed requests have already linked the account to the named app. A pending request whose app no longer requires its provider fails with AccountConnectionTargetChanged; request a new connection.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("cancel", "/v1/account-connections/:connection/cancel", {
+-      params: { connection: AccountConnectionId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: AccountConnection,
+-      error: interactiveErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Cancel a pending connection request without changing saved accounts.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("submit", "/v1/account-connections/submit", {
+-      payload: SubmitAccountConnection,
+-      success: Account,
+-      error: saveErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("oauthSetup", "/v1/account-connections/oauth/setup", {
+-      payload: CheckOAuthSetup,
+-      success: OAuthClientSetup,
+-      error: [
+-        ...errors,
+-        AccountConnectionClosed,
+-        AccountConnectionTargetChanged,
+-        StorageError,
+-        ProviderNotFound,
+-        AuthMethodInvalid,
+-        CredentialsError,
+-        OAuthSetupFailed,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Inspect a sign-in method's grant, scopes and whether a client can be created automatically, without registering a client or starting authorization. Pass provider to inspect a provider directly, or connection to use its saved provider site and callback target. Hosts must authorize access to the owner and target.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("startOAuth", "/v1/account-connections/oauth/start", {
+-      payload: StartConnectionOAuth,
+-      success: OAuthStartResult,
+-      error: [
+-        InteractiveRetirementBusy,
+-        InteractiveRetirementFailed,
+-        ...errors,
+-        AccountConnectionClosed,
+-        AccountConnectionTargetChanged,
+-        AccountConnectionRefused,
+-        CredentialsError,
+-        AuthMethodInvalid,
+-        OAuthClientUnavailable,
+-        OAuthClientNotFound,
+-        OAuthSetupFailed,
+-        OAuthCompletionFailed,
+-      ],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("findOAuth", "/v1/account-connections/oauth/find", {
+-      payload: FindConnectionOAuth,
+-      success: FoundConnectionOAuth,
+-      error: [...errors, AccountConnectionTargetChanged, CredentialsError, OAuthCompletionFailed],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Find the connection whose pending OAuth sign-in issued the callback's state, for example when the provider's link opened in another browser tab. Hosts must authorize the returned owner and connection before completing it.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("completeOAuth", "/v1/account-connections/oauth/complete", {
+-      payload: CompleteConnectionOAuth,
+-      success: Account,
+-      error: [
+-        InteractiveRetirementBusy,
+-        InteractiveRetirementFailed,
+-        ...errors,
+-        AccountConnectionClosed,
+-        AccountConnectionTargetChanged,
+-        AccountConnectionRefused,
+-        CredentialsError,
+-        OAuthCompletionFailed,
+-      ],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("startInteractive", "/v1/account-connections/interactive/start", {
+-      payload: StartConnectionInteractive,
+-      success: InteractiveInstructions,
+-      error: interactiveErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("interactiveStatus", "/v1/account-connections/interactive/status", {
+-      payload: GetAccountConnection,
+-      success: InteractiveConnectionStatus,
+-      error: interactiveErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("submitInteractive", "/v1/account-connections/interactive/submit", {
+-      payload: SubmitConnectionInteractive,
+-      success: InteractiveConnectionStatus,
+-      error: interactiveErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("cancelInteractive", "/v1/account-connections/interactive/cancel", {
+-      payload: GetAccountConnection,
+-      success: Schema.Void,
+-      error: interactiveErrors,
+-    }),
+-  );
++export const AccountConnectionsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("accountConnections")
++    .add(
++      HttpApiEndpoint.post("planOAuth", "/v1/account-connections/oauth/plan", {
++        payload: PlanConnectionOAuth,
++        success: OAuthConnectionPlan,
++        error: [
++          ...errors,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          AccountConnectionRefused,
++          AuthMethodInvalid,
++          CredentialsError,
++          OAuthSetupFailed,
++        ],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("reuseOAuth", "/v1/account-connections/oauth/reuse", {
++        payload: ReuseConnectionOAuth,
++        success: OAuthGrantReuseResult,
++        error: [
++          ...errors,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          AccountConnectionRefused,
++          CredentialsError,
++          AuthMethodInvalid,
++          OAuthSetupFailed,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Use one verified account's existing OAuth grant for a pending connection. Keeps the source's exact client and resource. Completes only when one real grant covers the target scopes and both bindings have the same durable placement; otherwise returns consent-required without saving an account or link. Hosts must authorize use of the source and completion of the target.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("create", "/v1/account-connections", {
++        payload: CreateAccountConnection,
++        success: AccountConnection,
++        error: [
++          AccountProvisioned,
++          InteractiveReconnectUnsupported,
++          AccountSiteInvalid,
++          StorageError,
++          ProviderNotFound,
++          AccountNotFound,
++          AccountConnectionNotFound,
++          AppNotFound,
++          AccountSelectionInvalid,
++          AccountConnectionTargetChanged,
++        ],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("get", "/v1/account-connections/:connection", {
++        params: { connection: AccountConnectionId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: AccountConnection,
++        error: [...errors, AccountConnectionTargetChanged],
++      }).annotate(
++        OpenApi.Description,
++        "Check a connection request: pending, completed with account metadata, cancelled or expired. A pending or expired request whose latest OAuth sign-in failed has state.failure: the error the user saw, with its reason, cause (stage and HTTP status) and serviceError (the service's own error and description, or the bounded text of another error body). A rate_limited failure has retryAfter when the service said when to try again. A sign-in the product refused for the creator's current access records AccountConnectionRefused, and one whose app requirement changed, including its scope, records AccountConnectionTargetChanged; both need a new sign-in. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed requests have already linked the account to the named app. A pending request whose app no longer requires its provider fails with AccountConnectionTargetChanged; request a new connection.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("cancel", "/v1/account-connections/:connection/cancel", {
++        params: { connection: AccountConnectionId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: AccountConnection,
++        error: interactiveErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Cancel a pending connection request without changing saved accounts.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("submit", "/v1/account-connections/submit", {
++        payload: SubmitAccountConnection,
++        success: Account,
++        error: saveErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("oauthSetup", "/v1/account-connections/oauth/setup", {
++        payload: CheckOAuthSetup,
++        success: OAuthClientSetup,
++        error: [
++          ...errors,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          StorageError,
++          ProviderNotFound,
++          AuthMethodInvalid,
++          CredentialsError,
++          OAuthSetupFailed,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Inspect a sign-in method's grant, scopes and whether a client can be created automatically, without registering a client or starting authorization. Pass provider to inspect a provider directly, or connection to use its saved provider site and callback target. Hosts must authorize access to the owner and target.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("startOAuth", "/v1/account-connections/oauth/start", {
++        payload: StartConnectionOAuth,
++        success: OAuthStartResult,
++        error: [
++          InteractiveRetirementBusy,
++          InteractiveRetirementFailed,
++          ...errors,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          AccountConnectionRefused,
++          CredentialsError,
++          AuthMethodInvalid,
++          OAuthClientUnavailable,
++          OAuthClientNotFound,
++          OAuthSetupFailed,
++          OAuthCompletionFailed,
++        ],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("findOAuth", "/v1/account-connections/oauth/find", {
++        payload: FindConnectionOAuth,
++        success: FoundConnectionOAuth,
++        error: [...errors, AccountConnectionTargetChanged, CredentialsError, OAuthCompletionFailed],
++      }).annotate(
++        OpenApi.Description,
++        "Find the connection whose pending OAuth sign-in issued the callback's state, for example when the provider's link opened in another browser tab. Hosts must authorize the returned owner and connection before completing it.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("completeOAuth", "/v1/account-connections/oauth/complete", {
++        payload: CompleteConnectionOAuth,
++        success: Account,
++        error: [
++          InteractiveRetirementBusy,
++          InteractiveRetirementFailed,
++          ...errors,
++          AccountConnectionClosed,
++          AccountConnectionTargetChanged,
++          AccountConnectionRefused,
++          CredentialsError,
++          OAuthCompletionFailed,
++        ],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("startInteractive", "/v1/account-connections/interactive/start", {
++        payload: StartConnectionInteractive,
++        success: InteractiveInstructions,
++        error: interactiveErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("interactiveStatus", "/v1/account-connections/interactive/status", {
++        payload: GetAccountConnection,
++        success: InteractiveConnectionStatus,
++        error: interactiveErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("submitInteractive", "/v1/account-connections/interactive/submit", {
++        payload: SubmitConnectionInteractive,
++        success: InteractiveConnectionStatus,
++        error: interactiveErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("cancelInteractive", "/v1/account-connections/interactive/cancel", {
++        payload: GetAccountConnection,
++        success: Schema.Void,
++        error: interactiveErrors,
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -345,166 +345,167 @@
+ ]);
+ export type AccountSignIn = typeof AccountSignIn.Type;
+
+-export const AccountsGroup = HttpApiGroup.make("accounts")
+-  .add(
+-    HttpApiEndpoint.get("observations", "/v1/accounts/:account/observations", {
+-      params: accountParams,
+-      query: { ...ownerQuery, apps: Schema.fromJsonString(AccountObservationInput.fields.apps) },
+-      success: AccountObservationView,
+-      error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("refreshObservations", "/v1/accounts/:account/observations/refresh", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({ apps: AccountObservationInput.fields.apps }),
+-      success: AccountObservationView,
+-      error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("identify", "/v1/accounts/:account/identity", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      success: Account,
+-      error: [StorageError, CredentialsError, AccountNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Verify a retained account's stable subject through its declared issuer's authenticated UserInfo endpoint. Preserves account IDs, links, client choices and grants. An account without available proof remains independent. Hosts must authorize use of the account.",
+-    ),
+-  )
+-
+-  .add(
+-    HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({
+-        label: AccountInputs.update.fields.label,
+-        description: AccountInputs.update.fields.description,
++export const AccountsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("accounts")
++    .add(
++      HttpApiEndpoint.get("observations", "/v1/accounts/:account/observations", {
++        params: accountParams,
++        query: { ...ownerQuery, apps: Schema.fromJsonString(AccountObservationInput.fields.apps) },
++        success: AccountObservationView,
++        error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
+       }),
+-      success: Account,
+-      error: [StorageError, AccountNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Rename a saved account or change its description. Only supplied fields change; a null description removes it. Agents read the label and description to choose between accounts. Its ID, credentials and app links stay the same.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/accounts/:account", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      success: Schema.Struct({ account: AccountId }),
+-      error: [
+-        StorageError,
+-        InteractiveRetirementBusy,
+-        InteractiveRetirementFailed,
+-        AccountWebhooksActive,
+-        AccountWorkflowsActive,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/accounts/:account", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      success: Account,
+-      error: [StorageError, AccountNotFound],
+-    }).annotate(OpenApi.Description, "Read saved account metadata without credentials."),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("provider", "/v1/accounts/:account/provider", {
+-      params: { account: AccountId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: Provider,
+-      error: [StorageError, AccountNotFound, ProviderNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read the provider definition and authentication methods for a saved account.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("health", "/v1/accounts/:account/health", {
+-      params: accountParams,
+-      query: {
+-        ...ownerQuery,
+-        // A JSON query value preserves [] instead of dropping it as an absent query parameter.
+-        apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
+-      },
+-      success: AccountHealth,
+-      error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read the named apps' latest checks of an account and the identity the checks reported. Does not run a check.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("revocation", "/v1/accounts/:account/revocation", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      success: AccountRevocation,
+-      error: [StorageError, CredentialsError, AccountNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Report whether deleting an account also asks its service to revoke access, so a person can be told before they delete it. Does not contact the service.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("check", "/v1/accounts/:account/health", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({ apps: AccountInputs.check.fields.apps }),
+-      success: AccountHealth,
+-      error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Run the provider checks of the named apps for this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("listHealth", "/v1/account-health", {
+-      query: {
+-        owner: Schema.optional(OwnerId),
+-        links: Schema.fromJsonString(AccountInputs.listHealth.fields.links),
+-      },
+-      success: Schema.Array(AccountHealth),
+-      error: StorageError,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read the latest checks and reported identity of every account, optionally for one owner, with the apps each is linked to. Does not run checks.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/accounts", {
+-      query: AccountInputs.list.fields,
+-      success: Schema.Array(Account),
+-      error: StorageError,
+-    }).annotate(
+-      OpenApi.Description,
+-      "List one owner's saved account metadata, optionally filtered by provider. Credentials are never returned.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("signIn", "/v1/accounts/:account/sign-in", {
+-      params: accountParams,
+-      query: ownerQuery,
+-      success: AccountSignIn,
+-      error: [StorageError, AccountNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Saved sign-in state for one account without refreshing tokens or contacting the provider.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("providers", "/v1/providers", {
+-      query: AccountInputs.providers.fields,
+-      success: Schema.Array(Provider),
+-      error: StorageError,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Provider definitions of an owner's saved accounts. A provider's ID leaves out a secrets method's `label` and its fields' `title` and `description`. Apps sharing an ID share one definition, which holds the text the last app deployed with it; an app's own wording is in its requirements. A provider stored before keeps its earlier ID, which an app keeps across rewording and a new app shares only with the exact earlier wording.",
+-    ),
+-  );
++    )
++    .add(
++      HttpApiEndpoint.post("refreshObservations", "/v1/accounts/:account/observations/refresh", {
++        params: accountParams,
++        query: ownerQuery,
++        payload: Schema.Struct({ apps: AccountObservationInput.fields.apps }),
++        success: AccountObservationView,
++        error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("identify", "/v1/accounts/:account/identity", {
++        params: accountParams,
++        query: ownerQuery,
++        success: Account,
++        error: [StorageError, CredentialsError, AccountNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Verify a retained account's stable subject through its declared issuer's authenticated UserInfo endpoint. Preserves account IDs, links, client choices and grants. An account without available proof remains independent. Hosts must authorize use of the account.",
++      ),
++    )
++
++    .add(
++      HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
++        params: accountParams,
++        query: ownerQuery,
++        payload: Schema.Struct({
++          label: AccountInputs.update.fields.label,
++          description: AccountInputs.update.fields.description,
++        }),
++        success: Account,
++        error: [StorageError, AccountNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Rename a saved account or change its description. Only supplied fields change; a null description removes it. Agents read the label and description to choose between accounts. Its ID, credentials and app links stay the same.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/accounts/:account", {
++        params: accountParams,
++        query: ownerQuery,
++        success: Schema.Struct({ account: AccountId }),
++        error: [
++          StorageError,
++          InteractiveRetirementBusy,
++          InteractiveRetirementFailed,
++          AccountWebhooksActive,
++          AccountWorkflowsActive,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("get", "/v1/accounts/:account", {
++        params: accountParams,
++        query: ownerQuery,
++        success: Account,
++        error: [StorageError, AccountNotFound],
++      }).annotate(OpenApi.Description, "Read saved account metadata without credentials."),
++    )
++    .add(
++      HttpApiEndpoint.get("provider", "/v1/accounts/:account/provider", {
++        params: { account: AccountId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: Provider,
++        error: [StorageError, AccountNotFound, ProviderNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Read the provider definition and authentication methods for a saved account.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("health", "/v1/accounts/:account/health", {
++        params: accountParams,
++        query: {
++          ...ownerQuery,
++          // A JSON query value preserves [] instead of dropping it as an absent query parameter.
++          apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
++        },
++        success: AccountHealth,
++        error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
++      }).annotate(
++        OpenApi.Description,
++        "Read the named apps' latest checks of an account and the identity the checks reported. Does not run a check.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("revocation", "/v1/accounts/:account/revocation", {
++        params: accountParams,
++        query: ownerQuery,
++        success: AccountRevocation,
++        error: [StorageError, CredentialsError, AccountNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Report whether deleting an account also asks its service to revoke access, so a person can be told before they delete it. Does not contact the service.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("check", "/v1/accounts/:account/health", {
++        params: accountParams,
++        query: ownerQuery,
++        payload: Schema.Struct({ apps: AccountInputs.check.fields.apps }),
++        success: AccountHealth,
++        error: [StorageError, AccountNotFound, AccountAcquisitionUnavailable],
++      }).annotate(
++        OpenApi.Description,
++        "Run the provider checks of the named apps for this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("listHealth", "/v1/account-health", {
++        query: {
++          owner: Schema.optional(OwnerId),
++          links: Schema.fromJsonString(AccountInputs.listHealth.fields.links),
++        },
++        success: Schema.Array(AccountHealth),
++        error: StorageError,
++      }).annotate(
++        OpenApi.Description,
++        "Read the latest checks and reported identity of every account, optionally for one owner, with the apps each is linked to. Does not run checks.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("list", "/v1/accounts", {
++        query: AccountInputs.list.fields,
++        success: Schema.Array(Account),
++        error: StorageError,
++      }).annotate(
++        OpenApi.Description,
++        "List one owner's saved account metadata, optionally filtered by provider. Credentials are never returned.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("signIn", "/v1/accounts/:account/sign-in", {
++        params: accountParams,
++        query: ownerQuery,
++        success: AccountSignIn,
++        error: [StorageError, AccountNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Saved sign-in state for one account without refreshing tokens or contacting the provider.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("providers", "/v1/providers", {
++        query: AccountInputs.providers.fields,
++        success: Schema.Array(Provider),
++        error: StorageError,
++      }).annotate(
++        OpenApi.Description,
++        "Provider definitions of an owner's saved accounts. A provider's ID leaves out a secrets method's `label` and its fields' `title` and `description`. Apps sharing an ID share one definition, which holds the text the last app deployed with it; an app's own wording is in its requirements. A provider stored before keeps its earlier ID, which an app keeps across rewording and a new app shares only with the exact earlier wording.",
++      ),
++    ))();
+diff --git a/packages/sdk/src/contracts/app-data.ts b/packages/sdk/src/contracts/app-data.ts
+--- a/packages/sdk/src/contracts/app-data.ts
++++ b/packages/sdk/src/contracts/app-data.ts
+@@ -69,24 +69,25 @@
+ /** Full current query result; revisions belong to the current server process. */
+ export const AppDataSnapshot = Schema.Struct({ revision: Schema.Int, value: Json });
+ /** JSON operation endpoints; subscriptions are composed by the serving host. */
+-export const AppDataGroup = HttpApiGroup.make("appData")
+-  .add(
+-    HttpApiEndpoint.post("subscribe", "/v1/app-data/subscribe", {
+-      payload: AppDataInput,
+-      success: HttpApiSchema.StreamSse({ data: AppDataSnapshot, error: Schema.Union(errors) }),
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("query", "/v1/app-data/query", {
+-      payload: AppDataInput,
+-      success: Json,
+-      error: errors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("mutate", "/v1/app-data/mutate", {
+-      payload: AppDataInput,
+-      success: Json,
+-      error: errors,
+-    }),
+-  );
++export const AppDataGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("appData")
++    .add(
++      HttpApiEndpoint.post("subscribe", "/v1/app-data/subscribe", {
++        payload: AppDataInput,
++        success: HttpApiSchema.StreamSse({ data: AppDataSnapshot, error: Schema.Union(errors) }),
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("query", "/v1/app-data/query", {
++        payload: AppDataInput,
++        success: Json,
++        error: errors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("mutate", "/v1/app-data/mutate", {
++        payload: AppDataInput,
++        success: Json,
++        error: errors,
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -558,213 +558,217 @@
+ export const LegacyVersionEndpoints = ["deployments", "deployment"] as const;
+
+ /** Creating and deploying share a build pipeline; copies own independent source. */
+-export const AppsGroup = HttpApiGroup.make("apps")
+-  .add(
+-    HttpApiEndpoint.post("checkCredentials", "/v1/apps/:app/credential-checks", {
+-      params: appParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({
+-        provider: AppInputs.checkCredentials.fields.provider,
+-        method: AppInputs.checkCredentials.fields.method,
+-        fields: AppInputs.checkCredentials.fields.fields,
++export const AppsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("apps")
++    .add(
++      HttpApiEndpoint.post("checkCredentials", "/v1/apps/:app/credential-checks", {
++        params: appParams,
++        query: ownerQuery,
++        payload: Schema.Struct({
++          provider: AppInputs.checkCredentials.fields.provider,
++          method: AppInputs.checkCredentials.fields.method,
++          fields: AppInputs.checkCredentials.fields.fields,
++        }),
++        success: Schema.NullOr(CredentialCheck),
++        error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
++      }).annotate(
++        OpenApi.Description,
++        "Check credentials before saving them, with this app's check for their provider. Nothing is saved or recorded. Returns null when the app defines no check for the provider.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("create", "/v1/apps", {
++        payload: AppInputs.create,
++        success: App,
++        error: [StorageError, ...sourceErrors, AppNameTaken, AppSlugTaken],
+       }),
+-      success: Schema.NullOr(CredentialCheck),
+-      error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Check credentials before saving them, with this app's check for their provider. Nothing is saved or recorded. Returns null when the app defines no check for the provider.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("create", "/v1/apps", {
+-      payload: AppInputs.create,
+-      success: App,
+-      error: [StorageError, ...sourceErrors, AppNameTaken, AppSlugTaken],
+-    }),
+-    HttpApiEndpoint.get("workspace", "/v1/apps/:app/workspace", {
+-      params: appParams,
+-      query: ownerQuery,
+-      success: SourceSnapshot,
+-      error: [StorageError, ...sourceErrors, AppNotFound],
+-    }),
+-    HttpApiEndpoint.post("commit", "/v1/apps/:app/commits", {
+-      params: appParams,
+-      payload: AppInputs.commit.mapFields((fields) => ({
+-        expected: fields.expected,
+-        files: fields.files,
+-        message: fields.message,
+-        owner: fields.owner,
+-      })),
+-      success: CommittedSource,
+-      error: [StorageError, ...sourceErrors, AppNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision and `removed`: how many files this save deleted and the first of their paths; the files are not echoed. A deleted file stays at the `expected` revision (`GET /v1/apps/:app/revisions/:commit`): to keep it, commit again against the new revision with it before deploying. A file path cannot also be a folder (`a` and `a/b`); such a save fails with SourcePathConflict and saves nothing. Paths must be valid Unicode; a lone surrogate fails with SourcePathNotUnicode.",
+-    ),
+-    HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
+-      params: appParams,
+-      query: ownerQuery,
+-      success: Schema.Array(GitCommit),
+-      error: [StorageError, ...sourceErrors, AppNotFound],
+-    }).annotate(OpenApi.Description, "Recent commits on the app's working branch."),
+-    HttpApiEndpoint.get("revision", "/v1/apps/:app/revisions/:commit", {
+-      params: { app: AppInputs.revision.fields.app, commit: AppInputs.revision.fields.commit },
+-      query: ownerQuery,
+-      success: SourceFiles,
+-      error: [StorageError, ...sourceErrors, AppNotFound],
+-    }).annotate(OpenApi.Description, "The complete files at one commit in the app's code lineage."),
+-    HttpApiEndpoint.post("copy", "/v1/apps/copies", {
+-      payload: AppInputs.copy,
+-      success: App,
+-      error: [
+-        StorageError,
+-        ...sourceErrors,
+-        RegistryError,
+-        AppNotFound,
+-        AppNameTaken,
+-        AppSlugTaken,
+-        VersionNotFound,
+-        AppNotDeployed,
+-        VersionBuildFailed,
+-        BuildBusy,
+-        BuildMemoryExceeded,
+-        AccountNotFound,
+-        AccountSelectionInvalid,
+-      ],
+-    }),
+-    HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
+-      payload: AppInputs.deploy,
+-      success: Schema.Struct({ app: DeployedApp, version: VersionMetadata }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
++      HttpApiEndpoint.get("workspace", "/v1/apps/:app/workspace", {
++        params: appParams,
++        query: ownerQuery,
++        success: SourceSnapshot,
++        error: [StorageError, ...sourceErrors, AppNotFound],
++      }),
++      HttpApiEndpoint.post("commit", "/v1/apps/:app/commits", {
++        params: appParams,
++        payload: AppInputs.commit.mapFields((fields) => ({
++          expected: fields.expected,
++          files: fields.files,
++          message: fields.message,
++          owner: fields.owner,
++        })),
++        success: CommittedSource,
++        error: [StorageError, ...sourceErrors, AppNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision and `removed`: how many files this save deleted and the first of their paths; the files are not echoed. A deleted file stays at the `expected` revision (`GET /v1/apps/:app/revisions/:commit`): to keep it, commit again against the new revision with it before deploying. A file path cannot also be a folder (`a` and `a/b`); such a save fails with SourcePathConflict and saves nothing. Paths must be valid Unicode; a lone surrogate fails with SourcePathNotUnicode.",
+       ),
+-      error: [
+-        ...sourceErrors,
+-        StorageError,
+-        VersionBuildFailed,
+-        BuildBusy,
+-        BuildMemoryExceeded,
+-        AppNameTaken,
+-        AppSlugTaken,
+-        AppNotFound,
+-        AccountNotFound,
+-        AccountSelectionInvalid,
+-        AppVersionChanged,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. With expectedVersion, a deploy to an existing app fails with AppVersionChanged unless that version is still active when it would activate. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/apps/:app", {
+-      params: appParams,
+-      query: ownerQuery,
+-      success: App,
+-      error: [StorageError, AppNotFound],
+-    }).annotate(OpenApi.Description, "Inspect an app and its account requirements."),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/apps", {
+-      query: {
+-        owner: AppInputs.list.fields.owner,
+-        name: AppInputs.list.fields.name,
+-        slug: AppInputs.list.fields.slug,
+-        // A JSON query value preserves [] instead of dropping it as an absent query parameter.
+-        ids: Schema.optional(Schema.fromJsonString(Schema.Array(AppId))),
+-      },
+-      success: Schema.Array(App),
+-      error: [StorageError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "List apps and their requirements. Owner is an optional lookup filter.",
+-    ),
+-  )
+-  // Idempotent removal of one configured copy; accounts and retained code are independent.
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/apps/:app", {
+-      params: appParams,
+-      query: ownerQuery,
+-      success: Schema.Struct({ app: AppId }),
+-      error: [
+-        StorageError,
+-        InteractiveRetirementBusy,
+-        InteractiveRetirementFailed,
+-        AppWebhooksActive,
+-        AppWorkflowsActive,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.patch("rename", "/v1/apps/:app/name", {
+-      params: appParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({
+-        name: AppInputs.rename.fields.name,
++      HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
++        params: appParams,
++        query: ownerQuery,
++        success: Schema.Array(GitCommit),
++        error: [StorageError, ...sourceErrors, AppNotFound],
++      }).annotate(OpenApi.Description, "Recent commits on the app's working branch."),
++      HttpApiEndpoint.get("revision", "/v1/apps/:app/revisions/:commit", {
++        params: { app: AppInputs.revision.fields.app, commit: AppInputs.revision.fields.commit },
++        query: ownerQuery,
++        success: SourceFiles,
++        error: [StorageError, ...sourceErrors, AppNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "The complete files at one commit in the app's code lineage.",
++      ),
++      HttpApiEndpoint.post("copy", "/v1/apps/copies", {
++        payload: AppInputs.copy,
++        success: App,
++        error: [
++          StorageError,
++          ...sourceErrors,
++          RegistryError,
++          AppNotFound,
++          AppNameTaken,
++          AppSlugTaken,
++          VersionNotFound,
++          AppNotDeployed,
++          VersionBuildFailed,
++          BuildBusy,
++          BuildMemoryExceeded,
++          AccountNotFound,
++          AccountSelectionInvalid,
++        ],
+       }),
+-      success: App,
+-      error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Rename an app and derive its new slug. The name and normalized slug must be unique within its owner.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("activate", "/v1/apps/:app/activate", {
+-      params: appParams,
+-      query: ownerQuery,
+-      payload: Schema.Struct({
+-        version: AppInputs.activate.fields.version,
+-        expectedVersion: AppInputs.activate.fields.expectedVersion,
+-      }).pipe(withLegacyKeys({ version: "deployment", expectedVersion: "expectedDeployment" })),
+-      success: App,
+-      // Same code lineage only. Managed webhooks re-register for the new version.
+-      error: [
+-        StorageError,
+-        AppNotFound,
+-        VersionNotFound,
+-        AppNotDeployed,
+-        AppVersionChanged,
+-        AccountNotFound,
+-        AccountSelectionInvalid,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Activate a retained version in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("versions", "/v1/apps/:app/versions", versionsOptions).annotate(
+-      OpenApi.Description,
+-      "List retained versions in the app code lineage.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("version", "/v1/apps/:app/version", versionOptions).annotate(
+-      OpenApi.Description,
+-      "Read a retained version's build metadata and account requirements without fetching source files.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("deployments", "/v1/apps/:app/deployments", versionsOptions)
+-      .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/versions`.")
+-      .annotate(OpenApi.Deprecated, true),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("deployment", "/v1/apps/:app/deployment", versionOptions)
+-      .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/version`.")
+-      .annotate(OpenApi.Deprecated, true),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("source", "/v1/apps/:app/source", {
+-      params: { app: AppId },
+-      query: versionQuery,
+-      success: Version,
+-      error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read source files for a retained version in the app code lineage.",
+-    ),
+-  );
++      HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
++        payload: AppInputs.deploy,
++        success: Schema.Struct({ app: DeployedApp, version: VersionMetadata }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        error: [
++          ...sourceErrors,
++          StorageError,
++          VersionBuildFailed,
++          BuildBusy,
++          BuildMemoryExceeded,
++          AppNameTaken,
++          AppSlugTaken,
++          AppNotFound,
++          AccountNotFound,
++          AccountSelectionInvalid,
++          AppVersionChanged,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. With expectedVersion, a deploy to an existing app fails with AppVersionChanged unless that version is still active when it would activate. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("get", "/v1/apps/:app", {
++        params: appParams,
++        query: ownerQuery,
++        success: App,
++        error: [StorageError, AppNotFound],
++      }).annotate(OpenApi.Description, "Inspect an app and its account requirements."),
++    )
++    .add(
++      HttpApiEndpoint.get("list", "/v1/apps", {
++        query: {
++          owner: AppInputs.list.fields.owner,
++          name: AppInputs.list.fields.name,
++          slug: AppInputs.list.fields.slug,
++          // A JSON query value preserves [] instead of dropping it as an absent query parameter.
++          ids: Schema.optional(Schema.fromJsonString(Schema.Array(AppId))),
++        },
++        success: Schema.Array(App),
++        error: [StorageError],
++      }).annotate(
++        OpenApi.Description,
++        "List apps and their requirements. Owner is an optional lookup filter.",
++      ),
++    )
++    // Idempotent removal of one configured copy; accounts and retained code are independent.
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/apps/:app", {
++        params: appParams,
++        query: ownerQuery,
++        success: Schema.Struct({ app: AppId }),
++        error: [
++          StorageError,
++          InteractiveRetirementBusy,
++          InteractiveRetirementFailed,
++          AppWebhooksActive,
++          AppWorkflowsActive,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.patch("rename", "/v1/apps/:app/name", {
++        params: appParams,
++        query: ownerQuery,
++        payload: Schema.Struct({
++          name: AppInputs.rename.fields.name,
++        }),
++        success: App,
++        error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken],
++      }).annotate(
++        OpenApi.Description,
++        "Rename an app and derive its new slug. The name and normalized slug must be unique within its owner.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("activate", "/v1/apps/:app/activate", {
++        params: appParams,
++        query: ownerQuery,
++        payload: Schema.Struct({
++          version: AppInputs.activate.fields.version,
++          expectedVersion: AppInputs.activate.fields.expectedVersion,
++        }).pipe(withLegacyKeys({ version: "deployment", expectedVersion: "expectedDeployment" })),
++        success: App,
++        // Same code lineage only. Managed webhooks re-register for the new version.
++        error: [
++          StorageError,
++          AppNotFound,
++          VersionNotFound,
++          AppNotDeployed,
++          AppVersionChanged,
++          AccountNotFound,
++          AccountSelectionInvalid,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Activate a retained version in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("versions", "/v1/apps/:app/versions", versionsOptions).annotate(
++        OpenApi.Description,
++        "List retained versions in the app code lineage.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("version", "/v1/apps/:app/version", versionOptions).annotate(
++        OpenApi.Description,
++        "Read a retained version's build metadata and account requirements without fetching source files.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("deployments", "/v1/apps/:app/deployments", versionsOptions)
++        .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/versions`.")
++        .annotate(OpenApi.Deprecated, true),
++    )
++    .add(
++      HttpApiEndpoint.get("deployment", "/v1/apps/:app/deployment", versionOptions)
++        .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/version`.")
++        .annotate(OpenApi.Deprecated, true),
++    )
++    .add(
++      HttpApiEndpoint.get("source", "/v1/apps/:app/source", {
++        params: { app: AppId },
++        query: versionQuery,
++        success: Version,
++        error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Read source files for a retained version in the app code lineage.",
++      ),
++    ))();
+diff --git a/packages/sdk/src/contracts/oauth-clients.ts b/packages/sdk/src/contracts/oauth-clients.ts
+--- a/packages/sdk/src/contracts/oauth-clients.ts
++++ b/packages/sdk/src/contracts/oauth-clients.ts
+@@ -195,77 +195,78 @@
+ export type OAuthMethodIssuer = typeof OAuthMethodIssuer.Type;
+
+ /** Stored OAuth clients, independent of any product's sharing policy. */
+-export const OAuthClientsGroup = HttpApiGroup.make("oauthClients")
+-  .add(
+-    HttpApiEndpoint.post("register", "/v1/oauth-clients", {
+-      payload: OAuthClientInputs.register,
+-      success: OAuthClient,
+-      error: [StorageError, CredentialsError, OAuthClientExists],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Register an OAuth client created in the service's developer settings, for browser sign-in at one authorization server (`issuer`; see oauthClients.issuers for a provider's). Every app of the owner that signs in at that server is offered it. Returns metadata only; the secret is never returned. Connections name the client with `client: { id }`. Credentials another client of the owner holds for that server, or held before an edit, fail with OAuthClientExists.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/oauth-clients", {
+-      query: OAuthClientInputs.list.fields,
+-      success: Schema.Array(OAuthClient),
+-      error: [StorageError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "List the owner's OAuth clients, optionally for one authorization server (`issuer`).",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("issuers", "/v1/oauth-client-issuers", {
+-      query: OAuthClientInputs.issuers.fields,
+-      success: Schema.Array(OAuthMethodIssuer),
+-      error: [StorageError, ProviderNotFound, OAuthClientsUnsupported, OAuthSetupFailed],
+-    }).annotate(
+-      OpenApi.Description,
+-      "The authorization server (issuer) each browser sign-in method of a provider uses, discovered as a sign-in discovers it. Register a client under one of these to offer it to every app that signs in there.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/oauth-clients/:client", {
+-      params: clientParams,
+-      query: { owner: OwnerId },
+-      success: OAuthClient,
+-      error: [StorageError, OAuthClientNotFound],
+-    }).annotate(OpenApi.Description, "Read an OAuth client's metadata."),
+-  )
+-  .add(
+-    HttpApiEndpoint.patch("update", "/v1/oauth-clients/:client", {
+-      params: clientParams,
+-      payload: Schema.Struct({
+-        owner: OwnerId,
+-        clientId: OAuthClientInputs.update.fields.clientId,
+-        clientSecret: OAuthClientInputs.update.fields.clientSecret,
+-      }),
+-      success: OAuthClient,
+-      error: [
+-        StorageError,
+-        CredentialsError,
+-        OAuthClientNotFound,
+-        OAuthClientNotEditable,
+-        OAuthClientExists,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Change a registered client's ID or secret. An omitted field keeps its current value, and the secret is never returned. New connections and reconnects use the change; accounts already connected keep renewing with the copy their grant holds, and a reconnect with that copy is still this client, under its current details. Automatic clients fail with OAuthClientNotEditable; credentials another client holds or held fail with OAuthClientExists.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/oauth-clients/:client", {
+-      params: clientParams,
+-      query: { owner: OwnerId },
+-      success: Schema.Struct({ client: OAuthClientId }),
+-      error: [StorageError, OAuthClientNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Remove an OAuth client so no new connection can use it. Accounts already connected with it keep the copy their grant holds and keep renewing, but cannot sign in with its credentials again: a reconnect needs another client.",
+-    ),
+-  );
++export const OAuthClientsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("oauthClients")
++    .add(
++      HttpApiEndpoint.post("register", "/v1/oauth-clients", {
++        payload: OAuthClientInputs.register,
++        success: OAuthClient,
++        error: [StorageError, CredentialsError, OAuthClientExists],
++      }).annotate(
++        OpenApi.Description,
++        "Register an OAuth client created in the service's developer settings, for browser sign-in at one authorization server (`issuer`; see oauthClients.issuers for a provider's). Every app of the owner that signs in at that server is offered it. Returns metadata only; the secret is never returned. Connections name the client with `client: { id }`. Credentials another client of the owner holds for that server, or held before an edit, fail with OAuthClientExists.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("list", "/v1/oauth-clients", {
++        query: OAuthClientInputs.list.fields,
++        success: Schema.Array(OAuthClient),
++        error: [StorageError],
++      }).annotate(
++        OpenApi.Description,
++        "List the owner's OAuth clients, optionally for one authorization server (`issuer`).",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("issuers", "/v1/oauth-client-issuers", {
++        query: OAuthClientInputs.issuers.fields,
++        success: Schema.Array(OAuthMethodIssuer),
++        error: [StorageError, ProviderNotFound, OAuthClientsUnsupported, OAuthSetupFailed],
++      }).annotate(
++        OpenApi.Description,
++        "The authorization server (issuer) each browser sign-in method of a provider uses, discovered as a sign-in discovers it. Register a client under one of these to offer it to every app that signs in there.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("get", "/v1/oauth-clients/:client", {
++        params: clientParams,
++        query: { owner: OwnerId },
++        success: OAuthClient,
++        error: [StorageError, OAuthClientNotFound],
++      }).annotate(OpenApi.Description, "Read an OAuth client's metadata."),
++    )
++    .add(
++      HttpApiEndpoint.patch("update", "/v1/oauth-clients/:client", {
++        params: clientParams,
++        payload: Schema.Struct({
++          owner: OwnerId,
++          clientId: OAuthClientInputs.update.fields.clientId,
++          clientSecret: OAuthClientInputs.update.fields.clientSecret,
++        }),
++        success: OAuthClient,
++        error: [
++          StorageError,
++          CredentialsError,
++          OAuthClientNotFound,
++          OAuthClientNotEditable,
++          OAuthClientExists,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Change a registered client's ID or secret. An omitted field keeps its current value, and the secret is never returned. New connections and reconnects use the change; accounts already connected keep renewing with the copy their grant holds, and a reconnect with that copy is still this client, under its current details. Automatic clients fail with OAuthClientNotEditable; credentials another client holds or held fail with OAuthClientExists.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/oauth-clients/:client", {
++        params: clientParams,
++        query: { owner: OwnerId },
++        success: Schema.Struct({ client: OAuthClientId }),
++        error: [StorageError, OAuthClientNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Remove an OAuth client so no new connection can use it. Accounts already connected with it keep the copy their grant holds and keep renewing, but cannot sign in with its credentials again: a reconnect needs another client.",
++      ),
++    ))();
+
+ /**
+  * Host-only: moving the saved clients of earlier versions, and recording the authorization server
+diff --git a/packages/sdk/src/contracts/owner.ts b/packages/sdk/src/contracts/owner.ts
+--- a/packages/sdk/src/contracts/owner.ts
++++ b/packages/sdk/src/contracts/owner.ts
+@@ -35,27 +35,28 @@
+ };
+
+ /** Ownership is a storage primitive, not authorization; the caller decides who may do this. */
+-export const OwnersGroup = HttpApiGroup.make("owners")
+-  .add(
+-    HttpApiEndpoint.get("check", "/v1/owners/:owner/removable", {
+-      params: { owner: OwnerId },
+-      success: OwnerRemovable,
+-      error: [StorageError, AppWorkflowsActive, AccountWorkflowsActive],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Report whether a purge would be refused for work in flight: a queued or running workflow, or an account pinned by one. Reads only, and never reports live webhook subscriptions, which the caller clears by removing them at their providers. Call this before any irreversible step so a retryable refusal costs nothing.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/owners/:owner", {
+-      params: { owner: OwnerId },
+-      success: OwnerRemoved,
+-      error: [StorageError, OwnerWebhooksActive, AppWorkflowsActive, AccountWorkflowsActive],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Delete every record belonging to one owner: configured apps, app records, stopped webhooks, saved accounts and their credentials, retained versions, pending connections, pending approvals, schedules with their run history and completed workflow runs. Remove live webhook subscriptions and finish or terminate active workflows first. Repeating removal is safe.",
+-    ),
+-  );
++export const OwnersGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("owners")
++    .add(
++      HttpApiEndpoint.get("check", "/v1/owners/:owner/removable", {
++        params: { owner: OwnerId },
++        success: OwnerRemovable,
++        error: [StorageError, AppWorkflowsActive, AccountWorkflowsActive],
++      }).annotate(
++        OpenApi.Description,
++        "Report whether a purge would be refused for work in flight: a queued or running workflow, or an account pinned by one. Reads only, and never reports live webhook subscriptions, which the caller clears by removing them at their providers. Call this before any irreversible step so a retryable refusal costs nothing.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/owners/:owner", {
++        params: { owner: OwnerId },
++        success: OwnerRemoved,
++        error: [StorageError, OwnerWebhooksActive, AppWorkflowsActive, AccountWorkflowsActive],
++      }).annotate(
++        OpenApi.Description,
++        "Delete every record belonging to one owner: configured apps, app records, stopped webhooks, saved accounts and their credentials, retained versions, pending connections, pending approvals, schedules with their run history and completed workflow runs. Remove live webhook subscriptions and finish or terminate active workflows first. Repeating removal is safe.",
++      ),
++    ))();
+
+ /** Host-only: moving owners' records to another owner, outside the HTTP and Promise facades. */
+ export const OwnerMovesHost = Symbol("executor.OwnerMoves");
+diff --git a/packages/sdk/src/contracts/publications.ts b/packages/sdk/src/contracts/publications.ts
+--- a/packages/sdk/src/contracts/publications.ts
++++ b/packages/sdk/src/contracts/publications.ts
+@@ -15,84 +15,86 @@
+ import { sourceErrors } from "./source.ts";
+
+ /** Publishing retains a reviewed revision and exposes it in this executor's catalog. */
+-export const PublicationsGroup = HttpApiGroup.make("publications")
+-  .add(
+-    HttpApiEndpoint.get("status", "/v1/publications/status", {
+-      success: Schema.Struct({ publishing: Schema.Boolean, origin: Schema.String }),
+-      error: [RegistryError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Whether this executor keeps its own catalog and can publish, and the registry origin it reads.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("preview", "/v1/apps/:app/publication-preview", {
+-      params: { app: PublicationInputs.preview.fields.app },
+-      payload: Schema.Struct({
+-        owner: PublicationInputs.preview.fields.owner,
+-        namespace: PublicationInputs.preview.fields.namespace,
+-        files: PublicationInputs.preview.fields.files,
+-      }),
+-      success: PublicationReadiness,
+-      error: [StorageError, ...sourceErrors, AppNotFound, RegistryError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Check the app's working source against the publishing rules without writing anything.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("publish", "/v1/apps/:app/publications", {
+-      params: { app: PublicationInputs.publish.fields.app },
+-      payload: Schema.Struct({
+-        owner: PublicationInputs.publish.fields.owner,
+-        namespace: PublicationInputs.publish.fields.namespace,
+-        commit: PublicationInputs.publish.fields.commit,
+-      }),
+-      success: Publication,
+-      error: [StorageError, ...sourceErrors, AppNotFound, RegistryError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Publish one selected Git revision. Republishing changes the listing; installed copies stay independent.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("owned", "/v1/publications", {
+-      query: { owner: PublicationInputs.owned.fields.owner },
+-      success: Schema.Array(Publication),
+-      error: [RegistryError],
+-    }).annotate(OpenApi.Description, "Current listings published by this owner."),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("unpublish", "/v1/publications/removals", {
+-      payload: PublicationInputs.unpublish,
+-      success: Schema.Struct({ name: PackageName }),
+-      error: [RegistryError],
+-    }).annotate(OpenApi.Description, "Remove a listing. Installed copies keep their source."),
+-  );
++export const PublicationsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("publications")
++    .add(
++      HttpApiEndpoint.get("status", "/v1/publications/status", {
++        success: Schema.Struct({ publishing: Schema.Boolean, origin: Schema.String }),
++        error: [RegistryError],
++      }).annotate(
++        OpenApi.Description,
++        "Whether this executor keeps its own catalog and can publish, and the registry origin it reads.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("preview", "/v1/apps/:app/publication-preview", {
++        params: { app: PublicationInputs.preview.fields.app },
++        payload: Schema.Struct({
++          owner: PublicationInputs.preview.fields.owner,
++          namespace: PublicationInputs.preview.fields.namespace,
++          files: PublicationInputs.preview.fields.files,
++        }),
++        success: PublicationReadiness,
++        error: [StorageError, ...sourceErrors, AppNotFound, RegistryError],
++      }).annotate(
++        OpenApi.Description,
++        "Check the app's working source against the publishing rules without writing anything.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("publish", "/v1/apps/:app/publications", {
++        params: { app: PublicationInputs.publish.fields.app },
++        payload: Schema.Struct({
++          owner: PublicationInputs.publish.fields.owner,
++          namespace: PublicationInputs.publish.fields.namespace,
++          commit: PublicationInputs.publish.fields.commit,
++        }),
++        success: Publication,
++        error: [StorageError, ...sourceErrors, AppNotFound, RegistryError],
++      }).annotate(
++        OpenApi.Description,
++        "Publish one selected Git revision. Republishing changes the listing; installed copies stay independent.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("owned", "/v1/publications", {
++        query: { owner: PublicationInputs.owned.fields.owner },
++        success: Schema.Array(Publication),
++        error: [RegistryError],
++      }).annotate(OpenApi.Description, "Current listings published by this owner."),
++    )
++    .add(
++      HttpApiEndpoint.post("unpublish", "/v1/publications/removals", {
++        payload: PublicationInputs.unpublish,
++        success: Schema.Struct({ name: PackageName }),
++        error: [RegistryError],
++      }).annotate(OpenApi.Description, "Remove a listing. Installed copies keep their source."),
++    ))();
+
+ /** Public registry reads expose selected release source, never private app Git history. */
+-export const RegistryGroup = HttpApiGroup.make("registry")
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/registry/apps", {
+-      query: { name: RegistryInputs.list.fields.name },
+-      success: Schema.Array(Publication),
+-      error: [RegistryError],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("snapshot", "/v1/registry/source", {
+-      query: RegistryInputs.snapshot,
+-      success: PublicationSnapshot,
+-      error: [RegistryError],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("file", "/v1/registry/file", {
+-      query: RegistryInputs.file,
+-      success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+-      error: [RegistryError],
+-    }).annotate(
+-      OpenApi.Description,
+-      "One file of a listing's selected commit, as its exact bytes. Snapshots list public files that are not inline text by their blob; installation reads each one here.",
+-    ),
+-  );
++export const RegistryGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("registry")
++    .add(
++      HttpApiEndpoint.get("list", "/v1/registry/apps", {
++        query: { name: RegistryInputs.list.fields.name },
++        success: Schema.Array(Publication),
++        error: [RegistryError],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("snapshot", "/v1/registry/source", {
++        query: RegistryInputs.snapshot,
++        success: PublicationSnapshot,
++        error: [RegistryError],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("file", "/v1/registry/file", {
++        query: RegistryInputs.file,
++        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
++        error: [RegistryError],
++      }).annotate(
++        OpenApi.Description,
++        "One file of a listing's selected commit, as its exact bytes. Snapshots list public files that are not inline text by their blob; installation reads each one here.",
++      ),
++    ))();
+diff --git a/packages/sdk/src/contracts/schedules.ts b/packages/sdk/src/contracts/schedules.ts
+--- a/packages/sdk/src/contracts/schedules.ts
++++ b/packages/sdk/src/contracts/schedules.ts
+@@ -223,102 +223,103 @@
+   AppProviderFailed,
+ ] as const;
+ /** Local SDK serving routes. Hosted products wrap these operations in their own authority. */
+-export const SchedulesGroup = HttpApiGroup.make("schedules")
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/apps/:app/schedules", {
+-      params: { app: AppId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: Schema.Array(ScheduleSettings),
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("definitions", "/v1/apps/:app/schedules/definitions", {
+-      params: { app: AppId },
+-      query: {
+-        owner: Schema.optional(OwnerId),
+-        accounts: AppAccountsQuery,
+-        actor: Schema.optional(Schema.NonEmptyString),
+-      },
+-      success: Schema.Array(AppSchedule),
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.patch("configure", "/v1/apps/:app/schedules/:name", {
+-      params: { app: AppId, name: Schema.NonEmptyString },
+-      payload: Schema.Struct({
+-        owner: Schema.optional(OwnerId),
+-        actor: Schema.optional(Schema.NonEmptyString),
+-        enabled: Schema.Boolean,
+-        approvalMode: Schema.optional(ScheduleApprovalMode),
++export const SchedulesGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("schedules")
++    .add(
++      HttpApiEndpoint.get("list", "/v1/apps/:app/schedules", {
++        params: { app: AppId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: Schema.Array(ScheduleSettings),
++        error: ScheduleErrors,
+       }),
+-      success: ScheduleSettings,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("copy", "/v1/apps/:app/schedules/:name/copy", {
+-      params: { app: AppId, name: Schema.NonEmptyString },
+-      query: {
+-        owner: Schema.optional(OwnerId),
+-        actor: Schema.optional(Schema.NonEmptyString),
+-      },
+-      success: ScheduleSettings,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.patch("update", "/v1/apps/:app/schedules/:name/copies/:copy", {
+-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+-      payload: Schema.Struct({
+-        owner: Schema.optional(OwnerId),
+-        enabled: Schema.Boolean,
+-        approvalMode: Schema.optional(ScheduleApprovalMode),
++    )
++    .add(
++      HttpApiEndpoint.get("definitions", "/v1/apps/:app/schedules/definitions", {
++        params: { app: AppId },
++        query: {
++          owner: Schema.optional(OwnerId),
++          accounts: AppAccountsQuery,
++          actor: Schema.optional(Schema.NonEmptyString),
++        },
++        success: Schema.Array(AppSchedule),
++        error: ScheduleErrors,
+       }),
+-      success: ScheduleSettings,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/copies/:copy/run", {
+-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+-      payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
+-      success: ScheduleSettings,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/apps/:app/schedules/:name/copies/:copy", {
+-      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: ScheduleSettings,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("runs", "/v1/scheduled-runs", {
+-      query: ScheduleInputs.runs.fields,
+-      success: Schema.Array(ScheduledRun),
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("approval", "/v1/scheduled-runs/:run/approval", {
+-      params: { run: ScheduledRunId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: ScheduledApproval,
+-      error: ScheduleErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("answer", "/v1/scheduled-runs/:run/approval", {
+-      params: { run: ScheduledRunId },
+-      payload: Schema.Struct({
+-        owner: Schema.optional(OwnerId),
+-        action: Schema.Literals(["accept", "decline"]),
++    )
++    .add(
++      HttpApiEndpoint.patch("configure", "/v1/apps/:app/schedules/:name", {
++        params: { app: AppId, name: Schema.NonEmptyString },
++        payload: Schema.Struct({
++          owner: Schema.optional(OwnerId),
++          actor: Schema.optional(Schema.NonEmptyString),
++          enabled: Schema.Boolean,
++          approvalMode: Schema.optional(ScheduleApprovalMode),
++        }),
++        success: ScheduleSettings,
++        error: ScheduleErrors,
+       }),
+-      success: ScheduledRun,
+-      error: ScheduleErrors,
+-    }),
+-  );
++    )
++    .add(
++      HttpApiEndpoint.get("copy", "/v1/apps/:app/schedules/:name/copy", {
++        params: { app: AppId, name: Schema.NonEmptyString },
++        query: {
++          owner: Schema.optional(OwnerId),
++          actor: Schema.optional(Schema.NonEmptyString),
++        },
++        success: ScheduleSettings,
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.patch("update", "/v1/apps/:app/schedules/:name/copies/:copy", {
++        params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
++        payload: Schema.Struct({
++          owner: Schema.optional(OwnerId),
++          enabled: Schema.Boolean,
++          approvalMode: Schema.optional(ScheduleApprovalMode),
++        }),
++        success: ScheduleSettings,
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/copies/:copy/run", {
++        params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
++        payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
++        success: ScheduleSettings,
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/apps/:app/schedules/:name/copies/:copy", {
++        params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: ScheduleSettings,
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("runs", "/v1/scheduled-runs", {
++        query: ScheduleInputs.runs.fields,
++        success: Schema.Array(ScheduledRun),
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("approval", "/v1/scheduled-runs/:run/approval", {
++        params: { run: ScheduledRunId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: ScheduledApproval,
++        error: ScheduleErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("answer", "/v1/scheduled-runs/:run/approval", {
++        params: { run: ScheduledRunId },
++        payload: Schema.Struct({
++          owner: Schema.optional(OwnerId),
++          action: Schema.Literals(["accept", "decline"]),
++        }),
++        success: ScheduledRun,
++        error: ScheduleErrors,
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/skills.ts b/packages/sdk/src/contracts/skills.ts
+--- a/packages/sdk/src/contracts/skills.ts
++++ b/packages/sdk/src/contracts/skills.ts
+@@ -125,39 +125,40 @@
+ ] as const;
+
+ /** Programmatic skill routes; serving products authorize the app and its accounts. */
+-export const AppSkillsGroup = HttpApiGroup.make("skills")
+-  .add(
+-    HttpApiEndpoint.get("bundle", "/v1/apps/:app/skill-bundle", {
+-      params: { app: AppId },
+-      query: Schema.Struct(selectionQuery).pipe(withLegacyKeys({ version: "deployment" })),
+-      success: AppSkillBundle,
+-      error: AppSkillErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read every skill and its text references from one evaluation of the selected version.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/apps/:app/skills", {
+-      params: { app: AppId },
+-      query: Schema.Struct(selectionQuery).pipe(withLegacyKeys({ version: "deployment" })),
+-      success: AppSkillCatalog,
+-      error: AppSkillErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "List this app's skill metadata using the chosen accounts. The response identifies its version.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("read", "/v1/apps/:app/skills/:name", {
+-      params: { app: AppId, name: AppSkillName },
+-      query: Schema.Struct({ ...selectionQuery, file: Schema.optional(SourceFilePath) }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
++export const AppSkillsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("skills")
++    .add(
++      HttpApiEndpoint.get("bundle", "/v1/apps/:app/skill-bundle", {
++        params: { app: AppId },
++        query: Schema.Struct(selectionQuery).pipe(withLegacyKeys({ version: "deployment" })),
++        success: AppSkillBundle,
++        error: AppSkillErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Read every skill and its text references from one evaluation of the selected version.",
+       ),
+-      success: AppSkillDocument,
+-      error: [...AppSkillErrors, AppSkillNotFound],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Read SKILL.md or a listed file within the skill. Pass the returned version and revision, and the same accounts, when reading references to reject changed content. Files are text; they are never executed.",
+-    ),
+-  );
++    )
++    .add(
++      HttpApiEndpoint.get("list", "/v1/apps/:app/skills", {
++        params: { app: AppId },
++        query: Schema.Struct(selectionQuery).pipe(withLegacyKeys({ version: "deployment" })),
++        success: AppSkillCatalog,
++        error: AppSkillErrors,
++      }).annotate(
++        OpenApi.Description,
++        "List this app's skill metadata using the chosen accounts. The response identifies its version.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("read", "/v1/apps/:app/skills/:name", {
++        params: { app: AppId, name: AppSkillName },
++        query: Schema.Struct({ ...selectionQuery, file: Schema.optional(SourceFilePath) }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: AppSkillDocument,
++        error: [...AppSkillErrors, AppSkillNotFound],
++      }).annotate(
++        OpenApi.Description,
++        "Read SKILL.md or a listed file within the skill. Pass the returned version and revision, and the same accounts, when reading references to reject changed content. Files are text; they are never executed.",
++      ),
++    ))();
+diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+--- a/packages/sdk/src/contracts/tools.ts
++++ b/packages/sdk/src/contracts/tools.ts
+@@ -1811,107 +1811,108 @@
+  * elicitation response, pins the saved version and rejects changed account identities. Unknown
+  * requests fail; repeated resumes report already-consumed while the marker is retained.
+  */
+-export const ToolsGroup = HttpApiGroup.make("tools")
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/tools", {
+-      query: Schema.Struct({ ...ToolInputs.list.fields, accounts: AppAccountsQuery }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
++export const ToolsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("tools")
++    .add(
++      HttpApiEndpoint.get("list", "/v1/tools", {
++        query: Schema.Struct({ ...ToolInputs.list.fields, accounts: AppAccountsQuery }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: ToolPage,
++        error: [
++          StorageError,
++          CredentialsError,
++          AppNotFound,
++          AppNotDeployed,
++          VersionNotFound,
++          AppEvaluationFailed,
++          ToolListingTimedOut,
++          AppProviderFailed,
++          AccountNotFound,
++          AccountRequired,
++          AccountChoiceUnsupported,
++          AccountSelectionInvalid,
++          OAuthReconnectRequired,
++          OAuthRenewalFailed,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Inspect an app current tools. Returns the active version and a cursor for the next page.",
+       ),
+-      success: ToolPage,
+-      error: [
+-        StorageError,
+-        CredentialsError,
+-        AppNotFound,
+-        AppNotDeployed,
+-        VersionNotFound,
+-        AppEvaluationFailed,
+-        ToolListingTimedOut,
+-        AppProviderFailed,
+-        AccountNotFound,
+-        AccountRequired,
+-        AccountChoiceUnsupported,
+-        AccountSelectionInvalid,
+-        OAuthReconnectRequired,
+-        OAuthRenewalFailed,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Inspect an app current tools. Returns the active version and a cursor for the next page.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("index", "/v1/tools/index", {
+-      query: Schema.Struct({ ...ToolInputs.index.fields, accounts: AppAccountsQuery }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
++    )
++    .add(
++      HttpApiEndpoint.get("index", "/v1/tools/index", {
++        query: Schema.Struct({ ...ToolInputs.index.fields, accounts: AppAccountsQuery }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: ToolIndex,
++        error: [
++          StorageError,
++          CredentialsError,
++          AppNotFound,
++          AppNotDeployed,
++          VersionNotFound,
++          AppEvaluationFailed,
++          ToolListingTimedOut,
++          AppProviderFailed,
++          AccountNotFound,
++          AccountRequired,
++          AccountChoiceUnsupported,
++          AccountSelectionInvalid,
++          OAuthReconnectRequired,
++          OAuthRenewalFailed,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "List an app's current tools without their schemas. Read one tool's schemas with get.",
+       ),
+-      success: ToolIndex,
+-      error: [
+-        StorageError,
+-        CredentialsError,
+-        AppNotFound,
+-        AppNotDeployed,
+-        VersionNotFound,
+-        AppEvaluationFailed,
+-        ToolListingTimedOut,
+-        AppProviderFailed,
+-        AccountNotFound,
+-        AccountRequired,
+-        AccountChoiceUnsupported,
+-        AccountSelectionInvalid,
+-        OAuthReconnectRequired,
+-        OAuthRenewalFailed,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "List an app's current tools without their schemas. Read one tool's schemas with get.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/tools/get", {
+-      query: Schema.Struct({ ...ToolInputs.get.fields, accounts: AppAccountsQuery }).pipe(
+-        withLegacyKeys({ version: "deployment" }),
++    )
++    .add(
++      HttpApiEndpoint.get("get", "/v1/tools/get", {
++        query: Schema.Struct({ ...ToolInputs.get.fields, accounts: AppAccountsQuery }).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: Tool,
++        error: [
++          StorageError,
++          CredentialsError,
++          AppNotFound,
++          AppNotDeployed,
++          VersionNotFound,
++          AppEvaluationFailed,
++          ToolListingTimedOut,
++          AppProviderFailed,
++          AccountNotFound,
++          AccountRequired,
++          AccountChoiceUnsupported,
++          AccountSelectionInvalid,
++          OAuthReconnectRequired,
++          OAuthRenewalFailed,
++          ToolNotFound,
++        ],
++      }).annotate(
++        OpenApi.Description,
++        "Describe one of an app's current tools, including its schemas.",
+       ),
+-      success: Tool,
+-      error: [
+-        StorageError,
+-        CredentialsError,
+-        AppNotFound,
+-        AppNotDeployed,
+-        VersionNotFound,
+-        AppEvaluationFailed,
+-        ToolListingTimedOut,
+-        AppProviderFailed,
+-        AccountNotFound,
+-        AccountRequired,
+-        AccountChoiceUnsupported,
+-        AccountSelectionInvalid,
+-        OAuthReconnectRequired,
+-        OAuthRenewalFailed,
+-        ToolNotFound,
+-      ],
+-    }).annotate(
+-      OpenApi.Description,
+-      "Describe one of an app's current tools, including its schemas.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("call", "/v1/tools/call", {
+-      payload: ToolInputs.call.pipe(withLegacyKeys({ version: "deployment" })),
+-      success: ToolCallResult,
+-      error: toolCallErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("resume", "/v1/tools/resume", {
+-      payload: ToolInputs.resume,
+-      success: ToolResumeResult,
+-      error: [StorageError, CredentialsError, ToolApprovalNotFound, RequestInvalid],
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("pruneApprovals", "/v1/tools/approvals/prune", {
+-      payload: ToolInputs.pruneApprovals,
+-      success: Schema.Void,
+-      error: [StorageError, RequestInvalid],
+-    }),
+-  );
++    )
++    .add(
++      HttpApiEndpoint.post("call", "/v1/tools/call", {
++        payload: ToolInputs.call.pipe(withLegacyKeys({ version: "deployment" })),
++        success: ToolCallResult,
++        error: toolCallErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("resume", "/v1/tools/resume", {
++        payload: ToolInputs.resume,
++        success: ToolResumeResult,
++        error: [StorageError, CredentialsError, ToolApprovalNotFound, RequestInvalid],
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("pruneApprovals", "/v1/tools/approvals/prune", {
++        payload: ToolInputs.pruneApprovals,
++        success: Schema.Void,
++        error: [StorageError, RequestInvalid],
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/webhooks.ts b/packages/sdk/src/contracts/webhooks.ts
+--- a/packages/sdk/src/contracts/webhooks.ts
++++ b/packages/sdk/src/contracts/webhooks.ts
+@@ -243,119 +243,126 @@
+ /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
+ export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });
+ /** Programmatic management surfaces are shared with the normal Executor management app. */
+-export const WebhooksGroup = HttpApiGroup.make("webhooks")
+-  .add(
+-    HttpApiEndpoint.get("get", "/v1/apps/:app/webhooks/:subscription", {
+-      params: subscription,
+-      success: WebhookSubscription,
+-      error: WebhookErrors,
+-    }).annotate(OpenApi.Description, "Read webhook subscription status without secrets."),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("confirmRemoval", "/v1/apps/:app/webhooks/:subscription/confirm-removal", {
+-      params: subscription,
+-      success: WebhookSubscription,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Confirm cleanup after removing the webhook at its provider. External deletion cannot be verified. Disable the subscription first.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("definitions", "/v1/apps/:app/webhook-definitions", {
+-      params: app,
+-      query: { accounts: AppAccountsQuery },
+-      success: Schema.Array(HostedWebhook),
+-      error: WebhookErrors,
+-    }).annotate(OpenApi.Description, "List app webhook definitions and configuration schemas."),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/apps/:app/webhooks", {
+-      params: app,
+-      success: Schema.Array(WebhookSubscription),
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "List saved webhook subscriptions, lifecycle status and safe failure stage.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("create", "/v1/apps/:app/webhooks", {
+-      params: app,
+-      payload: CreateWebhook.mapFields(({ app: _app, ...fields }) => fields),
+-      success: WebhookSubscription,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Register a webhook with a stable key for one source account. The actor is the subject whose access each callback is checked against; the app's other requirements use the actor's linked accounts. Config follows the definition schema. Check status in the result; setup-required needs the product browser setup link.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("reconcile", "/v1/apps/:app/webhooks/:subscription/reconcile", {
+-      params: subscription,
+-      success: WebhookSubscription,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Retry interrupted or failed registration or cleanup using its saved identity. Does not replay deliveries.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("remove", "/v1/apps/:app/webhooks/:subscription", {
+-      params: subscription,
+-      success: WebhookSubscription,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Stop new deliveries and remove the provider registration. Manual registrations require external removal and confirmation. Cleanup failures remain visible and can be reconciled.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("sources", "/v1/apps/:app/webhook-sources", {
+-      params: app,
+-      success: Schema.Array(WebhookSourceSummary),
+-      error: WebhookErrors,
+-    }).annotate(OpenApi.Description, "List the accounts linked to an app as webhook sources."),
+-  )
+-  .add(
+-    HttpApiEndpoint.put("link", "/v1/apps/:app/webhook-sources/:account", {
+-      params: { ...app, account: AccountId },
+-      payload: LinkWebhookSource.mapFields(({ app: _app, account: _account, ...fields }) => fields),
+-      success: WebhookSource,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Link an account to an app as a webhook source, or update its actor and configuration. Registration runs in the background; read sources for its status.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.patch("configureSource", "/v1/apps/:app/webhook-sources/:account", {
+-      params: { ...app, account: AccountId },
+-      payload: UpdateWebhookSource.mapFields(
+-        ({ app: _app, account: _account, ...fields }) => fields,
++export const WebhooksGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("webhooks")
++    .add(
++      HttpApiEndpoint.get("get", "/v1/apps/:app/webhooks/:subscription", {
++        params: subscription,
++        success: WebhookSubscription,
++        error: WebhookErrors,
++      }).annotate(OpenApi.Description, "Read webhook subscription status without secrets."),
++    )
++    .add(
++      HttpApiEndpoint.post(
++        "confirmRemoval",
++        "/v1/apps/:app/webhooks/:subscription/confirm-removal",
++        {
++          params: subscription,
++          success: WebhookSubscription,
++          error: WebhookErrors,
++        },
++      ).annotate(
++        OpenApi.Description,
++        "Confirm cleanup after removing the webhook at its provider. External deletion cannot be verified. Disable the subscription first.",
+       ),
+-      success: WebhookSource,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Change a webhook source's configuration, keeping its actor. expected names the source and revision the caller read; a source changed since, being removed or replaced fails with WebhookConflict. Registration runs in the background.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.delete("unlink", "/v1/apps/:app/webhook-sources/:account", {
+-      params: { ...app, account: AccountId },
+-      success: WebhookSource,
+-      error: WebhookErrors,
+-    }).annotate(
+-      OpenApi.Description,
+-      "Unlink a webhook source. Its managed subscriptions are removed in the background; the source is deleted once they are stopped.",
+-    ),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("deliver", "/v1/apps/:app/webhooks/:subscription/deliver", {
+-      params: subscription,
+-      payload: Schema.Struct({ request: WebhookRequestData }),
+-      success: WebhookResponseData,
+-      error: WebhookErrors,
+-    }),
+-  );
++    )
++    .add(
++      HttpApiEndpoint.get("definitions", "/v1/apps/:app/webhook-definitions", {
++        params: app,
++        query: { accounts: AppAccountsQuery },
++        success: Schema.Array(HostedWebhook),
++        error: WebhookErrors,
++      }).annotate(OpenApi.Description, "List app webhook definitions and configuration schemas."),
++    )
++    .add(
++      HttpApiEndpoint.get("list", "/v1/apps/:app/webhooks", {
++        params: app,
++        success: Schema.Array(WebhookSubscription),
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "List saved webhook subscriptions, lifecycle status and safe failure stage.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("create", "/v1/apps/:app/webhooks", {
++        params: app,
++        payload: CreateWebhook.mapFields(({ app: _app, ...fields }) => fields),
++        success: WebhookSubscription,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Register a webhook with a stable key for one source account. The actor is the subject whose access each callback is checked against; the app's other requirements use the actor's linked accounts. Config follows the definition schema. Check status in the result; setup-required needs the product browser setup link.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("reconcile", "/v1/apps/:app/webhooks/:subscription/reconcile", {
++        params: subscription,
++        success: WebhookSubscription,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Retry interrupted or failed registration or cleanup using its saved identity. Does not replay deliveries.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.delete("remove", "/v1/apps/:app/webhooks/:subscription", {
++        params: subscription,
++        success: WebhookSubscription,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Stop new deliveries and remove the provider registration. Manual registrations require external removal and confirmation. Cleanup failures remain visible and can be reconciled.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.get("sources", "/v1/apps/:app/webhook-sources", {
++        params: app,
++        success: Schema.Array(WebhookSourceSummary),
++        error: WebhookErrors,
++      }).annotate(OpenApi.Description, "List the accounts linked to an app as webhook sources."),
++    )
++    .add(
++      HttpApiEndpoint.put("link", "/v1/apps/:app/webhook-sources/:account", {
++        params: { ...app, account: AccountId },
++        payload: LinkWebhookSource.mapFields(
++          ({ app: _app, account: _account, ...fields }) => fields,
++        ),
++        success: WebhookSource,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Link an account to an app as a webhook source, or update its actor and configuration. Registration runs in the background; read sources for its status.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.patch("configureSource", "/v1/apps/:app/webhook-sources/:account", {
++        params: { ...app, account: AccountId },
++        payload: UpdateWebhookSource.mapFields(
++          ({ app: _app, account: _account, ...fields }) => fields,
++        ),
++        success: WebhookSource,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Change a webhook source's configuration, keeping its actor. expected names the source and revision the caller read; a source changed since, being removed or replaced fails with WebhookConflict. Registration runs in the background.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.delete("unlink", "/v1/apps/:app/webhook-sources/:account", {
++        params: { ...app, account: AccountId },
++        success: WebhookSource,
++        error: WebhookErrors,
++      }).annotate(
++        OpenApi.Description,
++        "Unlink a webhook source. Its managed subscriptions are removed in the background; the source is deleted once they are stopped.",
++      ),
++    )
++    .add(
++      HttpApiEndpoint.post("deliver", "/v1/apps/:app/webhooks/:subscription/deliver", {
++        params: subscription,
++        payload: Schema.Struct({ request: WebhookRequestData }),
++        success: WebhookResponseData,
++        error: WebhookErrors,
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/workflow-inputs.ts b/packages/sdk/src/contracts/workflow-inputs.ts
+--- a/packages/sdk/src/contracts/workflow-inputs.ts
++++ b/packages/sdk/src/contracts/workflow-inputs.ts
+@@ -36,43 +36,47 @@
+   evidence: WorkflowInputEvidence,
+ });
+ const path = "/v1/apps/:app/workflow-inputs/:id";
+-export const WorkflowInputsGroup = HttpApiGroup.make("workflowInputs")
+-  .add(
+-    HttpApiEndpoint.get("list", "/v1/workflow-inputs", {
+-      query: ListWorkflowInputs,
+-      success: WorkflowInputPage,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", path, {
+-      params: { app: AppId, id: WorkflowInputId },
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: WorkflowInput,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("answer", `${path}/answer`, {
+-      params: { app: AppId, id: WorkflowInputId },
+-      payload: Schema.Struct({ owner: Schema.optional(OwnerId), response: ElicitationResponse }),
+-      success: WorkflowInput,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("updateEvidence", `${path}/evidence`, {
+-      params: { app: AppId, id: WorkflowInputId },
+-      payload: Schema.Struct({ owner: Schema.optional(OwnerId), evidence: WorkflowInputEvidence }),
+-      success: WorkflowInput,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("withdraw", `${path}/withdraw`, {
+-      params: { app: AppId, id: WorkflowInputId },
+-      payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
+-      success: WorkflowInput,
+-      error: WorkflowErrors,
+-    }),
+-  );
++export const WorkflowInputsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("workflowInputs")
++    .add(
++      HttpApiEndpoint.get("list", "/v1/workflow-inputs", {
++        query: ListWorkflowInputs,
++        success: WorkflowInputPage,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("get", path, {
++        params: { app: AppId, id: WorkflowInputId },
++        query: { owner: Schema.optional(OwnerId) },
++        success: WorkflowInput,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("answer", `${path}/answer`, {
++        params: { app: AppId, id: WorkflowInputId },
++        payload: Schema.Struct({ owner: Schema.optional(OwnerId), response: ElicitationResponse }),
++        success: WorkflowInput,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("updateEvidence", `${path}/evidence`, {
++        params: { app: AppId, id: WorkflowInputId },
++        payload: Schema.Struct({
++          owner: Schema.optional(OwnerId),
++          evidence: WorkflowInputEvidence,
++        }),
++        success: WorkflowInput,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("withdraw", `${path}/withdraw`, {
++        params: { app: AppId, id: WorkflowInputId },
++        payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
++        success: WorkflowInput,
++        error: WorkflowErrors,
++      }),
++    ))();
+diff --git a/packages/sdk/src/contracts/workflows.ts b/packages/sdk/src/contracts/workflows.ts
+--- a/packages/sdk/src/contracts/workflows.ts
++++ b/packages/sdk/src/contracts/workflows.ts
+@@ -88,55 +88,58 @@
+
+ const path = "/v1/apps/:app/workflow-runs";
+ /** Flat transport groups are projected beneath executor.apps in the public SDK. */
+-export const AppWorkflowsGroup = HttpApiGroup.make("appWorkflows").add(
+-  HttpApiEndpoint.get("list", "/v1/apps/:app/workflows", {
+-    params: { app: AppId },
+-    query: Schema.Struct({ accounts: AppAccountsQuery, version: Schema.optional(VersionId) }).pipe(
+-      withLegacyKeys({ version: "deployment" }),
+-    ),
+-    success: Schema.Array(HostedWorkflow),
+-    error: WorkflowErrors,
+-  }),
+-);
+-/** Lifecycle operations start quickly and return a retained run identity. */
+-export const AppWorkflowRunsGroup = HttpApiGroup.make("appWorkflowRuns")
+-  .add(
+-    HttpApiEndpoint.post("start", path, {
++export const AppWorkflowsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("appWorkflows").add(
++    HttpApiEndpoint.get("list", "/v1/apps/:app/workflows", {
+       params: { app: AppId },
+-      payload: StartWorkflowFields.mapFields(({ app: _app, ...fields }) => fields).pipe(
+-        withLegacyKeys({ version: "deployment" }),
+-      ),
+-      success: WorkflowRun,
++      query: Schema.Struct({
++        accounts: AppAccountsQuery,
++        version: Schema.optional(VersionId),
++      }).pipe(withLegacyKeys({ version: "deployment" })),
++      success: Schema.Array(HostedWorkflow),
+       error: WorkflowErrors,
+     }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("get", `${path}/:run`, {
+-      params: WorkflowTarget.fields,
+-      success: WorkflowRun,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("pinned", `${path}/:run/pinned`, {
+-      params: WorkflowTarget.fields,
+-      query: { owner: Schema.optional(OwnerId) },
+-      success: PinnedWorkflowRun,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.get("list", path, {
+-      params: { app: AppId },
+-      query: ListWorkflowRuns.mapFields(({ app: _app, ...fields }) => fields),
+-      success: WorkflowRunPage,
+-      error: WorkflowErrors,
+-    }),
+-  )
+-  .add(
+-    HttpApiEndpoint.post("terminate", `${path}/:run/terminate`, {
+-      params: WorkflowTarget.fields,
+-      success: WorkflowRun,
+-      error: WorkflowErrors,
+-    }),
+-  );
++  ))();
++/** Lifecycle operations start quickly and return a retained run identity. */
++export const AppWorkflowRunsGroup = /* @__PURE__ */ (() =>
++  HttpApiGroup.make("appWorkflowRuns")
++    .add(
++      HttpApiEndpoint.post("start", path, {
++        params: { app: AppId },
++        payload: StartWorkflowFields.mapFields(({ app: _app, ...fields }) => fields).pipe(
++          withLegacyKeys({ version: "deployment" }),
++        ),
++        success: WorkflowRun,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("get", `${path}/:run`, {
++        params: WorkflowTarget.fields,
++        success: WorkflowRun,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("pinned", `${path}/:run/pinned`, {
++        params: WorkflowTarget.fields,
++        query: { owner: Schema.optional(OwnerId) },
++        success: PinnedWorkflowRun,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.get("list", path, {
++        params: { app: AppId },
++        query: ListWorkflowRuns.mapFields(({ app: _app, ...fields }) => fields),
++        success: WorkflowRunPage,
++        error: WorkflowErrors,
++      }),
++    )
++    .add(
++      HttpApiEndpoint.post("terminate", `${path}/:run/terminate`, {
++        params: WorkflowTarget.fields,
++        success: WorkflowRun,
++        error: WorkflowErrors,
++      }),
++    ))();

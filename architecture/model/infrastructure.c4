@@ -77,6 +77,7 @@ model {
   basalt.build -[sync]-> catalogSource "read official workspace catalog snapshots for the OAuth proof"
   basalt.build -[sync]-> connectorIdentity "read public workspace identity metadata for the OAuth proof"
   basalt.pool -[sync]-> providerLogos "provider logo URL in a subscription's identity, loaded by the browser"
+  basalt.modelGateway -[sync]-> providerLogos "provider logo URL in a saved account identity"
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"

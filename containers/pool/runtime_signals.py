@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum, IntEnum
 from types import TracebackType
+from .crash_tail import HomeCrashTail
 
 
 STARTUP_PHASE_MARKER = "POOL_STARTUP_PHASE "
@@ -36,7 +37,10 @@ class FailureCategory(IntEnum):
     UNRAISABLE = 9
 
 
-def report_child_exit(name: str, exit_code: int, category: FailureCategory) -> None:
+def report_child_exit(
+    name: str, exit_code: int, category: FailureCategory,
+    diagnostics: HomeCrashTail | None = None,
+) -> None:
     if (
         type(name) is not str
         or name not in ("home", "node", "home_import")
@@ -46,9 +50,11 @@ def report_child_exit(name: str, exit_code: int, category: FailureCategory) -> N
     ):
         return
     try:
+        receipt = {"child": name, "exit_code": exit_code, "category": int(category)}
+        tail = diagnostics.snapshot() if name == "home" and isinstance(diagnostics, HomeCrashTail) else []
         print(
             "POOL_CHILD_EXIT " + json.dumps(
-                {"child": name, "exit_code": exit_code, "category": int(category)},
+                {**receipt, **({"output_tail": tail} if tail else {})},
                 separators=(",", ":"),
             ),
             file=sys.stderr,

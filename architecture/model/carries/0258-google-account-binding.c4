@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountRuntime {
+    metadata {
+      constraint "Retained app builds bind their original account declarations. Invocation projection removes only matching host-added family and identity defaults while preserving OAuth policy, scopes, credential schemas and host checks."
+    }
+  }
+}

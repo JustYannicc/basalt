@@ -7,16 +7,13 @@ import providers from "./providers.json" with { type: "json" };
 import {
   callerHeader,
   controlBasePath as base,
-  type ControlErrorCode,
   type PoolView,
   type SignInFlow,
-  type SignInStarted,
-  type SignInStatus,
   type UsageRecord,
   type UsageResponse,
 } from "../../apps/pool/contract.ts";
-import { callbackOrigin } from "../../apps/pool/sign-in.ts";
-import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
+import { openEnvelope, verifyPoolToken } from "./token.ts";
+import { refusePoolAcquisition } from "./connection-policy.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
 import type { HomeViewData, PoolViewSnapshots } from "./view-snapshot.ts";
@@ -58,29 +55,8 @@ export interface HomeDependencies {
 /** Only the operations the routes need. Read-only requests pass null explicitly. */
 export interface ControlAttribution {
   expireLocked(home: HomeClient): Promise<void>;
-  reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void>;
-  discard(provider: string): Promise<void>;
-  rejectedCallback(session: Session): Promise<void>;
-  acceptedCallback(session: Session): Promise<void>;
-  status(home: PoolHome, session: Session): Promise<SignInStatus>;
   cancel(home: PoolHome, session: Session): Promise<void>;
-  started(session: Session, accountId: string): Promise<void>;
-  uploadStarted(): Promise<string>;
-  uploadFinished(upload: string): Promise<void>;
-  retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
-  uploaded(
-    home: PoolHome,
-    id: string,
-    upload: string,
-    key: string,
-    provider?: string,
-  ): Promise<void>;
   removed(id: string, intent?: { pool: string; actor: string; at: Date }): Promise<void>;
-  cached(session: Session): SignInStatus | undefined;
-  callback(home: HomeClient, session: Session): Promise<boolean>;
-  polled(session: Session): Promise<void>;
-  finished(session: Session, result?: SignInStatus): Promise<void>;
-  connected(home: PoolHome, session: Session, ids: string[]): Promise<SignInStatus>;
 }
 export interface ControlDependencies extends HomeDependencies {
   attribution: ControlAttribution | null;
@@ -112,7 +88,6 @@ export interface Membership {
   members: Member[];
 }
 export { poolGroupPrefix };
-export const signInTtlMs = 20 * 60_000;
 const management = "/v8/management";
 const sessionPrefix = "sbs1";
 // Home v1.1.6 management/quota_snapshots.go:18-19 caps each list at 200.
@@ -230,9 +205,6 @@ function matchesUsageStatus(row: Json, status: string | undefined): boolean {
 function positiveId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
-async function signSession(secret: string, session: Session): Promise<string> {
-  return signEnvelope(secret, sessionPrefix, session);
-}
 async function readSession(
   secret: string,
   opaque: string | null,
@@ -257,45 +229,6 @@ async function readSession(
   }
   return value as unknown as Session;
 }
-function detectFlow(value: Json): SignInFlow {
-  if (value.flow === "device") return "device";
-  if (value.flow === "browser" || value.flow === "callback") return "callback";
-  // A sign-in that ends on a local page needs its address pasted back; any other finishes itself.
-  return callbackOrigin(String(value.url)) ? "callback" : "device";
-}
-async function body(
-  request: Request,
-  code: ControlErrorCode,
-): Promise<{ raw: string; value: Json }> {
-  try {
-    const reader = request.body?.getReader();
-    if (!reader) throw new Error("Missing body");
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > 1024 * 1024) {
-        void reader.cancel().catch(() => {});
-        throw new Error("Body too large");
-      }
-      chunks.push(next.value);
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
-    const value: unknown = JSON.parse(raw);
-    if (!object(value)) throw new Error("Expected object");
-    return { raw, value };
-  } catch {
-    return fail(400, code, "Provide a valid JSON object no larger than 1 MiB.");
-  }
-}
 /** The shared Home client has no pool identity or attribution state. */
 export class HomeClient {
   private fetchHome: HomeDependencies["home"];
@@ -316,7 +249,7 @@ export class HomeClient {
     const mutation =
       init?.method !== undefined &&
       !["GET", "HEAD"].includes(init.method.toUpperCase()) &&
-      /^(?:\/(?:credentials|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(
+      /^(?:\/(?:credentials|config\/api-keys|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(
         path,
       );
     if (mutation) await this.changed?.();
@@ -768,89 +701,8 @@ const routes: Record<string, Route> = {
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
-  "POST /sign-ins": async (ctx) => {
-    const { request, client, pool, now, deps } = ctx;
-    const state = attribution(ctx);
-    const { value } = await body(request, "unknown_provider");
-    if (!providers.some((provider) => provider.id === value.provider))
-      return fail(400, "unknown_provider", "Choose a provider from this pool's provider list.");
-    const provider = value.provider as string;
-    await state.reserve(client, provider, pool, now);
-    const response = await client.response(
-      `/oauth/auth-url?provider=${encodeURIComponent(provider)}`,
-    );
-    if (response.status === 404) {
-      await state.discard(provider);
-      return fail(400, "unknown_provider", "This provider is not available.");
-    }
-    if (!response.ok) {
-      // Home returns its errors before starting a waiter. Only a lost response is ambiguous.
-      await state.discard(provider);
-      return unavailable();
-    }
-    const started: unknown = await response.json();
-    if (!object(started) || !text(started.url) || !text(started.state)) return unavailable();
-    const session: Session = {
-      pool,
-      provider,
-      state: started.state as string,
-      flow: detectFlow(started),
-      expiresAt: new Date(now.getTime() + signInTtlMs).toISOString(),
-    };
-    await state.started(session, ctx.accountId);
-    return json({
-      session: await signSession(deps.signingKey, session),
-      provider,
-      flow: session.flow,
-      url: started.url as string,
-      userCode:
-        text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null),
-      expiresAt: session.expiresAt,
-    } satisfies SignInStarted);
-  },
-  "POST /login-files": async (ctx) => {
-    const state = attribution(ctx);
-    const { value } = await body(ctx.request, "invalid_login_file");
-    // Home v1.1.6 oauth_login.go emits each table id as metadata.type. No alias mapping.
-    if (!providers.some((provider) => provider.id === value.type))
-      return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
-    // uuid.go:25-50 reuses a root uuid. Strip all caller-supplied credential selectors.
-    const { uuid: _uuid, id: _id, auth_index: _authIndex, ...credential } = value;
-    const raw = JSON.stringify(credential);
-    const identity = JSON.stringify([ctx.pool, credential], (_key, entry: unknown) =>
-      object(entry)
-        ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-        : entry,
-    );
-    const digest = new Uint8Array(
-      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)),
-    );
-    const key = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const pending = await state.retryUpload(ctx.home, key);
-    if (pending) return json({ accountId: pending });
-    const upload = await state.uploadStarted();
-    const response = await ctx.client.response("/credentials", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: raw,
-    });
-    if (response.status === 400) {
-      await state.uploadFinished(upload);
-      return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
-    }
-    if (!response.ok) return unavailable();
-    const saved: unknown = await response.json();
-    if (
-      !object(saved) ||
-      typeof saved.name !== "string" ||
-      !saved.name.endsWith(".json") ||
-      saved.name.length <= 5
-    )
-      return unavailable();
-    const id = saved.name.slice(0, -5);
-    await state.uploaded(ctx.home, id, upload, key, String(credential.type));
-    return json({ accountId: id });
-  },
+  "POST /sign-ins": async (ctx) => refusePoolAcquisition(ctx.pool),
+  "POST /login-files": async (ctx) => refusePoolAcquisition(ctx.pool),
   "DELETE /accounts/:id": async (ctx) => {
     let id: string;
     try {
@@ -867,44 +719,12 @@ const routes: Record<string, Route> = {
     );
     return json(null);
   },
-  "POST /sign-ins/callback": async (ctx) => {
-    const value = (await body(ctx.request, "invalid_callback")).value;
-    const session = await sessionFor(ctx, text(value.session));
-    if (session.flow !== "callback" || !text(value.redirectUrl))
-      return fail(400, "invalid_callback", "Paste the callback URL for this sign-in.");
-    try {
-      if (new URL(value.redirectUrl as string).searchParams.get("state") !== session.state)
-        throw new Error("Wrong state");
-    } catch {
-      return fail(400, "invalid_callback", "This callback belongs to a different sign-in.");
-    }
-    const state = attribution(ctx);
-    if (!(await state.callback(ctx.client, session)))
-      return json({ status: "waiting" } satisfies SignInStatus);
-    const response = await ctx.client.response(
-      "/oauth/callback",
-      post({ provider: session.provider, redirect_url: value.redirectUrl }),
-    );
-    if ([400, 404, 409].includes(response.status)) {
-      if (response.status === 400) await state.rejectedCallback(session);
-      else if (response.status === 409) await state.cancel(ctx.home, session);
-      else await state.finished(session);
-      return fail(
-        400,
-        "invalid_callback",
-        "This callback could not be accepted. Check the URL or start again.",
-      );
-    }
-    if (!response.ok) return unavailable();
-    await state.acceptedCallback(session);
-    return json({ status: "waiting" } satisfies SignInStatus);
-  },
+  "POST /sign-ins/callback": async (ctx) => refusePoolAcquisition(ctx.pool),
   "DELETE /sign-ins": async (ctx) => {
     await attribution(ctx).cancel(ctx.home, await sessionFor(ctx));
     return json(null);
   },
-  "GET /sign-ins/status": async (ctx) =>
-    json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
+  "GET /sign-ins/status": async (ctx) => refusePoolAcquisition(ctx.pool),
 };
 
 async function observeAccount(ctx: RouteContext, refresh: boolean): Promise<Response> {
@@ -995,6 +815,17 @@ export async function authorizeControl(
   const refresh = action?.[2] === "refresh" && request.method === "POST";
   if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner)
     return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  // Old app deployments and tools can still call these routes. Refuse before loading the
+  // attribution queue, reading a body or letting a status read finalize a credential.
+  if (
+    [
+      "POST /sign-ins",
+      "POST /login-files",
+      "POST /sign-ins/callback",
+      "GET /sign-ins/status",
+    ].includes(routeKey)
+  )
+    refusePoolAcquisition(claims.pool);
   const observation =
     routeKey === "GET /accounts/:id/observations" ||
     routeKey === "POST /accounts/:id/observations/refresh";

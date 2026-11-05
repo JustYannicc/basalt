@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "id": "overview-r2",
+  "artifact": {
+    "name": "overview-r2.html",
+    "sha256": "683e75f182bc3dd092f0ac5263f126e7a1b24d683dc9812cd872c21a6b3944c2"
+  },
+  "requirements": [
+    {
+      "id": "deficit-and-account-counts",
+      "text": "Projected balances can fall below zero and explain additional account counts without counting excluded or unknown plans.",
+      "gap": {
+        "state": "open",
+        "owner": "History/overview owner of PR #384",
+        "reason": "No conforming overview r2 scenario exists; older native Settings usage charts are not substitute proof."
+      }
+    },
+    {
+      "id": "quota-windows",
+      "text": "Weekly and five-hour charts remain separate, hide irrelevant windows and default to the more pressing window with a reason.",
+      "gap": {
+        "state": "open",
+        "owner": "History/overview owner of PR #384",
+        "reason": "No public overview browser/data journey covers r2 window selection."
+      }
+    },
+    {
+      "id": "seasonal-forecast",
+      "text": "Forecast uses weekday/hour seasonality and the busy-week p90 instead of the current request rate.",
+      "gap": {
+        "state": "open",
+        "owner": "History/overview owner of PR #384",
+        "reason": "No registered scenario exercises r2 forecast inputs and results."
+      }
+    },
+    {
+      "id": "refills-without-reset-spending",
+      "text": "Capacity follows refills with a calm refill lane and a dotted nominal full line; projections never spend banked resets.",
+      "gap": {
+        "state": "open",
+        "owner": "History/overview owner of PR #384",
+        "reason": "No registered r2 journey asserts refill changes and the explicit-spending boundary."
+      }
+    },
+    {
+      "id": "inspect-and-drill-down",
+      "text": "Request-per-hour values work on hover and touch, and the banked-reset aggregate opens Accounts at desktop and phone width.",
+      "gap": {
+        "state": "open",
+        "owner": "History/overview owner of PR #384",
+        "reason": "No conforming browser journey proves r2 interaction and Accounts navigation."
+      }
+    }
+  ]
+}

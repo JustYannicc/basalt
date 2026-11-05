@@ -1,5 +1,5 @@
 import { acquisitionReceipt, acquisitionStep } from "./account-acquisition-failure.ts";
-import { callbackOrigin } from "../../apps/pool/sign-in.ts";
+import { callbackOrigin } from "./account-acquisition-urls.ts";
 import providers from "./providers.json" with { type: "json" };
 import type { HomeClient } from "./control.ts";
 import { object, post, rows, text, unavailable } from "./json.ts";

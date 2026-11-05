@@ -82,3 +82,26 @@ test("clone readiness still accepts deliberately synthetic pool metadata after t
     await database.close();
   }
 });
+
+test("committed app, account and link writes wake the provisioning readiness reader", async () => {
+  const notifications = source.match(/await client\.query\(`(create function[\s\S]*?)`\);/u)?.[1];
+  assert.ok(notifications, "use the fixture's actual notification setup");
+  const { database } = await fixture();
+  let observed = 0;
+  const unlisten = await database.listen("e2e_provisioning_completed", () => observed++);
+  try {
+    await database.exec(notifications);
+    for (const sql of [
+      "insert into executor_apps values ('pool', 'organization:team', 'version')",
+      "insert into executor_accounts values ('token', 'organization:team', 'token')",
+      "insert into hosted_app_account_links values ('pool', 'token', 'pool', null)",
+    ]) {
+      const before = observed;
+      await database.exec(sql);
+      assert.equal(observed, before + 1, "a committed readiness dependency must wake the reader");
+    }
+  } finally {
+    await unlisten();
+    await database.close();
+  }
+});

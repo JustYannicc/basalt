@@ -1,12 +1,12 @@
-diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
---- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
-+++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
 @@ -1,3 +1,4 @@
 +import { acquisitionTransport } from "./pool-acquisition-transport.ts";
  import {
    accountAcquisitionDriver,
    AccountAcquisitionUnavailable,
-@@ -53,17 +54,12 @@
+@@ -76,17 +77,12 @@
            expiresAt: Math.min(context.deadline, at + 30_000),
            ...input,
          });
@@ -18,7 +18,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
 -        });
 -        if (!response.ok) {
 -          await response.body?.cancel();
--          throw new Error("Account acquisition backend unavailable");
+-          throw new Error("Account backend unavailable");
 -        }
 -        return await response.json();
 +        return acquisitionTransport(
@@ -29,7 +29,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b
 +        );
        };
        const oauth = capability.connection === "home-oauth";
-       const mirror = homeAccountKeyMirror({
+       const family = nativeProviderFamilies[capability.lab] ?? "openai-compatibility";
 diff --git a/apps/hosted/server/src/implementation/pool-acquisition-transport.ts b/apps/hosted/server/src/implementation/pool-acquisition-transport.ts
 new file mode 100644
 --- /dev/null

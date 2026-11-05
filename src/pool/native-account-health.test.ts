@@ -13,11 +13,24 @@ import type { Json } from "./json.ts";
 const key = "ab".repeat(32),
   now = Date.parse("2030-01-01T00:00:00Z");
 function fixture(
-  options: { error?: string; stale?: boolean; disabled?: boolean; exhausted?: boolean; unlimited?: boolean; provider?: string; first?: boolean; stalled?: boolean; wait?: (ms: number, signal: AbortSignal) => Promise<void> } = {},
+  options: {
+    unnamed?: boolean;
+    error?: string;
+    stale?: boolean;
+    disabled?: boolean;
+    deleted?: boolean;
+    exhausted?: boolean;
+    unlimited?: boolean;
+    provider?: string;
+    first?: boolean;
+    stalled?: boolean;
+    wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
   const calls: string[] = [],
     storage = new Map<string, unknown>();
-  let completed = !options.stale && !options.first, queued = false;
+  let completed = !options.stale && !options.first,
+    queued = false;
   const client = new HomeClient(
     async (path) => {
       calls.push(path);
@@ -27,8 +40,9 @@ function fixture(
             {
               id: "bound-id",
               provider: options.provider ?? "codex",
-              email: "subscriber@example.test",
+              ...(options.unnamed ? {} : { email: "subscriber@example.test" }),
               disabled: options.disabled,
+              deleted: options.deleted,
             },
           ],
         });
@@ -41,27 +55,40 @@ function fixture(
       return Response.json({
         credential: { credential_id: "bound-id", plan: { name: "Pro" } },
         collection: {
-          status: options.error ? "failed" : completed ? "success" : queued ? "collecting" : options.first ? "idle" : "success",
+          status: options.error
+            ? "failed"
+            : completed
+              ? "success"
+              : queued
+                ? "collecting"
+                : options.first
+                  ? "idle"
+                  : "success",
           freshness: completed ? "fresh" : "stale",
-          ...(options.first && !completed ? {} : { observed_at: new Date(now - (completed ? 0 : 31 * 60_000)).toISOString() }),
+          ...(options.first && !completed
+            ? {}
+            : { observed_at: new Date(now - (completed ? 0 : 31 * 60_000)).toISOString() }),
           last_attempt_at: new Date(now - (completed || queued ? 0 : 31 * 60_000)).toISOString(),
           ...(options.error
             ? { error: { code: options.error, message: "PRIVATE_DIAGNOSTIC" } }
             : {}),
         },
-        windows: options.first && !completed ? [] : [
-          {
-            id: "codex-week",
-            label: "Weekly",
-            unit: "percent",
-            limit: 100,
-            remaining: options.exhausted ? 0 : 80,
-            remaining_ratio: options.exhausted ? 0 : 0.8,
-            observed_at: new Date(now - (completed ? 0 : 31 * 60_000)).toISOString(),
-            period: { seconds: 604800 },
-            ...(options.unlimited ? { is_unlimited: true } : {}),
-          },
-        ],
+        windows:
+          options.first && !completed
+            ? []
+            : [
+                {
+                  id: "codex-week",
+                  label: "Weekly",
+                  unit: "percent",
+                  limit: 100,
+                  remaining: options.exhausted ? 0 : 80,
+                  remaining_ratio: options.exhausted ? 0 : 0.8,
+                  observed_at: new Date(now - (completed ? 0 : 31 * 60_000)).toISOString(),
+                  period: { seconds: 604800 },
+                  ...(options.unlimited ? { is_unlimited: true } : {}),
+                },
+              ],
       });
     },
     () => now,
@@ -110,6 +137,27 @@ function fixture(
   };
 }
 
+test("signed retirement reference checks read only the exact surviving credential and return fixed codes", async () => {
+  for (const [options, changes, verified] of [
+    [{}, {}, true],
+    [{ disabled: true }, {}, true],
+    [{ deleted: true }, {}, false],
+    [{ provider: "claude" }, {}, false],
+    [{}, { reference: "missing-id" }, false],
+    [{}, { reference: 'sbhrefs1:["bound-id","other-id"]' }, false],
+  ] as const) {
+    const f = fixture(options);
+    const response = await f.check({ action: "verify-retirement-reference", ...changes });
+    assert.equal(response?.status, 200);
+    assert.deepEqual(await response!.json(), {
+      verified,
+      code: verified ? "retirement_reference_verified" : "retirement_reference_unavailable",
+    });
+    assert.deepEqual(f.calls, ["/v8/management/credentials"]);
+  }
+  assert.equal((await fixture().unsigned())?.status, 403);
+});
+
 test("native subscription checks work before pool linking and keep paused or exhausted credentials healthy", async () => {
   for (const options of [{}, { disabled: true }, { exhausted: true }]) {
     const f = fixture(options),
@@ -126,6 +174,17 @@ test("native subscription checks work before pool linking and keep paused or exh
       false,
     );
   }
+});
+
+test("an unnamed native subscription keeps health and usage without exposing its reference", async () => {
+  const response = await fixture({ unnamed: true }).check();
+  assert.equal(response?.status, 200);
+  const body = (await response!.json()) as {
+    result: { accountInfo: unknown; observation: unknown };
+  };
+  assert.deepEqual(body.result.accountInfo, {});
+  assert.ok(body.result.observation);
+  assert.equal(JSON.stringify(body).includes("bound-id"), false);
 });
 
 test("native checks preserve credential rejection and rate limits without returning backend diagnostics", async () => {
@@ -165,22 +224,24 @@ test("invalid assertions and mismatched bindings never probe another credential"
   );
 });
 
-
 test("alarm observations read unlinked bindings without a health check or reset mutations", async () => {
   const f = fixture({ stale: true });
   const first = await f.check({ action: "observe" });
   assert.equal(first?.status, 200);
-  const old = await first!.json() as { result: { observedAt: string } };
+  const old = (await first!.json()) as { result: { observedAt: string } };
   const second = await f.check({ action: "observe" });
-  const fresh = await second!.json() as { result: { observedAt: string } };
+  const fresh = (await second!.json()) as { result: { observedAt: string } };
   // Both calls see the same completed reading; the old test required a second pass.
   assert.equal(old.result.observedAt, new Date(now).toISOString());
   assert.equal(fresh.result.observedAt, old.result.observedAt);
   assert.equal(fresh.result.observedAt, new Date(now).toISOString());
   assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
-  assert.ok(f.calls.every((path) => /\/(credentials|quota\/collect|quota\/credentials\/bound-id)$/.test(path)));
+  assert.ok(
+    f.calls.every((path) =>
+      /\/(credentials|quota\/collect|quota\/credentials\/bound-id)$/.test(path),
+    ),
+  );
 });
-
 
 test("an unlimited account reports its windows as unlimited instead of no reading", async () => {
   const f = fixture({ unlimited: true });
@@ -189,22 +250,26 @@ test("an unlimited account reports its windows as unlimited instead of no readin
     result: { observation: { windows: { measure: { unlimited?: boolean } }[] } } | null;
   };
   assert.ok(body.result, "an unlimited reading is a reading, not an unavailable source");
-  assert.deepEqual(body.result.observation.windows.map((window) => window.measure.unlimited), [true]);
+  assert.deepEqual(
+    body.result.observation.windows.map((window) => window.measure.unlimited),
+    [true],
+  );
 });
 
 test("mirrored API-limited accounts share interval collection and the same persisted cap", async () => {
   const f = fixture({ provider: "typesafe", stale: true });
   await f.check({ action: "observe", provider: "typesafe" });
   const response = await f.check({ action: "observe", provider: "typesafe" });
-  const body = await response!.json() as { result: { observedAt: string } };
+  const body = (await response!.json()) as { result: { observedAt: string } };
   assert.equal(body.result.observedAt, new Date(now).toISOString());
   assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
 });
 
-
 test("a first alarm collection publishes its new reading in the same pass", async () => {
   const f = fixture({ first: true });
-  const body = await (await f.check({ action: "observe" }))!.json() as { result: { observedAt: string; collection: { outcome: string } } };
+  const body = (await (await f.check({ action: "observe" }))!.json()) as {
+    result: { observedAt: string; collection: { outcome: string } };
+  };
   assert.equal(body.result.observedAt, new Date(now).toISOString());
   assert.equal(body.result.collection.outcome, "success");
   assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
@@ -214,13 +279,24 @@ test("the nine-second bound retains source time or a neutral first reading witho
   const original = AbortSignal.timeout;
   for (const first of [false, true]) {
     const budget = new AbortController();
-    t.mock.method(AbortSignal, "timeout", (ms: number) => ms === 9_000 ? budget.signal : original(ms));
-    const f = fixture({ first, stale: true, stalled: true, wait: async (_ms, signal) => {
-      budget.abort(new DOMException("Collection wait ended", "TimeoutError"));
-      signal.throwIfAborted();
-    } });
+    t.mock.method(AbortSignal, "timeout", (ms: number) =>
+      ms === 9_000 ? budget.signal : original(ms),
+    );
+    const f = fixture({
+      first,
+      stale: true,
+      stalled: true,
+      wait: async (_ms, signal) => {
+        budget.abort(new DOMException("Collection wait ended", "TimeoutError"));
+        signal.throwIfAborted();
+      },
+    });
     const response = await f.check({ action: "observe" });
-    const body = await response!.json() as { result: import("../../apps/pool/account-observation-contract.ts").PoolAccountObservation | null };
+    const body = (await response!.json()) as {
+      result:
+        | import("../../apps/pool/account-observation-contract.ts").PoolAccountObservation
+        | null;
+    };
     assert.equal(response!.status, 200);
     assert.ok("result" in body, "a wait timeout is not a backend failure");
     if (first) assert.equal(body.result, null, "no reading is pending, not unavailable");
@@ -228,8 +304,14 @@ test("the nine-second bound retains source time or a neutral first reading witho
       assert.ok(body.result);
       assert.equal(body.result.observedAt, new Date(now - 31 * 60_000).toISOString());
       assert.equal(body.result.collection, undefined);
-      const { nextObservationState } = await import("../../.upstream/packages/sdk/src/implementation/account-observation-state.ts");
-      const saved = nextObservationState({ result: body.result, outcome: "success", startedAt: now, now });
+      const { nextObservationState } =
+        await import("../../.upstream/packages/sdk/src/implementation/account-observation-state.ts");
+      const saved = nextObservationState({
+        result: body.result,
+        outcome: "success",
+        startedAt: now,
+        now,
+      });
       assert.equal(saved.lastAttempt.outcome, "success");
       assert.equal(saved.result?.observedAt, body.result.observedAt);
     }
@@ -239,7 +321,10 @@ test("the nine-second bound retains source time or a neutral first reading witho
 });
 
 test("a first collection that actually fails reports its failure even without a reading", async () => {
-  for (const [error, failure] of [["UPSTREAM_RATE_LIMITED", "rate_limited"], ["UPSTREAM_UNAVAILABLE", "unavailable"]]) {
+  for (const [error, failure] of [
+    ["UPSTREAM_RATE_LIMITED", "rate_limited"],
+    ["UPSTREAM_UNAVAILABLE", "unavailable"],
+  ]) {
     const f = fixture({ first: true, error });
     assert.deepEqual(await (await f.check({ action: "observe" }))!.json(), { failure });
   }

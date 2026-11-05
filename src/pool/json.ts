@@ -1,4 +1,4 @@
-import type { ControlErrorCode } from "../../apps/pool/contract.ts";
+import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts";
 
 export type Json = Record<string, unknown>;
 
@@ -11,6 +11,9 @@ export class ControlFailure extends Error {
     this.status = status;
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+  }
+  response(): ControlError {
+    return { error: this.code, message: this.message };
   }
 }
 export function fail(
@@ -59,7 +62,7 @@ export class BackendFailure extends ControlFailure {
 }
 export function failureResponse(error: unknown): Response {
   if (!(error instanceof ControlFailure)) return unavailableResponse();
-  const response = json({ error: error.code, message: error.message }, error.status);
+  const response = json(error.response(), error.status);
   if (error.retryAfterSeconds !== undefined)
     response.headers.set("Retry-After", String(error.retryAfterSeconds));
   return response;
