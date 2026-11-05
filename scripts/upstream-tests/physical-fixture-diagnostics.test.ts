@@ -9,13 +9,10 @@ import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { copyE2eEvidence } from "../e2e-evidence.ts";
 
-const load = (path: string) => import(new URL(`../../.upstream/${path}`, import.meta.url).href);
-const { productionOpsDatabaseFixture } = await load(
-  "e2e/support/production-ops-database-fixture.ts",
-);
-const { cloudRuntimeControl } = await load("e2e/support/cloud-runtime-control.ts");
-const { cloudLogActivity } = await load("e2e/support/cloud-log-activity.ts");
-const { fixtureProcessOutput } = await load("e2e/support/fixture-diagnostics.ts");
+import { productionOpsDatabaseFixture } from "../../.upstream/e2e/support/production-ops-database-fixture.ts";
+import { cloudRuntimeControl } from "../../.upstream/e2e/support/cloud-runtime-control.ts";
+import { cloudLogActivity } from "../../.upstream/e2e/support/cloud-log-activity.ts";
+import { fixtureProcessOutput } from "../../.upstream/e2e/support/fixture-diagnostics.ts";
 
 test("a failed readiness child retains both streams, its exit code and the control cause", async (t) => {
   const root = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "physical-diagnostics-"));

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-physical-fixture-diagnostics",
   "file": "0310-physical-fixture-diagnostics.patch",
-  "content_sha256": "500a157a265e2322a3b1f7237f34b4cf2acd1e64c09d926beb3615d719f975a0",
+  "content_sha256": "d9cfee06865727f8002661e31398e36f49ffff5341ac65c0363dc3048e843bd5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
