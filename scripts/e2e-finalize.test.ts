@@ -75,6 +75,28 @@ test("failed runs export selected CI evidence before pruning and never follow ru
   assert.equal(existsSync(run), false);
 });
 
+test("successful CI export preserves scope-proof metadata before pruning the original run", (t) => {
+  const { root, run, artifacts } = fixture(t);
+  const receipts = {
+    "environment.json": JSON.stringify({ prebuiltFramework: true }),
+    "runtime-preboot.json": JSON.stringify({ binding: "host", launches: 2 }),
+    "runtime-launches.ndjson": '{"launch":1}\n{"launch":2}\n',
+    "runtime-switches.ndjson": '{"binding":"host","launches":2}\n',
+  };
+  for (const [name, contents] of Object.entries(receipts))
+    writeFileSync(join(run, "cloud", name), contents);
+  finalizeE2e(root, run, "passed", { ci: true, retain: undefined, artifacts });
+  const retained = join(root, ".generated/e2e-evidence/run-one/cloud");
+  assert.equal(existsSync(run), false);
+  for (const [name, contents] of Object.entries(receipts))
+    assert.equal(readFileSync(join(retained, name), "utf8"), contents);
+  assert.equal(
+    JSON.parse(readFileSync(join(retained, "environment.json"), "utf8")).prebuiltFramework,
+    true,
+  );
+  assert.equal(existsSync(join(retained, "database")), false);
+});
+
 test("explicit owner retention survives pruning and an export failure leaves the run intact", (t) => {
   const { root, run, artifacts } = fixture(t);
   const retain = join(artifacts, "owner-proof");

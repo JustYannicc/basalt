@@ -2,6 +2,10 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync } from "nod
 import { dirname, join, relative } from "node:path";
 
 const diagnosticFiles = new Set([
+  "environment.json",
+  "runtime-preboot.json",
+  "runtime-launches.ndjson",
+  "runtime-switches.ndjson",
   "compiler-cache-host.log",
   "compiler-cache-production.json",
   "physical-state-digests.ndjson",
