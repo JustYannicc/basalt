@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-local-account-consent-pairing",
+  "file": "0264-local-account-consent-pairing.patch",
+  "content_sha256": "6ccec7ada130fab225a882d418b75f36a420db145ba197a3b16917fc8c10b1e4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

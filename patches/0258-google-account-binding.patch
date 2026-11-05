@@ -1,0 +1,842 @@
+diff --git a/e2e/account-definition.config.ts b/e2e/account-definition.config.ts
+new file mode 100644
+index 0000000..fb64c7d
+--- /dev/null
++++ b/e2e/account-definition.config.ts
+@@ -0,0 +1,4 @@
++import { defineConfig } from "vitest/config";
++export default defineConfig({
++  test: { include: ["e2e/tests/account-definition-projection.spec.ts"], testTimeout: 120_000 },
++});
+diff --git a/e2e/fixtures/google-provider-declarations.json b/e2e/fixtures/google-provider-declarations.json
+new file mode 100644
+index 0000000..0ab4dc7
+--- /dev/null
++++ b/e2e/fixtures/google-provider-declarations.json
+@@ -0,0 +1,280 @@
++[
++  {
++    "name": "Gmail",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["https://mail.google.com/", "https://www.googleapis.com/auth/gmail.settings.basic"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Calendar",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["https://www.googleapis.com/auth/calendar"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Drive",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["https://www.googleapis.com/auth/drive"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Photos",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": [
++        "https://www.googleapis.com/auth/photoslibrary.appendonly",
++        "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
++        "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
++        "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
++      ]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Admin",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": [
++        "openid",
++        "email",
++        "profile",
++        "https://www.googleapis.com/auth/admin.directory.user",
++        "https://www.googleapis.com/auth/admin.directory.user.alias",
++        "https://www.googleapis.com/auth/admin.directory.user.security",
++        "https://www.googleapis.com/auth/admin.directory.userschema",
++        "https://www.googleapis.com/auth/admin.directory.group",
++        "https://www.googleapis.com/auth/admin.directory.group.member",
++        "https://www.googleapis.com/auth/admin.directory.orgunit",
++        "https://www.googleapis.com/auth/admin.directory.domain",
++        "https://www.googleapis.com/auth/admin.directory.customer",
++        "https://www.googleapis.com/auth/admin.directory.rolemanagement",
++        "https://www.googleapis.com/auth/admin.directory.device.chromeos",
++        "https://www.googleapis.com/auth/admin.directory.device.mobile",
++        "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
++        "https://www.googleapis.com/auth/admin.directory.resource.calendar",
++        "https://www.googleapis.com/auth/admin.chrome.printers",
++        "https://www.googleapis.com/auth/admin.reports.audit.readonly",
++        "https://www.googleapis.com/auth/admin.reports.usage.readonly",
++        "https://www.googleapis.com/auth/admin.datatransfer"
++      ]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Contacts",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": [
++        "openid",
++        "email",
++        "profile",
++        "https://www.googleapis.com/auth/contacts",
++        "https://www.googleapis.com/auth/contacts.other.readonly",
++        "https://www.googleapis.com/auth/directory.readonly"
++      ]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Docs",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["openid", "email", "profile", "https://www.googleapis.com/auth/documents"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Forms",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": [
++        "openid",
++        "email",
++        "profile",
++        "https://www.googleapis.com/auth/forms.body",
++        "https://www.googleapis.com/auth/forms.responses.readonly"
++      ]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Meet",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": [
++        "openid",
++        "email",
++        "profile",
++        "https://www.googleapis.com/auth/meetings.space.created",
++        "https://www.googleapis.com/auth/meetings.space.readonly",
++        "https://www.googleapis.com/auth/meetings.space.settings"
++      ]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Slides",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["openid", "email", "profile", "https://www.googleapis.com/auth/presentations"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  },
++  {
++    "name": "Google Sheets",
++    "config": {
++      "authorizationParams": {
++        "access_type": "offline",
++        "prompt": "consent"
++      },
++      "discover": "https://accounts.google.com",
++      "scopes": ["openid", "email", "profile", "https://www.googleapis.com/auth/spreadsheets"]
++    },
++    "added": {
++      "family": {
++        "id": "google",
++        "name": "Google"
++      },
++      "identity": {
++        "issuer": "https://accounts.google.com",
++        "name": "Google"
++      }
++    }
++  }
++]
+diff --git a/e2e/support/account-definition-fixture.ts b/e2e/support/account-definition-fixture.ts
+new file mode 100644
+index 0000000..44887ef
+--- /dev/null
++++ b/e2e/support/account-definition-fixture.ts
+@@ -0,0 +1,77 @@
++import { Console, Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { accountDefinitionHostSource } from "./account-definition-host.ts";
++import { lockedNpmRegistry } from "./npm-registry.ts";
++
++const Ready = Schema.Struct({ port: Schema.Number });
++
++/** The SDK host owns its workerd, listener and storage for this one HTTP scenario. */
++export const accountDefinitionFixture = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem,
++    path = yield* Path.Path,
++    processes = yield* ChildProcessSpawner.ChildProcessSpawner,
++    http = yield* HttpClient.HttpClient;
++  const directory = yield* fs.makeTempDirectoryScoped({
++    directory: path.resolve(".local"),
++    prefix: "account-definition-",
++  });
++  const entry = path.join(directory, "host.ts");
++  yield* fs.writeFileString(entry, accountDefinitionHostSource);
++  const config = path.join(directory, "tsconfig.json");
++  yield* fs.writeFileString(
++    config,
++    JSON.stringify({
++      extends: path.resolve("tsconfig.json"),
++      compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++      files: [entry],
++      include: [],
++      exclude: [],
++    }),
++  );
++  const checked = yield* processes.exitCode(
++    ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++      stdout: "inherit",
++      stderr: "inherit",
++    }),
++  );
++  if (checked !== 0) return yield* Effect.die("Account definition SDK host failed its typecheck");
++  const registry = yield* lockedNpmRegistry;
++  const child = yield* processes.spawn(
++    ChildProcess.make("node", [entry], {
++      env: {
++        ...process.env,
++        DEFINITION_FIXTURE_DIRECTORY: directory,
++        DEFINITION_FIXTURE_REGISTRY: registry.url,
++        EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
++      },
++      stdout: "pipe",
++      stderr: "inherit",
++    }),
++  );
++  const listening = yield* Deferred.make<typeof Ready.Type, Error>();
++  yield* child.stdout.pipe(
++    Stream.decodeText(),
++    Stream.splitLines,
++    Stream.runForEach((line) =>
++      line.startsWith('{"port":')
++        ? Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line).pipe(
++            Effect.flatMap((value) => Deferred.succeed(listening, value)),
++          )
++        : Console.error(line),
++    ),
++    Effect.ensuring(Deferred.fail(listening, new Error("Account definition host exited"))),
++    Effect.forkChild,
++  );
++  const { port } = yield* Deferred.await(listening);
++  const origin = `http://127.0.0.1:${port}`;
++  const post = (route: string, input: unknown) =>
++    Effect.gen(function* () {
++      const request = yield* HttpClientRequest.post(origin + route).pipe(
++        HttpClientRequest.bodyJson(input),
++      );
++      const response = yield* http.execute(request);
++      return { status: response.status, body: yield* response.json };
++    });
++  return { origin, post };
++});
+diff --git a/e2e/support/account-definition-host.ts b/e2e/support/account-definition-host.ts
+new file mode 100644
+index 0000000..e036dbf
+--- /dev/null
++++ b/e2e/support/account-definition-host.ts
+@@ -0,0 +1,80 @@
++/** A real SDK/workerd host reached over HTTP, with synthetic credentials and a loopback provider. */
++export const accountDefinitionHostSource = `
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import * as Runtime from "@effect/platform-node/NodeRuntime";
++import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
++import { ProviderDefinition, toEffectRuntime, type BuiltApp } from "@executor-js/sdk/core";
++import { HostAccounts } from "apps/contracts";
++import { Console, Effect, Layer, Path, Redacted, Result, Schema } from "effect";
++import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
++
++Runtime.runMain(Effect.scoped(Effect.gen(function* () {
++  const path = yield* Path.Path;
++  const directory = process.env.DEFINITION_FIXTURE_DIRECTORY!;
++  const blobs = filesystemBlobStore({ directory: path.join(directory, "blobs") });
++  const host = yield* workerdApps({ directory: path.join(directory, "workerd"), blobs,
++    executor: Effect.never, npmRegistry: process.env.DEFINITION_FIXTURE_REGISTRY!,
++    allowPrivateAppFetch: true, encryptionKey: Redacted.make("b".repeat(64)) });
++  const runtime = toEffectRuntime(host.runtime, blobs);
++  const builds = new Map<string, BuiltApp>();
++  let reads = 0;
++  const Input = Schema.Struct({ build: Schema.String, slot: Schema.String,
++    mutation: Schema.optionalKey(Schema.Literals(["scope", "client", "identity", "family"])),
++    call: Schema.optionalKey(Schema.Boolean) });
++  const body = <A, I>(schema: Schema.Codec<A, I>) => HttpServerRequest.schemaBodyJson(schema);
++  const routes = Layer.mergeAll(
++    HttpRouter.add("POST", "/build", Effect.gen(function* () {
++      const input = yield* body(Schema.Struct({ files: Schema.NonEmptyArray(Schema.Struct({ path: Schema.String, content: Schema.String })) }));
++      const built = yield* runtime.build(input);
++      builds.set(built.build, built);
++      return yield* HttpServerResponse.json({ build: built.build });
++    })),
++    HttpRouter.add("POST", "/invoke", Effect.gen(function* () {
++      const input = yield* body(Input);
++      const built = builds.get(input.build);
++      if (built === undefined) return HttpServerResponse.empty({ status: 404 });
++      const selected = Object.fromEntries(Object.entries(built.requirements.accounts.user).map(([slot, required]) => {
++        let provider = Schema.decodeUnknownSync(ProviderDefinition)(required.definition);
++        const method = provider.auth.oauth;
++        if (slot === input.slot && method?.type === "oauth2" && method.grant !== "client_credentials") {
++          if (input.mutation === "scope") provider = { ...provider, auth: { ...provider.auth, oauth: { ...method, scopes: ["foreign-scope"] } } };
++          if (input.mutation === "client") provider = { ...provider, auth: { ...provider.auth, oauth: { ...method, tokenEndpointAuthMethod: "client_secret_basic" } } };
++          if (input.mutation === "identity") provider = { ...provider, auth: { ...provider.auth, oauth: { ...method, identity: { issuer: "https://foreign.example.test", name: "Foreign identity" } } } };
++          if (input.mutation === "family") provider = { ...provider, family: { id: "foreign", name: "Foreign family" } };
++        }
++        return [slot, { id: "acc_synthetic_" + slot, method: "oauth", generation: 7,
++          provider, fields: { access_token: "synthetic-client-a-" + slot, token_type: "Bearer" } }];
++      }));
++      const accounts = Schema.decodeUnknownSync(HostAccounts)({ app: {}, user: input.call ? selected : { [input.slot]: selected[input.slot] } });
++      const before = JSON.stringify(accounts);
++      const context = { app: "definition-fixture", build: built.build, caller: "synthetic-caller", accounts: Redacted.make(accounts) };
++      const result = yield* Effect.result(input.call
++        ? runtime.call({ ...context, database: false, tool: "read", kind: "query", input: {} })
++        : runtime.checkAccount({ ...context, requirement: input.slot }));
++      return yield* HttpServerResponse.json({
++        ok: Result.isSuccess(result),
++        ...(Result.isSuccess(result) ? { value: result.success } : { tag: result.failure._tag }),
++        retained: before === JSON.stringify(accounts),
++        definitions: Object.fromEntries(Object.entries(selected).map(([slot, account]) => [slot, account.provider])),
++        reads,
++      });
++    })),
++    HttpRouter.add("GET", "/provider/:slot", Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const slot = new URL(request.url, "http://fixture").pathname.split("/").at(-1);
++      reads++;
++      return request.headers.authorization === "Bearer synthetic-client-a-" + slot
++        ? yield* HttpServerResponse.json({ subject: "synthetic-person", slot })
++        : HttpServerResponse.empty({ status: 401 });
++    })),
++  );
++  const services = yield* Layer.build(HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++    Layer.provideMerge(NodeHttpServer.layer(createServer, { port: 0, host: "127.0.0.1" }))));
++  const listening = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in listening.address)) return yield* Effect.die("Expected TCP listener");
++  yield* Console.log(JSON.stringify({ port: listening.address.port }));
++  return yield* Effect.never;
++})).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)));
++`;
+diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
+index 4be5684..af78e46 100644
+--- a/e2e/support/app-package.ts
++++ b/e2e/support/app-package.ts
+@@ -162,8 +162,8 @@ export const publishedRelease = (version: Release) =>
+     return { url: `${base}${route}`, route, requests };
+   });
+ 
+-/** Advertise a compatible bundle as retained to exercise refusal before dispatch. */
+-const retainedObservationFramework = (protocol: 17 | 18) =>
++/** Advertise a compatible bundle under a retained protocol to exercise its host adapter. */
++const retainedObservationFramework = (protocol: 17 | 18 | 26) =>
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem,
+       path = yield* Path.Path;
+@@ -187,3 +187,4 @@ const retainedObservationFramework = (protocol: 17 | 18) =>
+ 
+ export const protocol17Framework = retainedObservationFramework(17);
+ export const protocol18Framework = retainedObservationFramework(18);
++export const protocol26Framework = retainedObservationFramework(26);
+diff --git a/e2e/tests/account-definition-projection.spec.ts b/e2e/tests/account-definition-projection.spec.ts
+new file mode 100644
+index 0000000..c28f7ea
+--- /dev/null
++++ b/e2e/tests/account-definition-projection.spec.ts
+@@ -0,0 +1,113 @@
++import { expect, it } from "@effect/vitest";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect, Layer, Schema } from "effect";
++import { FetchHttpClient } from "effect/http";
++import { accountDefinitionFixture } from "../support/account-definition-fixture.ts";
++import { protocol26Framework } from "../support/app-package.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import definitions from "../fixtures/google-provider-declarations.json" with { type: "json" };
++
++const Built = Schema.Struct({ build: Schema.String });
++const Reply = Schema.Struct({
++  ok: Schema.Boolean,
++  tag: Schema.optionalKey(Schema.String),
++  value: Schema.optionalKey(Schema.Json),
++  retained: Schema.Boolean,
++  reads: Schema.Number,
++  definitions: Schema.Record(
++    Schema.String,
++    Schema.Struct({
++      family: Schema.Struct({ id: Schema.String, name: Schema.String }),
++      auth: Schema.Struct({
++        oauth: Schema.Struct({
++          identity: Schema.Struct({ issuer: Schema.String, name: Schema.String }),
++        }),
++      }),
++    }),
++  ),
++});
++
++// Credential-free OAuth declarations from the eleven-provider signed snapshot. Tokens and people are synthetic.
++const source = (origin: string, explicit: boolean, family: boolean) => {
++  const providers = definitions.map(
++    (definition, index) => `const service${index} = defineProvider({
++  name: ${JSON.stringify(definition.name)},
++  ${family ? `family: ${JSON.stringify(definition.added.family)},` : ""}
++  auth: { oauth: oauth2(${JSON.stringify({
++    ...definition.config,
++    ...(explicit ? { identity: definition.added.identity } : {}),
++  })}) },
++  async health({ account, fetch, signal }) {
++    const response = await fetch(${JSON.stringify(`${origin}/provider/service${index}`)}, {
++      signal, headers: { authorization: "Bearer " + account.fields.access_token },
++    });
++    if (!response.ok) throw new ProviderError({ reason: "unauthorized", status: response.status });
++    return { accountInfo: { externalId: "service${index}" } };
++  },
++});`,
++  );
++  return `import { defineApp, defineProvider, oauth2, ProviderError, object, query, router } from "apps";
++${providers.join("\n")}
++export default defineApp({ user: { accounts: {
++  ${definitions.map((_, index) => `service${index}`).join(", ")}
++} } }, async ({ user }) => ({ tools: router({
++  read: query({ input: object({}) }, async () => Object.keys(user?.accounts ?? {})),
++}) }));`;
++};
++
++it.live("host-added Google metadata preserves retained and current account-check definitions", () =>
++  Effect.gen(function* () {
++    expect(definitions).toHaveLength(11);
++    const fixture = yield* accountDefinitionFixture;
++    const retained = yield* protocol26Framework;
++    const invoke = (build: string, slot: string, extra: object = {}) =>
++      fixture.post("/invoke", { build, slot, ...extra }).pipe(
++        Effect.tap((response) =>
++          Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
++        ),
++        Effect.flatMap((response) => Schema.decodeUnknownEffect(Reply)(response.body)),
++      );
++    for (const framework of [retained, undefined]) {
++      for (const explicit of [false, true]) {
++        const manifest =
++          framework === undefined
++            ? appsManifest
++            : {
++                path: "package.json",
++                content: JSON.stringify({ dependencies: { apps: framework } }),
++              };
++        const response = yield* fixture.post("/build", {
++          files: [
++            manifest,
++            {
++              path: "index.ts",
++              content: source(fixture.origin, explicit, framework === undefined && explicit),
++            },
++          ],
++        });
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const { build } = yield* Schema.decodeUnknownEffect(Built)(response.body);
++        for (const [index, definition] of definitions.entries()) {
++          const slot = `service${index}`;
++          const checked = yield* invoke(build, slot);
++          expect(checked.ok, `${definition.name}: ${JSON.stringify(checked)}`).toBe(true);
++          expect(checked.value).toMatchObject({ accountInfo: { externalId: slot } });
++          expect(checked.retained).toBe(true);
++          expect(checked.definitions[slot]?.family).toEqual(definition.added.family);
++          expect(checked.definitions[slot]?.auth.oauth.identity).toEqual(definition.added.identity);
++        }
++        const called = yield* invoke(build, "service0", { call: true });
++        expect(called.ok, JSON.stringify(called)).toBe(true);
++        expect(called.value).toHaveLength(11);
++        for (const mutation of ["scope", "client", "identity", "family"]) {
++          const refused = yield* invoke(build, "service0", { mutation });
++          expect(refused.ok, `${mutation}: ${JSON.stringify(refused)}`).toBe(false);
++          expect(refused.tag).toBe("HostAccountsInvalid");
++          expect(refused.retained).toBe(true);
++          expect(refused.reads).toBe(called.reads);
++        }
++        expect((yield* invoke(build, "service0")).ok).toBe(true);
++      }
++    }
++  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
++);
+diff --git a/packages/sdk/src/implementation/app-account-projection.ts b/packages/sdk/src/implementation/app-account-projection.ts
+new file mode 100644
+index 0000000..22bac6c
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-account-projection.ts
+@@ -0,0 +1,119 @@
++import { Effect } from "effect";
++import type {
++  DeclaredProvider,
++  DeclaredRequirements,
++  HostAccount,
++  HostAccounts,
++  HostAccountSlots,
++} from "apps/contracts";
++import { oauthAccountFamily, oauthIdentityDefaults } from "../contracts/oauth-families.ts";
++
++type Selected = HostAccountSlots[string];
++const isMany = (value: Selected): value is Extract<Selected, ReadonlyArray<unknown>> =>
++  Array.isArray(value);
++
++const inferredFamily = (provider: DeclaredProvider) =>
++  Object.values(provider.auth).flatMap((method) => {
++    const family = oauthAccountFamily(method);
++    return family === undefined ? [] : [family];
++  })[0];
++
++/** Undo only the defaults the host added; every credential-relevant field still reaches binding. */
++const projectProvider = (supplied: DeclaredProvider, declared: DeclaredProvider) => {
++  const inferred = inferredFamily(declared);
++  const family =
++    declared.family === undefined &&
++    inferred !== undefined &&
++    supplied.family?.id === inferred.id &&
++    supplied.family.name === inferred.name &&
++    supplied.family.methods === undefined
++      ? undefined
++      : supplied.family;
++  const { family: _family, ...rest } = supplied;
++  return {
++    ...rest,
++    ...(family === undefined ? {} : { family }),
++    auth: Object.fromEntries(
++      Object.entries(supplied.auth).map(([name, method]) => {
++        const original = Object.hasOwn(declared.auth, name) ? declared.auth[name] : undefined;
++        if (
++          original?.type !== "oauth2" ||
++          original.grant === "client_credentials" ||
++          original.identity !== undefined ||
++          method.type !== "oauth2" ||
++          method.grant === "client_credentials"
++        )
++          return [name, method];
++        const normalized = oauthIdentityDefaults(original);
++        if (
++          normalized.type !== "oauth2" ||
++          normalized.grant === "client_credentials" ||
++          normalized.identity === undefined ||
++          method.identity?.issuer !== normalized.identity.issuer ||
++          method.identity.name !== normalized.identity.name
++        )
++          return [name, method];
++        const { identity: _identity, ...credential } = method;
++        return [name, credential];
++      }),
++    ),
++  };
++};
++
++const accountsOf = (slots: HostAccountSlots) =>
++  Object.values(slots).flatMap((selected) => (isMany(selected) ? selected : [selected]));
++const hasDefaults = (account: HostAccount) => {
++  const provider = account.provider;
++  return (
++    inferredFamily(provider) !== undefined &&
++    (provider.family !== undefined ||
++      Object.values(provider.auth).some(
++        (method) =>
++          method.type === "oauth2" &&
++          method.grant !== "client_credentials" &&
++          method.identity !== undefined,
++      ))
++  );
++};
++
++/** Immutable declarations only, bounded per runner. No credentials or cross-request promises. */
++export const makeBuildAccountProjection = () => {
++  const declarations = new Map<string, DeclaredRequirements>();
++  return <E, R>(
++    build: string,
++    accounts: HostAccounts,
++    read: Effect.Effect<DeclaredRequirements, E, R>,
++  ): Effect.Effect<HostAccounts, E, R> =>
++    Effect.gen(function* () {
++      if (![...accountsOf(accounts.app), ...accountsOf(accounts.user ?? {})].some(hasDefaults))
++        return accounts;
++      let declared = declarations.get(build);
++      if (declared === undefined) {
++        declared = yield* read;
++        declarations.set(build, declared);
++        if (declarations.size > 4096) {
++          const oldest = declarations.keys().next();
++          if (!oldest.done) declarations.delete(oldest.value);
++        }
++      }
++      const requirements = declared.accounts;
++      const projectScope = (scope: "app" | "user", slots: HostAccountSlots) =>
++        Object.fromEntries(
++          Object.entries(slots).map(([slot, selected]) => {
++            const definition = Object.hasOwn(requirements[scope], slot)
++              ? requirements[scope][slot]?.definition
++              : undefined;
++            if (definition === undefined) return [slot, selected];
++            const project = (account: HostAccount): HostAccount => ({
++              ...account,
++              provider: projectProvider(account.provider, definition),
++            });
++            return [slot, isMany(selected) ? selected.map(project) : project(selected)];
++          }),
++        );
++      return {
++        app: projectScope("app", accounts.app),
++        ...(accounts.user === undefined ? {} : { user: projectScope("user", accounts.user) }),
++      };
++    });
++};
+diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
+index 78657f4..3491c9b 100644
+--- a/packages/sdk/src/implementation/app-runner.ts
++++ b/packages/sdk/src/implementation/app-runner.ts
+@@ -12,7 +12,9 @@
+ import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
+ import { Clock, Context, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
+ import {
++  DeclaredRequirements,
+   ElicitationReply,
++  HostResponse,
+   type HostRequest,
+   type HostAccounts,
+   scopedSlots,
+@@ -56,6 +58,7 @@ import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
+ import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
+ import { invocationWorkflow } from "./worker-workflow-rpc.ts";
+ import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
++import { makeBuildAccountProjection } from "./app-account-projection.ts";
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ 
+@@ -520,6 +523,7 @@ const runnerTiming = (within: AppRunnerHost["within"]) => {
+ 
+ /** Build the runner for one host's bindings. */
+ export const makeAppRunner = (host: AppRunnerHost) => {
++  const projectAccounts = makeBuildAccountProjection();
+   /** Start one call in a loaded Worker and release its invocation capability afterwards. */
+   const startOnce = (
+     name: string | null,
+@@ -709,6 +713,29 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+       ),
+     );
+ 
++  const declare = (
++    bundle: LoadedWorkerBuild,
++    headers: Readonly<Record<string, string>>,
++    explain: boolean,
++  ) =>
++    Effect.gen(function* () {
++      const protocol = yield* appProtocol(bundle.protocol).pipe(
++        Effect.catch((cause) => failed("unsupported", cause, explain)),
++      );
++      const command = { operation: "requirements" } as const;
++      const reply = yield* start(null, async () => bundle, {
++        body: protocol.invocation({ command, accounts: { app: {} } }),
++        headers,
++        globalOutbound: null,
++        elicit: null,
++        controls: null,
++        cache: null,
++        explain,
++        waiting: notTimed,
++      });
++      return yield* protocol.response(command, reply);
++    }).pipe(Effect.withSpan("runtime.app.declare"));
++
+   /** Run one call through its data supervisor, which loads the facet only on a cold start. */
+   const facet = (
+     target: AppDataHost,
+@@ -839,8 +866,25 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+         // A command this protocol's bundles would not run as asked fails without reaching them.
+         const refused = protocol.refuse(invocation.command);
+         if (refused !== undefined) return { ok: false, error: refused };
++        const declared = Effect.gen(function* () {
++          const bundle = yield* Effect.tryPromise({ try: load, catch: (cause) => cause }).pipe(
++            Effect.catch(failedBuild),
++          );
++          const reply = yield* declare(bundle, invocation.headers, false).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(HostResponse)),
++            Effect.catchTag("SchemaError", () => failed("invalid-reply")),
++          );
++          if (!reply.ok) return yield* failed("invalid-reply");
++          return yield* Schema.decodeUnknownEffect(DeclaredRequirements)(reply.value).pipe(
++            Effect.catch(() => failed("invalid-reply")),
++          );
++        });
+         const accountsFor = (resolved: HostAccounts) =>
+-          bundleAccounts(protocol, invocation.app, host.credentialKey, resolved);
++          projectAccounts(invocation.build, resolved, declared).pipe(
++            Effect.flatMap((projected) =>
++              bundleAccounts(protocol, invocation.app, host.credentialKey, projected),
++            ),
++          );
+         const accounts = yield* accountsFor(invocation.accounts);
+         const body = protocol.invocation({
+           command: invocation.command,
+@@ -961,24 +1005,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+      * Worker, so it is not named and the runtime does not keep it; it has no network or cache.
+      */
+     declare: (bundle: LoadedWorkerBuild, headers: Readonly<Record<string, string>>) =>
+-      Effect.gen(function* () {
+-        const protocol = yield* appProtocol(bundle.protocol).pipe(
+-          Effect.catch((cause) => failed("unsupported", cause, true)),
+-        );
+-        const command = { operation: "requirements" } as const;
+-        const reply = yield* start(null, async () => bundle, {
+-          body: protocol.invocation({ command, accounts: { app: {} } }),
+-          headers,
+-          globalOutbound: null,
+-          elicit: null,
+-          controls: null,
+-          cache: null,
+-          // The deployer sees why the app's declarations failed, in the app's own terms.
+-          explain: true,
+-          waiting: notTimed,
+-        });
+-        return yield* protocol.response(command, reply);
+-      }).pipe(Effect.withSpan("runtime.app.declare")),
++      declare(bundle, headers, true),
+   };
+ };
+ export type AppRunner = ReturnType<typeof makeAppRunner>;
