@@ -63,6 +63,7 @@ export function patchFixtureContent(file: string): string {
 export function makeReleaseRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "basalt-release-test-"));
   mkdirSync(join(root, "containers/pool"), { recursive: true });
+  writeFileSync(join(root, "containers/pool/billing-settings.json"), '{"allow_unpriced_models":true}\n');
   mkdirSync(join(root, "patches"), { recursive: true });
   mkdirSync(join(root, "scripts/releases"), { recursive: true });
   mkdirSync(join(root, "src/pool"), { recursive: true });

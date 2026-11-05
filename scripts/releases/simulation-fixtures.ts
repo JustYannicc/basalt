@@ -74,6 +74,7 @@ export function createHomeAssets(path: string): Record<"amd64" | "arm64", { name
 export function createBasaltFixture(path: string, toolBase: string, homeCommit: string, patch: string): string {
   mkdirSync(join(path, "patches"), { recursive: true });
   mkdirSync(join(path, "containers/pool"), { recursive: true });
+  writeFileSync(join(path, "containers/pool/billing-settings.json"), '{"allow_unpriced_models":true}\n');
   mkdirSync(join(path, "scripts/releases"), { recursive: true });
   mkdirSync(join(path, "src/pool"), { recursive: true });
   const home = artifact("home", "v1.1.6", homeCommit, "1");

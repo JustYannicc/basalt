@@ -76,6 +76,11 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
     const changed = !sameArtifact(next, current);
     releaseKey = `${kind}-${slug(next.tag)}`;
     if (changed) {
+      if (kind === "home") {
+        const policy = JSON.parse(readFileSync(join(rootPath, "containers/pool/billing-settings.json"), "utf8"));
+        if (policy.allow_unpriced_models !== true || Object.keys(policy).length !== 1)
+          throw new Error("Home updates require the explicit unpriced-model pool policy");
+      }
       const artifacts = { ...pool.artifacts, [kind]: next };
       files.push({
         path: "containers/pool/releases.json",

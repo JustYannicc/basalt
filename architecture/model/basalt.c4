@@ -232,6 +232,11 @@ model {
         control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,
         timestamp and validated generated request ID. Container log collection is enabled in the
         stack. The supervisor forwards closed numeric maintenance signals during normal operation.
+        Pool admission does not depend on having an API-equivalent model price. The supervisor
+        detects Home billing support and sets allow_unpriced_models before readiness, requiring
+        persisted readback. Only the known legacy billing shape can omit that capability.
+        Home release updates require the same explicit policy; missing prices remain unknown,
+        never synthetic zero-price rules.
         Unexpected process exits emit POOL_CHILD_EXIT with a closed home, node or home_import
         child name, bounded numeric exit status and failure category before cleanup. Home exits also
         attach at most eight Home-formatted error, fatal or panic records from stdout or stderr,
