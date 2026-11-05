@@ -39,7 +39,7 @@ if args and args[0] == 'run' and '--name' in args and args[args.index('--name') 
                  'image': item['Image'], 'boots': []}
         # The host observer runs outside the constrained container's cgroup.
         process = subprocess.Popen(['sudo', 'nsenter', '--target', str(item['State']['Pid']), '--net',
-                                    sys.executable, str(Path(__file__).with_name('pong.py')),
+                                    sys.executable, str(Path(__file__).resolve().with_name('pong.py')),
                                     str(ROOT / 'pong.json'), str(started)],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         state['observerPid'] = process.pid
