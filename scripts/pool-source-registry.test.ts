@@ -18,7 +18,8 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
   const releases = JSON.parse(read("containers/pool/releases.json").toString());
   const files: string[] = [];
   for (const name of ["home", "node"]) {
-    const artifact = sources.artifacts[name], release = releases.artifacts[name];
+    const artifact = sources.artifacts[name],
+      release = releases.artifacts[name];
     assert.equal(artifact.commit, release.commit);
     assert.equal(artifact.repository, release.repository);
     assert.match(artifact.sha256, /^[a-f0-9]{64}$/);
@@ -27,10 +28,32 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
       assert.match(patch.file, /^[a-zA-Z0-9_.-]+\.patch$/);
       assert.equal(digest(read(`containers/pool/patches/${patch.file}`)), patch.sha256);
       assert.equal(patch.retirement.mode, "manual");
-      assert.ok(patch.retirement.requires.includes("forced failure") && patch.retirement.requires.includes("purge"));
+      if (patch.identity === "cliproxy-home-single-line-log-records") {
+        assert.equal(name, "home");
+        assert.match(
+          patch.retirement.requires,
+          /escapes embedded CR and LF after formatting all log fields/,
+        );
+        assert.match(patch.retirement.requires, /exactly one physical line per record/);
+        assert.match(
+          patch.retirement.requires,
+          /formatter and real-child snapshot\/exit-receipt injection regressions/,
+        );
+        assert.match(patch.retirement.requires, /without changing request handling/);
+      } else {
+        assert.ok(
+          patch.retirement.requires.includes("forced failure") &&
+            patch.retirement.requires.includes("purge"),
+        );
+      }
       files.push(patch.file);
     }
   }
   assert.equal(new Set(files).size, files.length);
-  assert.deepEqual(files.sort(), readdirSync(new URL("containers/pool/patches/", root)).filter((file) => file.endsWith(".patch")).sort());
+  assert.deepEqual(
+    files.sort(),
+    readdirSync(new URL("containers/pool/patches/", root))
+      .filter((file) => file.endsWith(".patch"))
+      .sort(),
+  );
 });
