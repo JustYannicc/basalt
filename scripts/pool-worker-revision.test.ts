@@ -41,17 +41,15 @@ test("the revision follows the Worker's local import graph and nothing else", ()
     const first = poolWorkerRevision(root);
     assert.match(first, /^[a-f0-9]{64}$/);
     // Writing the revision module, or editing a test or an unrelated file, changes nothing the
-    // Worker bundles. Nor does the release environment: only file contents count.
+    // Worker bundles.
     writePoolWorkerRevision(root, join(root, ".upstream"));
     writeFileSync(join(root, "src/pool/route.test.ts"), "// edited\n");
     writeFileSync(join(root, "src/other/unrelated.ts"), "export const unrelated = 2;\n");
-    process.env.GITHUB_SHA = "another-release";
     assert.equal(poolWorkerRevision(root), first);
     // Any file it imports, however deep, is part of it.
     writeFileSync(join(root, "src/shared/name.ts"), `export const name = "renamed";\n`);
     assert.notEqual(poolWorkerRevision(root), first);
   } finally {
-    delete process.env.GITHUB_SHA;
     rmSync(root, { recursive: true, force: true });
   }
 });

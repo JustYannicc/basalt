@@ -57,10 +57,17 @@ index aa062a9..ef1bc09 100644
    SourceError,
    SourcePathConflict,
 diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
-index 25ac448..05ff1c5 100644
+index 25ac448..5ab22c7 100644
 --- a/apps/hosted/server/src/contracts/pool-defaults.ts
 +++ b/apps/hosted/server/src/contracts/pool-defaults.ts
-@@ -7,6 +7,24 @@ export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRot
+@@ -1,5 +1,6 @@
+ import type { SourceFiles, StorageError } from "@executor-js/sdk/core";
+ import { Context, type Effect } from "effect";
++import type { PoolSetupPending } from "./organization-defaults.ts";
+ 
+ /** Durable token-only jobs bypass ordinary organization setup and never install or upgrade apps. */
+ export const poolRotationJobPrefix = "basalt-pool-token:";
+@@ -7,6 +8,24 @@ export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRot
    defaultValue: () => false,
  });
  
@@ -73,13 +80,13 @@ index 25ac448..05ff1c5 100644
 +  defaultValue: () => undefined,
 +});
 +
-+/** What the pool Worker reports about itself; tests and other hosts may supply it directly. */
++/** What the pool Worker reports about itself. Tests supply it directly instead of a Worker. */
 +export interface PoolWorkerRelease {
 +  readonly revision: string;
 +  readonly keyVersion: string;
 +}
 +export const PoolWorkerReport = Context.Reference<
-+  Effect.Effect<PoolWorkerRelease, StorageError> | undefined
++  Effect.Effect<PoolWorkerRelease, PoolSetupPending> | undefined
 +>("hosted/PoolWorkerReport", { defaultValue: () => undefined });
 +
  /** The host supplies verified seed files lazily; checking the current version performs no I/O. */
@@ -230,7 +237,7 @@ index af5e329..f594e08 100644
        });
    });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 1c0aef7..5810706 100644
+index 1c0aef7..1aef56c 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
 @@ -2,12 +2,18 @@
@@ -273,7 +280,31 @@ index 1c0aef7..5810706 100644
      ),
      Effect.mapError(() => new ProvisioningFailed()),
      Effect.withSpan("hosted.provision"),
-@@ -191,6 +202,11 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -164,12 +175,17 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
+     for (const member of yield* managers(organization, requireVerifiedEmail))
+       yield* initialize(organization, member).pipe(
+         Effect.catch((error) =>
+-          Effect.logWarning("Member setup after team installation failed", {
+-            job: id,
+-            reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
+-              ? error._tag
+-              : "unknown",
+-          }),
++          Schema.is(PoolSetupPending)(error)
++            ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
++                job: id,
++                reason: error.reason,
++              })
++            : Effect.logWarning("Member setup after team installation failed", {
++                job: id,
++                reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
++                  ? error._tag
++                  : "unknown",
++              }),
+         ),
+       );
+   });
+@@ -191,6 +207,11 @@ export const provision = (id: string, services: ProvisioningServices) =>
            const initialize = yield* OrganizationDefaults;
            const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
            const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
@@ -285,7 +316,7 @@ index 1c0aef7..5810706 100644
            if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
            const [member] = yield* managers(
              job.organization_id,
-@@ -201,6 +217,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -201,6 +222,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
            if (member !== undefined)
              yield* initialize(job.organization_id, member).pipe(
                Effect.provideService(PoolTokenRotation, rotationOnly),

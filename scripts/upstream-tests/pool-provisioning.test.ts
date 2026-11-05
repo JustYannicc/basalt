@@ -37,16 +37,8 @@ const [sdk, organizationContracts, scheduleContracts, lifecycleModule, defaults,
     load("apps/hosted/server/src/implementation/pool-app-source.ts"),
     load("apps/hosted/server/src/implementation/pool-app-upgrades.ts"),
   ]);
-const {
-  AccountId,
-  AppId,
-  AppNameTaken,
-  AppNotFound,
-  AccountNotFound,
-  StorageError,
-  StorageHost,
-  VersionId,
-} = sdk;
+const { AccountId, AppId, AppNameTaken, AppNotFound, AccountNotFound, StorageHost, VersionId } =
+  sdk;
 const { AccountProvisioned } = sdk;
 const { OrganizationId } = organizationContracts;
 const { ScheduleWakeup } = scheduleContracts;
@@ -66,6 +58,9 @@ const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementatio
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
 const { provision, drainProvisioning, selfHostProvisioningServices } = await load(
   "apps/hosted/server/src/implementation/provisioning.ts",
+);
+const { PoolSetupPending } = await load(
+  "apps/hosted/server/src/contracts/organization-defaults.ts",
 );
 const { poolBundleJobPrefix, PoolWorkerReport } = await load(
   "apps/hosted/server/src/contracts/pool-defaults.ts",
@@ -1001,10 +996,12 @@ test("rotated tokens are never re-signed before the pool Worker reports the new 
 });
 
 test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the hosted origin", async () => {
-  let release = { revision: "earlier-pool-worker", keyVersion: "" };
+  // An old pool Worker has no release route yet.
+  let release: { revision: string; keyVersion: string } | null = null;
   const reads: string[] = [];
   const server = createServer((request, response) => {
     reads.push(request.url ?? "");
+    if (release === null) return void response.writeHead(404).end();
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(release));
   });
@@ -1033,10 +1030,14 @@ test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the
               ),
             );
           });
-        assert.equal((yield* run("behind-1"))._tag, "Failure");
+        assert.equal((yield* withPendingReasons(run("behind-1")))._tag, "Failure");
+        assert.deepEqual(reasons, ["worker-unreachable"]);
+        release = { revision: "earlier-pool-worker", keyVersion: "" };
+        assert.equal((yield* withPendingReasons(run("behind-2")))._tag, "Failure");
+        assert.deepEqual(reasons, ["worker-revision-and-key"]);
         release = { revision: poolWorkerRevision, keyVersion: yield* poolTokenKeyVersion(rotated) };
-        assert.equal((yield* run("behind-2"))._tag, "Success");
-        assert.deepEqual(reads, ["/pool/v1/release", "/pool/v1/release"]);
+        assert.equal((yield* run("behind-3"))._tag, "Success");
+        assert.deepEqual(reads, ["/pool/v1/release", "/pool/v1/release", "/pool/v1/release"]);
       }),
     );
   } finally {
@@ -1050,7 +1051,7 @@ test("ordinary member jobs ask the pool Worker only when they would deploy or re
       let asked = 0;
       const unreachable = Effect.suspend(() => {
         asked++;
-        return Effect.fail(new StorageError());
+        return Effect.fail(new PoolSetupPending({ reason: "worker-unreachable" }));
       });
       const member = (signingKey: Redacted.Redacted<string>, id: string) =>
         Effect.gen(function* () {
