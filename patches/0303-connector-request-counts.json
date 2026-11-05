@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connector-request-counts",
+  "file": "0303-connector-request-counts.patch",
+  "content_sha256": "93664a7a684417ec874a1467146e40d705ff470d132dfa0a52ec01ce7fc91683",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
