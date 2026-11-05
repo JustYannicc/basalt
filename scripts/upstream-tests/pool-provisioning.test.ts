@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -140,7 +141,7 @@ const fixture = <A>(
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
           "create table executor_deployments (id text primary key, requirements jsonb, app text, files jsonb, created_at timestamptz default clock_timestamp())",
           "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text, credential_generation integer not null default 0)",
-          "create table executor_account_acquisitions (account text primary key, owner text not null, provider text not null, method text not null, driver text not null, driver_revision text not null, generation integer not null, revision text not null, removal jsonb default null)",
+          "create table executor_account_acquisitions (account text primary key, owner text not null, provider text not null, method text not null, driver text not null, driver_revision text not null, generation integer not null, revision text not null, removal jsonb default null, mirror_ready boolean not null default false)",
           // Account deletion reads connection state to tell app-acquired accounts apart.
           "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz default now())",
           "create table hosted_app_access (id text, organization_id text, creator_id text, audience text, revision text default gen_random_uuid()::text)",
@@ -373,6 +374,7 @@ const fixture = <A>(
         options.poolSource ?? { version: poolAppVersion, files: Effect.succeed(poolAppFiles) },
       ),
       Effect.provide(pgliteLayer()),
+      Effect.provide(NodeCrypto.layer),
     ) as Effect.Effect<A, unknown>,
   );
 

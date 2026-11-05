@@ -101,3 +101,28 @@ diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-op
          const valid = p.operation("increment");
          const before = yield* p.account();
          const dry = yield* p.dryRun(valid);
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -38,7 +38,7 @@
+           Effect.promise(async () => {
+             try {
+               await client.query(
+-                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop function if exists e2e_provisioning_completed()",
++                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop trigger if exists e2e_pool_apps_completed on executor_apps; drop trigger if exists e2e_pool_accounts_completed on executor_accounts; drop trigger if exists e2e_pool_links_completed on hosted_app_account_links; drop function if exists e2e_provisioning_completed()",
+               );
+             } finally {
+               await client.end();
+@@ -71,6 +71,12 @@
+             create trigger e2e_provisioning_completed after insert or update or delete on hosted_provisioning
+             for each statement execute function e2e_provisioning_completed();
+             create trigger e2e_defaults_completed after insert or update or delete on organization
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_apps_completed after insert or update or delete on executor_apps
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_accounts_completed after insert or update or delete on executor_accounts
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_links_completed after insert or update or delete on hosted_app_account_links
+             for each statement execute function e2e_provisioning_completed()`);
+             for (;;) {
+               if (signal.aborted || disconnected) throw new ProvisioningFixtureFailed();

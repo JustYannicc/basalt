@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startPoolFixture } from "./recipes/pool-fixture.mjs";
+import { signEnvelope } from "../src/pool/token.ts";
+import { membershipPrefix } from "../src/pool/membership-contract.ts";
 import { signPoolToken } from "../src/pool/token.ts";
 
 const key = "ab".repeat(32);
@@ -87,4 +89,25 @@ test("the synthetic Claude catalog has known usability and definite refusal runs
     false,
   );
   assert.equal(f.resets.remaining("synthetic-account"), 2);
+});
+
+test("the synthetic fixture closes scheduled native membership refreshes", async () => {
+  const f = await startPoolFixture(key);
+  try {
+    const at = Date.now();
+    const response = await fetch(`${f.origin}/pool/v1/membership`, {
+      method: "POST",
+      body: JSON.stringify({
+        envelope: await signEnvelope(key, membershipPrefix, {
+          pool: "pool",
+          organization: "org",
+          at,
+          expiresAt: at + 30_000,
+        }),
+      }),
+    });
+    assert.equal(response.status, 200);
+  } finally {
+    await f.stop();
+  }
 });
