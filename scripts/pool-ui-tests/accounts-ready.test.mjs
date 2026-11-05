@@ -635,7 +635,20 @@ test(
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
             await who.getByText("Synthetic model", { exact: true }).waitFor();
             assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
-            assert.equal((await who.locator('[title="128 tokens"]').first().count()) > 0, true);
+            if (width === 390) {
+              const details = who.locator("details").filter({ hasText: "Usage details" }).first();
+              await details.locator("summary").click();
+              assert.equal(await details.locator('[title="128 tokens"]').isVisible(), true);
+              assert.equal(
+                await details.getByText("1 requests", { exact: true }).isVisible(),
+                true,
+              );
+            } else {
+              assert.equal(
+                await who.locator('table [title="128 tokens"]').first().isVisible(),
+                true,
+              );
+            }
             assert.equal(
               await frame.getByText("codex", { exact: true }).count(),
               0,
@@ -700,6 +713,10 @@ test(
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
             await frame.getByText("Synthetic model", { exact: true }).waitFor();
             await frame.getByText("Codex", { exact: true }).first().waitFor();
+            await frame
+              .getByRole("link", { name: /Enough accounts\?/ })
+              .getByText(/^Codex:/)
+              .waitFor();
             await capture(page, `usage-ready-${width}`);
             await settled();
             const after = await frame.evaluate(() => Reflect.get(window, "queries"));
@@ -862,6 +879,77 @@ test(
               );
             },
             { viewport: { width, height: 860 }, usage, capacityHeld: true, personal: true },
+          );
+        },
+      );
+    for (const width of [1440, 390])
+      await t.test(
+        `personal usage retries to a caller-scoped empty result at ${width}px`,
+        async () => {
+          viewResult = { ok: true, value: { ...empty, providers, isOwner: false } };
+          await session(
+            async ({ frame, accepted, settled }) => {
+              const failure = frame.getByText(
+                "Your usage could not be read. Reload and try again.",
+                { exact: true },
+              );
+              await failure.waitFor();
+              assert.ok(heldCapacity.length > 0);
+              assert.equal(
+                await frame.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
+                true,
+              );
+              const before = await frame.evaluate(
+                () =>
+                  Reflect.get(window, "queries").filter((name) => name === "personalOverview")
+                    .length,
+              );
+              usageResult = { ok: true, value: { ...emptyUsage.value, scope: "you" } };
+              await frame.getByRole("button", { name: "Try again", exact: true }).click();
+              const who = frame.locator("#who");
+              await who
+                .getByText("No requests through this pool in the last 7 days.", { exact: true })
+                .waitFor();
+              assert.equal(
+                await who
+                  .getByText(
+                    "Your requests through this pool in the last 7 days. Nobody else's show here.",
+                    { exact: true },
+                  )
+                  .isVisible(),
+                true,
+              );
+              assert.equal(await failure.count(), 0);
+              assert.equal(
+                await frame.getByRole("navigation", { name: "At a glance", exact: true }).count(),
+                0,
+              );
+              assert.equal(
+                await frame.getByRole("radio", { name: "Models", exact: true }).count(),
+                0,
+              );
+              assert.equal(
+                await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
+                0,
+              );
+              await settled();
+              assert.equal(
+                await frame.evaluate(
+                  () =>
+                    Reflect.get(window, "queries").filter((name) => name === "personalOverview")
+                      .length,
+                ),
+                before + 1,
+                "Retry sends one caller-scoped usage read without capacity",
+              );
+              assert.ok(heldCapacity.length > 0);
+              assert.deepEqual(
+                await accepted(),
+                [],
+                "Personal recovery never claims accounts are ready",
+              );
+            },
+            { viewport: { width, height: 860 }, usage: failed, capacityHeld: true, personal: true },
           );
         },
       );
