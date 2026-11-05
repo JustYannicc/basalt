@@ -12,11 +12,12 @@ from .test_recovery import Clock, Stop
 
 
 class RecoveryHTTPTests(unittest.TestCase):
-    def assert_real_response(self, response_bytes):
+    def assert_real_response(self, response_bytes, expected=(200, {"ok": True})):
         client, server = socket.socketpair()
         self.addCleanup(client.close)
         self.addCleanup(server.close)
         server.sendall(response_bytes)
+        server.shutdown(socket.SHUT_WR)
         deadline = RecoveryDeadline(Stop(Clock()))
 
         class PairConnection(recovery_http.http.client.HTTPConnection):
@@ -33,7 +34,7 @@ class RecoveryHTTPTests(unittest.TestCase):
                     2,
                     deadline,
                 ),
-                (200, {"ok": True}),
+                expected,
             )
 
     def test_real_http_response_can_close_connection_without_losing_body(self):
@@ -45,6 +46,18 @@ class RecoveryHTTPTests(unittest.TestCase):
         self.assert_real_response(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
             b'B\r\n{"ok":true}\r\n0\r\n\r\n'
+        )
+
+    def test_short_valid_json_body_is_rejected(self):
+        self.assert_real_response(
+            b'HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{"ok":true}',
+            (0, {}),
+        )
+
+    def test_empty_eof_with_positive_content_length_is_rejected(self):
+        self.assert_real_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n",
+            (0, {}),
         )
 
     def test_response_reads_share_remaining_episode_budget(self):
@@ -91,6 +104,7 @@ class RecoveryHTTPTests(unittest.TestCase):
         connection = Mock()
         response = connection.getresponse.return_value
         response.isclosed.return_value = False
+        response.length = None
         response.status = 503
         response.read1.side_effect = [
             json.dumps({"error": "unavailable"}).encode(),
