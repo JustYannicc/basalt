@@ -214,16 +214,21 @@ export function pressing(
   const five = fiveLines[0];
   const fallback = lab.lines[0];
   if (!weekly || !five) return { key: fallback?.key ?? "", text: null };
+  const isFresh = (line: CapacityLine) => {
+    const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
+    return Boolean(
+      latest &&
+      asOf !== null &&
+      asOf >= latest.last.observedAt.to &&
+      asOf - latest.last.observedAt.from <= 6 * 60_000,
+    );
+  };
   const exhaustedNow = (line: CapacityLine) => {
     const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
-    const now = asOf;
-    const fresh =
-      latest &&
-      now !== null &&
-      now >= latest.last.observedAt.to &&
-      now - latest.last.observedAt.from <= 6 * 60_000;
     return Boolean(
-      fresh && latest!.last.full > 0 && latest!.last.remaining <= latest!.last.full * outShare,
+      isFresh(line) &&
+      latest!.last.full > 0 &&
+      latest!.last.remaining <= latest!.last.full * outShare,
     );
   };
   const forecastReady = (line: CapacityLine) =>
@@ -267,6 +272,23 @@ export function pressing(
     return {
       key: first.key,
       text: `${first.label} is more pressing: ${at(first)}; ${other?.label.toLowerCase() ?? "other window"} ${other ? at(other) : "is unavailable"}`,
+    };
+  }
+  // Nothing runs out: the window with less left now is the one to watch.
+  const left = (line: CapacityLine) => {
+    const latest = line.points.filter(isMeasuredCapacityPoint).at(-1);
+    return latest && latest.last.full > 0 ? latest.last.remaining / latest.last.full : null;
+  };
+  const weeklyLeft = left(weekly);
+  const fiveLeft = left(five);
+  if (weeklyLeft !== null && fiveLeft !== null) {
+    const chosen = fiveLeft < weeklyLeft ? five : weekly;
+    const percent = (value: number) => `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`;
+    // An old reading is reported as such, never as the balance now.
+    const when = isFresh(weekly) && isFresh(five) ? "left now" : "left at the last reading";
+    return {
+      key: chosen.key,
+      text: `${chosen.label} is more pressing: ${percent(Math.min(weeklyLeft, fiveLeft))} ${when} vs ${percent(Math.max(weeklyLeft, fiveLeft))}`,
     };
   }
   const bothForecastsReady = weeklyLines.every(forecastReady) && fiveLines.every(forecastReady);
@@ -493,6 +515,10 @@ const whole = new Intl.NumberFormat("en", { maximumFractionDigits: 0 });
 
 /** "4.2", "38", "1,240": one decimal under 10 units, whole numbers above. */
 export const amount = (value: number) => (Math.abs(value) >= 10 ? whole : units).format(value);
+
+/** "6h", "16.8h", "1.5d": gaps end at a reading time, not on the hour, so hours arrive fractional. */
+export const duration = (hours: number) =>
+  hours >= 48 ? `${units.format(hours / 24)}d` : `${units.format(hours)}h`;
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

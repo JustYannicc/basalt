@@ -119,15 +119,6 @@ function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) =>
       : by === "model" && row.provider
         ? name(row.provider)
         : null;
-  const requestSize =
-    row.requestTokens &&
-    [row.requestTokens.p50, row.requestTokens.p90, row.requestTokens.p99]
-      .map((value) =>
-        value === null || !Number.isSafeInteger(value) || value < 0
-          ? "—"
-          : tokensShort(BigInt(value)),
-      )
-      .join(" / ");
   return (
     <span className="flex min-w-0 items-center gap-2">
       {by === "provider" && row.provider ? (
@@ -139,13 +130,8 @@ function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) =>
         />
       ) : null}
       <span className="min-w-0">
-        <span className="block truncate font-medium">{row.label}</span>
+        <span className="block font-medium [overflow-wrap:anywhere]">{row.label}</span>
         {meta && <span className="block text-xs font-normal text-muted-foreground">{meta}</span>}
-        {requestSize && (
-          <span className="block text-xs font-normal text-muted-foreground">
-            Request tokens p50 / p90 / p99: {requestSize}
-          </span>
-        )}
       </span>
     </span>
   );
@@ -194,15 +180,11 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
   };
 }
 
-const percentiles = (row: Row) => {
-  if (!row.requestTokens) return dash;
+const requestSize = (row: Row) => {
+  if (!row.requestTokens) return null;
   const show = (value: number | null) =>
     value === null || !Number.isSafeInteger(value) || value < 0 ? "—" : tokensShort(BigInt(value));
-  return (
-    <span title="Per-request total tokens">
-      {show(row.requestTokens.p50)} / {show(row.requestTokens.p90)} / {show(row.requestTokens.p99)}
-    </span>
-  );
+  return `p50 ${show(row.requestTokens.p50)} · p90 ${show(row.requestTokens.p90)} · p99 ${show(row.requestTokens.p99)} tokens`;
 };
 
 const percentileText = (values: {
@@ -228,51 +210,7 @@ const cells = (
       <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden">
         <TokenCell totals={totals} />
       </td>
-      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden">{percentiles(row)}</td>
-      <td className="w-[16%] py-2.5 pr-2 text-right tabular-nums max-[740px]:w-[32%]">
-        <MoneyCell
-          list={moneyRows.apiBilled}
-          priced={moneyRows.apiCount}
-          excluded={moneyRows.apiExcluded}
-          title={
-            personal?.metrics.apiBilled.status === "unavailable"
-              ? personal.metrics.apiBilled.reason
-              : overview?.metrics.apiBilled.status === "unavailable"
-                ? overview.metrics.apiBilled.reason
-                : undefined
-          }
-        />
-        <details className="mt-1 hidden text-xs max-[740px]:block">
-          <summary className="cursor-pointer text-muted-foreground">Usage details</summary>
-          <div className="mt-1 grid gap-1 text-right text-pretty">
-            <span>{totals.requests.toLocaleString()} requests</span>
-            <span>
-              Tokens: <TokenCell totals={totals} />
-            </span>
-            <span>Request p50 / p90 / p99: {percentiles(row)}</span>
-            <span>
-              Subscription value:{" "}
-              <MoneyCell
-                list={moneyRows.subscriptionValue}
-                priced={moneyRows.subscriptionCount}
-                excluded={moneyRows.subscriptionExcluded}
-                title={
-                  personal?.metrics.subscriptionValue.status === "unavailable"
-                    ? personal.metrics.subscriptionValue.reason
-                    : overview?.metrics.subscriptionValue.status === "unavailable"
-                      ? overview.metrics.subscriptionValue.reason
-                      : undefined
-                }
-              />
-            </span>
-            <span>
-              Imported API price:{" "}
-              <MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} />
-            </span>
-          </div>
-        </details>
-      </td>
-      <td className="py-2.5 pr-2 text-right tabular-nums max-[740px]:hidden">
+      <td className="py-2.5 pr-2 text-right tabular-nums">
         <MoneyCell
           list={moneyRows.subscriptionValue}
           priced={moneyRows.subscriptionCount}
@@ -287,7 +225,18 @@ const cells = (
         />
       </td>
       <td className="py-2.5 text-right tabular-nums max-[540px]:hidden">
-        <MoneyCell list={totals.imported} priced={totals.importedPriced > 0} excluded={0n} />
+        <MoneyCell
+          list={moneyRows.apiBilled}
+          priced={moneyRows.apiCount}
+          excluded={moneyRows.apiExcluded}
+          title={
+            personal?.metrics.apiBilled.status === "unavailable"
+              ? personal.metrics.apiBilled.reason
+              : overview?.metrics.apiBilled.status === "unavailable"
+                ? overview.metrics.apiBilled.reason
+                : undefined
+          }
+        />
       </td>
     </>
   );
@@ -384,114 +333,119 @@ export function WhoUses({
           No requests through this pool in the last {days} days.
         </p>
       ) : (
-        <table className="w-full border-collapse text-[13px]">
-          <thead>
-            <tr className="text-left text-xs whitespace-nowrap text-muted-foreground [&>th]:border-b [&>th]:border-border [&>th]:py-2 [&>th]:pr-2 [&>th]:font-medium">
-              <th scope="col" className="w-[32%] max-[740px]:w-[43%]">
-                {by === "person" ? "Person" : by === "provider" ? "Lab" : "Model"}
-              </th>
-              <th scope="col" className="w-[26%] max-[740px]:w-[25%]">
-                Tokens by lab
-              </th>
-              <th scope="col" className="text-right max-[540px]:hidden">
-                Requests
-              </th>
-              <th scope="col" className="text-right max-[740px]:hidden">
-                Tokens
-              </th>
-              <th scope="col" className="text-right max-[740px]:hidden">
-                Request tokens p50/p90/p99
-              </th>
-              <th scope="col" className="text-right">
-                API cost
-              </th>
-              <th scope="col" className="text-right max-[740px]:hidden">
-                Subscription value
-              </th>
-              <th scope="col" className="text-right max-[540px]:hidden">
-                Imported API price
-              </th>
-            </tr>
-          </thead>
-          <tbody className="[&_td]:border-b [&_td]:border-border [&_th]:border-b [&_th]:border-border">
-            {list.map((row) => {
-              const expanded = open.has(row.id);
-              const canOpen = row.children.length > 0;
-              return (
-                <Fragment key={row.id}>
-                  <tr className={row.countsOnly || row.empty ? "text-muted-foreground" : undefined}>
-                    <th scope="row" className="py-2.5 pr-2 text-left font-normal">
-                      {canOpen ? (
-                        <button
-                          type="button"
-                          aria-expanded={expanded}
-                          onClick={() => toggle(row.id)}
-                          className="inline-flex min-w-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-[740px]:min-h-11"
-                        >
-                          <svg
-                            className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
-                            viewBox="0 0 16 16"
-                            fill="none"
-                            aria-hidden="true"
+        <div className="min-w-0 overflow-x-auto">
+          <table className="w-full border-collapse text-[13px]">
+            <thead>
+              <tr className="text-left text-xs whitespace-nowrap text-muted-foreground [&>th]:border-b [&>th]:border-border [&>th]:py-2 [&>th]:pr-2 [&>th]:font-medium">
+                <th scope="col">
+                  {by === "person" ? "Person" : by === "provider" ? "Lab" : "Model"}
+                </th>
+                <th scope="col" className="w-[28%]">
+                  Tokens by lab
+                </th>
+                <th scope="col" className="text-right max-[540px]:hidden">
+                  Requests
+                </th>
+                <th scope="col" className="text-right max-[740px]:hidden">
+                  Tokens
+                </th>
+                <th scope="col" className="text-right">
+                  Subscription value
+                </th>
+                <th scope="col" className="text-right max-[540px]:hidden">
+                  API cost
+                </th>
+              </tr>
+            </thead>
+            <tbody className="[&_td]:border-b [&_td]:border-border [&_th]:border-b [&_th]:border-border">
+              {list.map((row) => {
+                const expanded = open.has(row.id);
+                const canOpen = row.children.length > 0;
+                return (
+                  <Fragment key={row.id}>
+                    <tr
+                      className={row.countsOnly || row.empty ? "text-muted-foreground" : undefined}
+                    >
+                      <th scope="row" className="py-2.5 pr-2 text-left font-normal">
+                        {canOpen ? (
+                          <button
+                            type="button"
+                            aria-expanded={expanded}
+                            onClick={() => toggle(row.id)}
+                            className="inline-flex min-w-0 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-[740px]:min-h-11"
                           >
-                            <path
-                              d="m6 3.5 4.5 4.5L6 12.5"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </svg>
-                          <Name row={row} by={by} name={name} />
-                        </button>
-                      ) : (
-                        <span className="block pl-[22px]">
-                          <Name row={row} by={by} name={name} />
-                        </span>
-                      )}
-                    </th>
-                    <td className="py-2.5 pr-2">
-                      <Stack row={row} max={max} name={name} />
-                    </td>
-                    {cells(row, slices, overview, personal)}
-                  </tr>
-                  {expanded &&
-                    row.children.map((child) => (
-                      <tr key={child.id} className="bg-muted text-xs">
-                        <th scope="row" className="py-[7px] pr-2 pl-[34px] text-left font-normal">
-                          <span className="flex items-center gap-2">
-                            {by === "person" && child.provider && (
-                              <span
-                                className="size-2 shrink-0 rounded-[2px]"
-                                style={{ background: labColor(child.provider) }}
+                            <svg
+                              className={`size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
+                              viewBox="0 0 16 16"
+                              fill="none"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="m6 3.5 4.5 4.5L6 12.5"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
                               />
-                            )}
-                            <span>
-                              {child.label}
-                              {by === "person" && child.provider && (
-                                <span className="ml-1 text-muted-foreground">
-                                  · {name(child.provider)}
-                                </span>
-                              )}
-                            </span>
+                            </svg>
+                            <Name row={row} by={by} name={name} />
+                          </button>
+                        ) : (
+                          <span className="block pl-[22px]">
+                            <Name row={row} by={by} name={name} />
                           </span>
-                        </th>
-                        <td className="py-[7px] pr-2">
-                          <Stack row={child} max={max} name={name} />
+                        )}
+                      </th>
+                      <td className="py-2.5 pr-2">
+                        <Stack row={row} max={max} name={name} />
+                      </td>
+                      {cells(row, slices, overview, personal)}
+                    </tr>
+                    {expanded &&
+                      row.children.map((child) => (
+                        <tr key={child.id} className="bg-muted text-xs">
+                          <th scope="row" className="py-[7px] pr-2 pl-[34px] text-left font-normal">
+                            <span className="flex items-center gap-2">
+                              {by === "person" && child.provider && (
+                                <span
+                                  className="size-2 shrink-0 rounded-[2px]"
+                                  style={{ background: labColor(child.provider) }}
+                                />
+                              )}
+                              <span>
+                                {child.label}
+                                {by === "person" && child.provider && (
+                                  <span className="ml-1 text-muted-foreground">
+                                    · {name(child.provider)}
+                                  </span>
+                                )}
+                              </span>
+                            </span>
+                          </th>
+                          <td className="py-[7px] pr-2">
+                            <Stack row={child} max={max} name={name} />
+                          </td>
+                          {cells(child, slices, overview, personal)}
+                        </tr>
+                      ))}
+                    {expanded && requestSize(row) && (
+                      <tr className="bg-muted text-xs">
+                        <td colSpan={6} className="py-[7px] pr-2 pl-[34px] text-muted-foreground">
+                          Request size for {row.label}: {requestSize(row)}
                         </td>
-                        {cells(child, slices, overview, personal)}
                       </tr>
-                    ))}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
       {requestTokens?.percentiles && (
         <p className="text-xs text-muted-foreground">
-          Request tokens across {requestTokens.requests.toLocaleString()} requests:{" "}
-          {percentileText(requestTokens.percentiles)}.
+          Per request, everyone: {percentileText(requestTokens.percentiles)} tokens, across{" "}
+          {requestTokens.requests.toLocaleString()} requests.
         </p>
       )}
       {requestTokens?.status === "unavailable" && (
@@ -555,27 +509,37 @@ export function Money({
   const unknown = api?.excluded.unknownKind ?? 0;
   const unpriced = (api?.excluded.unpriced ?? 0) + (subscription?.excluded.unpriced ?? 0);
   const personDay = overview?.metrics.perActivePersonPerDay;
+  const recorded = total(people.value.groups).imported;
   return (
     <section id="cost" aria-labelledby="cost-heading" className="grid scroll-mt-4 gap-4 pt-12">
       <div className="grid gap-1">
         <h2 id="cost-heading" className="text-lg font-semibold tracking-[-0.02em]">
-          What it cost
+          API cost and subscription value
         </h2>
         <p className="max-w-[38rem] text-sm text-muted-foreground text-pretty">
-          {personal
-            ? `Current provider API rates applied to your ${days} days of pool requests. Home credits and imported prices stay separate.`
-            : `Current provider API rates applied to ${days} days of pool requests. Home credits and imported prices stay separate.`}
+          Two different things. API cost is money billed per token. Subscription value is what
+          flat-rate requests would have cost at API prices.
         </p>
       </div>
       <div className="grid grid-cols-2 rounded-lg border border-border max-[540px]:grid-cols-1">
         <Figure
-          label="API cost, estimated billed"
-          value={api?.status === "available" ? overviewAmount(api.amount) : "Unavailable"}
+          label="API cost"
+          value={
+            api?.status === "available"
+              ? overviewAmount(api.amount)
+              : recorded.length
+                ? moneyList(recorded)
+                : "Unavailable"
+          }
           days={days}
-          body={metricBody(api, "Waiting for current USD provider prices.")}
+          body={
+            api?.status !== "available" && recorded.length
+              ? "At the API price recorded with each request, as in Settings. It isn't split into billed and subscription until this pool's accounts are mapped."
+              : metricBody(api, "Waiting for current USD provider prices.")
+          }
         />
         <Figure
-          label="Subscription value at API prices"
+          label="Subscription value"
           value={
             subscription?.status === "available"
               ? overviewAmount(subscription.amount)

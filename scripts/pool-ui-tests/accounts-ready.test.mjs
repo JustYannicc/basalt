@@ -615,7 +615,7 @@ test(
             assert.deepEqual(
               await Promise.all([
                 frame.getByRole("heading", { name: "Who uses what", exact: true }).isVisible(),
-                money.getByText("API cost, estimated billed", { exact: true }).isVisible(),
+                money.getByText("API cost", { exact: true }).isVisible(),
                 money
                   .getByText(/^\$0\.02/)
                   .first()
@@ -639,13 +639,8 @@ test(
             await who.getByText("Synthetic model", { exact: true }).waitFor();
             assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
             if (width === 390) {
-              const details = who.locator("details").filter({ hasText: "Usage details" }).first();
-              await details.locator("summary").click();
-              assert.equal(await details.locator('[title="128 tokens"]').isVisible(), true);
-              assert.equal(
-                await details.getByText("1 requests", { exact: true }).isVisible(),
-                true,
-              );
+              // Phones keep the mock's columns; the range total above the table carries tokens.
+              assert.match(await who.innerText(), /128 tokens · 1 request in 7 days/);
             } else {
               assert.equal(
                 await who.locator('table [title="128 tokens"]').first().isVisible(),
@@ -719,10 +714,34 @@ test(
               .waitFor();
             await frame.getByText("Synthetic model", { exact: true }).waitFor();
             await frame.getByText("Codex", { exact: true }).first().waitFor();
+            // The pool has no accounts, so a leftover Codex reading is not current capacity.
             await frame
               .getByRole("link", { name: /Enough accounts\?/ })
-              .getByText(/^Codex:/)
+              .getByText("No accounts yet", { exact: true })
               .waitFor();
+            assert.equal(
+              await frame.locator("#capacity article").count(),
+              0,
+              "A lab with no current account shows no capacity panel",
+            );
+            assert.match(
+              await frame.locator("#capacity").innerText(),
+              /No accounts in this pool, so there is no capacity to show/,
+            );
+            assert.deepEqual(
+              await who.evaluate((section) => {
+                const table = section.querySelector("table").getBoundingClientRect();
+                return [table.right <= section.getBoundingClientRect().right + 0.5];
+              }),
+              [true],
+              `The usage table stays inside the content column at ${width}px`,
+            );
+            assert.deepEqual(
+              await who
+                .locator("thead th")
+                .evaluateAll((cells) => cells.map((cell) => cell.textContent.trim())),
+              ["Model", "Tokens by lab", "Requests", "Tokens", "Subscription value", "API cost"],
+            );
             await capture(page, `usage-ready-${width}`);
             await settled();
             const after = await frame.evaluate(() => Reflect.get(window, "queries"));
@@ -1000,7 +1019,7 @@ test(
             );
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
-            await enough.getByText("No readings yet", { exact: true }).waitFor();
+            await enough.getByText("No accounts yet", { exact: true }).waitFor();
             assert.equal(
               await frame.getByText(/This read is incomplete/).count(),
               0,
@@ -1229,7 +1248,7 @@ test(
             assert.deepEqual(await accepted(), []);
             release();
             const visible = populated
-              ? "1 subscription account across 1 lab. Conversations stay on one account; new ones spread across them."
+              ? "1 subscription account across 1 lab"
               : "Pick your first account";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
@@ -1339,9 +1358,7 @@ test(
           [0.88, 0.63],
         ],
       });
-    const saved = sourceRef
-      ? "build-seat-1@example.com"
-      : "3 subscription accounts across 2 labs. Conversations stay on one account; new ones spread across them.";
+    const saved = sourceRef ? "build-seat-1@example.com" : "3 subscription accounts across 2 labs";
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);

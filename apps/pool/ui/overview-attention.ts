@@ -51,5 +51,15 @@ export function accountProblems(view: PoolView): AccountProblem[] {
   ].filter((problem) => problem.count > 0);
 }
 
+/** Distinct accounts behind any problem above, so overlapping symptoms count each account once. */
+export const accountsWithProblems = (view: PoolView) =>
+  view.accounts.filter(
+    (account) =>
+      account.credentialFailure !== undefined ||
+      account.readingFailed ||
+      account.freshness !== "fresh" ||
+      account.state !== "active",
+  ).length;
+
 export const bankedResetCount = (view: PoolView) =>
   view.accounts.reduce((sum, account) => sum + (account.bankedResets?.available ?? 0), 0);

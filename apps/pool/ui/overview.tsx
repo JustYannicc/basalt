@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { PoolView, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
-import { capacityLabs, gaps, hourMs, planChips } from "./capacity-model.ts";
+import { capacityLabs, duration, gaps, hourMs, planChips } from "./capacity-model.ts";
 import {
   CapacitySection,
   labSummaries,
@@ -13,9 +13,10 @@ import {
 import { StateIcon } from "./controls.tsx";
 import { LabMark } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
-import { rows, total } from "./series-model.ts";
+import { moneyList, rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
-import { accountProblems, bankedResetCount } from "./overview-attention.ts";
+import { accountProblems, accountsWithProblems, bankedResetCount } from "./overview-attention.ts";
+import { currentCapacity } from "./overview-snapshot.ts";
 
 // The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
 // resets and actions stay on the host's Accounts tab; this page only aggregates.
@@ -51,9 +52,10 @@ export function ManagerOverview({
   onRetry: () => void;
 }) {
   const name = namer(providers);
+  const current = { ...data, capacity: currentCapacity(data.capacity, view) };
   const labs =
-    providers && data.coherent === true && data.capacity?.ok
-      ? labSummaries(data.capacity.value, days)
+    providers && current.coherent === true && current.capacity?.ok
+      ? labSummaries(current.capacity.value, days)
       : [];
   return (
     <>
@@ -66,9 +68,10 @@ export function ManagerOverview({
           </button>
         </p>
       )}
-      <Answers data={data} labs={labs} days={days} name={name} view={view} />
+      <Answers data={current} labs={labs} days={days} name={name} view={view} />
       <CapacitySection
-        result={data.capacity?.ok && !providers ? undefined : data.capacity}
+        result={current.capacity?.ok && !providers ? undefined : current.capacity}
+        empty={view?.accounts.length === 0}
         providers={providers ?? []}
         days={days}
         coherent={data.coherent === true}
@@ -88,7 +91,7 @@ export function ManagerOverview({
         days={days}
         name={name}
       />
-      <Attention data={data} name={name} days={days} view={view} accountsHref={accountsHref} />
+      <Attention data={current} name={name} days={days} view={view} accountsHref={accountsHref} />
     </>
   );
 }
@@ -195,29 +198,37 @@ function Answers({
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
   const learning = labs.find((entry) => entry.verdict.tone === "learn");
+  const allLearning = labs.length > 0 && labs.every((entry) => entry.verdict.tone === "learn");
   const enough: { tone: Tone; text: string } =
-    !data.capacity || (!view && data.capacity.ok)
-      ? { tone: "learn", text: "Reading…" }
-      : !data.capacity.ok
-        ? { tone: "learn", text: "Capacity unavailable" }
-        : data.coherent === false
-          ? { tone: "learn", text: "Read incomplete" }
-          : labs.length === 0
-            ? { tone: "learn", text: "No readings yet" }
-            : worst
-              ? {
-                  tone: worst.verdict.tone,
-                  text: `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
-                }
-              : learning
+    view?.accounts.length === 0
+      ? { tone: "learn", text: "No accounts yet" }
+      : !data.capacity || (!view && data.capacity.ok)
+        ? { tone: "learn", text: "Reading…" }
+        : !data.capacity.ok
+          ? { tone: "learn", text: "Capacity unavailable" }
+          : data.coherent === false
+            ? { tone: "learn", text: "Read incomplete" }
+            : labs.length === 0
+              ? { tone: "learn", text: "No readings yet" }
+              : worst
                 ? {
-                    tone: "learn",
+                    tone: worst.verdict.tone,
                     text:
-                      learning.verdict.short === "Unavailable"
-                        ? "Forecast unavailable"
-                        : "Learning the weekly pattern",
+                      worst.verdict.short === "Runs short"
+                        ? `${name(worst.lab.provider)} runs short`
+                        : `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
                   }
-                : { tone: "ok", text: "Enough for the next 72 hours" };
+                : learning
+                  ? {
+                      tone: "learn",
+                      text:
+                        learning.verdict.short === "Unavailable"
+                          ? "Forecast unavailable"
+                          : allLearning
+                            ? "Too early to say"
+                            : "Learning the weekly pattern",
+                    }
+                  : { tone: "ok", text: "Yes, every lab" };
   const usage = data.usage?.ok ? data.usage.value : null;
   const read = data.people?.ok ? data.people.value : null;
   const people = read
@@ -239,7 +250,22 @@ function Answers({
         )
       : 0;
   const failedShare = sum && sum.requests ? (sum.failed / sum.requests) * 100 : null;
-  const problems = view ? accountProblems(view) : [];
+  const needYou = view ? accountsWithProblems(view) : 0;
+  const billed =
+    usage?.metrics.apiBilled.status === "available" && usage.metrics.apiBilled.amount !== null
+      ? usage.metrics.apiBilled.amount
+      : null;
+  const subscription =
+    usage?.metrics.subscriptionValue.status === "available" &&
+    usage.metrics.subscriptionValue.amount !== null
+      ? usage.metrics.subscriptionValue.amount
+      : null;
+  const unpriced = usage
+    ? usage.metrics.apiBilled.excluded.unpriced + usage.metrics.subscriptionValue.excluded.unpriced
+    : 0;
+  // Until requests can be split into billed and subscription, the price recorded with each
+  // request is the one figure that exists; Settings shows the same total.
+  const recorded = billed === null && sum && sum.imported.length ? moneyList(sum.imported) : null;
   return (
     <nav
       aria-label="At a glance"
@@ -282,19 +308,18 @@ function Answers({
         answer={
           !usage
             ? "Reading…"
-            : usage.metrics.apiBilled.status === "available" &&
-                usage.metrics.apiBilled.amount !== null
-              ? usd(usage.metrics.apiBilled.amount) + " estimated billed"
-              : "Estimate unavailable"
+            : billed !== null
+              ? `${usd(billed)} billed est.`
+              : recorded
+                ? `${recorded} at API prices`
+                : "Estimate unavailable"
         }
       >
         {sum && (
           <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
-            {usage?.metrics.subscriptionValue.status === "available" &&
-            usage.metrics.subscriptionValue.amount !== null
-              ? `${usd(usage.metrics.subscriptionValue.amount)} subscription value at API prices`
-              : "Subscription value unavailable"}
-            . Unknown-kind and unpriced requests are excluded.
+            {billed === null && recorded
+              ? "Recorded with each request. Not yet split into billed and subscription."
+              : `Separate: ${subscription === null ? "subscription value unavailable" : `${usd(subscription)} subscription value at API prices`}${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
           </span>
         )}
       </Answer>
@@ -302,8 +327,8 @@ function Answers({
         href="#attention"
         question="Anything broken?"
         tone={
-          problems.length
-            ? "warn"
+          needYou
+            ? "bad"
             : failedShare === null
               ? undefined
               : sum!.failed > 0
@@ -313,23 +338,29 @@ function Answers({
                   : undefined
         }
         answer={
-          problems.length
-            ? `${problems.length} types of account issues`
+          needYou
+            ? `${needYou} ${needYou === 1 ? "account needs" : "accounts need"} you`
             : failedShare === null
               ? read
                 ? "No requests yet"
                 : "Reading…"
               : sum!.failed > 0
                 ? `${failedShare.toFixed(1)}% of requests failed`
-                : "No failed requests"
+                : "Nothing broken"
         }
       >
-        <span className="text-[13px] text-muted-foreground text-pretty">
-          {usage?.metrics.failureShareWorstHourP95.status === "available" &&
-          usage.metrics.failureShareWorstHourP95.p95 !== null
-            ? `Worst-hour failure share p95: ${usage.metrics.failureShareWorstHourP95.p95.toFixed(1)}%. `
-            : ""}
-          Account health is on the Accounts tab.
+        <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
+          {[
+            needYou && failedShare !== null
+              ? `${failedShare.toFixed(1)}% of requests failed`
+              : null,
+            usage?.metrics.failureShareWorstHourP95.status === "available" &&
+            usage.metrics.failureShareWorstHourP95.p95 !== null
+              ? `worst hours p95 ${usage.metrics.failureShareWorstHourP95.p95.toFixed(1)}%`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       </Answer>
     </nav>
@@ -410,7 +441,7 @@ function Attention({
       if (missing)
         items.push({
           tone: "info",
-          text: `${name(lab.provider)} had ${missing}h without readings in ${days} days`,
+          text: `${name(lab.provider)} had ${duration(missing)} without readings in ${days} days`,
           sub: "Shown as gaps in its chart. Nothing is filled in.",
         });
     }
