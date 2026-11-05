@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "poolSelectOnlyUi": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Pools pick accounts saved on provider apps and send every connection to the provider app",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned loopback catalog for the provider apps."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account policies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolSelectOnlyUi": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/web/src/contracts/navigation.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/dashboard-bindings.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/add-app.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connect-account.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/import-login-file.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/loopback-oauth.tsx",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/catalog.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/provider-accounts.tsx"
+  ]
+}

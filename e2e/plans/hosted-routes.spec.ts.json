@@ -9,8 +9,8 @@
           "reason": "The hosted Google Routes proxy is Cloud-only."
         },
         "cloud": {
-          "status": "scheduled",
-          "runtime": "managed"
+          "status": "not-run",
+          "reason": "Cloud relinking of the retired provisioned Routes account returns AuthMethodInvalid instead of HTTP 200; tracked in https://github.com/JustYannicc/basalt/issues/499."
         },
         "local": {
           "status": "not-applicable",
@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "hostedRoutes": [
-      "declared:cloud"
-    ]
+    "hostedRoutes": []
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/contracts/emulators.ts",

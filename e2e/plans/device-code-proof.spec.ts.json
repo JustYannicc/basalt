@@ -5,7 +5,8 @@
       "title": "Device codes bound to S256 proof refuse a missing or wrong verifier without consuming the approval",
       "targets": {
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         },
         "self-host": {
           "status": "scheduled"
@@ -36,8 +37,7 @@
   },
   "runs": {
     "deviceCodeProof": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ],
     "deviceCodeProofRestart": [
       "declared:self-host"

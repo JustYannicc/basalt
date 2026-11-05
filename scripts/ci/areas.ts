@@ -69,6 +69,7 @@ export const heavyJobs = [
 
 // Shared infrastructure changes need every consumer. Feature rules below may overlap deliberately.
 export const sharedInputs = [
+  ".upstream/packages/ui/src/implementation/dashboard/{app-detail,publish-app}.tsx",
   // Helpers and fixture assets may have consumers outside any one declaration.
   ".upstream/e2e/support/**",
   ".upstream/e2e/fixtures/**",

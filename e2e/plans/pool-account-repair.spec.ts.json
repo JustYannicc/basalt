@@ -48,5 +48,6 @@
     ".upstream/packages/ui/src/implementation/dashboard/apps.tsx",
     "apps/pool/**",
     "src/pool/**"
-  ]
+  ],
+  "fixture": "pool-setup"
 }

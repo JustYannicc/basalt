@@ -20,7 +20,7 @@
   },
   "runs": {
     "publishingOff": [
-      "declared:self-host"
+      "access-editor-reads:publishing-layout"
     ]
   },
   "inputs": [

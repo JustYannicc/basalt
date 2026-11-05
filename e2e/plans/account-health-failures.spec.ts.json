@@ -12,7 +12,8 @@
           "reason": "Exercises hosted saved accounts through public HTTP."
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         }
       }
     },
@@ -36,8 +37,7 @@
   },
   "runs": {
     "accountHealthFailures": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ],
     "driverHealthFailures": [
       "declared:self-host"

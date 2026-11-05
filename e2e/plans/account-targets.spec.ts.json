@@ -1,0 +1,28 @@
+{
+  "scenarios": {
+    "accountTargets": {
+      "title": "account target metadata survives restart and bound accounts refuse execution without cloud fallback",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the public SDK host with retained PostgreSQL storage."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Exercises a runner-owned public SDK host."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountTargets": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/e2e/tests/account-targets.spec.ts"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "scenarios": {
+    "googleDuplicateBindings": {
+      "fixtures": "actors",
+      "title": "Google identity recovery retires exact duplicate bindings without changing verified replacements",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted production operations own this migration."
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The signed operator endpoint is Cloud-only."
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "googleDuplicateBindings": [
+      "google-account-recovery:google-recovery-through-signed-cloud-operations"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-duplicate-bindings-v1.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
+    ".upstream/packages/sdk/src/implementation/webhooks.ts"
+  ]
+}

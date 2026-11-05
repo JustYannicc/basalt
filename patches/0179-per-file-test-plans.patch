@@ -28,7 +28,7 @@ index 4730a9e..0c6dbd1 100644
  import type { Target } from "./report-model.ts";
  
  /** Scheduled tests need a real result; other dispositions explain why none is expected. */
-@@ -106,8 +107,12 @@ export const oauthDocumentOriginCallback =
+@@ -106,8 +107,15 @@ export const oauthDocumentOriginCallback =
   * any expression over all of them a union that grows with the plan, and TypeScript refuses one past
   * about a thousand members (TS2590). Values are still checked against the plan, extra keys included.
   */
@@ -37,9 +37,55 @@ index 4730a9e..0c6dbd1 100644
 +export const legacyScenarios: Record<string, typeof TestPlan.Type> = {};
 +const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof TestPlan.Type }) => {
 +  for (const declared of Object.values(basaltPlans)) Schema.decodeUnknownSync(TestPlan)(declared);
-+  Object.assign(legacyScenarios, scenarios);
-+  return { ...scenarios, ...basaltPlans };
++  const active = { ...scenarios };
++  // Rules was removed from Human in the loop; the later policy carry still contains its old plan.
++  Reflect.deleteProperty(active, "hostedToolPolicyDraft");
++  Object.assign(legacyScenarios, active);
++  return { ...active, ...basaltPlans };
 +};
  
  /** Scenario names and applicability used by both test declarations and test selection. */
  export const scenarios = plan({
+diff --git a/e2e/tests/account-display-privacy.spec.ts b/e2e/tests/account-display-privacy.spec.ts
+--- a/e2e/tests/account-display-privacy.spec.ts
++++ b/e2e/tests/account-display-privacy.spec.ts
+@@ -68,7 +68,11 @@
+             params: [fixture.account],
+           },
+         ]);
+-        expect(stored).toEqual([[{ account_info: null }]]);
++        expect(stored).toEqual([[{
++          account_info: { checkFailure: { phase: "decode", tag: "HostOutputInvalid" } },
++        }]]);
++        for (const secret of ["opaque-1", interactiveBackendKey, unicodeSecret])
++          for (const encoded of forms(secret)) expect(JSON.stringify(stored)).not.toContain(encoded);
+         yield* serverControl("start");
+         yield* fixture.statusBackend.answer({
+           status: 200,
+diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-observation-access.spec.ts
+--- a/e2e/tests/account-observation-access.spec.ts
++++ b/e2e/tests/account-observation-access.spec.ts
+@@ -135,7 +135,7 @@
+         });
+         expect((yield* member("POST", `${f.accountPath}/observations/refresh`)).status).toBe(403);
+         expect((yield* member("GET", f.accountPath)).body).toMatchObject({
+-          health: { apps: [{ check: { displayStatus: legacy } }] },
++          health: { apps: [{ check: { displayStatus: { ...legacy, badges: [] } } }] },
+         });
+         const revision = (yield* body(Revision, readable)).revision;
+         const canRefresh = yield* f.api.request(f.actors.owner, "PUT", path, {
+diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
+--- a/e2e/tests/embedded-app-navigation.spec.ts
++++ b/e2e/tests/embedded-app-navigation.spec.ts
+@@ -121,7 +121,10 @@
+         // A document load renders the app's access on the server, so the page is opened in the
+         // browser from a page that never read the Apps list.
+         const access = yield* browser.use("Hold the app's access", (page) =>
+-          hold(page, readOf(screen.app.id, "/access")),
++          hold(page, (url) =>
++            readOf(screen.app.id, "/access")(url) ||
++            (url.pathname.startsWith("/api/organizations/") && url.pathname.endsWith("/resources")),
++          ),
+         );
+         yield* Effect.addFinalizer(() =>
+           browser.use("Release the access hold", () => access.release()).pipe(Effect.orDie),

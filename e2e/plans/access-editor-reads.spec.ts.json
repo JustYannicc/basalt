@@ -1,0 +1,89 @@
+{
+  "scenarios": {
+    "appSettingsGroupsRead": {
+      "fixtures": "actors",
+      "title": "App Settings asks for groups without waiting for the app's access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization sharing policy."
+        }
+      }
+    },
+    "appSettingsGroupsReadMobile": {
+      "fixtures": "actors",
+      "title": "Mobile App Settings asks for groups without waiting for the app's access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization sharing policy."
+        }
+      }
+    },
+    "manageAccessGroupsRead": {
+      "fixtures": "actors",
+      "title": "Manage access asks for groups without waiting for the account or its access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization sharing policy."
+        }
+      }
+    },
+    "manageAccessGroupsReadMobile": {
+      "fixtures": "actors",
+      "title": "Mobile Manage access asks for groups without waiting for the account or its access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization sharing policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appSettingsGroupsRead": [
+      "access-editor-reads:self-host",
+      "access-editor-reads:cloud"
+    ],
+    "appSettingsGroupsReadMobile": [
+      "access-editor-reads:self-host",
+      "access-editor-reads:cloud"
+    ],
+    "manageAccessGroupsRead": [
+      "access-editor-reads:self-host",
+      "access-editor-reads:cloud"
+    ],
+    "manageAccessGroupsReadMobile": [
+      "access-editor-reads:self-host",
+      "access-editor-reads:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/e2e/tests/access-editor-reads.spec.ts"
+  ]
+}

@@ -1,10 +1,48 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": [
-    "memberControls",
-    "memberControlsMobile"
-  ],
+  "scenarios": {
+    "memberControls": {
+      "fixtures": "actors",
+      "title": "Member restrictions keep controls visible and the app overview stable",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization member roles."
+        }
+      }
+    },
+    "memberControlsMobile": {
+      "fixtures": "actors",
+      "title": "Mobile member restrictions keep controls visible and the app overview stable",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "attached"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization member roles."
+        }
+      }
+    }
+  },
+  "runs": {
+    "memberControls": [
+      "access-editor-reads:publishing-layout"
+    ],
+    "memberControlsMobile": [
+      "access-editor-reads:publishing-layout"
+    ]
+  },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
     ".upstream/apps/hosted/server/src/app-management.ts",

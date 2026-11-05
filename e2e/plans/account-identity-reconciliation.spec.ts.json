@@ -1,0 +1,37 @@
+{
+  "scenarios": {
+    "accountIdentityReconciliation": {
+      "fixtures": "actors",
+      "title": "Hosted saved sign-in completion retries a failed account read without repeating reuse",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "The hosted account projection has its own read contract."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic authorization server listens on loopback."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountIdentityReconciliation": [
+      "host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/account-projection.ts",
+    ".upstream/apps/hosted/web/src/contracts/identity-consent.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/local/web/src/contracts/identity-consent.ts",
+    ".upstream/apps/local/web/src/implementation/pages/oauth-fields.tsx",
+    ".upstream/packages/ui/src/contracts/identity-consent.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx"
+  ]
+}

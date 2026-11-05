@@ -12,7 +12,8 @@
           "runtime": "managed"
         },
         "local": {
-          "status": "scheduled"
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account APIs and actor sessions."
         }
       }
     }
@@ -20,8 +21,7 @@
   "runs": {
     "personalDataReporting": [
       "personal-data-reporting:reporting-retained-data-and-registration-isolation",
-      "personal-data-reporting:cloud-scheduling-and-organization-isolation",
-      "declared:local"
+      "personal-data-reporting:cloud-scheduling-and-organization-isolation"
     ]
   },
   "inputs": [

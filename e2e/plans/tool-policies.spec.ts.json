@@ -8,8 +8,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled",
-          "runtime": "managed"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         },
         "local": {
           "status": "not-applicable",
@@ -25,8 +25,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled",
-          "runtime": "managed"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         },
         "local": {
           "status": "not-applicable",
@@ -37,12 +37,10 @@
   },
   "runs": {
     "hostedAccountToolPolicies": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ],
     "hostedToolPolicies": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ]
   },
   "inputs": [

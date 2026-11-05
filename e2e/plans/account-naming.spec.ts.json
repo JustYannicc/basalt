@@ -1,0 +1,30 @@
+{
+  "scenarios": {
+    "pastedCredentialsNamedAfterSaving": {
+      "fixtures": "actors",
+      "title": "Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local naming is covered by the local account naming scenarios."
+        }
+      }
+    }
+  },
+  "runs": {
+    "pastedCredentialsNamedAfterSaving": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility",
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/**",
+    ".upstream/packages/ui/**"
+  ]
+}

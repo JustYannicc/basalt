@@ -12,12 +12,13 @@ const entry = declarations.files[file];
 if (!group?.matrix || !entry) throw new Error("Unknown declared CI run");
 const pattern = patternForGroup(id, file, root);
 const environment = { ...process.env };
+if (entry.fixture === "pool-setup") environment.BASALT_E2E_POOL_SETUP = "1";
 if (entry.fixture === "google-routes") {
   const { googleMapsAddition } = await import("../../src/catalog/google-maps/index.ts");
   const directory = join(root, ".generated/ci");
   const path = join(directory, "maps-source.json");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const origin = "http://localhost";
+  const origin = "https://routes-fixture.invalid";
   const addition = googleMapsAddition(origin);
   writeFileSync(path, JSON.stringify({ origin, entry: addition.entry, source: addition.source }), {
     mode: 0o600,

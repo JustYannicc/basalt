@@ -3,7 +3,7 @@
     "poolSeedNativeUpgrade": {
       "fixtures": "actors",
       "legacyStorage": true,
-      "title": "pool seed upgrades add canonical native slots and preserve existing account links",
+      "title": "pool seed upgrades add canonical native slots only after retained links are removed",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -25,6 +25,8 @@
     ]
   },
   "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-series.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
     ".upstream/packages/apps/src/implementation/connect.ts",
     ".upstream/packages/apps/src/implementation/provider.ts",
     "apps/pool/**",

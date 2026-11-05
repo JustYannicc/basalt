@@ -12,15 +12,15 @@
           "reason": "The proof uses two E2E operator OAuth clients on one issuer."
         },
         "local": {
-          "status": "scheduled"
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account APIs and actor sessions."
         }
       }
     }
   },
   "runs": {
     "personalDataClientIsolation": [
-      "personal-data-reporting:reporting-retained-data-and-registration-isolation",
-      "declared:local"
+      "personal-data-reporting:reporting-retained-data-and-registration-isolation"
     ]
   },
   "inputs": [

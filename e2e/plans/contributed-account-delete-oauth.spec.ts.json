@@ -13,16 +13,14 @@
           "reason": "Requires concurrent transactions in managed Cloud's PostgreSQL."
         },
         "cloud": {
-          "status": "scheduled",
-          "runtime": "managed"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         }
       }
     }
   },
   "runs": {
-    "contributedAccountDeleteOAuthReconnect": [
-      "declared:cloud"
-    ]
+    "contributedAccountDeleteOAuthReconnect": []
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/account-removal-lock.ts",

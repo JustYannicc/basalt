@@ -465,7 +465,7 @@ jobs:
           --workers 1
       - name: Verify one saved provider account supplies two native pools
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies|^Saved-account rows retain exact IDs|^Hosted saved sign-in completion retries' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:one-saved-provider-account-supplies-two-native-pools)" --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
@@ -518,8 +518,10 @@ jobs:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_PREBOOT_BINDING: "alternate"
           BASALT_ADOPTION_PROOF_WORKERS: "1"
-          BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
-        run: node scripts/production-ops/prove-provider-adoption.ts
+        run: |
+          BASALT_ADOPTION_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts google-account-recovery:google-recovery-through-signed-cloud-operations)"
+          export BASALT_ADOPTION_PROOF_PATTERN
+          node scripts/production-ops/prove-provider-adoption.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -573,14 +575,14 @@ jobs:
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: configured
-        run: bun run e2e:cloud --test-name '^Google client diagnostics compare saved clients without exposing credentials$' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-recovery:configured-client-diagnostics)" --workers 1
       - name: Verify unavailable Google client diagnostics
         timeout-minutes: 3
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: unconfigured
-        run: bun run e2e:cloud --test-name '^Google client diagnostics distinguish an unavailable configured client$' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-recovery:unconfigured-client-diagnostics)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -669,7 +671,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues|^Cloud default reconciliation retains' --manual-cron --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts pool-account-recovery:recovery-through-cloud-s-real-provisioning-queue)" --manual-cron --workers 1
       - name: Verify atomic pool setup with ordinary cron triggers
         timeout-minutes: 5
         working-directory: .upstream
@@ -904,7 +906,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_COMPILER_CACHE_INHERITED: "1"
-        run: bun run e2e:cloud --test-name '^(Cloud deploys fail promptly when the compiler does not answer|Production compiler cache reuses only intact output from the same release|Cloud test stages bypass inherited production compiler cache settings)$' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -943,7 +945,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^Approvals answers free text|^Approvals renders custom|^hosted schedule controls enable|^Before a route|^Returning to loaded console pages|^Connect leads Claude Code and Codex with one-click pool setup|^Claude Desktop and the pool endpoint show a pool key once|^Returning to Connect|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps|^Known methods stay usable|^Credential draft survives app refresh|^Initial catalog failure recovers|^Provider account policy waits for a settled refresh|^First-entry route holds|^First-entry document hover|^Hidden console sections"
+          "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab)"
           --workers 1
       - name: Verify local navigation, custom displays and scheduled approvals
         working-directory: .upstream
@@ -953,7 +955,7 @@ jobs:
           --workers 1
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name "^Before a route|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps|^Hidden console sections|^First-entry route holds" --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load)" --workers 1
       - name: Verify browser analytics after server rendering
         working-directory: .upstream
         run: >-
@@ -991,13 +993,13 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the app overview stays in place as publishing access settles
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1
       - name: Verify access editors start independent reads together
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:self-host)" --workers 1
       - name: Verify Cloud access editors start independent reads together
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:cloud)" --workers 1
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1825,7 +1827,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted acquisition status outages|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts|^Pools select reusable provider accounts|^Retained pool subscriptions keep|^Pools pick accounts saved on provider apps|^Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced"
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:reusable-acquisition-health-and-retained-account-compatibility)"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
@@ -1834,7 +1836,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall|^account rows show a mapped pool account's requests|^app Accounts tabs show a mapped pool account's requests|^account lists use constant SQL statements|^account polling backs off while health is|^an open account row shows newly retained usage"
+          "$(node ../scripts/ci/e2e-pattern.ts account-acquisition:account-usage-rows-and-cells)"
           --workers 1
       - name: Collect bounded E2E evidence
         if: always()

@@ -146,9 +146,9 @@ test("access-editor and publishing proofs have a separate deadline from the appr
     .filter((step: { run?: string }) => step.run?.includes("--test-name"))
     .map((step: { run: string }) => step.run);
   assert.deepEqual(commands, [
-    'bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1',
-    "bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1",
-    "bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1",
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1',
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:self-host)" --workers 1',
+    'bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:cloud)" --workers 1',
   ]);
   for (const command of commands)
     assert.ok(!approvals.steps.some((step: { run?: string }) => step.run === command));

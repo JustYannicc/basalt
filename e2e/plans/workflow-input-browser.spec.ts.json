@@ -8,7 +8,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         },
         "local": {
           "status": "not-applicable",
@@ -24,7 +25,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         },
         "local": {
           "status": "not-applicable",
@@ -40,7 +42,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
         },
         "local": {
           "status": "not-applicable",
@@ -51,16 +54,13 @@
   },
   "runs": {
     "workflowInputBrowser": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
-      "declared:cloud"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
     "workflowDisplayBrowser": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
-      "declared:cloud"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
     "workflowDisplayAuthority": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ]
   },
   "inputs": [

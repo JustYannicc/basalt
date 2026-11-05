@@ -25,7 +25,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         },
         "local": {
           "status": "not-applicable",
@@ -41,7 +42,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         },
         "local": {
           "status": "not-applicable",
@@ -57,7 +59,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         },
         "local": {
           "status": "not-applicable",
@@ -71,16 +74,13 @@
       "declared:self-host"
     ],
     "workflowInputPagination": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ],
     "workflowInputRevocation": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ],
     "workflowInputAuthority": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ]
   },
   "inputs": [

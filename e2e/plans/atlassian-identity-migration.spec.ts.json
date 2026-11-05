@@ -2,6 +2,10 @@
   "scenarios": {
     "atlassianIdentityMigration": {
       "fixtures": "actors",
+      "managementApps": [
+        "owner",
+        "admin"
+      ],
       "title": "Atlassian identity recovery binds exact grants and preserves sites, credentials and links through signed operations",
       "targets": {
         "local": {

@@ -12,16 +12,15 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled",
-          "runtime": "managed"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         }
       }
     }
   },
   "runs": {
     "appCallConnections": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ]
   },
   "inputs": [

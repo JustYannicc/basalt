@@ -264,5 +264,30 @@
     "target": "cloud",
     "mode": "managed",
     "matrix": true
+  },
+  "google-account-recovery:configured-client-diagnostics": {
+    "job": "google-account-recovery",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "google-account-recovery:unconfigured-client-diagnostics": {
+    "job": "google-account-recovery",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "access-editor-reads:self-host": {
+    "job": "access-editor-reads",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "access-editor-reads:cloud": {
+    "job": "access-editor-reads",
+    "target": "cloud",
+    "mode": "managed"
+  },
+  "access-editor-reads:publishing-layout": {
+    "job": "access-editor-reads",
+    "target": "self-host",
+    "mode": "managed"
   }
 }

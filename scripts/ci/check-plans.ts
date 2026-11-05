@@ -8,6 +8,7 @@ import { Schema } from "effect";
 import { legacyScenarios, scenarios, TestPlan } from "../../.upstream/e2e/test-plan.ts";
 import { readDeclarations } from "./declarations.ts";
 import { upstreamInputFiles } from "./inputs.ts";
+import { assertAutomaticCloudControl } from "./server-control.ts";
 
 const root = process.cwd();
 const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
@@ -44,6 +45,11 @@ const files = readdirSync(".upstream/e2e/tests", { recursive: true, encoding: "u
 );
 for (const [file, entry] of Object.entries(declarations.files)) {
   assert.ok(files.includes(file), "Declaration has no test file: " + file);
+  assertAutomaticCloudControl(
+    root,
+    file,
+    Object.values(entry.runs).some((runs) => runs.includes("declared:cloud")),
+  );
   for (const [key, value] of Object.entries(entry.scenarios)) {
     assert.ok(!known.has(key), "Duplicate scenario key: " + key);
     known.set(key, file);
@@ -53,12 +59,18 @@ for (const [file, entry] of Object.entries(declarations.files)) {
       decoded,
       "Prepared plan does not contain declaration: " + key,
     );
-    if (legacyScenarios[key])
+    if (legacyScenarios[key]) {
+      const legacy = legacyScenarios[key]!;
+      // Adopted Cloud failures stay visible as not-run while their self-host proof remains selected.
+      const expected = decoded.targets.cloud.status === "not-run"
+        ? { ...legacy, targets: { ...legacy.targets, cloud: decoded.targets.cloud } }
+        : legacy;
       assert.deepEqual(
-        legacyScenarios[key],
+        expected,
         decoded,
         "Central plan drifted from its per-file declaration: " + key,
       );
+    }
   }
   for (const key of entry.inherited) {
     assert.ok(inheritedKeys.has(key), "A Basalt scenario cannot claim upstream ownership: " + key);

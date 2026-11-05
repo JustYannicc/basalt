@@ -25,7 +25,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "not-run",
+          "reason": "Automatic Cloud selection requires serverControl, which only runner-owned self-host processes support. Existing explicit Cloud jobs retain their target-aware fixtures."
         },
         "local": {
           "status": "not-applicable",
@@ -39,8 +40,7 @@
       "declared:self-host"
     ],
     "toolsOnlyApiKeys": [
-      "declared:self-host",
-      "declared:cloud"
+      "declared:self-host"
     ]
   },
   "inputs": [

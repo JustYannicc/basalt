@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
@@ -102,7 +102,10 @@ export function readDeclarations(root = repository) {
           Object.entries(record(source.runs)).map(([key, value]) => {
             const ids = strings(value);
             const scenario = scenarios[key];
-            if (!scenario || !ids.length || new Set(ids).size !== ids.length)
+            const scheduled = scenario && Object.values(scenario.targets).some(
+              (target) => record(target).status === "scheduled",
+            );
+            if (!scenario || (!ids.length && scheduled) || new Set(ids).size !== ids.length)
               throw new Error(file + ": invalid scenario assignment " + key);
             for (const id of ids) {
               const group = groups[id];
@@ -147,7 +150,7 @@ export function readDeclarations(root = repository) {
         const fixture =
           source.fixture === undefined
             ? undefined
-            : choice(source.fixture, ["google-routes"] as const);
+            : choice(source.fixture, ["google-routes", "pool-setup"] as const);
         return [file, { scenarios, runs, config, inherited, inputs, fixture }];
       }),
   );
@@ -264,5 +267,7 @@ export function prepareTestPlans(root: string, upstream: string) {
   const path = join(upstream, "e2e/basalt-plans.json");
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(plans, null, 2) + "\n");
+  // Human in the loop no longer has Rules. Its obsolete draft journey is added by a later carry.
+  rmSync(join(upstream, "e2e/tests/tool-policy-draft.spec.ts"), { force: true });
   return Object.keys(plans).length;
 }

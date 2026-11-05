@@ -378,6 +378,20 @@
       "runtime": "attached",
       "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
       "command": "bun run e2e:deployed --test-name '^Hovering an app link reads the app and its tools before the click, and opening it reuses that read$'"
+    },
+    "memberControls": {
+      "file": "member-controls.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^Member restrictions keep controls visible and the app overview stable$'"
+    },
+    "memberControlsMobile": {
+      "file": "member-controls.spec.ts",
+      "target": "cloud",
+      "runtime": "attached",
+      "reason": "Requires a deployed Cloud stage; retained as inherited manual coverage while the self-host counterpart runs in CI.",
+      "command": "bun run e2e:deployed --test-name '^Mobile member restrictions keep controls visible and the app overview stable$'"
     }
   }
 }

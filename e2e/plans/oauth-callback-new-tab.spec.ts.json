@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "oauthCallbackNewTab": {
+      "fixtures": "actors",
+      "title": "OAuth completes when the service's sign-in link opens in a new tab",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Covers the hosted callback page; the local page has its own scenario."
+        }
+      }
+    },
+    "oauthCallbackOtherUser": {
+      "fixtures": "actors",
+      "title": "Another member cannot finish a sign-in from its link, and its creator still can",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a scoped loopback OAuth issuer."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has one owner; hosted connections belong to the member who started them."
+        }
+      }
+    }
+  },
+  "runs": {
+    "oauthCallbackNewTab": [
+      "declared:self-host"
+    ],
+    "oauthCallbackOtherUser": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/oauth-callback.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/name-account.tsx"
+  ]
+}

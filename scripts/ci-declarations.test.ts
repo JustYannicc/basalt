@@ -76,6 +76,24 @@ const withFixture = (
   }
 };
 
+test("an explicitly unrun scenario keeps its plan without claiming a running job", () =>
+  withFixture((root, write) => {
+    const plan = scenario("Waiting for Cloud parity");
+    const deferred = { ...plan, targets: {
+      ...plan.targets,
+      "self-host": { status: "not-run", reason: "Tracked parity failure" },
+    } };
+    write("e2e/plans/first.spec.ts.json", {
+      scenarios: { first: deferred }, runs: { first: [] }, inputs: ["src/first.ts"],
+    });
+    assert.deepEqual(readDeclarations(root).files["first.spec.ts"]!.runs.first, []);
+    assert.deepEqual(declaredMatrices(null, root)["declared-self-host"]!.include, []);
+    write("e2e/plans/first.spec.ts.json", {
+      scenarios: { first: plan }, runs: { first: [] }, inputs: ["src/first.ts"],
+    });
+    assert.throws(() => readDeclarations(root), /invalid scenario assignment/);
+  }));
+
 test("adding a per-file plan extends existing groups and preserves exact scenario names", () =>
   withFixture((root, write) => {
     const first = "Account (personal) uses $5?";

@@ -3,6 +3,7 @@
     "poolUsageSeries": {
       "fixtures": "actors",
       "legacyStorage": true,
+      "appOrigin": true,
       "title": "poolUsageSeries is manager-only and preserves one bounded decimal usage read",
       "targets": {
         "self-host": {

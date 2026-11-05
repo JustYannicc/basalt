@@ -48,6 +48,23 @@
           "reason": "Synthetic OAuth issuer uses loopback."
         }
       }
+    },
+    "accountIdentityFamilyMarks": {
+      "legacyStorage": true,
+      "title": "An identity shared by several apps shows its family mark; single-app rows keep theirs",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Local browser proves the row marks; hosted policy is covered separately."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Synthetic OAuth issuer uses loopback."
+        }
+      }
     }
   },
   "runs": {
@@ -59,9 +76,13 @@
     ],
     "accountIdentityConsentScreen": [
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
+    ],
+    "accountIdentityFamilyMarks": [
+      "declared:local"
     ]
   },
   "inputs": [
+    ".upstream/.changeset/account-identities-and-grants.md",
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/src/contracts/oauth-wire.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/egress.ts",
@@ -86,6 +107,7 @@
     ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
     ".upstream/apps/hosted/server/src/implementation/provider-account-methods.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/account-projection.ts",
     ".upstream/apps/hosted/web/src/contracts/accounts.ts",
     ".upstream/apps/hosted/web/src/contracts/identity-consent.ts",
     ".upstream/apps/hosted/web/src/implementation/components/connection-status.tsx",
@@ -180,11 +202,13 @@
     ".upstream/packages/ui/src/contracts/identity-requests.ts",
     ".upstream/packages/ui/src/contracts/oauth-scopes.ts",
     ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/identity-app-picker.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-complete.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/identity-consent.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/oauth-scopes.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/verify-identities-client.tsx",

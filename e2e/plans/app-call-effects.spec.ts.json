@@ -1,0 +1,52 @@
+{
+  "scenarios": {
+    "appCallEffects": {
+      "title": "app effects send once through native tools and fence denied stale concurrent and restarted dispatch",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses the public SDK native workerd host with retained PostgreSQL storage."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned SDK host and a synthetic external delivery boundary."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appCallEffects": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/apps/package.json",
+    ".upstream/packages/apps/protocols/34.json",
+    ".upstream/packages/apps/src/contracts/app-calls.ts",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/packages/apps/src/contracts/protocols/33.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/contracts/workflows.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/workflow-rpc.ts",
+    ".upstream/packages/sdk/src/contracts/tools.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-host.ts",
+    ".upstream/packages/sdk/src/contracts/workflow-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-context.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-effects.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-protection.ts",
+    ".upstream/packages/sdk/src/implementation/app-calls.ts",
+    ".upstream/packages/sdk/src/implementation/app-confirmations.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/tool-policy.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/worker-workflow-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-client.ts",
+    ".upstream/packages/sdk/src/implementation/workerd-entry.ts"
+  ]
+}

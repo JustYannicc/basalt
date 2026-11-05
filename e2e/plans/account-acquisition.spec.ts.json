@@ -16,10 +16,30 @@
           "reason": "Requires a process-owned public product composition and loopback credential service."
         }
       }
+    },
+    "accountAcquisitionRecovery": {
+      "fixtures": "actors",
+      "title": "hosted acquisition status outages retain the session and terminal failure receipt",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted account routes and a process-owned driver."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Requires a process-owned product and loopback credential service."
+        }
+      }
     }
   },
   "runs": {
     "accountAcquisition": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "accountAcquisitionRecovery": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ]
   },
@@ -28,6 +48,8 @@
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
     ".upstream/apps/hosted/server/src/implementation/interactive-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-registry.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-acquisition-transport.ts",
     ".upstream/apps/hosted/web/src/contracts/errors.ts",
     ".upstream/apps/local/server/src/contracts/account-connections.ts",
     ".upstream/apps/local/server/src/contracts/dashboard.ts",
