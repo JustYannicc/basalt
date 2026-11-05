@@ -1,16 +1,16 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -114,7 +114,7 @@
-     return saved === undefined ? undefined : accountRowFromSaved(saved);
-   };
+@@ -137,7 +137,7 @@
+       ? undefined
+       : (account: AccountSummary) => traffic.traffic?.([account]);
    const reported = methodQuery.data;
 -  const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
 +  const methodsReady = Option.isSome(reported);
    const methods: RequirementMethods | undefined = Option.isSome(reported)
      ? {
          unavailable: (requirement, method) =>
-@@ -125,17 +125,20 @@
+@@ -148,17 +148,20 @@
            reported.value.native.find((entry) => entry.requirement === requirement)?.name,
        }
      : undefined;
@@ -35,7 +35,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
    const providerApp = methodsReady && Option.isSome(reported) ? reported.value.providerApp : null;
    const connectsHere = (slot: string) =>
      connections.state === "ready" && connections.of(slot)?.canConnect === true;
-@@ -145,11 +148,7 @@
+@@ -168,11 +171,7 @@
    const copiedPackage = app.copiedFrom?.name;
    const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
    const catalogEntry = catalogEntries?.find((entry) => entry.package === copiedPackage);
@@ -48,7 +48,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
    const registry = useContext(RegistryContext);
    const revalidate = (account: AccountSummary["id"]) => {
      const check = checkAppAccountAtom({ organization, app: app.id, account });
-@@ -362,7 +361,7 @@
+@@ -392,7 +391,7 @@
        <div className="mb-4 empty:hidden">
          <ProviderReturnLink app={app} />
        </div>

@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Ordinary apps keep known sign-in choices and credential drafts through background metadata reads and retained failures. Provider-app connection controls require a settled host policy and retain recovery after a failed refresh. Reads with no value retain loading, failure and retry behavior. Reusing the same saved authorization for an already-connected target preserves its existing account binding."
+      constraint "Ordinary apps keep known sign-in choices and credential drafts through background metadata reads and retained failures. Provider-app connection controls require a settled host policy and retain recovery after a failed refresh. Reads with no value retain loading, failure and retry behavior. Account-row traffic and sharing reads retain their existing boundaries. Reusing the same saved authorization for an already-connected target preserves its existing account binding."
     }
   }
 }
