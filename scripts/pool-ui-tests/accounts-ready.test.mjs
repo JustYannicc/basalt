@@ -907,9 +907,7 @@ test(
               usageResult = { ok: true, value: { ...emptyUsage.value, scope: "you" } };
               await frame.getByRole("button", { name: "Try again", exact: true }).click();
               const who = frame.locator("#who");
-              await who
-                .getByText("No requests through this pool in the last 7 days.", { exact: true })
-                .waitFor();
+              await who.getByText("No requests in this range", { exact: true }).waitFor();
               assert.equal(
                 await who
                   .getByText(
@@ -919,6 +917,7 @@ test(
                   .isVisible(),
                 true,
               );
+              assert.equal(await who.getByText("You", { exact: true }).isVisible(), true);
               assert.equal(await failure.count(), 0);
               assert.equal(
                 await frame.getByRole("navigation", { name: "At a glance", exact: true }).count(),
