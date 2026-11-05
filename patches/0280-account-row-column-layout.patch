@@ -101,7 +101,7 @@ diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-
          for (const width of [1280, 390])
            for (const scheme of ["light", "dark"] as const)
              for (const [name, url] of surfaces) {
-@@ -328,15 +332,57 @@
+@@ -328,15 +332,64 @@
                    ),
                );
                if (name === "accounts") {
@@ -118,26 +118,33 @@ diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-
 +                  "The Add app action lives in the row menu with its full label",
 +                  (page) => {
 +                    const row = accountRow(page, "Verified mail");
-+                    return Promise.all([
-+                      page.evaluate(() => Reflect.get(window, "accountRowHeights") as number[]),
-+                      row.boundingBox(),
-+                    ]).then(([heights, before]) =>
-+                      openRowMenu(page, row, "Verified mail").then((menu) => {
-+                        const add = menu.getByRole("menuitem", {
-+                          name: "Add Fixture identity app",
-+                          exact: true,
-+                        });
-+                        return add
-+                          .waitFor()
-+                          .then(() => add.evaluate((item) => item.scrollWidth <= item.clientWidth))
-+                          .then((readable) =>
-+                            page.keyboard
-+                              .press("Escape")
-+                              .then(() => row.boundingBox())
-+                              .then((after) => ({ heights, before, after, readable })),
-+                          );
-+                      }),
-+                    );
++                    return row
++                      .scrollIntoViewIfNeeded()
++                      .then(() =>
++                        Promise.all([
++                          page.evaluate(() => Reflect.get(window, "accountRowHeights") as number[]),
++                          row.boundingBox(),
++                        ]),
++                      )
++                      .then(([heights, before]) =>
++                        openRowMenu(page, row, "Verified mail").then((menu) => {
++                          const add = menu.getByRole("menuitem", {
++                            name: "Add Fixture identity app",
++                            exact: true,
++                          });
++                          return add
++                            .waitFor()
++                            .then(() =>
++                              add.evaluate((item) => item.scrollWidth <= item.clientWidth),
++                            )
++                            .then((readable) =>
++                              page.keyboard
++                                .press("Escape")
++                                .then(() => row.boundingBox())
++                                .then((after) => ({ heights, before, after, readable })),
++                            );
++                        }),
++                      );
 +                  },
 +                );
 +                expect(menuLayout.heights.length).toBeGreaterThan(0);
