@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-overview-series",
+  "file": "0185-pool-overview-series.patch",
+  "content_sha256": "c127cae95a9f23f8482746671ebfcd026efafc83668ae17f7a701b1cd6ceaac7",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

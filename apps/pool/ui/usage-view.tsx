@@ -3,7 +3,7 @@ import type { AccountsNeeded, Cap, Provider, UsageSummary } from "../contract.ts
 import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import { providerName } from "./accounts.tsx";
-import { Button, ExternalIcon, Problem } from "./controls.tsx";
+import { Button, ExternalIcon, Problem, Segmented } from "./controls.tsx";
 import { exactTime, percent, resetsIn } from "./usage.ts";
 import {
   advice,
@@ -33,13 +33,16 @@ const otherShade = "bg-foreground/10";
 function useUsage(load: () => Promise<Result<UsageSummary>>, poll: Poll) {
   const [summary, setSummary] = useState<UsageSummary>();
   const [error, setError] = useState<string>();
-  const read = useCallback(async () => {
-    const result = await load();
-    if (result.ok) {
-      setSummary(result.value);
-      setError(undefined);
-    } else setError(result.message);
-  }, [load]);
+  const read = useCallback(
+    async () =>
+      load().then((result) => {
+        if (result.ok) {
+          setSummary(result.value);
+          setError(undefined);
+        } else setError(result.message);
+      }),
+    [load],
+  );
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect -- read awaits the backend before updating state
     void read();
@@ -146,30 +149,7 @@ export function MetricSwitch({
     { id: "tokens", label: "Tokens" },
     { id: "cost", label: "Cost" },
   ];
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Show"
-      className="inline-flex h-8 w-fit rounded-md border border-border p-0.5 max-[740px]:h-11"
-    >
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          role="radio"
-          aria-checked={metric === option.id}
-          onClick={() => onChange(option.id)}
-          className={`rounded-[4px] px-3 text-xs font-medium transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
-            metric === option.id
-              ? "bg-accent text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
+  return <Segmented label="Show" value={metric} options={options} onChange={onChange} />;
 }
 
 function Headline({ summary, metric }: { summary: UsageSummary; metric: Metric }) {

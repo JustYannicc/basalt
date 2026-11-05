@@ -21,6 +21,7 @@ import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./nativ
 import { nativeSession } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
+import { OverviewPrices } from "./overview-prices.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
@@ -32,6 +33,8 @@ import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
 import {
   handleUsageSeries,
   lastSuccessAtPath,
+  poolOverviewPath,
+  poolPersonalOverviewPath,
   poolUsageSeriesPath,
 } from "./model-history/series-http.ts";
 import {
@@ -81,6 +84,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private computers: Computers;
   private appModels: AppModels;
   private prices: PriceUpkeep;
+  private overviewPrices: OverviewPrices;
   private usage: PoolUsage;
   private managementReadyUntil = 0;
   private managementWarming?: Promise<void>;
@@ -148,6 +152,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         .fetch(new Request(`http://pool${path}`, { ...init, headers }));
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
+    this.overviewPrices = new OverviewPrices(this.mirrorHome);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -385,19 +390,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return failureResponse(error);
       }
     }
-    if (pathname === poolUsageSeriesPath || pathname === lastSuccessAtPath)
+    if (
+      pathname === poolUsageSeriesPath ||
+      pathname === lastSuccessAtPath ||
+      pathname === poolOverviewPath ||
+      pathname === poolPersonalOverviewPath
+    )
       return handleUsageSeries(request, {
         home: this.mirrorHome,
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+        currentPrices: (targets) => this.overviewPrices.read(targets),
       });
     if (
       pathname === managedUsagePath ||
       pathname === managedCapPath ||
-      pathname.startsWith("/__setup/v1/")
-    )
-      return this.computers.handle(request);
+      pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
       const response = await this.computers.context(request);
       // Connect reads this when it opens; copying a setup prompt next mints a key in Home, so start
@@ -406,7 +415,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       if (response.ok) this.ctx.waitUntil(this.managementReady().catch(() => {}));
       return response;
     }
-    if (pathname === summaryPath) return this.usage.handle(request);
+    if (pathname === summaryPath || pathname === "/pool/v1/usage/capacity")
+      return this.usage.handle(request);
     if (pathname === modelHistoryPath || pathname === modelImportPath)
       return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,

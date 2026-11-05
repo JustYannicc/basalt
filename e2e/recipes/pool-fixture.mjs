@@ -179,6 +179,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       timers.add(timer);
     },
   });
+  const traces = [];
   const server = createServer(async (request, response) => {
     try {
       const chunks = [];
@@ -240,8 +241,20 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
         }),
       );
       if (access) accessCalls.push(result.status);
+      const reply = Buffer.from(await result.arrayBuffer());
+      // Diagnostics only: what this pool answered for an account's observation or check. The
+      // account reference in the path is kept for in-process checks and never written as is.
+      const observed = /\/accounts\/([^/?]+)\/(observations|collect)/.exec(request.url ?? "");
+      if (observed || request.url?.endsWith("/pool/v1/account-acquisitions"))
+        traces.push({
+          method: request.method,
+          route: observed ? `/accounts/<ref>/${observed[2]}` : "/pool/v1/account-acquisitions",
+          ...(observed ? { reference: decodeURIComponent(observed[1]) } : {}),
+          status: result.status,
+          body: reply.toString("utf8").slice(0, 32_768),
+        });
       response.writeHead(result.status, Object.fromEntries(result.headers));
-      response.end(Buffer.from(await result.arrayBuffer()));
+      response.end(reply);
     } catch {
       response
         .writeHead(500, { "Content-Type": "application/json" })
@@ -271,6 +284,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     product(origin) {
       productOrigin = origin;
     },
+    traces,
     sends,
     accessCalls,
     resets,
@@ -330,6 +344,8 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
             id: "short",
             scope: "account",
             scope_id: "codex",
+            // Home reports each limit window's unit; without one the pool can't show the window.
+            unit: "percent",
             window_seconds: 18000,
             remaining_ratio: remaining,
             observed_at: observed,

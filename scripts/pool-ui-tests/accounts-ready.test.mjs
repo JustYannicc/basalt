@@ -711,7 +711,9 @@ test(
             };
             assert.deepEqual(await accepted(), []);
             release();
-            const visible = populated ? "1 account" : "Pick your first account";
+            const visible = populated
+              ? "1 subscription account across 1 lab. Conversations stay on one account; new ones spread across them."
+              : "Pick your first account";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
@@ -813,7 +815,9 @@ test(
           [0.88, 0.63],
         ],
       });
-    const saved = sourceRef ? "build-seat-1@example.com" : "2 accounts";
+    const saved = sourceRef
+      ? "build-seat-1@example.com"
+      : "3 subscription accounts across 2 labs. Conversations stay on one account; new ones spread across them.";
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);
