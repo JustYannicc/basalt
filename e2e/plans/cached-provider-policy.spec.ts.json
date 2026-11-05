@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "cachedProviderPolicyDesktop": {
+      "fixtures": "actors",
+      "title": "Provider account policy waits for a settled refresh 1440",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted provider account policy."
+        }
+      }
+    },
+    "cachedProviderPolicyPhone": {
+      "fixtures": "actors",
+      "title": "Provider account policy waits for a settled refresh 390",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Hosted read transitions run on self-host."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted provider account policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cachedProviderPolicyDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ],
+    "cachedProviderPolicyPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts"
+  ]
+}

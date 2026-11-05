@@ -269,7 +269,7 @@ export function prepareTestPlans(root: string, upstream: string) {
   const path = join(upstream, "e2e/basalt-plans.json");
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(plans, null, 2) + "\n");
-  // Human in the loop no longer has Rules. Its obsolete draft journey is added by a later carry.
+  // Human in the loop no longer has Rules, so its legacy draft journey must not run.
   rmSync(join(upstream, "e2e/tests/tool-policy-draft.spec.ts"), { force: true });
   return Object.keys(plans).length;
 }

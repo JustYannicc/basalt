@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "hiddenSectionDesktop": {
+      "fixtures": "actors",
+      "title": "Hidden console sections stop focus and poll reads at 1280px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not share the hosted section router."
+        }
+      }
+    },
+    "hiddenSectionPhone": {
+      "fixtures": "actors",
+      "title": "Hidden console sections stop focus and poll reads at 390px",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not share the hosted section router."
+        }
+      }
+    }
+  },
+  "runs": {
+    "hiddenSectionDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "hiddenSectionPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx",
+    ".upstream/packages/ui/src/contracts/refresh.ts"
+  ]
+}

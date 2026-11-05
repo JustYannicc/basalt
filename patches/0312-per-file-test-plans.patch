@@ -38,7 +38,7 @@ index 4730a9e..0c6dbd1 100644
 +const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof TestPlan.Type }) => {
 +  for (const declared of Object.values(basaltPlans)) Schema.decodeUnknownSync(TestPlan)(declared);
 +  const active = { ...scenarios };
-+  // Rules was removed from Human in the loop; the later policy carry still contains its old plan.
++  // Rules was removed from Human in the loop; the legacy policy plan must not run.
 +  Reflect.deleteProperty(active, "hostedToolPolicyDraft");
 +  Object.assign(legacyScenarios, active);
 +  return { ...active, ...basaltPlans };

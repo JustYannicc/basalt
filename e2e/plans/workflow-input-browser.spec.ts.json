@@ -42,8 +42,7 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "not-run",
-          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
+          "status": "scheduled"
         },
         "local": {
           "status": "not-applicable",
@@ -57,7 +56,8 @@
       "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
     "workflowDisplayBrowser": [
-      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "declared:cloud"
     ],
     "workflowDisplayAuthority": ["declared:self-host"]
   },

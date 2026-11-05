@@ -1,0 +1,49 @@
+{
+  "scenarios": {
+    "cloudPoolCallbackSharing": {
+      "fixtures": "actors",
+      "title": "Cloud pool callbacks let a separate catalog instance change its audience",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Managed Cloud exercises the external pool receiver fixture."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted app audiences."
+        }
+      }
+    },
+    "cloudPoolCallbackCleanup": {
+      "fixtures": "actors",
+      "title": "Cloud pool callbacks let an onboarded organization finish fixture cleanup",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Managed Cloud exercises the external pool receiver fixture."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization removal."
+        }
+      }
+    }
+  },
+  "runs": {
+    "cloudPoolCallbackSharing": ["declared:cloud"],
+    "cloudPoolCallbackCleanup": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/e2e/support/cloud-environment.ts",
+    ".upstream/e2e/support/cloud-pool-gateway.ts"
+  ],
+  "fixture": "google-routes"
+}

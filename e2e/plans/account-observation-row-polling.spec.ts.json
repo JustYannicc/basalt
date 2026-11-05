@@ -88,7 +88,8 @@
   },
   "runs": {
     "accountObservationRowPolling": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
+      "account-acquisition:account-usage-rows-and-cells"
     ],
     "accountObservationOutagePollingPending": ["account-acquisition:account-usage-rows-and-cells"],
     "accountObservationOutagePollingUnavailable": [
