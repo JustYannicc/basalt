@@ -63,8 +63,8 @@ and app tabs, shared pools, existing installations, MCP and model clients.
 On phones, make essential details usable by touch.
 
 Architecture changes start at [architecture/README.md](architecture/README.md)
-and its [glossary](architecture/CONTEXT.md). Put durable carry constraints in the
-affected `architecture/model/` file; describe responsibilities, not carry history.
+and its [glossary](architecture/CONTEXT.md). Put durable carry constraints in a per-carry file as described below;
+describe responsibilities, not carry history.
 [Fitness checks](scripts/architecture/fitness.test.ts)
 enforce boundaries. For behavior, read [pools](docs/pools.md) or
 [connectors](docs/connectors.md); for deployment, [self-hosting](docs/self-hosting.md).
@@ -78,3 +78,5 @@ overlay. Keep test accounts dedicated.
 
 Report source checks, merge, deployment and live acceptance separately; keep
 acceptance open until proven.
+
+Put each added or changed carry's durable constraint in `architecture/model/carries/<stem>.c4`, matching its patch and record stem. Update it in the same PR, including record-only changes; rename it with the carry and remove it on retirement. Record one non-empty constraint in the defined extension shape in `architecture/model/carries/README.md`. Keep shared area files for module responsibilities and structural relationships. Existing per-carry files may be removed only with retirement. Legacy area prose can stay until its carry changes; record its updated constraint in the carry file.
