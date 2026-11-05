@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The retained-default fixture owns onboarding and records the retained pool before dispatching team setup, so no initial compile can race its legacy metadata setup. Subsequent member recovery still proves unchanged active version, deployments, selected accounts and unknown-declaration refusal with the existing deadlines."
+    }
+  }
+}

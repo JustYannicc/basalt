@@ -1,3 +1,4 @@
+import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -152,8 +153,10 @@ function instrument() {
     let name;
     try {
       const operation = text === null ? null : JSON.parse(text);
-      name = operation?.name;
-      if (operation?.name) queries.push(operation.name);
+      name =
+        operation?.name ??
+        (String(input).endsWith("/pool-usage/overview") ? "overviewUsage" : undefined);
+      if (name) queries.push(name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
       if (operation?.name === "computerContext")
         Reflect.set(window, "contextSends", Reflect.get(window, "contextSends") + 1);
@@ -318,6 +321,11 @@ test(
       } else if (request.url === "/main.css" && stylesheet !== null) {
         response.setHeader("content-type", "text/css");
         response.end(stylesheet);
+      } else if (request.url === "/_executor/api/pool-usage/overview") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(overviewFixture(JSON.parse(body).input, usageResult.value)));
       } else if (request.url === "/_executor/api/query") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -334,15 +342,17 @@ test(
             JSON.stringify(
               name === "usage"
                 ? usageResult
-                : name === "computerContext"
-                  ? {
-                      ok: true,
-                      value: {
-                        accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
-                        shareHref: `${parentOrigin}/share/context-${++contextReads}`,
-                      },
-                    }
-                  : failed,
+                : name === "capacity"
+                  ? capacityFixture(input)
+                  : name === "computerContext"
+                    ? {
+                        ok: true,
+                        value: {
+                          accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+                          shareHref: `${parentOrigin}/share/context-${++contextReads}`,
+                        },
+                      }
+                    : failed,
             ),
           );
       } else if (request.url === "/") {
@@ -503,13 +513,13 @@ test(
             await capture(page, `usage-before-capacity-${width}`);
             const queries = await frame.evaluate(() => Reflect.get(window, "queries"));
             assert.ok(
-              queries.includes("usage"),
+              queries.includes("overviewUsage"),
               "Usage must start before the held capacity read answers",
             );
             await frame.waitForFunction(
               () =>
-                Reflect.get(window, "completedQueries").filter((name) => name === "usage").length >=
-                2,
+                Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
+                  .length >= 2,
             );
             await settled();
             await capture(page, `usage-awaits-provider-names-${width}`);
@@ -519,15 +529,17 @@ test(
               "Provider IDs must not flash before capacity supplies their names",
             );
             assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
-            const usageReads = queries.filter((name) => name === "usage").length;
+            const usageReads = queries.filter((name) => name === "overviewUsage").length;
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
-            await frame.getByText("Codex", { exact: true }).waitFor();
+            await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            await frame.getByText("Synthetic model", { exact: true }).waitFor();
+            await frame.getByText("Codex", { exact: true }).first().waitFor();
             await capture(page, `usage-ready-${width}`);
             await settled();
             const after = await frame.evaluate(() => Reflect.get(window, "queries"));
             assert.equal(
-              after.filter((name) => name === "usage").length,
+              after.filter((name) => name === "overviewUsage").length,
               usageReads,
               "Receiving capacity must not fetch usage again",
             );
@@ -720,7 +732,12 @@ test(
               assert.deepEqual(await accepted(), []);
               viewResult = { ok: true, value };
               if (recovery === "manual")
-                await frame.getByRole("button", { name: "Try again", exact: true }).click();
+                await frame
+                  .getByRole("alert")
+                  .filter({ hasText: "Synthetic pool failure" })
+                  .locator("..")
+                  .getByRole("button", { name: "Try again", exact: true })
+                  .click();
               else await poll();
               await requests(1, true);
               release();
@@ -907,7 +924,11 @@ test(
           await settled();
           // A failed revalidation is an answer, not a reason to ask again.
           assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await frame.getByRole("button", { name: "Try again", exact: true }).click();
+          await frame
+            .getByText(/^Couldn't update; showing a saved view from 6m ago$/)
+            .locator("..")
+            .getByRole("button", { name: "Try again", exact: true })
+            .click();
           await requests(1, true);
           assert.deepEqual(sent(), { retained: 2, fresh: 2 });
           freshResult = live();
@@ -937,7 +958,12 @@ test(
           await capture(page, "follow-up-unreachable");
           await settled();
           assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await frame.getByRole("button", { name: "Try again", exact: true }).click();
+          await frame
+            .getByRole("alert")
+            .filter({ hasText: "Synthetic pool failure" })
+            .locator("..")
+            .getByRole("button", { name: "Try again", exact: true })
+            .click();
           await requests(1, true);
           freshResult = live();
           release(true);

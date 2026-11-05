@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-google-race-cleanup",
+  "file": "0289-google-race-cleanup.patch",
+  "content_sha256": "e30d93b36f117de0d849843148d878ba580d96dc6702e8b7231776ecdb93e2bc",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

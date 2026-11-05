@@ -1,0 +1,43 @@
+diff --git a/e2e/tests/google-duplicate-binding-race.spec.ts b/e2e/tests/google-duplicate-binding-race.spec.ts
+--- a/e2e/tests/google-duplicate-binding-race.spec.ts
++++ b/e2e/tests/google-duplicate-binding-race.spec.ts
+@@ -9,6 +9,7 @@
+ import { Artifact } from "../support/production-ops-client.ts";
+ import { boundary } from "../support/provider-adoption-steps.ts";
+ import { Evidence } from "../support/evidence.ts";
++import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import { defineApp, defineProvider, oauth2, secrets, object, string, router } from "apps";
+@@ -45,8 +46,29 @@
+         expect(hook.status).toBe("active");
+         yield* Effect.addFinalizer(() =>
+           Effect.gen(function* () {
+-            yield* p.rows("delete from executor_webhook_accounts where subscription=$1", [hook.id]);
+-            yield* p.rows("delete from executor_webhooks where id=$1", [hook.id]);
++            const unlinked = yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${path}/accounts/user/primary/${primary}`,
++            );
++            expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++            const removed = yield* api.request(
++              actors.owner,
++              "DELETE",
++              `${path}/webhooks/${hook.id}`,
++            );
++            expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++            const stopped = yield* settleWebhookSubscriptions(
++              actors.owner,
++              path,
++              (hooks) =>
++                hooks.some((item) => item.id === hook.id) &&
++                hooks.every((item) => item.status === "stopped"),
++            );
++            yield* (yield* Evidence).json("duplicate-race-cleanup-stopped.json", {
++              primaryUnlinked: true,
++              subscriptions: stopped.map(({ id, status }) => ({ id, status })),
++            });
+           }).pipe(Effect.orDie),
+         );
+         const requirement = yield* body(

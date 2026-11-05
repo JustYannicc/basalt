@@ -1,0 +1,48 @@
+diff --git a/e2e/tests/pool-retained-defaults.spec.ts b/e2e/tests/pool-retained-defaults.spec.ts
+--- a/e2e/tests/pool-retained-defaults.spec.ts
++++ b/e2e/tests/pool-retained-defaults.spec.ts
+@@ -130,14 +130,19 @@
+           `select id from executor_deployments where code = (select code from executor_apps where id = $1) order by id`,
+           [app.id],
+         );
+-        const dispatch = (expected: "succeeded" | "queued") =>
++        const dispatch = (expected: "succeeded" | "queued", kind: "team" | "member" = "member") =>
+           Effect.gen(function* () {
+             yield* defer();
+             const id = randomUUID();
+             yield* rows(
+-              `insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++              kind === "team"
++                ? `insert into hosted_provisioning (id, kind, organization_id, available_at)
++          values ($1, 'team', $2, now())`
++                : `insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
+           values ($1, 'member', $2, $3, now())`,
+-              [id, actors.organization.id, viewer.userId],
++              kind === "team"
++                ? [id, actors.organization.id]
++                : [id, actors.organization.id, viewer.userId],
+             );
+             yield* Effect.scoped(
+               http
+@@ -185,7 +190,8 @@
+           expect(serving.status, JSON.stringify(serving.body)).toBe(200);
+           expect(serving.body).toEqual({ accounts: [account] });
+         });
+-        const held = yield* dispatch("succeeded");
++        // This case owns onboarding: seed the retained pool before team setup can compile a default.
++        const held = yield* dispatch("succeeded", "team");
+         yield* unchanged;
+         // Recovery has no metadata proving a fresh creation. It must keep legacy policy too.
+         yield* rows(`update executor_apps set copied_from = $1::json where id = $2`, [
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3704,7 +3704,7 @@
+   },
+   cloudPoolRetainedDefaults: {
+     fixtures: "actors",
+-    managementApps: ["owner"],
++    deferOnboarding: true,
+     file: "pool-retained-defaults.spec.ts",
+     title:
+       "Cloud default reconciliation retains legacy versions and recovery policy and refuses unknown declarations",

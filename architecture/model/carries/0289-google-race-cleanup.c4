@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The duplicate-binding race fixture unlinks its primary account and stops every owned webhook through public APIs before app removal. Cleanup retains the manual subscription as stopped evidence; it never deletes webhook SQL rows or changes the race assertions or deadlines."
+    }
+  }
+}
