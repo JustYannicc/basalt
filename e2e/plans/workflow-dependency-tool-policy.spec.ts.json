@@ -8,8 +8,7 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "not-run",
-          "reason": "Cloud parity failure tracked in https://github.com/JustYannicc/basalt/issues/499; existing assertions remain unchanged."
+          "status": "scheduled"
         },
         "local": {
           "status": "not-applicable",
@@ -19,7 +18,7 @@
     }
   },
   "runs": {
-    "workflowDependencyToolPolicy": ["declared:self-host"]
+    "workflowDependencyToolPolicy": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
