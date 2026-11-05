@@ -17,8 +17,10 @@ test("the MCP boundary rejects a retained migrator or introspector, regardless o
     "node_modules/.bun/kysely@0.29.6/node_modules/kysely/dist/dialect/postgres/postgres-introspector.js",
     "node_modules/.bun/kysely@0.29.6/node_modules/kysely/dist/migration/migrator.js",
   ]) {
-    assert.throws(() => assertMcpRuntimeBundle({ worker: "mcp-server", sources: { [source]: 1 } }),
-      /must not upload migration or schema introspection code/);
+    assert.throws(
+      () => assertMcpRuntimeBundle({ worker: "mcp-server", sources: { [source]: 1 } }),
+      /must not upload migration or schema introspection code/,
+    );
   }
 });
 
