@@ -1,0 +1,9 @@
+{
+  "identity": "executor-cloud-app-log-forwarding",
+  "file": "0298-cloud-app-log-forwarding.patch",
+  "content_sha256": "340f8d84317a66619812fb7cce9dabe264a47ad98235741fd0debc3e1a3320df",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
