@@ -1,3 +1,8 @@
+import {
+  removalDiagnostic,
+  type RemovalDiagnostic,
+} from "../../src/pool/import-removal/failure.ts";
+
 const categories = [
   "config",
   "auth",
@@ -8,6 +13,8 @@ const categories = [
   "defect",
   "interrupted",
   "unknown",
+  "home",
+  "timeout",
 ] as const;
 const causeKinds = ["failure", "defect", "interrupted", "composite"] as const;
 const phases = [
@@ -19,6 +26,11 @@ const phases = [
   "forward",
   "request",
   "receipt",
+  "readiness",
+  "snapshot",
+  "credential-delete",
+  "membership-delete",
+  "verify",
 ] as const;
 const sqlClasses = [
   "08",
@@ -71,6 +83,11 @@ export interface FailureReceipt {
   readonly httpStatus?: number;
   readonly reason?: "operation_busy" | "organization_removing" | "stale_plan";
   readonly retryable?: boolean;
+  readonly code?: RemovalDiagnostic["code"];
+  readonly elapsedMs?: number;
+  readonly rowId?: string;
+  readonly homeStatus?: number;
+  readonly homeCode?: RemovalDiagnostic["homeCode"];
 }
 
 export class OperationFailure extends Error {
@@ -98,6 +115,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
           : {};
   const sqlStateClass = sqlClasses.find((entry) => entry === row.sqlStateClass);
   const causeKind = causeKinds.find((entry) => entry === row.causeKind);
+  const removal = removalDiagnostic(row);
   return {
     format: "basalt-production-ops-failure-v1",
     category,
@@ -105,6 +123,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
     ...(category === "sql" && sqlStateClass ? { sqlStateClass } : {}),
     ...(causeKind === undefined ? {} : { causeKind }),
     ...reason,
+    ...removal,
   };
 }
 

@@ -13,9 +13,13 @@ export class MemoryStorage implements ComputerStorage {
   async get<T>(key: string): Promise<T | undefined> {
     return structuredClone(this.values.get(key)) as T | undefined;
   }
+  async list(options: { prefix: string; limit: number }): Promise<Map<string, unknown>> {
+    return new Map([...this.values.entries()].filter(([key]) => key.startsWith(options.prefix)).slice(0, options.limit).map(([key, value]) => [key, structuredClone(value)]));
+  }
   async delete(key: string): Promise<void> { this.values.delete(key); }
-  async put(key: string, value: unknown): Promise<void> {
-    this.values.set(key, structuredClone(value));
+  async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
+    if (typeof key === "string") this.values.set(key, structuredClone(value));
+    else for (const [name, item] of Object.entries(key)) this.values.set(name, structuredClone(item));
   }
 }
 

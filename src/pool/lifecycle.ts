@@ -15,6 +15,10 @@ export class PoolRuntimeUnhealthy extends Error {
   constructor() { super("The pool runtime is temporarily unhealthy"); }
 }
 
+export class PoolStartupDeadline extends Error {
+  constructor() { super("The pool did not become ready within the startup budget"); }
+}
+
 export interface RuntimeDriver {
   running(): boolean;
   start(): void;
@@ -102,7 +106,7 @@ export class PoolLifecycle {
           await this.clock.sleep(1_000);
         }
       }
-      throw new Error("The pool did not become ready within the startup budget");
+      throw new PoolStartupDeadline();
     } finally {
       // An alarm retries failed starts too. The container can outlive a sleeping DO.
       const next = this.clock.now() + poolLifecycle.refreshMs;

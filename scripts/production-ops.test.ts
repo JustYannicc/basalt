@@ -201,6 +201,31 @@ test("a failed operator CLI saves a safe receipt before exiting", () => {
   }
 });
 
+test("the CLI saves the failed removal boundary and downstream status without provider text", () => {
+  const diagnostic = {
+    format: "basalt-production-ops-failure-v1",
+    category: "home",
+    phase: "credential-delete",
+    code: "home_http",
+    elapsedMs: 42,
+    rowId: "11111111-1111-4111-8111-111111111111",
+    homeStatus: 500,
+    homeCode: "write_failed",
+  };
+  const { directory, result } = run({
+    error: "operation_failed",
+    failure: { ...diagnostic, message: poison, response: poison },
+  });
+  try {
+    assert.equal(result.status, 1);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), { ...diagnostic, httpStatus: 409 });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("runtime refusals retain only allowlisted diagnostic fields", () => {
   const { directory, result } = run({
     error: poison,
