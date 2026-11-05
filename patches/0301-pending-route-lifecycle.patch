@@ -1,0 +1,149 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+@@ -1,4 +1,5 @@
+ import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
++import { useState } from "react";
+ import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
+ import { CloudPagePending } from "../components/page-pending.tsx";
+ import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
+@@ -55,9 +56,19 @@
+ /**
+  * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
+  * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
+- * keep reading on focus and on poll timers. Keying by the child route unmounts the previous page.
++ * keep reading on focus and on poll timers, so a new key unmounts a page that has rendered. A page
++ * still on the router's pending page rendered nothing that could stay behind; the next page keeps
++ * its boundary, so one pending page shows until the next page is ready.
+  */
+ function PageOutlet() {
+   const page = useChildMatches({ select: (matches) => matches[0]?.routeId });
+-  return <Outlet key={page} />;
++  const pending = useChildMatches({ select: (matches) => matches[0]?.status === "pending" });
++  const [outlet, setOutlet] = useState({ key: 0, page, rendered: !pending });
++  let next = outlet;
++  if (page !== outlet.page)
++    next = { key: outlet.rendered ? outlet.key + 1 : outlet.key, page, rendered: !pending };
++  else if (!pending && !outlet.rendered) next = { ...outlet, rendered: true };
++  // Set while rendering, so the key changes in the same render and transition as the match.
++  if (next !== outlet) setOutlet(next);
++  return <Outlet key={next.key} />;
+ }
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+@@ -1,4 +1,5 @@
+ import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
++import { useState } from "react";
+ import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
+ import { PagePending } from "@executor-js/hosted-web/page-pending";
+ import { DashboardShell } from "@executor-js/hosted-web/shell";
+@@ -38,9 +39,19 @@
+ /**
+  * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
+  * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
+- * keep reading on focus and on poll timers. Keying by the child route unmounts the previous page.
++ * keep reading on focus and on poll timers, so a new key unmounts a page that has rendered. A page
++ * still on the router's pending page rendered nothing that could stay behind; the next page keeps
++ * its boundary, so one pending page shows until the next page is ready.
+  */
+ function PageOutlet() {
+   const page = useChildMatches({ select: (matches) => matches[0]?.routeId });
+-  return <Outlet key={page} />;
++  const pending = useChildMatches({ select: (matches) => matches[0]?.status === "pending" });
++  const [outlet, setOutlet] = useState({ key: 0, page, rendered: !pending });
++  let next = outlet;
++  if (page !== outlet.page)
++    next = { key: outlet.rendered ? outlet.key + 1 : outlet.key, page, rendered: !pending };
++  else if (!pending && !outlet.rendered) next = { ...outlet, rendered: true };
++  // Set while rendering, so the key changes in the same render and transition as the match.
++  if (next !== outlet) setOutlet(next);
++  return <Outlet key={next.key} />;
+ }
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -111,6 +111,26 @@
+ 
+ /** Scenario names and applicability used by both test declarations and test selection. */
+ export const scenarios = plan({
++  firstEntryOverlapDesktop: {
++    fixtures: "actors",
++    file: "first-entry-reveal.spec.ts",
++    title: "First-entry route holds one pending view during overlap at 1440px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local route loaders are unchanged."),
++    },
++  },
++  firstEntryOverlapPhone: {
++    fixtures: "actors",
++    file: "first-entry-reveal.spec.ts",
++    title: "First-entry route holds one pending view during overlap at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local route loaders are unchanged."),
++    },
++  },
+   firstEntryDesktop: {
+     fixtures: "actors",
+     file: "first-entry-reveal.spec.ts",
+diff --git a/e2e/tests/first-entry-reveal.spec.ts b/e2e/tests/first-entry-reveal.spec.ts
+--- a/e2e/tests/first-entry-reveal.spec.ts
++++ b/e2e/tests/first-entry-reveal.spec.ts
+@@ -6,6 +6,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
+ import { firstEntryPages, observeFirstEntry } from "../support/first-entry-reveal-probe.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ /**
+@@ -73,4 +74,45 @@
+       ),
+     );
+   }
++  // Entering a page while the previous page is still on the router's pending page must hand that
++  // pending page over, not mount a second one. Holding the Apps view keeps Apps pending throughout.
++  for (const width of [1440, 390]) {
++    const scenario =
++      width === 1440 ? scenarios.firstEntryOverlapDesktop : scenarios.firstEntryOverlapPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const organization = `/org/${actors.organization.slug}`;
++          yield* browser.login(actors.owner);
++          yield* browser.use("Set viewport", (page) =>
++            page.setViewportSize({ width, height: 960 }),
++          );
++          const apps = yield* holdQuery(
++            /\/assets\/org\._organizationSlug\.apps\.index-[^/]+\.js$/,
++            "continue",
++            { allRequests: true },
++          );
++          yield* openThroughBrowser("Enter the apps list", `${organization}/apps`);
++          yield* apps.requested;
++          const results = [];
++          for (const target of firstEntryPages) {
++            const recorded = yield* observeFirstEntry(organization, target);
++            results.push({ page: target.page, recorded });
++            yield* evidence.json("first-entry-overlap.json", results);
++            yield* openInApp("Back to the apps list", `${organization}/apps`);
++          }
++          yield* apps.release;
++          for (const { page, recorded } of results) {
++            expect(recorded.sawPending, `${page} shows the router's pending page`).toBe(true);
++            expect(recorded.replacedWhileHeld, `${page} keeps one pending page`).toBe(false);
++            expect(recorded.pendingMountsWhileHeld, `${page} mounts no nested fallback`).toBe(1);
++          }
++        }),
++      ),
++    );
++  }
+ });

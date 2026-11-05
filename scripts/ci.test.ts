@@ -445,3 +445,28 @@ test("connection control changes select their retained-data browser guard", () =
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
 });
+
+test("first-entry view and route changes select their browser guards", () => {
+  for (const path of [
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/approvals.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx",
+    ".upstream/e2e/tests/first-entry-reveal.spec.ts",
+    ".upstream/e2e/tests/first-entry-behavior.spec.ts",
+    ".upstream/e2e/support/first-entry-reveal-probe.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
+
+test("hidden section reads select their browser guards", () => {
+  for (const path of [
+    ".upstream/e2e/tests/hidden-section-reads.spec.ts",
+    ".upstream/e2e/tests/dashboard-client-loading.spec.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
