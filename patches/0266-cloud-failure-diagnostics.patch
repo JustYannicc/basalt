@@ -24,8 +24,9 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
 
  const access = "/pool/v1/access";
  const acquisition = "/pool/v1/account-acquisitions";
-@@ -12,6 +24,15 @@
+@@ -12,7 +25,16 @@
    provider: Schema.optionalKey(Schema.String),
+   reference: Schema.optionalKey(Schema.String),
    at: Schema.Number,
    expiresAt: Schema.Number,
 +});
