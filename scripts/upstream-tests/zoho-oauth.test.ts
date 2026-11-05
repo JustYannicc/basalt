@@ -30,10 +30,10 @@ const regions = [
 ] as const;
 
 test("the eight Zoho data centers share one optional Multi-DC pair and preserve regional placement", async () => {
-  assert.deepEqual(await clients({}), []);
+  assert.deepEqual((await clients({})).map(client => client.id), ["zendesk-tenant"]);
   const configured = await clients({ EXECUTOR_PRODUCT_NAME: "Signalbox",
     EXECUTOR_OAUTH_ZOHO_CLIENT_ID: "synthetic-zoho-client", EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: "synthetic-zoho-secret" });
-  assert.equal(configured.length, 8);
+  assert.equal(configured.length, 9);
   for (const [region, accounts, api] of regions) {
     const client = configured.find(client => client.id === `zoho-${region}`)!;
     assert.ok(client);

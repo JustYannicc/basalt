@@ -97,6 +97,8 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   if (metadata.version !== "0.14.2") throw new Error("Wrong provider emulator version.");
   const entry = typeof metadata.bin === "string" ? metadata.bin : Object.values(metadata.bin)[0];
   if (!entry) throw new Error("Published emulator CLI missing.");
+  await run("bun", [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs")],
+    root, join(directory, "zendesk-tenant-runtime.json"), home, useHeavySlot);
   const output = await run("bun", [join(root, "scripts/connectors-tests/runtime.mjs"), root, upstream, directory,
     resolve(packageRoot, entry), browser, commit, candidate, JSON.stringify(patches)], upstream,
   join(directory, "runtime.json"), home, useHeavySlot);

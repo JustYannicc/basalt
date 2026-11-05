@@ -97,7 +97,7 @@ test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-
   }
 
   // Refreshed responses advertise one hour, so they must outlive the original one-second grant.
-  await new Promise((resolve) => setTimeout(resolve, 1100));
+  fixture.advanceClock(1100);
   for (const { site, second } of issued) {
     assert.equal(second.expires_in, 3600);
     assert.equal((await readCurrentUser(site, second.access_token)).status, 200,

@@ -23,10 +23,10 @@ const settings = {
 };
 
 test("hosted collaboration clients are optional and use separate credentials", async () => {
-  assert.deepEqual(await clients({}), []);
+  assert.deepEqual((await clients({})).map(client => client.id), ["zendesk-tenant"]);
   const configured = await clients(settings);
-  assert.deepEqual(configured.map(client => client.id), ["gitlab", "miro"]);
-  for (const client of configured) {
+  assert.deepEqual(configured.map(client => client.id), ["gitlab", "miro", "zendesk-tenant"]);
+  for (const client of configured.filter(client => client.id !== "zendesk-tenant")) {
     assert.equal(client.label, `Signalbox for ${client.id === "gitlab" ? "GitLab" : "Miro"}`);
     assert.equal(client.clientId, `synthetic-${client.id}-client`);
     assert.equal(Redacted.value(client.clientSecret), `synthetic-${client.id}-secret`);

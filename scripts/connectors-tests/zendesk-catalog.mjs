@@ -52,7 +52,7 @@ export async function startZendeskCatalogWorker({ root, upstream, directory, mar
     port: await freePort(),
     compatibilityDate: "2026-08-06",
     compatibilityFlags: ["nodejs_compat"],
-    bindings: {
+    bindings: marketplace === undefined ? {} : {
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: marketplace.organizationId,
       ZENDESK_MARKETPLACE_APP_ID: marketplace.appId,
     },
