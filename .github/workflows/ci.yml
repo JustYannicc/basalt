@@ -519,6 +519,53 @@ jobs:
           BASALT_ADOPTION_PROOF_WORKERS: "1"
           BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
         run: node scripts/production-ops/prove-provider-adoption.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - name: Upload Google recovery evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        timeout-minutes: 1
+        with:
+          include-hidden-files: true
+          name: google-account-recovery-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
+            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+          if-no-files-found: warn
+  google-account-diagnostics:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'google-account-diagnostics')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Prepare the pinned Google recovery runtime
+        timeout-minutes: 2
+        uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
+      - name: Build the isolated Google recovery test assets
+        timeout-minutes: 2
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Verify the prepared Google recovery browser engine
+        timeout-minutes: 1
+        working-directory: .upstream
+        run: node ../scripts/check-e2e-browser.mjs
       - name: Verify saved Google client comparisons
         timeout-minutes: 3
         working-directory: .upstream
@@ -536,13 +583,13 @@ jobs:
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
-      - name: Upload Google recovery evidence
+      - name: Upload Google client diagnostics evidence
         uses: actions/upload-artifact@v4
         if: always()
         timeout-minutes: 1
         with:
           include-hidden-files: true
-          name: google-account-recovery-e2e
+          name: google-account-diagnostics-e2e
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
@@ -1586,7 +1633,7 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-pool, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, google-account-diagnostics, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:

@@ -41,6 +41,7 @@ test("a client change selects its real product and platform jobs without cloud o
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
     "google-account-recovery",
+    "google-account-diagnostics",
     "contributed-account-recipes",
     "production-ops-identity",
     "production-build",
