@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-bundle-rollout-target",
   "file": "0306-pool-bundle-rollout-target.patch",
-  "content_sha256": "a838ebb8ad394a45ad1ac2a3f7b22b3414019462293bbd84a81dfc18ee12241d",
+  "content_sha256": "66a3c7de3119bd9a718318c292ae3a9033f0e293605cc89bd935695a6955b2d5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

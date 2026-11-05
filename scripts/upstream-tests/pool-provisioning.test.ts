@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import {
   Context,
@@ -997,6 +998,50 @@ test("rotated tokens are never re-signed before the pool Worker reports the new 
       assert.equal(ownedRecord(state!.pools)!.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
     }),
   );
+});
+
+test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the hosted origin", async () => {
+  let release = { revision: "earlier-pool-worker", keyVersion: "" };
+  const reads: string[] = [];
+  const server = createServer((request, response) => {
+    reads.push(request.url ?? "");
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(release));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
+  try {
+    await fixture(({ sql, executor, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const rotated = Redacted.make("cd".repeat(32));
+        const defaults = yield* withPoolDefaults(
+          executor,
+          Option.some(rotated),
+          () => Effect.void,
+          origin,
+        );
+        const run = (id: string) =>
+          Effect.gen(function* () {
+            yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+              values (${id}, 'member', ${organization}, 'person-a')`;
+            return yield* Effect.exit(
+              provision(id, selfHostProvisioningServices).pipe(
+                Effect.provideService(OrganizationDefaults, defaults),
+              ),
+            );
+          });
+        assert.equal((yield* run("behind-1"))._tag, "Failure");
+        release = { revision: poolWorkerRevision, keyVersion: yield* poolTokenKeyVersion(rotated) };
+        assert.equal((yield* run("behind-2"))._tag, "Success");
+        assert.deepEqual(reads, ["/pool/v1/release", "/pool/v1/release"]);
+      }),
+    );
+  } finally {
+    server.close();
+  }
 });
 
 test("ordinary member jobs ask the pool Worker only when they would re-sign", async () => {

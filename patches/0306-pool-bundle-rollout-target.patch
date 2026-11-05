@@ -1,3 +1,16 @@
+diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
+index e41cb24..1233831 100644
+--- a/apps/hosted/cloud/src/implementation/default-app.ts
++++ b/apps/hosted/cloud/src/implementation/default-app.ts
+@@ -20,6 +20,7 @@ export const defaultApp = (
+ ) =>
+   Effect.gen(function* () {
+     const initialize = yield* organizationDefaults(executor, origin, document);
+-    const pools = yield* withPoolDefaults(executor, poolKey, initialize);
++    // The router serves the pool Worker on this origin unless BASALT_POOL_ORIGIN names another.
++    const pools = yield* withPoolDefaults(executor, poolKey, initialize, origin);
+     return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
+   });
 diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
 index aa062a9..8270a2e 100644
 --- a/apps/hosted/server/src/contracts/organization-defaults.ts
@@ -97,7 +110,7 @@ index f16764c..eb034b5 100644
            where member.role = 'owner' and "user"."emailVerified" = true`,
        },
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index af5e329..a3e7b1a 100644
+index af5e329..9981f90 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -12,7 +12,10 @@ import { Config, Effect, Option, type Redacted, Schema } from "effect";
@@ -112,7 +125,7 @@ index af5e329..a3e7b1a 100644
  import { ScheduleWakeup } from "../contracts/schedules.ts";
  import { lockAppLinks } from "./app-accounts.ts";
  import { poolAppSetup } from "./resource-lifecycle.ts";
-@@ -455,6 +458,25 @@ export const poolDefaults = (
+@@ -455,11 +458,32 @@ export const poolDefaults = (
        yield* reconcilePool(executor, key, organization, user);
    }).pipe(Effect.mapError(() => new StorageError()));
  
@@ -138,7 +151,14 @@ index af5e329..a3e7b1a 100644
  /** Ordinary setup commits first; rotation jobs have authority only to renew existing pool tokens. */
  export const withPoolDefaults = (
    executor: Executor,
-@@ -467,11 +489,43 @@ export const withPoolDefaults = (
+   key: Option.Option<Redacted.Redacted<string>>,
+   initialize: Parameters<typeof OrganizationDefaults.of>[0],
++  /** Where the pool Worker answers when BASALT_POOL_ORIGIN is unset, as for native grants. */
++  poolOrigin?: string,
+ ) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+@@ -467,11 +491,43 @@ export const withPoolDefaults = (
      return (organization: OrganizationId, user?: Parameters<typeof initialize>[1]) =>
        Effect.gen(function* () {
          const rotationOnly = yield* PoolTokenRotation;
@@ -175,7 +195,7 @@ index af5e329..a3e7b1a 100644
 +            rotationOnly ||
 +            (yield* recordBehindKey(sql, key, organization, user.userId))
 +          )
-+            yield* awaitPoolWorker(key);
++            yield* awaitPoolWorker(key, poolOrigin);
            yield* poolDefaults(executor, key, organization, user.userId, rotationOnly).pipe(
              Effect.provideService(SqlClient.SqlClient, sql),
              Effect.provideService(PoolAppSource, poolSeed),
@@ -249,10 +269,10 @@ index 1c0aef7..9d79008 100644
            return;
 diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
 new file mode 100644
-index 0000000..aa57f05
+index 0000000..2a84759
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-worker-gate.ts
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,57 @@
 +import { StorageError } from "@executor-js/sdk/core";
 +import { Config, Effect, Option, type Redacted, Schema } from "effect";
 +import { PoolSetupPending } from "../contracts/organization-defaults.ts";
@@ -282,9 +302,12 @@ index 0000000..aa57f05
 +
 +/**
 + * Fail until the pool Worker runs the code revision this server was prepared with and signs with
-+ * this server's key. Hosts without a separate pool Worker origin have nothing to wait for.
++ * this server's key. A host with no pool Worker origin at all has nothing to wait for.
 + */
-+export const awaitPoolWorker = (key: Option.Option<Redacted.Redacted<string>>) =>
++export const awaitPoolWorker = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  fallbackOrigin?: string,
++) =>
 +  Effect.gen(function* () {
 +    const supplied = yield* PoolWorkerReport;
 +    let report;
@@ -294,8 +317,9 @@ index 0000000..aa57f05
 +        Config.option,
 +        Effect.mapError(() => new StorageError()),
 +      );
-+      if (Option.isNone(origin)) return;
-+      report = yield* fetchRelease(origin.value);
++      const target = Option.getOrUndefined(origin) ?? fallbackOrigin;
++      if (target === undefined) return;
++      report = yield* fetchRelease(target);
 +    }
 +    const revision = report.revision === poolWorkerRevision;
 +    const keyVersion = Option.isNone(key)
