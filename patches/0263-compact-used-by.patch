@@ -1,8 +1,7 @@
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
-index 8c3ec05..f5d18b8 100644
 --- a/e2e/tests/account-compact-rows.spec.ts
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
+@@ -4,7 +4,7 @@
  import { FetchHttpClient, HttpClient } from "effect/http";
  import type { Page } from "playwright";
  import { body } from "../support/api.ts";
@@ -11,7 +10,7 @@ index 8c3ec05..f5d18b8 100644
  import { appsManifest } from "../support/apps-release.ts";
  import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
  import { IdentityAccount } from "../support/account-identity-product.ts";
-@@ -13,7 +13,11 @@ import { Browser } from "../support/browser.ts";
+@@ -13,7 +13,11 @@
  import { Evidence } from "../support/evidence.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
  import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
@@ -24,7 +23,7 @@ index 8c3ec05..f5d18b8 100644
  import { accountRow, openRowMenu } from "../support/account-rows.ts";
  import { scenarios } from "../test-plan.ts";
  
-@@ -184,6 +188,47 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+@@ -210,6 +214,47 @@
            expect((yield* fixture.check()).status).toBe(200);
          }
          expect((yield* usage.refresh()).status).toBe(200);
@@ -72,15 +71,15 @@ index 8c3ec05..f5d18b8 100644
          expect((yield* outdated.deploy({ observe: true, health: true })).status).toBe(200);
          const checkOf = (detail: { readonly body: unknown }) =>
            JSON.stringify((detail.body as { health?: unknown }).health ?? null);
-@@ -225,6 +270,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+@@ -251,6 +296,7 @@
              accountRow(page, "Usage account").locator("[data-account-plan]").waitFor(),
              accountRow(page, "New reporter").locator("[data-usage-unread]").waitFor(),
              accountRow(page, "Verified mail").locator("[data-account-verified]").first().waitFor(),
 +            accountRow(page, "Many apps mail").locator("[data-used-by-more]").waitFor(),
-           ]);
-         yield* browser.login(plain.actors.owner);
-         const surfaces = [
-@@ -271,6 +317,38 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+             accountRow(page, "Default")
+               .locator("[data-account-name]", { hasText: "generated@example.test" })
+               .waitFor(),
+@@ -301,6 +347,38 @@
                    expect(action.width).toBeGreaterThan(0);
                    expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
                  }
@@ -116,13 +115,14 @@ index 8c3ec05..f5d18b8 100644
 +                  expect(new Set(line.tops).size, JSON.stringify(line)).toBe(1);
 +                  expect(line.inside, JSON.stringify(line)).toBe(true);
 +                }
-               }
-               yield* evidence.attach(
-                 `compact-rows-${name}-${width}-${scheme}.png`,
-@@ -281,6 +359,34 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                 // Titles at every width: verified identity, then an authored name, then the
+                 // reported email, and only then the generated label.
+                 expect(
+@@ -325,6 +403,34 @@
+                 ),
                );
              }
- 
++
 +        // "+2 more" lists the other apps, each still a link to its Accounts tab.
 +        const others = yield* browser.use("Open the many-apps list", (page) =>
 +          page
@@ -150,15 +150,13 @@ index 8c3ec05..f5d18b8 100644
 +          "Many apps third, the support inbox triage and reply drafter",
 +        ]);
 +        yield* browser.use("Close the many-apps list", (page) => page.keyboard.press("Escape"));
-+
-         const wide = yield* browser.use("Measure the rows at 1280px", (page) =>
-           page
-             .setViewportSize({ width: 1280, height: 900 })
+ 
+         // The generated-label account's own app tab uses the same title.
+         const generatedTab = `/org/${plain.actors.organization.slug}/apps/${generated.app.id}?view=accounts`;
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
-index 767c9df..3f34daf 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -301,7 +301,9 @@ export function AccountRowCells({
+@@ -304,7 +304,9 @@
        <span className={cn("flex min-w-0 items-center", empty)}>{health}</span>
        <span
          className={cn(
@@ -170,10 +168,9 @@ index 767c9df..3f34daf 100644
          )}
        >
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index b140659..6675206 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -48,7 +48,20 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
+@@ -52,7 +52,20 @@
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
  
@@ -194,7 +191,7 @@ index b140659..6675206 100644
  export function AccountsPage<E>({
    query,
    Failure,
-@@ -237,6 +250,17 @@ function AccountsList({
+@@ -241,6 +254,17 @@
                const app = apps.find((item) => item.id === id);
                return app === undefined ? "an app" : appDisplayName(app, brand);
              };
@@ -212,7 +209,7 @@ index b140659..6675206 100644
  
              return (
                <AccountRowProvider key={account.id}>
-@@ -280,26 +304,44 @@ function AccountsList({
+@@ -285,26 +309,44 @@
                      }
                      usersLabel="Used by"
                      users={

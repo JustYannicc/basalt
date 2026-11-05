@@ -72,15 +72,13 @@ index 1c827c5..231a2f2 100644
            accountMenu: (account, slot, requirement, linked) =>
              linked &&
              (usable(account) || removable(links, slot, account)) && (
-@@ -263,7 +293,7 @@ export function AppAccounts({
-               </Button>
-             ),
+@@ -263,5 +293,5 @@ export function AppAccounts({
+           },
          }
 -      : { links, viewer, readOnly, accountRow };
 +      : { links, viewer, readOnly, accountRow, accountTraffic };
    const notDeployed = "Deploy this app to link accounts.";
    return (
-     <>
 diff --git a/e2e/support/account-traffic.ts b/e2e/support/account-traffic.ts
 new file mode 100644
 index 0000000..f3d9cb4

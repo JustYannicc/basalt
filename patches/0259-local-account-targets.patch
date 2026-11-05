@@ -666,11 +666,13 @@ diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
 index b508f390a..2c06eaac7 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -63,3 +63,4 @@ export { asciiJson } from "./implementation/ascii-json.ts";
+@@ -61,5 +61,6 @@
+ export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
+ export { asciiJson } from "./implementation/ascii-json.ts";
++export * from "./contracts/account-target.ts";
  
  export * from "./contracts/app-views.ts";
  export * from "./contracts/app-calls.ts";
-+export * from "./contracts/account-target.ts";
 diff --git a/packages/sdk/src/implementation/account-target-schema.ts b/packages/sdk/src/implementation/account-target-schema.ts
 new file mode 100644
 index 000000000..9d5f8a894

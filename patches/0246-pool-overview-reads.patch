@@ -298,19 +298,19 @@ index 3007bdc13..1bb3c55ef 100644
        }),
      );
      const client = yield* HttpClient.HttpClient;
--    // Match poolUsageSeriesPath and lastSuccessAtPath in Basalt's src/pool/model-history/series-http.ts.
+-    // Signed host operations use the public pool boundary.
 +    // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
      const path =
        action === "poolUsageSeries"
          ? "/pool/v1/usage/series"
          : action === "lastSuccessAt"
            ? "/pool/v1/usage/last-success"
--          : `/__setup/v1/${action}`;
+-          : `/pool/v1/${action}`;
 +          : action === "poolOverview"
 +            ? "/pool/v1/usage/overview"
 +            : action === "poolPersonalOverview"
 +              ? "/pool/v1/usage/personal-overview"
-+              : `/__setup/v1/${action}`;
++              : `/pool/v1/${action}`;
      const response = yield* client.post(new URL(path, origin).href, {
        body: HttpBody.jsonUnsafe({ envelope }),
      });

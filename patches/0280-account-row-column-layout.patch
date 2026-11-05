@@ -1,6 +1,5 @@
 diff --git a/e2e/support/account-row-layout.ts b/e2e/support/account-row-layout.ts
 new file mode 100644
-index 000000000..5349f3283
 --- /dev/null
 +++ b/e2e/support/account-row-layout.ts
 @@ -0,0 +1,77 @@
@@ -82,20 +81,29 @@ index 000000000..5349f3283
 +    }).observe(document, { subtree: true, childList: true, attributes: true });
 +  }, label);
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
-index 683233e23..ccf125cc1 100644
 --- a/e2e/tests/account-compact-rows.spec.ts
 +++ b/e2e/tests/account-compact-rows.spec.ts
-@@ -16,2 +16,3 @@ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
- import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+@@ -18,6 +18,7 @@
+   observationFixture,
+   observationSource,
+ } from "../support/account-observation-fixture.ts";
 +import { accountRowLayout, trackAccountRowHeight } from "../support/account-row-layout.ts";
  import { accountRow, openRowMenu } from "../support/account-rows.ts";
-@@ -266,2 +267,5 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -310,6 +311,9 @@
+             `/org/${plain.actors.organization.slug}/apps/${usage.app.id}?view=accounts`,
+           ],
          ] as const;
 +        yield* browser.use("Observe the verified row through hydration and setup", (page) =>
 +          trackAccountRowHeight(page, "Verified mail"),
 +        );
          for (const width of [1280, 390])
-@@ -284,4 +288,46 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+           for (const scheme of ["light", "dark"] as const)
+             for (const [name, url] of surfaces) {
+@@ -328,15 +332,57 @@
+                   ),
+               );
                if (name === "accounts") {
 +                const layout = yield* browser.use(
 +                  "Account columns share tracks and actions leave names readable",
@@ -143,19 +151,27 @@ index 683233e23..ccf125cc1 100644
 -                  "The verified name and Add app action both keep space",
 +                  "The verified name and row menu both keep space",
                    (page) =>
-@@ -292,3 +338,3 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                     Promise.all([
+                       accountRow(page, "Verified mail")
+                         .locator("[data-account-name]")
+                         .boundingBox(),
                        accountRow(page, "Verified mail")
 -                        .getByRole("button", { name: "Add Fixture identity app", exact: true })
 +                        .getByRole("button", { name: "Manage Verified mail", exact: true })
                          .boundingBox(),
+                     ]),
+                 );
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index 1d3f84b77..5c873718a 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
-@@ -1 +1,2 @@
+@@ -1,3 +1,4 @@
 +import { accountRowLayout } from "../support/account-row-layout.ts";
  import { expect, layer } from "@effect/vitest";
-@@ -314,3 +315,11 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+ import { Effect, Schema } from "effect";
+ import type { Page } from "playwright";
+@@ -312,7 +313,15 @@
+           page.getByPlaceholder("Search accounts…").fill(""),
+         );
          yield* browser.use("Add a later app from the saved account", (page) =>
 -          page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
 +          page
@@ -168,7 +184,11 @@ index 1d3f84b77..5c873718a 100644
 +              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
 +            ),
          );
-@@ -408,3 +417,9 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.use("Choose the later app", (page) =>
+           page
+@@ -406,7 +415,13 @@
+           ).toBe(retainedBinding.account);
+         }
          yield* browser.use("Inspect each binding's independent actions", (page) =>
 -          page.getByRole("button", { name: "Manage apps", exact: true }).click(),
 +          page
@@ -179,7 +199,11 @@ index 1d3f84b77..5c873718a 100644
 +            .click()
 +            .then(() => page.getByRole("menuitem", { name: "Manage apps", exact: true }).click()),
          );
-@@ -520,5 +535,5 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.checkpoint("Every binding remains independently manageable");
+         yield* browser.use("Close binding actions and inspect the phone layout", (page) =>
+@@ -518,9 +533,9 @@
+             .then(() => page.getByRole("heading", { name: /^Accounts/ }).waitFor()),
+         );
          const row = (page: Page, app: string) =>
 -          page
 -            .locator(".inventory-row")
@@ -188,7 +212,11 @@ index 1d3f84b77..5c873718a 100644
 +            has: page.getByRole("link").filter({ has: page.getByText(app, { exact: true }) }),
 +          });
          const mark = (page: Page, app: string) =>
-@@ -549,2 +564,41 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+           row(page, app)
+             .getByRole("img")
+@@ -547,6 +562,45 @@
+             );
+         const expectMarks = (width: string) =>
            Effect.gen(function* () {
 +            yield* browser.use(`${width}: each fixture row is loaded`, (page) =>
 +              Promise.all(
@@ -230,25 +258,34 @@ index 1d3f84b77..5c873718a 100644
 +            );
 +            expect(menuLabels).toEqual([true, true]);
              for (const [app, name, domain] of [
-@@ -618,3 +672,3 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+               ["Mail fixture", "Google", "google.com"],
+               ["Issues fixture", "Atlassian", "atlassian.com"],
+@@ -616,13 +670,16 @@
+           page
+             .goto("/accounts")
              .then(() =>
 -              page.getByRole("button", { name: "Add Fixture identity app", exact: true }).waitFor(),
 +              page.getByRole("button", { name: "Manage same@example.test", exact: true }).waitFor(),
              ),
-@@ -623,4 +677,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         );
+         yield* browser.use("Connect Writer", (page) =>
            page
 -            .getByRole("button", { name: "Add Fixture identity app", exact: true })
+-            .click()
 +            .getByRole("button", { name: "Manage same@example.test", exact: true })
-             .click()
++            .click()
 +            .then(() =>
 +              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
 +            )
              .then(() => page.getByRole("combobox", { name: "App", exact: true }).click())
+             .then(() => page.getByRole("option", { name: "Writer", exact: true }).click()),
+         );
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
-index f1c15bd0f..da543d123 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
-@@ -28,3 +28,7 @@ import { accountTitle } from "../../contracts/account-title.ts";
+@@ -26,17 +26,23 @@
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountTitle } from "../../contracts/account-title.ts";
  
 -/** Account management lives on its list row; products supply the menu items they support. */
 +/**
@@ -257,20 +294,24 @@ index f1c15bd0f..da543d123 100644
 + * grouped identity row's, leaves the row's details in view and lists only its children.
 + */
  export function AccountActionsMenu({
-@@ -32,2 +36,3 @@ export function AccountActionsMenu({
+   account,
    children,
 +  rowActions = true,
  }: {
-@@ -35,2 +40,3 @@ export function AccountActionsMenu({
+   readonly account: Pick<AccountSummary, "label">;
    readonly children: ReactNode;
 +  readonly rowActions?: boolean;
  }) {
-@@ -38,3 +44,3 @@ export function AccountActionsMenu({
+   return (
      <DropdownMenu>
 -      <AccountRowMenuPresence />
 +      {rowActions && <AccountRowMenuPresence />}
        <DropdownMenuTrigger asChild>
-@@ -48,4 +54,5 @@ export function AccountActionsMenu({
+         <Button
+           variant="ghost"
+@@ -46,8 +52,9 @@
+           <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
+         </Button>
        </DropdownMenuTrigger>
 -      <DropdownMenuContent align="end" className="min-w-44">
 -        <AccountRowMenuItems />
@@ -278,11 +319,14 @@ index f1c15bd0f..da543d123 100644
 +      <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
 +        {rowActions && <AccountRowMenuItems />}
          {children}
+       </DropdownMenuContent>
+     </DropdownMenu>
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
-index 015b8ab09..593958d2a 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -132,2 +132,18 @@ export interface AccountRowUsage {
+@@ -130,6 +130,22 @@
+   readonly disabledReason?: string | undefined;
+ }
  
 +/** A row-level action a host control offers through the row's menu, such as adding an app. */
 +export interface AccountRowMenuAction {
@@ -301,13 +345,21 @@ index 015b8ab09..593958d2a 100644
 +};
 +
  interface AccountRowState {
-@@ -143,2 +159,5 @@ interface AccountRowState {
+   /** A row menu is mounted, so row-level actions move into it. */
+   readonly menu: boolean;
+@@ -141,6 +157,9 @@
+   /** Row content that only Details shows, such as requested access or the description. */
+   readonly extra: boolean;
    readonly setExtra: (present: boolean) => void;
 +  /** Adding another app for the row's verified identity, offered from the row's menu. */
 +  readonly identity: AccountRowMenuAction | undefined;
 +  readonly setIdentity: (action: AccountRowMenuAction | undefined) => void;
  }
-@@ -155,5 +174,17 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+ 
+ const AccountRowContext = createContext<AccountRowState | undefined>(undefined);
+@@ -153,9 +172,21 @@
+   const [details, setDetails] = useState(false);
+   const [usage, setUsage] = useState<AccountRowUsage>();
    const [extra, setExtra] = useState(false);
 +  const [identity, setIdentity] = useState<AccountRowMenuAction>();
    const value = useMemo(
@@ -327,7 +379,11 @@ index 015b8ab09..593958d2a 100644
 +    }),
 +    [menu, details, usage, extra, identity],
    );
-@@ -200,6 +231,18 @@ export function AccountRowDetails({
+   return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
+ }
+@@ -198,10 +229,22 @@
+   return shown ? children : null;
+ }
  
 -/** The row's own actions at the top of its menu: refreshing usage and opening details. */
 +/** The identity action as a menu item; the label wraps rather than truncating on a phone. */
@@ -348,7 +404,11 @@ index 015b8ab09..593958d2a 100644
 +  const details = row.usage !== undefined || row.extra;
 +  if (!details && row.identity === undefined) return null;
    const { refresh, pending = false, disabledReason } = row.usage ?? {};
-@@ -220,5 +263,8 @@ export function AccountRowMenuItems() {
+   return (
+     <>
+@@ -218,9 +261,12 @@
+           </span>
+         </DropdownMenuItem>
        )}
 -      <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
 -        {row.details ? "Hide details" : "Details"}
@@ -360,14 +420,21 @@ index 015b8ab09..593958d2a 100644
 +      )}
 +      <AccountRowIdentityItem />
        <DropdownMenuSeparator />
-@@ -239,3 +285,5 @@ const narrow = {
+     </>
+   );
+@@ -237,18 +283,20 @@
+ 
+ /**
   * Columns: [choice] · logo · account · type · plan · [requests 7d] · health · used by · menu. A
 - * list with `requests` passes every row's `requests` cell, empty where nothing was counted.
 + * list with `requests` passes every row's `requests` cell, empty where nothing was counted. The
 + * menu track is a fixed 2rem in every list, so rows with and without a menu share their columns;
 + * every other row action lives in that menu.
   */
-@@ -246,7 +294,7 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
+ export const accountRowGrid = (lead: boolean, requests = false) =>
+   cn(
+     "grid items-center gap-x-3",
+     lead
        ? requests
 -        ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
 -        : "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
@@ -379,7 +446,11 @@ index 015b8ab09..593958d2a 100644
 +        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
 +        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]",
      lead ? narrow.lead : narrow.plain,
-@@ -320,4 +368,5 @@ export function AccountRowCells({
+   );
+ 
+@@ -320,15 +368,28 @@
+ }
+ 
  /**
 - * The menu cell. On narrow lists it stays on the first line, centred on the name: the cell is one
 - * name line tall and a larger button overflows it evenly.
@@ -387,13 +458,18 @@ index 015b8ab09..593958d2a 100644
 + * centred on the name: the cell is one name line tall and a larger button overflows it evenly. A
 + * status mark beside the button, such as a spinner, sits outside the track (`AccountRowMenuMark`).
   */
-@@ -327,3 +376,3 @@ export function AccountRowMenu({ children }: { readonly children?: ReactNode })
+ export function AccountRowMenu({ children }: { readonly children?: ReactNode }) {
+   return (
+     <span
        data-account-row-menu
 -      className="flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
 +      className="relative flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
      >
-@@ -334,2 +383,14 @@ export function AccountRowMenu({ children }: { readonly children?: ReactNode })
- 
++      {children}
++    </span>
++  );
++}
++
 +/**
 + * A small mark beside the menu button, such as a pending spinner. On wide lists it hangs into the
 + * gap before the menu track instead of widening it; narrow lists keep it in line.
@@ -401,46 +477,64 @@ index 015b8ab09..593958d2a 100644
 +export function AccountRowMenuMark({ children }: { readonly children: ReactNode }) {
 +  return (
 +    <span className="pointer-events-none absolute top-1/2 right-full flex -translate-y-1/2 @max-[640px]/account-rows:static @max-[640px]/account-rows:mr-0 @max-[640px]/account-rows:translate-y-0">
-+      {children}
-+    </span>
-+  );
-+}
-+
- /** Column names for a list of rows without a choice column; hidden where the cells wrap. */
-@@ -347,3 +408,3 @@ export function AccountRowHeader({
+       {children}
+     </span>
+   );
+@@ -347,11 +408,11 @@
+     <div
+       className={cn(
          accountRowGrid(false, requests !== undefined),
 -        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
 +        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
        )}
-@@ -351,3 +412,3 @@ export function AccountRowHeader({
+     >
        <span className="col-span-2">Account</span>
 -      <span>Type</span>
 +      <span data-account-type-header>Type</span>
        <span>Plan</span>
+       {requests !== undefined && (
+         <span
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index ca9f48bd3..e3ea67de1 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -9,2 +9,3 @@ import {
+@@ -7,6 +7,7 @@
+   AccountRowDescription,
+   AccountRowDetails,
    AccountRowHeader,
 +  AccountRowIdentityItem,
    AccountRowLogo,
-@@ -21,2 +22,4 @@ import {
+   AccountRowMenu,
+   AccountRowName,
+@@ -19,6 +20,8 @@
+   accountRowGrid,
+   accountRowType,
    accountRowsContainer,
 +  menuTrigger,
 +  useAccountRow,
  } from "./account-row.tsx";
-@@ -33,2 +36,3 @@ import { cn } from "../lib/utils.ts";
+ import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
+ import {
+@@ -31,6 +34,7 @@
+ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
  import { useEffect, useRef, useState, type ReactNode } from "react";
 +import { AccountActionsMenu } from "./account-actions.tsx";
  import { QueryResult, useQuery, useDashboard } from "./context.tsx";
-@@ -50,3 +54,4 @@ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -48,7 +52,8 @@
+ } from "../../contracts/account-identities.ts";
+ import { RequestedAccess } from "./oauth-scopes.tsx";
  import { Button } from "../components/button.tsx";
 -import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 +import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 +import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
-@@ -312,32 +317,33 @@ function AccountsList({
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+@@ -352,36 +357,37 @@
+                     }
+                   />
                    <AccountRowMenu>
 +                    {/* Renders only its dialog here; it offers itself from the row's one menu. */}
                      {account.identity !== undefined && identityActions?.(bindings, data)}
@@ -502,7 +596,11 @@ index ca9f48bd3..e3ea67de1 100644
 -                      </OutsideAccountRow>
 +                      accountActions(account, { binding: false })
                      )}
-@@ -395 +401,55 @@ function AccountsList({
+                   </AccountRowMenu>
+                   {family !== undefined && (
+@@ -435,3 +441,57 @@
+     </>
+   );
  }
 +
 +/**
@@ -559,14 +657,19 @@ index ca9f48bd3..e3ea67de1 100644
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 5b5a9b926..315f8af8e 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -36,2 +36,3 @@ import {
+@@ -34,6 +34,7 @@
+   AccountRowLogo,
+   AccountRowMenu,
    AccountRowMenuItems,
 +  AccountRowMenuMark,
    AccountRowMenuPresence,
-@@ -1487,3 +1488,7 @@ function ChoiceRow<E>({
+   AccountRowName,
+   AccountRowProvider,
+@@ -1485,7 +1486,11 @@
+             }
+           />
            <AccountRowMenu>
 -            {pending && <Spinner className="size-3.5 text-muted-foreground" />}
 +            {pending && (
@@ -575,11 +678,12 @@ index 5b5a9b926..315f8af8e 100644
 +              </AccountRowMenuMark>
 +            )}
              {hostProvisioned || automatic
+               ? undefined
+               : data.accountMenu?.(account, slot, requirement, linked)}
 diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
-index 104f83100..fd3fe7737 100644
 --- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
-@@ -1,3 +1,7 @@
+@@ -1,5 +1,9 @@
 -/** Start from the verified account row, then use the product's existing app connection form. */
 -import { useState, type ReactNode } from "react";
 +/**
@@ -589,11 +693,19 @@ index 104f83100..fd3fe7737 100644
 + */
 +import { useEffect, useRef, useState, type ReactNode } from "react";
  import type { AccountId, AccountRequirement, App } from "@executor-js/sdk";
-@@ -15,2 +19,3 @@ import {
+ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { identityAppTargets } from "../../contracts/identity-consent.ts";
+@@ -13,6 +17,7 @@
+   SelectValue,
+ } from "../components/select.tsx";
  import { Label } from "../components/label.tsx";
 +import { useAccountRow } from "./account-row.tsx";
  
-@@ -38,2 +43,18 @@ export function IdentityAppPicker({
+ export function IdentityAppPicker({
+   bindings,
+@@ -36,6 +41,22 @@
+   const [open, setOpen] = useState(false);
+   const [selected, setSelected] = useState("");
    const [busy, setBusy] = useState(false);
 +  // The row menu's trigger, focused again when the dialog closes.
 +  const returnFocus = useRef<HTMLElement | null>(null);
@@ -612,7 +724,11 @@ index 104f83100..fd3fe7737 100644
 +    return () => setIdentity(undefined);
 +  }, [setIdentity, label]);
    if (identity === undefined || account === undefined) return null;
-@@ -53,13 +74,15 @@ export function IdentityAppPicker({
+   const targets = identityAppTargets(inventory, identity.issuer);
+   const choices = targets.filter(
+@@ -51,25 +72,36 @@
+   const chosen = targets.find((entry) => `${entry.app.id}:${entry.requirement}` === selected);
+   return (
      <>
 -      <Button
 -        variant="outline"
@@ -639,7 +755,10 @@ index 104f83100..fd3fe7737 100644
 +        </Button>
 +      )}
        <Dialog
-@@ -70,4 +93,13 @@ export function IdentityAppPicker({
+         open={open}
+         onOpenChange={(value) => {
+           if (!busy) setOpen(value);
+         }}
        >
 -        <DialogContent className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]">
 -          <DialogTitle>Add {identity.name} app</DialogTitle>
@@ -655,3 +774,5 @@ index 104f83100..fd3fe7737 100644
 +        >
 +          <DialogTitle>{label}</DialogTitle>
            <DialogDescription>Use {identity.label} with another app.</DialogDescription>
+           {choices.length === 0 && chosen === undefined ? (
+             <p className="text-sm text-muted-foreground">
