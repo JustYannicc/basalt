@@ -176,7 +176,7 @@ diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactiv
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8927,6 +8927,16 @@
+@@ -9029,6 +9029,16 @@
        "self-host": scheduled,
        local: na("Uses hosted app-account access policies."),
        cloud: na("Uses a process-owned driver registration and synthetic credential custodian."),
@@ -196,7 +196,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 diff --git a/e2e/tests/account-acquisition.spec.ts b/e2e/tests/account-acquisition.spec.ts
 --- a/e2e/tests/account-acquisition.spec.ts
 +++ b/e2e/tests/account-acquisition.spec.ts
-@@ -8,6 +8,57 @@
+@@ -8,6 +8,81 @@
  import { scenarios } from "../test-plan.ts";
  
  layer(HostedLive, { excludeTestServices: true })("Reusable hosted accounts", (it) => {
@@ -225,6 +225,30 @@ diff --git a/e2e/tests/account-acquisition.spec.ts b/e2e/tests/account-acquisiti
 +        expect((yield* backend.calls).filter((call) => call.step === "status")).toHaveLength(2);
 +        expect((yield* backend.calls).filter((call) => call.step === "start")).toHaveLength(1);
 +        expect((yield* backend.calls).filter((call) => call.step === "submit")).toHaveLength(1);
++
++        const stale = (yield* body(
++          Resource,
++          yield* f.pending(actors.member, f.manager.app.id, account.id),
++        )).id;
++        expect((yield* f.start(actors.member, stale)).status).toBe(200);
++        const fresh = (yield* body(
++          Resource,
++          yield* f.pending(actors.member, f.manager.app.id, account.id),
++        )).id;
++        expect((yield* f.start(actors.member, fresh)).status).toBe(200);
++        expect((yield* f.submit(actors.member, fresh)).status).toBe(200);
++        const staleStatus = () =>
++          api.request(actors.member, "GET", `${f.connectPath(stale)}/status`);
++        const superseded = yield* staleStatus();
++        expect(superseded.status, JSON.stringify(superseded.body)).toBe(422);
++        expect(superseded.body).toMatchObject({
++          receipt: { phase: "state", errorClass: "binding_changed", retryable: false },
++        });
++        const staleCalls = (yield* backend.calls).length;
++        const retainedSuperseded = yield* staleStatus();
++        expect(retainedSuperseded.status).toBe(422);
++        expect(retainedSuperseded.body).toEqual(superseded.body);
++        expect((yield* backend.calls).length).toBe(staleCalls);
 +
 +        const second = (yield* body(Resource, yield* f.pending(actors.member))).id;
 +        expect((yield* f.start(actors.member, second)).status).toBe(200);
@@ -257,7 +281,7 @@ diff --git a/e2e/tests/account-acquisition.spec.ts b/e2e/tests/account-acquisiti
 diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
 --- a/packages/sdk/src/contracts/interactive-accounts.ts
 +++ b/packages/sdk/src/contracts/interactive-accounts.ts
-@@ -15,17 +15,63 @@
+@@ -15,17 +15,66 @@
    type StorageError,
  } from "./shared.ts";
  
@@ -279,6 +303,7 @@ diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/s
 +    "timeout",
 +    "home_unavailable",
 +    "home_rejected",
++    "binding_changed",
 +    "invalid_response",
 +    "internal",
 +  ]),
@@ -309,13 +334,15 @@ diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/s
 +    description:
 +      receipt === undefined
 +        ? "The app could not complete this sign-in step."
-+        : receipt.errorClass === "runtime_unhealthy"
-+          ? "The sign-in backend is temporarily unhealthy."
-+          : receipt.errorClass === "home_rejected"
-+            ? "The sign-in backend rejected this step."
-+            : receipt.errorClass === "timeout"
-+              ? "The sign-in backend did not answer in time."
-+              : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
++        : receipt.errorClass === "binding_changed"
++          ? "A newer sign-in replaced this account connection."
++          : receipt.errorClass === "runtime_unhealthy"
++            ? "The sign-in backend is temporarily unhealthy."
++            : receipt.errorClass === "home_rejected"
++              ? "The sign-in backend rejected this step."
++              : receipt.errorClass === "timeout"
++                ? "The sign-in backend did not answer in time."
++                : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
 +    retryable: receipt?.retryable ?? false,
 +    recovery: {
 +      action: receipt?.retryable
@@ -328,7 +355,7 @@ diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/s
  });
  export type InteractiveConnectionFailed = typeof InteractiveConnectionFailed.Type;
  
-@@ -36,6 +82,7 @@
+@@ -36,6 +85,7 @@
    session: Schema.optionalKey(Schema.NonEmptyString),
    instructions: Schema.optionalKey(InteractiveInstructions),
    failed: Schema.optionalKey(Schema.NonEmptyString),
@@ -383,23 +410,28 @@ diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/
        if (
          previous?.instructions?.expiresAt !== undefined &&
          previous.instructions.expiresAt <= (yield* Clock.currentTimeMillis)
-@@ -173,7 +180,40 @@
+@@ -173,7 +180,49 @@
        const invoke = yield* prepareContext(input, claimed.row, claimed.session, command);
        const result = yield* invoke(command).pipe(
          Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),
 -        Effect.onError(() => recordFailure(input, claimed)),
 +        Effect.catch((error) => {
-+          const receipt = Schema.is(InteractiveConnectionFailed)(error)
-+            ? error.receipt
-+            : claimed.session.driver === undefined
-+              ? undefined
-+              : {
-+                  phase: "request" as const,
-+                  errorClass: Cause.isTimeoutError(error)
-+                    ? ("timeout" as const)
-+                    : ("internal" as const),
-+                  retryable: true,
-+                };
++          const changedBinding =
++            Schema.is(AccountAcquisitionUnavailable)(error) && error.reason === "changed";
++          const receipt = changedBinding
++            ? { phase: "state" as const, errorClass: "binding_changed" as const, retryable: false }
++            : Schema.is(InteractiveConnectionFailed)(error)
++              ? error.receipt
++              : claimed.session.driver === undefined ||
++                  Schema.is(AccountAcquisitionUnavailable)(error)
++                ? undefined
++                : {
++                    phase: "request" as const,
++                    errorClass: Cause.isTimeoutError(error)
++                      ? ("timeout" as const)
++                      : ("internal" as const),
++                    retryable: true,
++                  };
 +          if (receipt?.retryable) {
 +            if (step === "status")
 +              return Effect.logWarning("INTERACTIVE_ACQUISITION_RETRY", receipt).pipe(
@@ -416,16 +448,20 @@ diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/
 +              ),
 +            );
 +          }
-+          return recordFailure(
-+            input,
-+            claimed,
-+            Schema.is(InteractiveConnectionFailed)(error) ? error.receipt : undefined,
-+          ).pipe(Effect.andThen(Effect.fail(error)));
++          return recordFailure(input, claimed, receipt).pipe(
++            Effect.andThen(
++              Effect.fail(
++                changedBinding && receipt !== undefined
++                  ? new InteractiveConnectionFailed({ reason: "step", receipt })
++                  : error,
++              ),
++            ),
++          );
 +        }),
        );
        const persist = transaction(db, (tx) =>
          Effect.gen(function* () {
-@@ -342,7 +382,13 @@
+@@ -342,7 +391,13 @@
              input: { method: input.method },
            }).pipe(
              Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStart)),
