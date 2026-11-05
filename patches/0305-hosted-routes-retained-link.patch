@@ -124,7 +124,7 @@ diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted
 diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
 --- a/e2e/tests/hosted-routes.spec.ts
 +++ b/e2e/tests/hosted-routes.spec.ts
-@@ -3,7 +3,12 @@
+@@ -3,9 +3,13 @@
  import { Effect, Schema } from "effect";
  import { Api, body } from "../support/api.ts";
  import { Actors } from "../support/actors.ts";
@@ -136,9 +136,11 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
 +  unlinkAccount,
 +} from "../support/app-accounts.ts";
  import { withHostedHttpCase } from "../support/case.ts";
- import { App } from "../support/contracts.ts";
+-import { App } from "../support/contracts.ts";
  import { cloudLocks } from "../support/cloud-locks.ts";
-@@ -132,7 +137,8 @@
+ import { Emulators } from "../support/emulators.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+@@ -132,7 +136,8 @@
              const accounts = yield* linkedAccountIds(actor, app.path);
              expect(accounts).toHaveLength(1);
              return { actor, app, account: accounts[0]! };
@@ -148,7 +150,7 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
          const results = yield* Effect.forEach(
            selected,
            ({ actor, app, account }) =>
-@@ -145,9 +151,7 @@
+@@ -145,9 +150,7 @@
          );
          const completed = results.filter(
            (result) =>
@@ -159,7 +161,7 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
          );
          const rejected = results.filter(
            (result) =>
-@@ -232,14 +236,35 @@
+@@ -232,14 +235,35 @@
          ).toEqual([{ calls: 1 }]);
  
          // Explicitly relinking the retained account restores access without provisioning another.
