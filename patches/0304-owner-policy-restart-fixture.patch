@@ -1,0 +1,480 @@
+diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
+--- a/e2e/tests/tool-policies.spec.ts
++++ b/e2e/tests/tool-policies.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema, Schedule } from "effect";
++import { Effect, Schema } from "effect";
+ import { connectionsPath } from "../support/app-accounts.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -7,29 +7,10 @@
+ import { withHostedHttpCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+-import { serverControl } from "../support/server-control.ts";
+-import { Target } from "../support/platform.ts";
++import { ownerToolPolicyCase } from "../support/owner-tool-policy-case.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Policy = Schema.Struct({ id: Schema.String, revision: Schema.Int, revoked: Schema.Boolean });
+-const History = Schema.Struct({
+-  items: Schema.Array(
+-    Schema.Struct({
+-      action: Schema.String,
+-      actor: Schema.String,
+-      actorName: Schema.String,
+-      snapshot: Schema.Struct({ revision: Schema.Int }),
+-    }),
+-  ),
+-});
+-const source = `import {defineApp,query,mutation,workflow,object,string,router} from "apps";
+-const input=object({title:string()});
+-const read=query({input},async(_ctx,value)=>({read:value.title}));
+-const write=mutation({input,approval:()=>"user-approval"},async(_ctx,value)=>({wrote:value.title}));
+-const denied=mutation({input,approval:()=>"denied"},async()=>({ran:true}));
+-const failed=mutation({input,approval:()=>{throw new Error("policy failure");}},async()=>({ran:true}));
+-const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("read",read,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
+-export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe,other:probe}});`;
+ 
+ layer(RuntimeLive, { excludeTestServices: true })("General approval policies", (it) => {
+   it.effect(scenarios.hostedAccountToolPolicies.title, (context) =>
+@@ -168,189 +149,6 @@
+     ),
+   );
+   it.effect(scenarios.hostedToolPolicies.title, (context) =>
+-    withHostedHttpCase(
+-      context,
+-      Effect.gen(function* () {
+-        const api = yield* Api,
+-          actors = yield* Actors;
+-        const prefix = `/api/organizations/${actors.organization.id}`;
+-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-          name: "Policy target",
+-          files: [{ path: "index.ts", content: source }, appsManifest],
+-        });
+-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+-        const app = yield* body(Resource, deployed);
+-        yield* Effect.addFinalizer(() =>
+-          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+-        );
+-        const path = `${prefix}/tool-policies`;
+-        const target = { kind: "app", app: app.id };
+-        const call = (tool: string, title = "safe") =>
+-          api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
+-            tool,
+-            kind: tool === "read" ? "query" : "mutation",
+-            input: { title },
+-          });
+-        const save = (mode: string, policy?: typeof Policy.Type) =>
+-          api.request(
+-            actors.owner,
+-            policy === undefined ? "POST" : "PUT",
+-            policy === undefined ? path : `${path}/${policy.id}`,
+-            { target, mode, ...(policy === undefined ? {} : { revision: policy.revision }) },
+-          );
+-        const workflowProbe = (workflow = "probe") =>
+-          Effect.gen(function* () {
+-            const started = yield* api.request(
+-              actors.owner,
+-              "POST",
+-              `${prefix}/apps/${app.id}/workflow-runs`,
+-              { workflow, input: { title: "safe" } },
+-            );
+-            expect(started.status, JSON.stringify(started.body)).toBe(200);
+-            const run = yield* body(Resource, started);
+-            const result = yield* Effect.gen(function* () {
+-              return yield* body(
+-                Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) }),
+-                yield* api.request(
+-                  actors.owner,
+-                  "GET",
+-                  `${prefix}/apps/${app.id}/workflow-runs/${run.id}`,
+-                ),
+-              );
+-            }).pipe(
+-              Effect.repeat({
+-                while: (result) => result.status === "queued" || result.status === "running",
+-                schedule: Schedule.spaced("100 millis"),
+-              }),
+-              Effect.timeout("30 seconds"),
+-            );
+-            expect(result.status, JSON.stringify(result)).toBe("complete");
+-            return result.output;
+-          });
+-        expect((yield* call("read")).body).toEqual({ read: "safe" });
+-        expect((yield* call("write")).status).toBe(409);
+-        const first = yield* save("always-ask");
+-        expect(first.status, JSON.stringify(first.body)).toBe(200);
+-        const always = yield* body(Policy, first);
+-        // This query has no app approval callback. The host must still ask.
+-        expect((yield* call("read")).status).toBe(409);
+-        expect((yield* call("write")).status).toBe(409);
+-        const scopedReply = yield* api.request(actors.owner, "POST", path, {
+-          target: { kind: "tool", app: app.id, tool: "read" },
+-          mode: "never-ask",
+-          workflow: "probe",
+-        });
+-        expect(scopedReply.status, JSON.stringify(scopedReply.body)).toBe(200);
+-        const scoped = yield* body(Policy, scopedReply);
+-        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
+-        expect(yield* workflowProbe("other")).toEqual({ blocked: true });
+-        expect((yield* call("read")).status).toBe(409);
+-        const scopeHistory = yield* api.request(
+-          actors.owner,
+-          "GET",
+-          `${path}/${scoped.id}/history`,
+-        );
+-        expect(scopeHistory.body).toMatchObject({ items: [{ snapshot: { workflow: "probe" } }] });
+-        expect(
+-          (yield* api.request(
+-            actors.owner,
+-            "DELETE",
+-            `${path}/${scoped.id}?revision=${scoped.revision}`,
+-          )).status,
+-        ).toBe(200);
+-        expect(yield* workflowProbe()).toEqual({ blocked: true });
+-        expect(
+-          (yield* api.request(actors.member, "PUT", `${path}/${always.id}`, {
+-            target,
+-            mode: "never-ask",
+-            revision: always.revision,
+-          })).status,
+-        ).toBe(403);
+-        expect(
+-          (yield* api.request(actors.owner, "PUT", `${path}/${always.id}`, {
+-            target,
+-            mode: "never-ask",
+-            revision: 0,
+-          })).status,
+-        ).toBe(409);
+-        const neverReply = yield* save("never-ask", always);
+-        expect(neverReply.status, JSON.stringify(neverReply.body)).toBe(200);
+-        const never = yield* body(Policy, neverReply);
+-        expect((yield* call("read")).body).toEqual({ read: "safe" });
+-        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+-        expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
+-        expect((yield* call("denied")).status).not.toBe(200);
+-        expect((yield* call("failed")).status).not.toBe(200);
+-        const writesReply = yield* save("ask-writes", never);
+-        expect(writesReply.status, JSON.stringify(writesReply.body)).toBe(200);
+-        const writes = yield* body(Policy, writesReply);
+-        expect((yield* call("read")).body).toEqual({ read: "safe" });
+-        expect((yield* call("write")).status).toBe(409);
+-        const specific = yield* api.request(actors.owner, "POST", path, {
+-          target: { kind: "tool", app: app.id, tool: "write" },
+-          mode: "never-ask",
+-          inputSchema: {
+-            type: "object",
+-            properties: { title: { const: "safe" } },
+-            required: ["title"],
+-          },
+-        });
+-        expect(specific.status, JSON.stringify(specific.body)).toBe(200);
+-        const narrower = yield* body(Policy, specific);
+-        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+-        expect((yield* call("write", "outside")).status).toBe(409);
+-        // Cloud constructs its executor per event; only the persistent self-host process needs a restart.
+-        if ((yield* Target).metadata.target === "self-host") yield* serverControl("restart");
+-        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+-        const revoked = yield* api.request(
+-          actors.owner,
+-          "DELETE",
+-          `${path}/${narrower.id}?revision=${narrower.revision}`,
+-        );
+-        expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+-        expect((yield* call("write")).status).toBe(409);
+-        const removed = yield* api.request(
+-          actors.owner,
+-          "DELETE",
+-          `${path}/${writes.id}?revision=${writes.revision}`,
+-        );
+-        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+-        const disabled = yield* body(Policy, removed);
+-        const history = yield* body(
+-          History,
+-          yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
+-        );
+-        expect(history.items.map((item) => item.action)).toEqual([
+-          "created",
+-          "updated",
+-          "updated",
+-          "revoked",
+-        ]);
+-        expect(history.items.map((item) => item.snapshot.revision)).toEqual([1, 2, 3, 4]);
+-        expect(
+-          history.items.every((item) => item.actor.length > 0 && item.actorName.length > 0),
+-        ).toBe(true);
+-        const restored = yield* save("never-ask", disabled);
+-        expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+-        expect((yield* call("write")).body).toEqual({ wrote: "safe" });
+-        const latest = yield* body(
+-          History,
+-          yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
+-        );
+-        expect(latest.items.map((item) => item.action)).toEqual([
+-          "created",
+-          "updated",
+-          "updated",
+-          "revoked",
+-          "restored",
+-        ]);
+-        const invalid = yield* api.request(actors.owner, "POST", path, {
+-          target,
+-          mode: "never-ask",
+-          inputSchema: { type: "invalid" },
+-        });
+-        expect(invalid.status).toBe(422);
+-      }),
+-    ),
++    withHostedHttpCase(context, ownerToolPolicyCase(Effect.void)),
+   );
+ });
+diff --git a/e2e/support/owner-tool-policy-case.ts b/e2e/support/owner-tool-policy-case.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/owner-tool-policy-case.ts
+@@ -0,0 +1,206 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema, Schedule } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { appsManifest } from "./apps-release.ts";
++import { Resource } from "./contracts.ts";
++
++const Policy = Schema.Struct({ id: Schema.String, revision: Schema.Int, revoked: Schema.Boolean });
++const History = Schema.Struct({
++  items: Schema.Array(
++    Schema.Struct({
++      action: Schema.String,
++      actor: Schema.String,
++      actorName: Schema.String,
++      snapshot: Schema.Struct({ revision: Schema.Int }),
++    }),
++  ),
++});
++const source = `import {defineApp,query,mutation,workflow,object,string,router} from "apps";
++const input=object({title:string()});
++const read=query({input},async(_ctx,value)=>({read:value.title}));
++const write=mutation({input,approval:()=>"user-approval"},async(_ctx,value)=>({wrote:value.title}));
++const denied=mutation({input,approval:()=>"denied"},async()=>({ran:true}));
++const failed=mutation({input,approval:()=>{throw new Error("policy failure");}},async()=>({ran:true}));
++const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("read",read,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
++export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe,other:probe}});`;
++
++// The separate self-host scenario supplies the process restart at the persistence checkpoint.
++export const ownerToolPolicyCase = <A, E, R>(restart: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Policy target",
++      files: [{ path: "index.ts", content: source }, appsManifest],
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(Resource, deployed);
++    yield* Effect.addFinalizer(() =>
++      api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++    );
++    const path = `${prefix}/tool-policies`;
++    const target = { kind: "app", app: app.id };
++    const call = (tool: string, title = "safe") =>
++      api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
++        tool,
++        kind: tool === "read" ? "query" : "mutation",
++        input: { title },
++      });
++    const save = (mode: string, policy?: typeof Policy.Type) =>
++      api.request(
++        actors.owner,
++        policy === undefined ? "POST" : "PUT",
++        policy === undefined ? path : `${path}/${policy.id}`,
++        { target, mode, ...(policy === undefined ? {} : { revision: policy.revision }) },
++      );
++    const workflowProbe = (workflow = "probe") =>
++      Effect.gen(function* () {
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/workflow-runs`,
++          { workflow, input: { title: "safe" } },
++        );
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const run = yield* body(Resource, started);
++        const result = yield* Effect.gen(function* () {
++          return yield* body(
++            Schema.Struct({ status: Schema.String, output: Schema.optionalKey(Schema.Json) }),
++            yield* api.request(
++              actors.owner,
++              "GET",
++              `${prefix}/apps/${app.id}/workflow-runs/${run.id}`,
++            ),
++          );
++        }).pipe(
++          Effect.repeat({
++            while: (result) => result.status === "queued" || result.status === "running",
++            schedule: Schedule.spaced("100 millis"),
++          }),
++          Effect.timeout("30 seconds"),
++        );
++        expect(result.status, JSON.stringify(result)).toBe("complete");
++        return result.output;
++      });
++    expect((yield* call("read")).body).toEqual({ read: "safe" });
++    expect((yield* call("write")).status).toBe(409);
++    const first = yield* save("always-ask");
++    expect(first.status, JSON.stringify(first.body)).toBe(200);
++    const always = yield* body(Policy, first);
++    // This query has no app approval callback. The host must still ask.
++    expect((yield* call("read")).status).toBe(409);
++    expect((yield* call("write")).status).toBe(409);
++    const scopedReply = yield* api.request(actors.owner, "POST", path, {
++      target: { kind: "tool", app: app.id, tool: "read" },
++      mode: "never-ask",
++      workflow: "probe",
++    });
++    expect(scopedReply.status, JSON.stringify(scopedReply.body)).toBe(200);
++    const scoped = yield* body(Policy, scopedReply);
++    expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
++    expect(yield* workflowProbe("other")).toEqual({ blocked: true });
++    expect((yield* call("read")).status).toBe(409);
++    const scopeHistory = yield* api.request(actors.owner, "GET", `${path}/${scoped.id}/history`);
++    expect(scopeHistory.body).toMatchObject({ items: [{ snapshot: { workflow: "probe" } }] });
++    expect(
++      (yield* api.request(
++        actors.owner,
++        "DELETE",
++        `${path}/${scoped.id}?revision=${scoped.revision}`,
++      )).status,
++    ).toBe(200);
++    expect(yield* workflowProbe()).toEqual({ blocked: true });
++    expect(
++      (yield* api.request(actors.member, "PUT", `${path}/${always.id}`, {
++        target,
++        mode: "never-ask",
++        revision: always.revision,
++      })).status,
++    ).toBe(403);
++    expect(
++      (yield* api.request(actors.owner, "PUT", `${path}/${always.id}`, {
++        target,
++        mode: "never-ask",
++        revision: 0,
++      })).status,
++    ).toBe(409);
++    const neverReply = yield* save("never-ask", always);
++    expect(neverReply.status, JSON.stringify(neverReply.body)).toBe(200);
++    const never = yield* body(Policy, neverReply);
++    expect((yield* call("read")).body).toEqual({ read: "safe" });
++    expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++    expect(yield* workflowProbe()).toEqual({ result: { read: "safe" } });
++    expect((yield* call("denied")).status).not.toBe(200);
++    expect((yield* call("failed")).status).not.toBe(200);
++    const writesReply = yield* save("ask-writes", never);
++    expect(writesReply.status, JSON.stringify(writesReply.body)).toBe(200);
++    const writes = yield* body(Policy, writesReply);
++    expect((yield* call("read")).body).toEqual({ read: "safe" });
++    expect((yield* call("write")).status).toBe(409);
++    const specific = yield* api.request(actors.owner, "POST", path, {
++      target: { kind: "tool", app: app.id, tool: "write" },
++      mode: "never-ask",
++      inputSchema: {
++        type: "object",
++        properties: { title: { const: "safe" } },
++        required: ["title"],
++      },
++    });
++    expect(specific.status, JSON.stringify(specific.body)).toBe(200);
++    const narrower = yield* body(Policy, specific);
++    expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++    expect((yield* call("write", "outside")).status).toBe(409);
++    // Cloud constructs its executor per event; only the persistent self-host process needs a restart.
++    yield* restart;
++    expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++    const revoked = yield* api.request(
++      actors.owner,
++      "DELETE",
++      `${path}/${narrower.id}?revision=${narrower.revision}`,
++    );
++    expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
++    expect((yield* call("write")).status).toBe(409);
++    const removed = yield* api.request(
++      actors.owner,
++      "DELETE",
++      `${path}/${writes.id}?revision=${writes.revision}`,
++    );
++    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++    const disabled = yield* body(Policy, removed);
++    const history = yield* body(
++      History,
++      yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
++    );
++    expect(history.items.map((item) => item.action)).toEqual([
++      "created",
++      "updated",
++      "updated",
++      "revoked",
++    ]);
++    expect(history.items.map((item) => item.snapshot.revision)).toEqual([1, 2, 3, 4]);
++    expect(history.items.every((item) => item.actor.length > 0 && item.actorName.length > 0)).toBe(
++      true,
++    );
++    const restored = yield* save("never-ask", disabled);
++    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
++    expect((yield* call("write")).body).toEqual({ wrote: "safe" });
++    const latest = yield* body(
++      History,
++      yield* api.request(actors.owner, "GET", `${path}/${always.id}/history`),
++    );
++    expect(latest.items.map((item) => item.action)).toEqual([
++      "created",
++      "updated",
++      "updated",
++      "revoked",
++      "restored",
++    ]);
++    const invalid = yield* api.request(actors.owner, "POST", path, {
++      target,
++      mode: "never-ask",
++      inputSchema: { type: "invalid" },
++    });
++    expect(invalid.status).toBe(422);
++  });
+diff --git a/e2e/tests/tool-policy-restart.spec.ts b/e2e/tests/tool-policy-restart.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/tool-policy-restart.spec.ts
+@@ -0,0 +1,12 @@
++import { layer } from "@effect/vitest";
++import { withHostedHttpCase } from "../support/case.ts";
++import { ownerToolPolicyCase } from "../support/owner-tool-policy-case.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Approval policy persistence", (it) => {
++  it.effect(scenarios.hostedToolPolicyRestart.title, (context) =>
++    withHostedHttpCase(context, ownerToolPolicyCase(serverControl("restart"))),
++  );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9156,6 +9156,16 @@
+     targets: {
+       "self-host": scheduled,
+       cloud: managedCloud,
++      local: na("General owner policies belong to the hosted product."),
++    },
++  },
++  hostedToolPolicyRestart: {
++    fixtures: "actors",
++    file: "tool-policy-restart.spec.ts",
++    title: "owner approval policies survive a self-host process restart",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Cloud has no persistent product process to restart."),
+       local: na("General owner policies belong to the hosted product."),
+     },
+   },
