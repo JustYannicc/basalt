@@ -178,6 +178,14 @@ export const areas = [
   },
   {
     paths: [
+      ".upstream/apps/hosted/web/src/implementation/pages/{resource-settings,app-detail,account-actions}.tsx",
+      ".upstream/e2e/tests/access-editor-reads.spec.ts",
+      ".upstream/e2e/support/read-dispatch.ts",
+    ],
+    jobs: ["human-in-the-loop"],
+  },
+  {
+    paths: [
       ".upstream/**/*dashboard*",
       ".upstream/**/*batch*",
       ".upstream/**/*prefetch*",

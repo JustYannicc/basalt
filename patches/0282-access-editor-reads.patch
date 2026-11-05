@@ -1,0 +1,485 @@
+diff --git a/apps/hosted/web/src/implementation/pages/resource-settings.tsx b/apps/hosted/web/src/implementation/pages/resource-settings.tsx
+--- a/apps/hosted/web/src/implementation/pages/resource-settings.tsx
++++ b/apps/hosted/web/src/implementation/pages/resource-settings.tsx
+@@ -1,9 +1,9 @@
+ /** Hosted access settings use the same persisted policy enforced by execution. */
+-import { useAtomSet, useAtomValue } from "@effect/atom-react";
++import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult } from "effect/reactivity";
+ import { Option } from "effect";
+ import type { AppId, AccountId } from "@executor-js/sdk";
+-import { QueryView } from "@executor-js/ui/dashboard/context";
++import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import {
+   appAccessAtom,
+@@ -16,6 +16,28 @@
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { SharingEditor } from "../components/sharing.tsx";
++/**
++ * Each sharing form reads its access before the groups, beneath gates its page owns. The page
++ * renders one of these where the form will open, so the form's reads start with the page's own.
++ * App detail already reads the app's access.
++ */
++export function ReadAppSharingEarly() {
++  const { organization } = useOrganizationRoute();
++  const groups = groupsAtom(organization);
++  usePreload(groups);
++  useAtomMount(groups);
++  return null;
++}
++/** The account dialog loads the account before its access form, so it starts both form reads. */
++export function ReadAccountSharingEarly({ account }: { readonly account: AccountId }) {
++  const { organization } = useOrganizationRoute();
++  const access = accountAccessAtom({ organization, account });
++  const groups = groupsAtom(organization);
++  usePreload(access, groups);
++  useAtomMount(access);
++  useAtomMount(groups);
++  return null;
++}
+ /** These controls change app and account access; linked accounts are separate. */
+ export function AppAccessSettings({ app }: { readonly app: AppId }) {
+   const { organization } = useOrganizationRoute();
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -13,7 +13,7 @@
+   requirementAccounts,
+   type RequirementLink,
+ } from "@executor-js/ui/contracts/app-accounts";
+-import { AppAccessSettings } from "./resource-settings.tsx";
++import { AppAccessSettings, ReadAppSharingEarly } from "./resource-settings.tsx";
+ import { PoolUsageSection } from "./pool-usage.tsx";
+ import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
+ import {
+@@ -305,6 +305,8 @@
+         )
+       }
+     >
++      {/* Settings waits for the app and its access before its sharing form reads the groups. */}
++      {view === "settings" && <ReadAppSharingEarly />}
+       <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
+         {screenApp !== undefined ? (
+           <AppScreen app={screenApp} active={selectedView === "app"} />
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -1,4 +1,4 @@
+-import { AccountAccessSettings } from "./resource-settings.tsx";
++import { AccountAccessSettings, ReadAccountSharingEarly } from "./resource-settings.tsx";
+ import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
+@@ -90,6 +90,8 @@
+       busy={busy}
+       onClose={onClose}
+     >
++      {/* Manage access reads the account, then its access, before its form reads the groups. */}
++      {dialog === "access" && <ReadAccountSharingEarly account={id} />}
+       <QueryView
+         pending={<DetailSkeleton label="Loading account" />}
+         query={accountAtom({ organization, account: id })}
+diff --git a/e2e/support/read-dispatch.ts b/e2e/support/read-dispatch.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/read-dispatch.ts
+@@ -0,0 +1,79 @@
++/**
++ * When the page asks for one public read, whether it sends it on its own or inside a dashboard
++ * batch. Watching changes no request, so the batching a scenario sees is the product's own.
++ */
++import { Deferred, Effect } from "effect";
++import type { Request } from "playwright";
++import { Browser } from "./browser.ts";
++import { batchedReads, batchPath } from "./read-batches.ts";
++
++export const watchRead = (read: {
++  /** The API group and endpoint a batch names the read by. */
++  readonly group: string;
++  readonly endpoint: string;
++  /** The organization it reads, by URL slug and by verified ID. */
++  readonly organizations: ReadonlyArray<string>;
++  /** The read's own request paths, for each of those references. */
++  readonly paths: ReadonlyArray<string>;
++}) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const arrived = yield* Deferred.make<{
++      readonly via: "alone" | "batched";
++      readonly request: Request;
++    }>();
++    let count = 0;
++    const requested = (request: Request) => {
++      const url = new URL(request.url());
++      const via =
++        request.method() === "GET" && read.paths.includes(url.pathname)
++          ? "alone"
++          : request.method() === "POST" &&
++              url.pathname === batchPath &&
++              batchedReads(request.postData()).some(
++                (entry) =>
++                  entry.group === read.group &&
++                  entry.endpoint === read.endpoint &&
++                  read.organizations.includes(entry.params.organization ?? ""),
++              )
++            ? "batched"
++            : undefined;
++      if (via === undefined) return;
++      count += 1;
++      // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright request listeners are plain callbacks
++      Effect.runSync(Deferred.succeed(arrived, { via, request } as const));
++    };
++    const label = `${read.group}.${read.endpoint}`;
++    yield* browser.use(`Observe ${label} reads`, (page) =>
++      Promise.resolve(page.context().on("request", requested)),
++    );
++    yield* Effect.addFinalizer(() =>
++      browser
++        .use(`Stop observing ${label} reads`, (page) =>
++          Promise.resolve(page.context().off("request", requested)),
++        )
++        .pipe(Effect.orDie),
++    );
++    return {
++      /** Reads the page has asked for since the watch began. */
++      count: Effect.sync(() => count),
++      /**
++       * How the first read went out, or none when the page sends none within the same 30 seconds
++       * a held query waits for its request.
++       */
++      dispatched: Deferred.await(arrived).pipe(
++        Effect.map(({ via }) => via),
++        Effect.timeoutOption("30 seconds"),
++      ),
++      responded: Deferred.await(arrived).pipe(
++        Effect.flatMap(({ request }) =>
++          browser.use(`Wait for the first ${label} response headers`, () =>
++            request.response().then((response) => {
++              if (response === null) throw new Error(`${label} returned no response`);
++            }),
++          ),
++        ),
++        Effect.timeout("30 seconds"),
++      ),
++    };
++  });
+diff --git a/e2e/tests/access-editor-reads.spec.ts b/e2e/tests/access-editor-reads.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/access-editor-reads.spec.ts
+@@ -0,0 +1,263 @@
++/**
++ * App Settings and a shared account's Manage access each show a sharing form that needs an access
++ * read and the organization's groups. The groups read must not wait for the reads in front of the
++ * form: while those are held, the page has already asked for the groups. Each journey starts from
++ * a fresh Accounts document, which reads no groups; the Apps list would read them first.
++ */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Option, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Locator, Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { watchRead } from "../support/read-dispatch.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
++const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({name:"Access reads fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
++export default defineApp({user: { accounts:{service:service.many()} }},{tools: router({ hello:query({input:object({})},async()=>"Hello") })});`;
++
++/** An owner's app, group and shared account, removed when the case ends. */
++const ownedFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const name = `Access reads ${randomUUID().slice(0, 8)}`;
++  const groupName = `${name} group`;
++  const group = yield* body(
++    Group,
++    yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
++      name: groupName,
++      description: "",
++      memberIds: [],
++    }),
++  );
++  const app = yield* body(
++    App,
++    yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name,
++      files: [{ path: "index.ts", content: source }, appsManifest],
++    }),
++  );
++  const accounts: string[] = [];
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status).toBe(
++        200,
++      );
++      for (const id of accounts)
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`)).status,
++        ).toBe(200);
++      expect(
++        (yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${group.id}`, {
++          revision: group.revision,
++        })).status,
++      ).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  const connection = yield* body(
++    Resource,
++    yield* api.request(
++      actors.owner,
++      "POST",
++      connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++      { destination: { kind: "shared", audience: { kind: "everyone" } } },
++    ),
++  );
++  const account = yield* body(
++    Resource,
++    yield* api.request(actors.owner, "POST", `${prefix}/connections/${connection.id}/submit`, {
++      method: "key",
++      label: name,
++      fields: { token: "synthetic" },
++    }),
++  );
++  accounts.push(account.id);
++  return { name, groupName, app: app.id, account: account.id };
++});
++
++type Fixture = Effect.Success<typeof ownedFixture>;
++
++/** The organization's API paths, by URL slug and by verified ID. */
++const organizationPaths = Effect.map(
++  Actors,
++  (actors) => (path: string) =>
++    [actors.organization.slug, actors.organization.id].map(
++      (reference) => `/api/organizations/${reference}${path}`,
++    ),
++);
++
++/**
++ * A new Accounts document, ready once the shared account's row is listed, with a watch on the
++ * groups read that the page has not yet used.
++ */
++const freshAccounts = (fixture: Fixture, label: string) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors,
++      browser = yield* Browser;
++    const groups = yield* watchRead({
++      group: "groups",
++      endpoint: "list",
++      organizations: [actors.organization.slug, actors.organization.id],
++      paths: (yield* organizationPaths)("/groups"),
++    });
++    yield* browser.use(label, (page) =>
++      page
++        .goto(`/org/${actors.organization.slug}/accounts`)
++        .then(() =>
++          page.getByRole("button", { name: `Manage ${fixture.name}`, exact: true }).waitFor(),
++        ),
++    );
++    expect(yield* groups.count, "Accounts reads no groups").toBe(0);
++    return groups;
++  });
++
++/** The released form offers the organization's group and lets its owner change access. */
++const usableForm = (
++  fixture: Fixture,
++  subject: "app" | "account",
++  within: (page: Page) => Locator,
++) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const audience = (page: Page) =>
++      within(page).getByRole("combobox", { name: `Who can use this ${subject}?`, exact: true });
++    const offered = (page: Page) =>
++      within(page).getByRole("checkbox", { name: fixture.groupName, exact: true });
++    expect(
++      yield* browser.use(`The ${subject} owner may change access`, (page) =>
++        audience(page)
++          .waitFor()
++          .then(() => audience(page).isEnabled()),
++      ),
++    ).toBe(true);
++    yield* browser.use(`Choose groups for the ${subject}`, (page) =>
++      audience(page)
++        .click()
++        .then(() => page.getByRole("option", { name: "Selected groups", exact: true }).click()),
++    );
++    expect(
++      yield* browser.use(`The ${subject} form offers the organization's group`, (page) =>
++        offered(page)
++          .waitFor()
++          .then(() => offered(page).isEnabled()),
++      ),
++    ).toBe(true);
++  });
++
++/** App Settings, opened from Accounts, while the app's access read is held. */
++const appSettings = (fixture: Fixture, width: number) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const actors = yield* Actors,
++        browser = yield* Browser;
++      const paths = yield* organizationPaths;
++      const groups = yield* freshAccounts(fixture, "Open Accounts in a new document");
++      const access = yield* holdQuery(paths(`/apps/${fixture.app}/access`), "continue", {
++        allRequests: true,
++      });
++      yield* openInApp(
++        "Open the app's Settings from Accounts",
++        `/org/${actors.organization.slug}/apps/${fixture.app}?view=settings`,
++      );
++      yield* access.requested;
++      expect(
++        Option.isSome(yield* groups.dispatched),
++        "Settings asks for the groups while the app's access is held",
++      ).toBe(true);
++      yield* groups.responded;
++      // The form must use the early result even if every later groups request is held.
++      yield* holdQuery(paths("/groups"), "continue", { allRequests: true });
++      expect(
++        yield* browser.use("The sharing form waits for the held access", (page) =>
++          page.getByRole("combobox", { name: "Who can use this app?", exact: true }).count(),
++        ),
++      ).toBe(0);
++      yield* access.release;
++      yield* usableForm(fixture, "app", (page) => page.locator("body"));
++      yield* browser.checkpoint(`${width} app sharing form`);
++    }),
++  );
++
++/** Manage access, opened from the account's row, while the account and its access are held. */
++const manageAccess = (fixture: Fixture, width: number) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const paths = yield* organizationPaths;
++      const groups = yield* freshAccounts(fixture, "Open Accounts in a new document");
++      const detail = yield* holdQuery(paths(`/accounts/${fixture.account}`), "continue", {
++        allRequests: true,
++      });
++      const access = yield* holdQuery(paths(`/accounts/${fixture.account}/access`), "continue", {
++        allRequests: true,
++      });
++      yield* browser.use("Open Manage access from the account's row", (page) =>
++        page
++          .getByRole("button", { name: `Manage ${fixture.name}`, exact: true })
++          .click()
++          .then(() => page.getByRole("menuitem", { name: "Manage access", exact: true }).click())
++          .then(() => page.getByRole("dialog").waitFor()),
++      );
++      yield* detail.requested;
++      expect(
++        Option.isSome(yield* groups.dispatched),
++        "Manage access asks for the groups while the account and its access are held",
++      ).toBe(true);
++      yield* groups.responded;
++      yield* holdQuery(paths("/groups"), "continue", { allRequests: true });
++      yield* access.requested;
++      expect(
++        yield* browser.use("The sharing form waits for the held reads", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("combobox", { name: "Who can use this account?", exact: true })
++            .count(),
++        ),
++      ).toBe(0);
++      yield* detail.release;
++      yield* access.release;
++      yield* usableForm(fixture, "account", (page) => page.getByRole("dialog"));
++      yield* browser.checkpoint(`${width} account sharing form`);
++      yield* browser.use("Close Manage access", (page) =>
++        page
++          .getByRole("dialog")
++          .getByRole("button", { name: "Close", exact: true })
++          .click()
++          .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++      );
++    }),
++  );
++
++layer(HostedLive, { excludeTestServices: true })("Access editor reads", (it) => {
++  for (const [scenario, journey, width] of [
++    [scenarios.appSettingsGroupsRead, appSettings, 1440],
++    [scenarios.appSettingsGroupsReadMobile, appSettings, 390],
++    [scenarios.manageAccessGroupsRead, manageAccess, 1440],
++    [scenarios.manageAccessGroupsReadMobile, manageAccess, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors,
++            browser = yield* Browser;
++          const fixture = yield* ownedFixture;
++          yield* browser.login(actors.owner);
++          yield* browser.use("Set the viewport", (page) =>
++            page.setViewportSize({ width, height: 900 }),
++          );
++          yield* journey(fixture, width);
++        }),
++      ),
++    );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2421,6 +2421,46 @@
+     fixtures: "actors",
+     file: "resource-sharing.spec.ts",
+     title: "Group sharing forms retain drafts and recover stale edits on desktop and mobile",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  appSettingsGroupsRead: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "App Settings asks for groups without waiting for the app's access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  appSettingsGroupsReadMobile: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Mobile App Settings asks for groups without waiting for the app's access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  manageAccessGroupsRead: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Manage access asks for groups without waiting for the account or its access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  manageAccessGroupsReadMobile: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Mobile Manage access asks for groups without waiting for the account or its access",
+     targets: {
+       "self-host": scheduled,
+       cloud: scheduled,

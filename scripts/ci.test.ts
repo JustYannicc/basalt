@@ -217,6 +217,17 @@ test("only affected configured Boat jobs substitute for hosted jobs, and every b
   assert.ok(gateErrors(needs, selected, ["production-ops-identity"]).length);
 });
 
+test("access editor changes select the public independent-read guards", () => {
+  for (const path of [
+    ".upstream/apps/hosted/web/src/implementation/pages/resource-settings.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/e2e/tests/access-editor-reads.spec.ts",
+    ".upstream/e2e/support/read-dispatch.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
+
 test("fast-only and full gates reject missing work and dishonest lane selections", () => {
   const needs = (selected: readonly string[]) =>
     Object.fromEntries(
