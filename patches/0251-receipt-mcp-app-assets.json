@@ -1,7 +1,7 @@
 {
   "identity": "basalt-receipt-mcp-app-assets",
   "file": "0251-receipt-mcp-app-assets.patch",
-  "content_sha256": "d5a875e7c76abd01644a7f7824a7953b95e53044726bd3b7aa8c59cb3ca13083",
+  "content_sha256": "d101beec917acc7e775ecd4fd0ef1c4bdc7dd16fd3badc68db5d7d63f8b60d6e",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
