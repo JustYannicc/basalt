@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-row-column-layout",
   "file": "0280-account-row-column-layout.patch",
-  "content_sha256": "dbb953209ca89af58acf2e0c5a1d3b97e9ac9b751bc54eec3e9e52b7693e1961",
+  "content_sha256": "acc17054898cd7e74aaa7e098c64830835af9b80c8f4f48707fb99a23ff75524",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

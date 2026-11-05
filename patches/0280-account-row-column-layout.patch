@@ -873,23 +873,22 @@ diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/pack
 diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
 --- a/e2e/tests/account-traffic.spec.ts
 +++ b/e2e/tests/account-traffic.spec.ts
-@@ -301,6 +301,28 @@
+@@ -301,6 +301,27 @@
            /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
          );
  
-+        const intermediate = yield* browser.use("Read request units at 1000px", async (page) => {
-+          await page.setViewportSize({ width: 1000, height: 900 });
-+          const row = accountRow(page, "Traffic account");
-+          const container = page.locator('[class*="@container/account-rows"]').first();
-+          return {
-+            width: (await container.boundingBox())?.width,
-+            header: await page.locator("[data-requests-header]").isVisible(),
-+            unit: await row.locator("[data-requests-unit]").isVisible(),
-+            count: await row
-+              .locator("[data-account-requests]")
-+              .getAttribute("data-account-requests"),
-+          };
-+        });
++        const intermediate = yield* browser.use("Read request units at 1000px", (page) =>
++          page.setViewportSize({ width: 1000, height: 900 }).then(() => {
++            const row = accountRow(page, "Traffic account");
++            const container = page.locator('[class*="@container/account-rows"]').first();
++            return Promise.all([
++              container.boundingBox(),
++              page.locator("[data-requests-header]").isVisible(),
++              row.locator("[data-requests-unit]").isVisible(),
++              row.locator("[data-account-requests]").getAttribute("data-account-requests"),
++            ]).then(([box, header, unit, count]) => ({ width: box?.width, header, unit, count }));
++          }),
++        );
 +        expect(intermediate.width).toBeGreaterThan(640);
 +        expect(intermediate.width).toBeLessThanOrEqual(880);
 +        expect(intermediate.header).toBe(false);
