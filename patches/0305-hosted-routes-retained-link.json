@@ -1,7 +1,7 @@
 {
   "identity": "executor-hosted-routes-retained-link",
   "file": "0305-hosted-routes-retained-link.patch",
-  "content_sha256": "0d4e8ad6e33446f27ef4f31248718b37ba7fb74a6a7d9d5632ab5cb498481835",
+  "content_sha256": "e3a466afc9f42a07318348ff4a67fa513c88c285345aef2801070d2b97e0ce83",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
