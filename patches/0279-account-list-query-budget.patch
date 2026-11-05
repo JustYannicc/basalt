@@ -1,0 +1,1256 @@
+diff --git a/apps/hosted/server/src/implementation/account-identity-placement.ts b/apps/hosted/server/src/implementation/account-identity-placement.ts
+new file mode 100644
+index 0000000..4a7de75
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-identity-placement.ts
+@@ -0,0 +1,40 @@
++import { stringSet } from "fumadb-effect/sql";
++import { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++import { StorageError, type Account, type AccountId } from "@executor-js/sdk/core";
++
++/** The ordered groups are part of the durable identity placement key. */
++export const accountIdentityPlacements =
++  (sql: SqlClient.SqlClient) => (accounts: readonly Pick<Account, "id" | "owner">[]) =>
++    Effect.gen(function* () {
++      if (accounts.length === 0) return new Map<AccountId, string | null>();
++      const rows = yield* sql<{
++        account_id: AccountId;
++        organization_id: string;
++        kind: string;
++        personal_user_id: string | null;
++        audience: string | null;
++        groups: string[];
++      }>`
++      select a.account_id, a.organization_id, a.kind, a.personal_user_id, a.audience,
++        coalesce((select json_agg(g.group_id order by g.group_id)
++          from hosted_account_groups g where g.account_id = a.account_id), '[]'::json) as groups
++      from hosted_account_access a where ${stringSet(
++        sql,
++        sql("a.account_id"),
++        accounts.map((account) => account.id),
++        "postgresql",
++      )}`;
++      return new Map(
++        rows.map((row) => [
++          row.account_id,
++          JSON.stringify([
++            row.organization_id,
++            row.kind,
++            row.personal_user_id ?? null,
++            row.audience ?? null,
++            row.groups,
++          ]),
++        ]),
++      );
++    }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index a2593f7..7e216bf 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -2,3 +2,4 @@
++import { accountIdentityPlacements } from "./account-identity-placement.ts";
+ import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
+ import { requireAppAccess } from "./resource-policy.ts";
+ import { requireOrganizationAppWrite } from "./organization-app-write.ts";
+@@ -556,22 +557,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+           const commit = yield* PoolSetupCommit;
+           if (commit !== undefined) yield* commit(app);
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
++      accountIdentityPlacements: accountIdentityPlacements(sql),
+       accountIdentityPlacement: (account) =>
+-        Effect.gen(function* () {
+-          const rows = yield* sql`select organization_id, kind, personal_user_id, audience
+-          from hosted_account_access where account_id = ${account.id}`;
+-          const row = rows[0];
+-          if (row === undefined) return null;
+-          const groups = yield* sql`select group_id from hosted_account_groups
+-          where account_id = ${account.id} order by group_id`;
+-          return JSON.stringify([
+-            row.organization_id,
+-            row.kind,
+-            row.personal_user_id ?? null,
+-            row.audience ?? null,
+-            groups.map((group) => group.group_id),
+-          ]);
+-        }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
++        accountIdentityPlacements(sql)([account]).pipe(
++          Effect.map((placements) => placements.get(account.id) ?? null),
++        ),
+       connectionIdentityPlacement: (connection) =>
+         Effect.gen(function* () {
+           const rows =
+diff --git a/apps/hosted/testing/storage-fault-fixture.ts b/apps/hosted/testing/storage-fault-fixture.ts
+index 6742657..5ccf1b5 100644
+--- a/apps/hosted/testing/storage-fault-fixture.ts
++++ b/apps/hosted/testing/storage-fault-fixture.ts
+@@ -6,6 +6,7 @@
+  * statement is replaced by one the database rejects, so the failure is a real SQL error from the
+  * driver. Production entry points never provide it.
+  */
++import { stringSetFixture } from "./string-set-fixture.ts";
+ import { Effect, Layer, Option, Schema, type Tracer } from "effect";
+ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import * as Statement from "effect/sql/Statement";
+@@ -31,8 +32,47 @@ export const storageFaultFixture = Effect.sync(() => {
+   /** Armed until a read binding the ID inside every named span reaches it; then reported until the next arm. */
+   let armed: typeof Arm.Type | undefined;
+   let failed: ReadonlyArray<string> | undefined;
++  let counted: readonly string[] = [];
++  const counts = new Map<
++    string,
++    {
++      name: string;
++      statements: number;
++      acquisition: number;
++      identity: number;
++      placement: number;
++      maximumParameters: number;
++    }
++  >();
+   const transformer: Statement.Transformer = (statement, sql, _fiber, span) =>
+     Effect.sync(() => {
++      if (counted.length > 0) {
++        let current: Option.Option<Tracer.AnySpan> = Option.some(span);
++        while (Option.isSome(current) && current.value._tag === "Span") {
++          const parent = current.value;
++          if (counted.includes(parent.name)) {
++            const [text, parameters] = statement.compile();
++            if (/^\s*select\b/iu.test(text)) {
++              const count = counts.get(parent.spanId) ?? {
++                name: parent.name,
++                statements: 0,
++                acquisition: 0,
++                identity: 0,
++                placement: 0,
++                maximumParameters: 0,
++              };
++              count.statements++;
++              count.maximumParameters = Math.max(count.maximumParameters, parameters.length);
++              if (/executor_account_acquisitions/iu.test(text)) count.acquisition++;
++              if (/executor_account_identities/iu.test(text)) count.identity++;
++              if (/hosted_account_access/iu.test(text)) count.placement++;
++              counts.set(parent.spanId, count);
++            }
++            break;
++          }
++          current = parent.parent;
++        }
++      }
+       const fault = armed;
+       if (fault === undefined) return statement;
+       const [text, params] = statement.compile();
+@@ -44,6 +84,24 @@ export const storageFaultFixture = Effect.sync(() => {
+       return sql`select executor_test_storage_fault()`;
+     });
+   const routes = Layer.mergeAll(
++    stringSetFixture,
++    HttpRouter.add(
++      "POST",
++      "/api/devtools/statement-count",
++      Effect.gen(function* () {
++        const input = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ within: Schema.Array(Schema.NonEmptyString) }),
++        );
++        counted = input.within;
++        counts.clear();
++        return HttpServerResponse.jsonUnsafe({ armed: true });
++      }).pipe(Effect.orDie),
++    ),
++    HttpRouter.add(
++      "GET",
++      "/api/devtools/statement-count",
++      Effect.sync(() => HttpServerResponse.jsonUnsafe({ operations: [...counts.values()] })),
++    ),
+     HttpRouter.add(
+       "POST",
+       path,
+diff --git a/apps/hosted/testing/string-set-fixture.ts b/apps/hosted/testing/string-set-fixture.ts
+new file mode 100644
+index 0000000..f53552e
+--- /dev/null
++++ b/apps/hosted/testing/string-set-fixture.ts
+@@ -0,0 +1,48 @@
++/** Loopback test host only: drive the public adapter with a bind-limit-sized account set. */
++import { Effect, Schema } from "effect";
++import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { fumadb } from "fumadb-effect";
++import { schema, table, idColumn } from "fumadb-effect/schema";
++import { sqlAdapter, stringSet } from "fumadb-effect/sql";
++
++const shape = schema({
++  version: "1.0.0",
++  tables: {
++    accounts: table("executor_accounts", {
++      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
++    }),
++  },
++});
++const orm = fumadb({ namespace: "set-boundary", schemas: [shape] })
++  .client(sqlAdapter({ provider: "postgresql" }))
++  .orm("1.0.0");
++export const stringSetFixture = HttpRouter.add(
++  "POST",
++  "/api/devtools/string-set-boundary",
++  Effect.gen(function* () {
++    const { values } = yield* HttpServerRequest.schemaBodyJson(
++      Schema.Struct({ values: Schema.Array(Schema.String) }),
++    );
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* orm.findMany("accounts", { where: (b) => b("id", "in", values) });
++    const direct = yield* sql<{ id: string }>`select id from executor_accounts
++      where ${stringSet(sql, sql("id"), values, "postgresql")}`;
++    const excluded = yield* orm.findMany("accounts", { where: (b) => b("id", "not in", values) });
++    const escaped = yield* Effect.forEach(
++      ["", "NULL", "a,b", "a\\b", 'a"b', "a\nb", "x'); SELECT 1; --"],
++      (value) =>
++        sql<{
++          found: boolean;
++        }>`select ${stringSet(sql, sql`${value}`, values, "postgresql")} as found`.pipe(
++          Effect.map((rows) => rows[0]?.found ?? false),
++        ),
++    );
++    return HttpServerResponse.jsonUnsafe({
++      escaped,
++      ids: rows.map(({ id }) => id),
++      direct: direct.map(({ id }) => id),
++      excluded: excluded.map(({ id }) => id),
++    });
++  }).pipe(Effect.withSpan("storage.stringSetBoundary"), Effect.orDie),
++);
+diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
+index bda20d0..2c64551 100644
+--- a/apps/hosted/web/src/contracts/account-observations.ts
++++ b/apps/hosted/web/src/contracts/account-observations.ts
+@@ -6,7 +6,7 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
+ export type ObservationAudience = ObservationPolicy["read"];
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
+-import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
++import { accountPolling } from "./account-polling.ts";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { HostedClient } from "./api.ts";
+@@ -23,11 +23,13 @@ const observations = Atom.family((key: AccountKey) =>
+   protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
+ );
+ // The server collects on its own interval; a visible row reads the retained report again so new
+-// readings appear without a manual refresh, and sooner while a collection is still running.
++// readings appear without a manual refresh. Unavailable or prolonged collections back off.
+ const polledObservations = Atom.family((key: AccountKey) =>
+-  pollingQuery(observations(key), {
+-    active: whileLoaded((view) => view.reports.some((report) => report.collecting)),
+-  }),
++  accountPolling(
++    observations(key),
++    (view) => view.reports.some((report) => report.collecting),
++    (view) => view.reports.some((report) => report.freshness === "unavailable"),
++  ),
+ );
+ /** The caller's view of an account's retained usage, with what the policy lets them do. */
+ export const accountObservationsAtom = (key: {
+diff --git a/apps/hosted/web/src/contracts/account-polling.ts b/apps/hosted/web/src/contracts/account-polling.ts
+new file mode 100644
+index 0000000..1b0509e
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/account-polling.ts
+@@ -0,0 +1,82 @@
++/** One mounted clock reconciles account views; failures never create a faster polling lane. */
++import type { AccountHealth } from "@executor-js/sdk";
++import { Effect } from "effect";
++import { Atom, AsyncResult } from "effect/reactivity";
++
++const interval = 30_000;
++const maximumBackoff = 10;
++const cadence = Atom.readable((get) => {
++  if (typeof window === "undefined") return 0;
++  let tick = 0;
++  get.addFinalizer(
++    Effect.runCallback(
++      Effect.forever(
++        Effect.sleep(interval).pipe(Effect.andThen(() => Effect.sync(() => get.setSelf(++tick)))),
++      ),
++    ),
++  );
++  return tick;
++});
++
++/** Focus and acknowledged writes still refresh immediately; only periodic reconciliation backs off. */
++export const accountPolling = <A, E>(
++  source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
++  pending?: (value: A) => boolean,
++  unavailableHealth?: (value: A) => boolean,
++): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
++  Atom.readable(
++    (get) => {
++      if (typeof window === "undefined") return get(source);
++      let value = get.once(source);
++      let tick = get.once(cadence);
++      let readAt = tick;
++      let unsettledAt: number | undefined;
++      let backoff = 2;
++      const unavailable = () =>
++        AsyncResult.isFailure(value) ||
++        (AsyncResult.isSuccess(value) && unavailableHealth?.(value.value) === true);
++      const unsettled = () =>
++        unavailable() || (AsyncResult.isSuccess(value) && pending?.(value.value) === true);
++      const observe = () => {
++        if (!unsettled()) {
++          unsettledAt = undefined;
++          backoff = 2;
++        } else unsettledAt ??= tick;
++      };
++      observe();
++      get.subscribe(source, (next) => {
++        value = next;
++        readAt = tick;
++        observe();
++        get.setSelf(next);
++      });
++      get.subscribe(cadence, (next) => {
++        tick = next;
++        const age = unsettledAt === undefined ? 0 : tick - unsettledAt;
++        // Unavailable reads wait two ticks; prolonged pending work uses the same bounded backoff.
++        const delay = unsettled() && (unavailable() || age >= 1) ? backoff : 1;
++        if (!value.waiting && document.visibilityState === "visible" && tick - readAt >= delay) {
++          readAt = tick;
++          if (unsettled()) backoff = Math.min(maximumBackoff, backoff * 2);
++          get.refresh(source);
++        }
++      });
++      return value;
++    },
++    (refresh) => refresh(source),
++  );
++
++/** A failed or missing watched check gives no reason to increase reconciliation traffic. */
++export const unavailableAccountHealth = (health: AccountHealth | undefined) => {
++  const checks = [
++    ...(health?.apps ?? []),
++    ...(health?.driver === undefined ? [] : [health.driver]),
++  ];
++  return checks.some(
++    ({ checkable, check }) =>
++      checkable &&
++      (check === null ||
++        !check.current ||
++        ["upstream_unavailable", "check_failed", "tools_unavailable"].includes(check.status)),
++  );
++};
+diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
+index 4f2d791..95a5f7f 100644
+--- a/apps/hosted/web/src/contracts/app-accounts.ts
++++ b/apps/hosted/web/src/contracts/app-accounts.ts
+@@ -4,7 +4,7 @@
+  * connecting reads the app's discovery again.
+  */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { Data, Effect } from "effect";
+@@ -58,7 +58,11 @@ export type AppAccountLink = Atom.Success<ReturnType<typeof appLinks>>[number];
+  * account. App links change only when someone who can edit the app changes them; the page reads
+  * them again on its normal refresh and after the caller's own changes, without polling.
+  */
+-const liveUserLinks = Atom.family((key: AppKey) => pollingQuery(userLinks(key)));
++const liveUserLinks = Atom.family((key: AppKey) =>
++  accountPolling(userLinks(key), undefined, (links) =>
++    links.some(({ health }) => unavailableAccountHealth(health)),
++  ),
++);
+ /**
+  * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
+  * use the app reads them; only people who can edit it see the identity checks reported.
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+index 6f5200f..e618d79 100644
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -1,6 +1,6 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
+ import { observeBrowserUsage } from "./product-analytics.ts";
+ import { protectedQuery } from "./protected-query.ts";
+ import { hydratedResult } from "@executor-js/ui/contracts/http";
+@@ -199,7 +199,10 @@ export const organizationPresentation = Atom.family((reference: OrganizationRefe
+ export const inventoryAtom = Atom.family((organization: OrganizationReference) =>
+   HostedClient.query("organization", "inventory", hydrated({ params: { organization } })).pipe(
+     revalidated,
+-    pollingQuery,
++    (source) =>
++      accountPolling(source, undefined, ({ accounts }) =>
++        accounts.some(({ health }) => unavailableAccountHealth(health)),
++      ),
+     protectedQuery,
+   ),
+ );
+diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
+index ff7abf7..f919832 100644
+--- a/apps/hosted/web/src/contracts/resource-access.ts
++++ b/apps/hosted/web/src/contracts/resource-access.ts
+@@ -2,7 +2,7 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
++import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
+ import { Data, Effect } from "effect";
+ import { Atom, AsyncResult } from "effect/reactivity";
+ import type { Account, AccountId, AppId } from "@executor-js/sdk";
+@@ -42,7 +42,12 @@ const directory = Atom.family((key: DirectoryKey) =>
+     }),
+   ).pipe(
+     revalidated,
+-    (source) => pollingQuery(source, { active: whileLoaded(({ pendingApp }) => pendingApp) }),
++    (source) =>
++      accountPolling(
++        source,
++        ({ pendingApp }) => pendingApp,
++        ({ accounts }) => accounts.some(({ health }) => unavailableAccountHealth(health)),
++      ),
+     protectedQuery,
+   ),
+ );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 01a865f..4793705 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -320,6 +320,15 @@ export const scenarios = plan({
+       cloud: na("The synthetic authorization server listens on loopback."),
+     },
+   },
++  accountHealthQueryBudget: {
++    file: "account-health-query-budget.spec.ts",
++    title: "account lists use constant SQL statements for one and six saved identities",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Statement counting is confined to the local test host."),
++      local: na("Hosted identity placements and health list reads."),
++    },
++  },
+   accountIdentityPolicy: {
+     fixtures: "actors",
+     file: "account-identity-policy.spec.ts",
+@@ -9217,6 +9226,46 @@ export const scenarios = plan({
+       local: na("Exercises hosted sharing policy and rows."),
+     },
+   },
++  accountObservationOutagePollingPending: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "account polling backs off while health is pending",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Controlled loopback reports and browser clock."),
++      local: na("Hosted account rows."),
++    },
++  },
++  accountObservationOutagePollingUnavailable: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "account polling backs off while health is unavailable",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Controlled loopback reports and browser clock."),
++      local: na("Hosted account rows."),
++    },
++  },
++  accountObservationOutagePollingFailed: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "account polling backs off while health is failed",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Controlled loopback reports and browser clock."),
++      local: na("Hosted account rows."),
++    },
++  },
++  accountFirstDocumentRead: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "app accounts finish their initial document reads before browser hydration",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback allowance service."),
++      local: na("Hosted account pages."),
++    },
++  },
+   accountObservationRowPolling: {
+     fixtures: "actors",
+     file: "account-observation-row-polling.spec.ts",
+diff --git a/e2e/tests/account-health-query-budget.spec.ts b/e2e/tests/account-health-query-budget.spec.ts
+new file mode 100644
+index 0000000..2fadfc6
+--- /dev/null
++++ b/e2e/tests/account-health-query-budget.spec.ts
+@@ -0,0 +1,260 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Layer, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { startDevelopmentServer } from "../support/managed-server.ts";
++import { Target } from "../support/platform.ts";
++import { Api, SessionClients, body } from "../support/api.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { IdentityAccount } from "../support/account-identity-product.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(TestLive, { excludeTestServices: true })("Account list query budgets", (it) => {
++  it.effect(scenarios.accountHealthQueryBudget.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const target = yield* Target;
++        const origin = yield* startDevelopmentServer(target);
++        const rawApi = yield* Api.pipe(
++          Effect.provide(Layer.fresh(Api.layer)),
++          Effect.provide(Layer.fresh(SessionClients.layer)),
++          Effect.provideService(Target, { ...target, metadata: { ...target.metadata, origin } }),
++        );
++        const api = {
++          ...rawApi,
++          request: (...args: Parameters<typeof rawApi.request>) =>
++            rawApi.request(args[0], args[1], `${origin}${args[2]}`, args[3], {
++              origin,
++              ...args[4],
++            }),
++        };
++        const owner = yield* api.session();
++        expect((yield* api.request(owner, "POST", "/api/devtools/operator", {})).status).toBe(200);
++        const users = yield* body(
++          Schema.Struct({
++            users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
++          }),
++          yield* api.request(owner, "GET", "/api/auth/admin/list-users"),
++        );
++        const developer = users.users.find((user) => user.email === "agent-agent@example.test");
++        if (developer === undefined) return yield* Effect.die("Development owner is missing");
++        expect(
++          (yield* api.request(owner, "POST", "/api/auth/admin/impersonate-user", {
++            userId: developer.id,
++          })).status,
++        ).toBe(200);
++        const organization = (yield* body(
++          Schema.Array(Schema.Struct({ id: Schema.String })),
++          yield* api.request(owner, "GET", "/api/auth/organization/list"),
++        ))[0];
++        if (organization === undefined)
++          return yield* Effect.die("Development organization is missing");
++        const actors = { owner, organization };
++        const http = yield* HttpClient.HttpClient,
++          issuer = yield* accountIdentityIssuer;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const accounts = new Set<string>(),
++          apps: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const deploy = (name: string, scopes: string[]) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [
++                appsManifest,
++                {
++                  path: "index.ts",
++                  content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2(${JSON.stringify({ authorizationUrl: issuer.origin + "/authorize", tokenUrl: issuer.origin + "/token", scopes, tokenEndpointAuthMethod: "none", identity: { issuer: issuer.origin, name: "Policy identity" } })})}});
++export default defineApp({user:{accounts:{service}}},async()=>({tools:router({})}));`,
++                },
++              ],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = (yield* body(Resource, response)).id;
++            apps.push(app);
++            return app;
++          });
++        const connect = (app: string, shared = false) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++              shared ? { destination: { kind: "shared", audience: { kind: "everyone" } } } : {},
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return (yield* body(Resource, response)).id;
++          });
++        const firstApp = yield* deploy("Policy source", ["read", "write"]);
++        const firstConnection = yield* connect(firstApp);
++        const start = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${firstConnection}/oauth/start`,
++          { method: "oauth", client: { clientId: "policy-client" } },
++        );
++        expect(start.status, JSON.stringify(start.body)).toBe(200);
++        const authorization = yield* body(
++          Schema.Struct({ authorizationUrl: Schema.String }),
++          start,
++        );
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const response = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++            expect(response.status).toBe(302);
++            if (response.headers.location === undefined)
++              return yield* Effect.die("Issuer omitted callback");
++            return response.headers.location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${firstConnection}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++        const source = yield* body(IdentityAccount, completed);
++        accounts.add(source.id);
++        expect(source.identity).toBeDefined();
++        const countReads = Effect.gen(function* () {
++          const armed = yield* api.request(actors.owner, "POST", "/api/devtools/statement-count", {
++            within: ["sdk.accounts.list", "sdk.accounts.listHealth"],
++          });
++          expect(armed.status).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/resources/accounts`)).status,
++          ).toBe(200);
++          expect((yield* api.request(actors.owner, "GET", `${prefix}/resources`)).status).toBe(200);
++          return yield* body(
++            Schema.Struct({
++              operations: Schema.Array(
++                Schema.Struct({
++                  name: Schema.String,
++                  statements: Schema.Number,
++                  acquisition: Schema.Number,
++                  identity: Schema.Number,
++                  placement: Schema.Number,
++                }),
++              ),
++            }),
++            yield* api.request(actors.owner, "GET", "/api/devtools/statement-count"),
++          );
++        });
++        const small = yield* countReads;
++        const reader = yield* deploy("Policy reader", ["read"]),
++          pending = yield* connect(reader);
++        const planPath = `${prefix}/connections/${pending}/oauth/plan`;
++        const plan = yield* api.request(actors.owner, "POST", planPath, {
++          method: "oauth",
++          sourceAccount: source.id,
++        });
++        expect(plan.status, JSON.stringify(plan.body)).toBe(200);
++        expect((yield* body(Schema.Struct({ status: Schema.String }), plan)).status).toBe("reuse");
++        const reuse = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${pending}/oauth/reuse`,
++          { method: "oauth", account: source.id },
++        );
++        expect(reuse.status, JSON.stringify(reuse.body)).toBe(200);
++        const binding = yield* body(
++          Schema.Struct({ status: Schema.Literal("completed"), account: IdentityAccount }),
++          reuse,
++        );
++        accounts.add(binding.account.id);
++        expect(binding.account.identity?.id).toBe(source.identity?.id);
++        for (let index = 0; index < 4; index++) {
++          const siblingApp = yield* deploy(`Query budget reader ${index}`, ["read"]);
++          const siblingConnection = yield* connect(siblingApp);
++          const sibling = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${siblingConnection}/oauth/reuse`,
++            { method: "oauth", account: source.id },
++          );
++          expect(sibling.status, JSON.stringify(sibling.body)).toBe(200);
++          accounts.add(
++            (yield* body(Schema.Struct({ account: IdentityAccount }), sibling)).account.id,
++          );
++        }
++        expect(accounts.size).toBe(6);
++        const large = yield* countReads;
++        const evidence = yield* Evidence;
++        yield* evidence.json("statement-counts.json", { small, large });
++        for (const name of ["sdk.accounts.listHealth", "sdk.accounts.list"]) {
++          const before = small.operations.filter((operation) => operation.name === name);
++          const after = large.operations.filter((operation) => operation.name === name);
++          expect(before.length, `${name} was measured`).toBeGreaterThan(0);
++          expect(after.length, `${name} was measured with more accounts`).toBeGreaterThan(0);
++          expect(
++            new Set(after.map((operation) => operation.statements)),
++            `${name} statement count is constant as accounts grow`,
++          ).toEqual(new Set(before.map((operation) => operation.statements)));
++          for (const operation of after) {
++            expect(operation.acquisition).toBeLessThanOrEqual(1);
++            expect(operation.identity).toBeLessThanOrEqual(1);
++            expect(operation.placement).toBeLessThanOrEqual(1);
++          }
++        }
++        for (const size of [65_536, 1]) {
++          const present = [...accounts].slice(0, size);
++          const values = [
++            ...present,
++            ...Array.from({ length: size - present.length }, (_, index) => `missing-${index}`),
++          ];
++          // Delimiters, quotes, backslashes and SQL-looking text remain values on every representation.
++          values.push(...present, "", "NULL", "a,b", "a\\b", 'a"b', "a\nb", "x'); SELECT 1; --");
++          expect(
++            (yield* api.request(actors.owner, "POST", "/api/devtools/statement-count", {
++              within: ["storage.stringSetBoundary"],
++            })).status,
++          ).toBe(200);
++          const response = yield* api.request(
++            actors.owner,
++            "POST",
++            "/api/devtools/string-set-boundary",
++            { values },
++          );
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const result = yield* body(
++            Schema.Struct({
++              escaped: Schema.Array(Schema.Boolean),
++              ids: Schema.Array(Schema.String),
++              direct: Schema.Array(Schema.String),
++              excluded: Schema.Array(Schema.String),
++            }),
++            response,
++          );
++          expect(result.escaped).toEqual(Array(7).fill(true));
++          expect(new Set(result.ids)).toEqual(new Set(present));
++          expect(new Set(result.direct)).toEqual(new Set(present));
++          expect(result.excluded.some((id) => present.includes(id))).toBe(false);
++          const counted = yield* body(
++            Schema.Struct({
++              operations: Schema.Array(
++                Schema.Struct({ statements: Schema.Number, maximumParameters: Schema.Number }),
++              ),
++            }),
++            yield* api.request(actors.owner, "GET", "/api/devtools/statement-count"),
++          );
++          expect(counted.operations).toEqual([{ statements: 10, maximumParameters: 2 }]);
++        }
++        yield* api.request(actors.owner, "POST", "/api/devtools/statement-count", { within: [] });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index 9aa5327..2bcecde 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -6,7 +6,11 @@ import { body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+-import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
++import {
++  advanceToReconciliation,
++  holdQuery,
++  installBrowserClock,
++} from "../support/query-transition.ts";
+ import { accountRow, openRowDetails } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -16,6 +20,42 @@ const Retained = Schema.Struct({
+ });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Account observation row polling", (it) => {
++  it.effect(scenarios.accountFirstDocumentRead.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const f = yield* observationFixture({ observe: true, health: true, shared: true });
++        yield* browser.login(f.actors.owner);
++        const modules = yield* holdQuery(/\/assets\/.*\.js$/, "continue", { allRequests: true });
++        yield* browser.use(
++          "Load the first app Accounts document with browser modules held",
++          (page) =>
++            page
++              .goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`, {
++                waitUntil: "commit",
++              })
++              .then((response) => response?.finished()),
++        );
++        yield* modules.requested;
++        const rendered = yield* browser.use(
++          "Read the server result before hydration can start a cadence",
++          (page) =>
++            page
++              .waitForFunction(
++                () =>
++                  document.readyState !== "loading" &&
++                  document.querySelector('[hidden][id^="S:"]') === null,
++              )
++              .then(() =>
++                page.getByRole("status", { name: "Loading accounts", exact: true }).count(),
++              ),
++        );
++        expect(rendered, "Initial reads settle before hydration or a polling tick").toBe(0);
++        yield* modules.release;
++      }),
++    ),
++  );
+   it.effect(scenarios.accountObservationRowPolling.title, (context) =>
+     withHostedCase(
+       context,
+@@ -68,4 +108,116 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+       }),
+     ),
+   );
++  for (const mode of ["pending", "unavailable", "failed"] as const) {
++    it.effect(
++      {
++        pending: scenarios.accountObservationOutagePollingPending,
++        unavailable: scenarios.accountObservationOutagePollingUnavailable,
++        failed: scenarios.accountObservationOutagePollingFailed,
++      }[mode].title,
++      (context) =>
++        withHostedCase(
++          context,
++          Effect.gen(function* () {
++            const browser = yield* Browser;
++            const f = yield* observationFixture({ observe: true, health: true, shared: true });
++            yield* f.backend.answer({ status: 200, body: allowance() });
++            expect((yield* f.refresh()).status).toBe(200);
++            let requests = 0;
++            yield* installBrowserClock;
++            yield* browser.use("Keep the retained report pending or unavailable", (page) =>
++              page.route(new RegExp(`/accounts/${f.account}/observations$`), (route) => {
++                requests++;
++                if (mode === "failed") return route.abort("failed");
++                return route.fetch().then((response) =>
++                  response.json().then((value: unknown) => {
++                    const json = Schema.decodeUnknownSync(
++                      Schema.Record(Schema.String, Schema.Unknown),
++                    )(value);
++                    const reports = Schema.decodeUnknownSync(
++                      Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
++                    )(json.reports);
++                    return route.fulfill({
++                      response,
++                      json: {
++                        ...json,
++                        reports: reports.map((report) => ({
++                          ...report,
++                          collecting: true,
++                          ...(mode === "unavailable" ? { freshness: "unavailable" } : {}),
++                        })),
++                      },
++                    });
++                  }),
++                );
++              }),
++            );
++            yield* browser.login(f.actors.owner);
++            yield* browser.use("Open Accounts while the pool cannot settle health", (page) => {
++              const loaded =
++                mode === "failed"
++                  ? page
++                      .waitForEvent("requestfailed", (request) =>
++                        new URL(request.url()).pathname.endsWith(
++                          `/accounts/${f.account}/observations`,
++                        ),
++                      )
++                      .then(() => undefined)
++                  : page
++                      .waitForResponse((response) =>
++                        new URL(response.url()).pathname.endsWith(
++                          `/accounts/${f.account}/observations`,
++                        ),
++                      )
++                      .then(() => undefined);
++              return page.goto(`/org/${f.actors.organization.slug}/accounts`).then(() => loaded);
++            });
++            const initial = requests;
++            expect(initial).toBeGreaterThan(0);
++            yield* browser.use(
++              "Pending and unavailable health do not enable five-second polling",
++              (page) => page.context().clock.runFor(30_000),
++            );
++            expect(
++              requests - initial,
++              "No extra read in the first thirty seconds of an outage",
++            ).toBe(0);
++            const retryAfter = (milliseconds: number) =>
++              browser.use("Retry on the shared bounded cadence", (page) => {
++                const settled =
++                  mode === "failed"
++                    ? page
++                        .waitForEvent("requestfailed", (request) =>
++                          new URL(request.url()).pathname.endsWith(
++                            `/accounts/${f.account}/observations`,
++                          ),
++                        )
++                        .then(() => undefined)
++                    : page
++                        .waitForResponse((response) =>
++                          new URL(response.url()).pathname.endsWith(
++                            `/accounts/${f.account}/observations`,
++                          ),
++                        )
++                        .then(() => undefined);
++                return page
++                  .context()
++                  .clock.runFor(milliseconds)
++                  .then(() => settled);
++              });
++            let previous = requests;
++            yield* retryAfter(30_000);
++            expect(requests - previous, "The first retry waits one minute").toBe(1);
++            for (const milliseconds of [120_000, 240_000, 300_000]) {
++              previous = requests;
++              yield* retryAfter(milliseconds);
++              expect(
++                requests - previous,
++                "Retries back off and remain live at the five-minute cap",
++              ).toBe(1);
++            }
++          }),
++        ),
++    );
++  }
+ });
+diff --git a/packages/fumadb-effect/src/implementation/sql/index.ts b/packages/fumadb-effect/src/implementation/sql/index.ts
+index 901ad73..7b2d389 100644
+--- a/packages/fumadb-effect/src/implementation/sql/index.ts
++++ b/packages/fumadb-effect/src/implementation/sql/index.ts
+@@ -50,3 +50,5 @@ export const sqlAdapter = (config: SqlAdapterConfig): Adapter<SqlClient> => {
+     createMigrator: (context) => createSqlMigrator(context, resolved),
+   };
+ };
++
++export { stringSet } from "./string-set.ts";
+diff --git a/packages/fumadb-effect/src/implementation/sql/string-set.ts b/packages/fumadb-effect/src/implementation/sql/string-set.ts
+new file mode 100644
+index 0000000..25f6dea
+--- /dev/null
++++ b/packages/fumadb-effect/src/implementation/sql/string-set.ts
+@@ -0,0 +1,26 @@
++import type { SqlClient } from "effect/sql/SqlClient";
++import type { Statement } from "effect/sql";
++import type { Provider } from "../../contracts/provider.ts";
++
++/** PostgreSQL text sets must not exhaust the bind-message parameter limit. */
++export const stringSet = (
++  sql: SqlClient,
++  left: Statement.Fragment | Statement.Identifier,
++  input: readonly string[],
++  provider: Provider,
++): Statement.Fragment => {
++  const values = [...new Set(input)];
++  if (values.length === 0) return sql.literal("1=0");
++  if (provider === "postgresql" || provider === "cockroachdb") {
++    // Bind a quoted array literal as text, then let PostgreSQL type it. This also works on
++    // SqlClient implementations without a driver-specific array parameter constructor.
++    const array = `{${values.map((value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(",")}}`;
++    return sql`${left} = ANY(CAST(${array} AS text[]))`;
++  }
++  // Native parameters preserve MySQL's column collation and do not truncate long values.
++  if (provider === "mysql")
++    return sql`${left} IN (${sql.csv(values.map((value) => sql`${value}`))})`;
++  const json = JSON.stringify(values);
++  if (provider === "sqlite") return sql`${left} IN (SELECT value FROM json_each(${json}))`;
++  return sql`${left} IN (SELECT value FROM OPENJSON(${json}))`;
++};
+diff --git a/packages/fumadb-effect/src/implementation/sql/where.ts b/packages/fumadb-effect/src/implementation/sql/where.ts
+index b215373..3d201d0 100644
+--- a/packages/fumadb-effect/src/implementation/sql/where.ts
++++ b/packages/fumadb-effect/src/implementation/sql/where.ts
+@@ -6,6 +6,7 @@
+  * SQL text this module emits is structural (`AND`, `IS NULL`, `1=0`, the
+  * `ESCAPE` clause), never user input.
+  */
++import { stringSet } from "./string-set.ts";
+ import { Option, Result } from "effect";
+ import { Statement } from "effect/sql";
+ import type { SqlClient } from "effect/sql/SqlClient";
+@@ -162,6 +163,13 @@ const buildCompare = (
+       return Result.map(
+         Result.all(items.map((item) => serialize(item, column, provider))),
+         (values) => {
++          if (
++            (column.type === "string" || column.type.startsWith("varchar(")) &&
++            values.every((item): item is string => typeof item === "string")
++          ) {
++            const set = stringSet(sql, left, values, provider);
++            return operator === "in" ? set : sql`NOT (${set})`;
++          }
+           const list = sql`(${sql.csv(values.map((item) => valueOrNull(sql, item ?? null)))})`;
+           return operator === "in" ? sql`${left} IN ${list}` : sql`${left} NOT IN ${list}`;
+         },
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index ac800cf..c7c0572 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -158,6 +158,10 @@ export interface ResourceLifecycle {
+   readonly accountIdentityPlacement?: (
+     account: Pick<Account, "id" | "owner">,
+   ) => Effect.Effect<string | null, StorageError>;
++  /** Batch metadata reads without changing placement authority or retaining actor-specific verdicts. */
++  readonly accountIdentityPlacements?: (
++    accounts: readonly Pick<Account, "id" | "owner">[],
++  ) => Effect.Effect<ReadonlyMap<AccountId, string | null>, StorageError>;
+   /** Resolve the reviewed destination of a saved connection, independently of whoever is completing it. */
+   readonly connectionIdentityPlacement?: (connection: {
+     readonly id: AccountConnectionId;
+diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+index ad4ca52..1bb6e3e 100644
+--- a/packages/sdk/src/implementation/account-acquisition-bindings.ts
++++ b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+@@ -35,6 +35,48 @@ export const acquisitionBinding = (
+       : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
+   });
+ 
++/**
++ * Listing reads metadata once and never decrypts a retained private reference. Retained bindings
++ * can outlive their registration, so an empty registry does not prove there are no saved bindings.
++ */
++export const acquisitionBindings = (
++  db: Query,
++  accounts: readonly Pick<StoredAccount, "id" | "owner">[],
++) =>
++  Effect.gen(function* () {
++    if (accounts.length === 0) return new Map<AccountId, AccountAcquisitionBinding>();
++    const rows = yield* query(() =>
++      db.findMany("accountAcquisitions", {
++        select: [
++          "account",
++          "owner",
++          "provider",
++          "method",
++          "driver",
++          "driverRevision",
++          "generation",
++          "revision",
++          "removal",
++        ],
++        where: (b) =>
++          b(
++            "account",
++            "in",
++            accounts.map((account) => account.id),
++          ),
++      }),
++    );
++    const bindings = yield* Schema.decodeUnknownEffect(Schema.Array(AccountAcquisitionBinding))(
++      rows,
++    ).pipe(Effect.mapError(() => new StorageError()));
++    const owners = new Map(accounts.map((account) => [account.id, account.owner]));
++    return new Map(
++      bindings
++        .filter((binding) => owners.get(binding.account) === binding.owner)
++        .map((binding) => [binding.account, binding]),
++    );
++  });
++
+ export const bindingMatchesAccount = (
+   binding: AccountAcquisitionBinding,
+   account: StoredAccount,
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+index acfb6f9..dd48271 100644
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -1,7 +1,11 @@
++import { acquisitionBindings } from "./account-acquisition-bindings.ts";
+ import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
+ import { Clock, Effect, Option, Result, Schema } from "effect";
+ import { AccountInfo, AccountCheckResult, HostOutputInvalid, ProviderError } from "apps/contracts";
+-import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
++import {
++  AccountAcquisitionUnavailable,
++  type AccountAcquisitionBinding,
++} from "../contracts/account-acquisition-driver.ts";
+ import type {
+   AccountDriverHealth,
+   AccountHealth,
+@@ -12,6 +16,7 @@ import { StorageError } from "../contracts/shared.ts";
+ import { query, transaction, type Query } from "./database.ts";
+ import { accountCheckRecord, recordedCheckFailure } from "./account-check-record.ts";
+ import {
++  driverBindingMatches,
+   driverSourceCurrent,
+   retainedDriverBinding,
+   type AccountDriverResolver,
+@@ -41,9 +46,12 @@ export const makeDriverAccountHealth = (
+       }),
+     );
+   type Row = Effect.Success<ReturnType<typeof rows>>[number];
+-  const project = (account: DriverAccount, row: Row | undefined) =>
++  const project = (
++    account: DriverAccount,
++    row: Row | undefined,
++    binding: AccountAcquisitionBinding | undefined,
++  ) =>
+     Effect.gen(function* () {
+-      const binding = yield* retainedDriverBinding(acquisition, account);
+       if (binding === undefined) return undefined;
+       const checkable =
+         binding.removal !== null || acquisition === undefined
+@@ -92,20 +100,32 @@ export const makeDriverAccountHealth = (
+   const report = (account: DriverAccount) =>
+     Effect.gen(function* () {
+       if (acquisition === undefined) return undefined;
+-      return yield* project(account, (yield* rows([account]))[0]);
++      return yield* project(
++        account,
++        (yield* rows([account]))[0],
++        yield* retainedDriverBinding(acquisition, account),
++      );
+     });
+   const list = (accounts: readonly DriverAccount[]) =>
+     Effect.gen(function* () {
+       if (acquisition === undefined || accounts.length === 0)
+         return new Map<DriverAccount["id"], Effect.Success<ReturnType<typeof project>>>();
+-      const recorded = yield* rows(accounts);
++      const bindings = yield* acquisitionBindings(db, accounts);
++      const bound = accounts.filter((account) => {
++        const binding = bindings.get(account.id);
++        return binding !== undefined && driverBindingMatches(binding, account);
++      });
++      if (bound.length === 0)
++        return new Map<DriverAccount["id"], Effect.Success<ReturnType<typeof project>>>();
++      const recorded = new Map((yield* rows(bound)).map((row) => [row.account, row]));
+       const values = yield* Effect.forEach(
+-        accounts,
++        bound,
+         (account) =>
+           Effect.gen(function* () {
+             const result = yield* project(
+               account,
+-              recorded.find((row) => row.account === account.id),
++              recorded.get(account.id),
++              bindings.get(account.id),
+             );
+             return [account.id, result] as const;
+           }),
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index c53851f..c7887f2 100644
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -274,7 +274,7 @@ export const makeAccountHealth = (
+     });
+ 
+   /**
+-   * App health uses a fixed number of reads; driver metadata reads have bounded concurrency. An owner filter
++   * App health and retained driver metadata use a fixed number of reads. An owner filter
+    * limits the accounts read to that owner, as for a hosted organization. `links` names the apps
+    * each account is linked to.
+    */
+diff --git a/packages/sdk/src/implementation/account-identities.ts b/packages/sdk/src/implementation/account-identities.ts
+index 2f0d7cd..87f65e8 100644
+--- a/packages/sdk/src/implementation/account-identities.ts
++++ b/packages/sdk/src/implementation/account-identities.ts
+@@ -58,6 +58,57 @@ export const accountIdentity = (
+     );
+   });
+ 
++/** Resolve all public identity metadata with one storage read per list. */
++export const accountIdentities = (
++  db: Query,
++  accounts: readonly Pick<StoredAccount, "id" | "owner" | "identityId">[],
++  lifecycle: ResourceLifecycle | undefined,
++) =>
++  Effect.gen(function* () {
++    const identified = accounts.filter((account) => account.identityId !== null);
++    if (identified.length === 0) return new Map<StoredAccount["id"], AccountIdentity>();
++    const placements =
++      lifecycle?.accountIdentityPlacements === undefined
++        ? new Map(
++            yield* Effect.forEach(identified, (account) =>
++              identityPlacement(account, lifecycle).pipe(
++                Effect.map((placement) => [account.id, placement] as const),
++              ),
++            ),
++          )
++        : yield* lifecycle.accountIdentityPlacements(identified);
++    const placed = identified.filter((account) => placements.get(account.id) != null);
++    if (placed.length === 0) return new Map<StoredAccount["id"], AccountIdentity>();
++    const identityIds = [
++      ...new Set(
++        placed.flatMap((account) => (account.identityId === null ? [] : [account.identityId])),
++      ),
++    ];
++    const rows = yield* query(() =>
++      db.findMany("accountIdentities", {
++        select: ["id", "owner", "placement", "issuer", "name", "label"],
++        where: (b) => b("id", "in", identityIds),
++      }),
++    );
++    const byId = new Map(rows.map((row) => [row.id, row]));
++    const entries = yield* Effect.forEach(identified, (account) =>
++      Effect.gen(function* () {
++        const row = account.identityId === null ? undefined : byId.get(account.identityId);
++        if (
++          row === undefined ||
++          row.owner !== account.owner ||
++          row.placement !== placements.get(account.id)
++        )
++          return [];
++        const identity = yield* Schema.decodeUnknownEffect(AccountIdentity)(row).pipe(
++          Effect.mapError(() => new StorageError()),
++        );
++        return [[account.id, identity] as const];
++      }),
++    );
++    return new Map(entries.flat());
++  });
++
+ /** Called after external verification; no token or profile request runs inside this transaction. */
+ export const recordAccountIdentity = (
+   db: Query,
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index c15b7eb..cb5959d 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -15,7 +15,7 @@ import { Provider, ProviderNotFound } from "../contracts/provider.ts";
+ import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+ import { StoredAccount, StoredAccountMetadata, type Credentials } from "../contracts/storage.ts";
+ import { query, transaction, type Query } from "./database.ts";
+-import { accountGrantId, accountIdentity } from "./account-identities.ts";
++import { accountGrantId, accountIdentities, accountIdentity } from "./account-identities.ts";
+ import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
+ import { validateFields } from "./provider.ts";
+ 
+@@ -351,9 +351,10 @@ export const makeAccounts = (
+           }),
+         ),
+       )(rows).pipe(Effect.mapError(() => new StorageError()));
++      const identities = yield* accountIdentities(db, stored, lifecycle);
+       return yield* Effect.forEach(stored, (row) =>
+         Effect.gen(function* () {
+-          const identity = yield* accountIdentity(db, row, lifecycle);
++          const identity = identities.get(row.id);
+           return {
+             ...(yield* publicAccount(row)),
+             ...(identity === undefined ? {} : { identity }),
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index a506df2..8d37ee0 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -77,11 +77,6 @@ export function AccountObservations<E>({
+   const details = useId();
+   const view = Option.getOrUndefined(AsyncResult.value(result));
+   const inspected = view?.canInspect === true ? view : undefined;
+-  const collecting = inspected?.reports.some((report) => report.collecting) === true;
+-  // Another request's collection is under a short lease; read again on the next clock tick.
+-  useEffect(() => {
+-    if (collecting) reload();
+-  }, [collecting, now, reload]);
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const run = async () => {
