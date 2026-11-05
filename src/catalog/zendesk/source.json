@@ -19,7 +19,7 @@
     },
     {
       "path": "openapi.ts",
-      "content": "import type { OpenapiToolNamesOptions } from \"apps/openapi\";\n\n// The Support API spec declares basicAuth, but the saved provider account is OAuth.\nexport function optionsFor(site: string) {\n  return {\n    source: { url: \"https://developer.zendesk.com/zendesk/oas.yaml\" },\n    allowedOrigin: site,\n    baseUrl: site,\n    securitySchemes: { basicAuth: { type: \"http\", scheme: \"bearer\" } },\n    methods: {\n      oauth: [{ scheme: \"basicAuth\", field: \"access_token\", part: \"value\", prefix: \"\" }],\n    },\n    oauth: [],\n  } satisfies OpenapiToolNamesOptions;\n}\n"
+      "content": "import type { OpenapiToolNamesOptions } from \"apps/openapi\";\n\n// Both declared schemes use the saved provider account's OAuth bearer token.\nexport function optionsFor(site: string) {\n  return {\n    source: { url: \"https://developer.zendesk.com/zendesk/oas.yaml\" },\n    allowedOrigin: site,\n    baseUrl: site,\n    securitySchemes: {\n      basicAuth: { type: \"http\", scheme: \"bearer\" },\n      oauth2: { type: \"http\", scheme: \"bearer\" },\n    },\n    methods: {\n      oauth: [\n        { scheme: \"basicAuth\", field: \"access_token\", part: \"value\", prefix: \"\" },\n        { scheme: \"oauth2\", field: \"access_token\", part: \"value\", prefix: \"\" },\n      ],\n    },\n    oauth: [],\n  } satisfies OpenapiToolNamesOptions;\n}\n"
     },
     {
       "path": "package.json",
