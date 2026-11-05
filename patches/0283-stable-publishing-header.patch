@@ -1,0 +1,103 @@
+diff --git a/packages/ui/src/implementation/dashboard/publish-app.tsx b/packages/ui/src/implementation/dashboard/publish-app.tsx
+--- a/packages/ui/src/implementation/dashboard/publish-app.tsx
++++ b/packages/ui/src/implementation/dashboard/publish-app.tsx
+@@ -285,3 +285,4 @@
++const publishingBox = "h-9 w-26 max-[740px]:h-11";
+ const publishingPending = (
+-  <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
++  <Skeleton className={publishingBox} aria-label="Loading publishing access" />
+ );
+@@ -297,4 +298,9 @@
+   const { result } = useQuery(atoms.publishing);
+-  if (AsyncResult.isSuccess(result)) return result.value.publishing ? children : null;
+-  return AsyncResult.isFailure(result) ? children : publishingPending;
++  // A placeholder shown while the host answered keeps its box when the answer is no: on a phone
++  // it is the actions row, and removing it would pull everything beneath it up.
++  const [heldPlace] = useState(() => AsyncResult.isInitial(result));
++  if (!AsyncResult.isSuccess(result))
++    return AsyncResult.isFailure(result) ? children : publishingPending;
++  if (result.value.publishing) return children;
++  return heldPlace ? <div aria-hidden className={cn("invisible", publishingBox)} /> : null;
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -276,31 +276,27 @@
+       actions={
+-        app === undefined || access === undefined ? (
+-          // Hold no place for a Publish control on a host that does not publish.
++        <>
++          {app !== undefined && canUse && openApp?.(app)}
++          {/* Loading and loaded share this check, so a place it held stays after a no. */}
+           <WhenPublishing atoms={appManagement(organization)}>
+-            <Skeleton className="h-9 w-28 max-[740px]:h-11" />
+-          </WhenPublishing>
+-        ) : (
+-          <>
+-            {canUse && openApp?.(app)}
+-            {canManage && (role === "owner" || role === "admin") ? (
++            {app === undefined || access === undefined ? (
++              <Skeleton className="h-9 w-28 max-[740px]:h-11" />
++            ) : canManage && (role === "owner" || role === "admin") ? (
+               <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
+             ) : (
+-              <WhenPublishing atoms={appManagement(organization)}>
+-                <Button
+-                  variant="outline"
+-                  size="sm"
+-                  disabledReason={
+-                    role === undefined
+-                      ? "Checking organization access…"
+-                      : role === "owner" || role === "admin"
+-                        ? manageReason
+-                        : "Only organization owners and admins can publish apps."
+-                  }
+-                >
+-                  Publish
+-                </Button>
+-              </WhenPublishing>
++              <Button
++                variant="outline"
++                size="sm"
++                disabledReason={
++                  role === undefined
++                    ? "Checking organization access…"
++                    : role === "owner" || role === "admin"
++                      ? manageReason
++                      : "Only organization owners and admins can publish apps."
++                }
++              >
++                Publish
++              </Button>
+             )}
+-          </>
+-        )
++          </WhenPublishing>
++        </>
+       }
+diff --git a/e2e/tests/member-controls.spec.ts b/e2e/tests/member-controls.spec.ts
+--- a/e2e/tests/member-controls.spec.ts
++++ b/e2e/tests/member-controls.spec.ts
+@@ -150,2 +150,9 @@
+                 const references = [actors.organization.slug, actors.organization.id];
++                // The host answers whether it publishes after the first measurement, as a slow
++                // answer would, so the Publish placeholder's settling is measured every run.
++                const publishingStatus = yield* holdQuery(
++                  references.map((ref) => `/api/organizations/${ref}/app-publications/status`),
++                  "continue",
++                  { allRequests: true },
++                );
+                 const authority = yield* holdQuery(
+@@ -165,2 +172,3 @@
+                 yield* authority.requested;
++                yield* publishingStatus.requested;
+                 yield* inventory.requested;
+@@ -192,2 +200,8 @@
+                 yield* authority.release;
++                yield* publishingStatus.release;
++                yield* browser.use("Publishing placeholder settles", (page) =>
++                  page
++                    .getByLabel("Loading publishing access", { exact: true })
++                    .waitFor({ state: "hidden" }),
++                );
+                 yield* browser.use("Member restriction resolves", (page) =>

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-brand-colours",
+  "file": "0252-provider-brand-colours.patch",
+  "content_sha256": "c71e9000214d2e3c472107a45faecb998c5312f4ddf9d9b5e446db52c0caa557",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

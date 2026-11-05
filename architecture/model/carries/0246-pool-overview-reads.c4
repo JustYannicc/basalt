@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Pool Overview resolves the signed-in app session through the hosted usage service. Managers may read capacity without app execution access; members read only their own usage, and usage loads independently of capacity."
+    }
+  }
+}

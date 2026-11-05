@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Overview keeps provider quota windows separate from measured API-equivalent usage, preserves missing data and currencies, and limits per-account inspection to accounts the signed-in person may inspect."
+    }
+  }
+}

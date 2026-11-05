@@ -310,8 +310,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs
       - name: Verify app query phase diagnostics
@@ -368,8 +367,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
         run: >-
@@ -404,8 +402,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the private OAuth transport and hosted placement
         working-directory: .upstream
         run: >-
@@ -452,10 +449,9 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 2
-        run: |
-          npm run prepare:upstream
-          cd .upstream
-          bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
       - name: Build the isolated Google recovery test assets
         timeout-minutes: 2
         working-directory: .upstream
@@ -472,6 +468,20 @@ jobs:
           BASALT_ADOPTION_PROOF_WORKERS: "1"
           BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
         run: node scripts/production-ops/prove-provider-adoption.ts
+      - name: Verify saved Google client comparisons
+        timeout-minutes: 3
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: configured
+        run: bun run e2e:cloud --test-name '^Google client diagnostics compare saved clients without exposing credentials$' --workers 1
+      - name: Verify unavailable Google client diagnostics
+        timeout-minutes: 3
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+          BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: unconfigured
+        run: bun run e2e:cloud --test-name '^Google client diagnostics distinguish an unavailable configured client$' --workers 1
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
         if: always()
@@ -503,8 +513,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify account deletion against concurrent OAuth renewal
         timeout-minutes: 5
         run: node scripts/oauth-removal-tests/prove.ts
@@ -543,8 +552,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify recovery through Cloud's real provisioning queue
         timeout-minutes: 5
         working-directory: .upstream
@@ -585,8 +593,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the SSO journeys
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify OIDC and SAML through the private service binding
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
@@ -618,8 +625,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify runtime database binding with one isolated restart
         working-directory: .upstream
         env:
@@ -669,8 +675,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify exact provider account adoption through signed operations
         timeout-minutes: 5
         run: node scripts/production-ops/prove-provider-adoption.ts
@@ -729,8 +734,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify stable database identity through signed apply verification and replay
         timeout-minutes: 22
         env:
@@ -769,8 +773,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Prepare the production compiler's released framework assets
         working-directory: .upstream
         run: node scripts/build-basalt-framework.ts
@@ -810,8 +813,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify workflow requests and scheduled approvals in the human-in-the-loop tab
         working-directory: .upstream
         run: >-
@@ -839,6 +841,40 @@ jobs:
           name: human-in-the-loop-e2e
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  access-editor-reads:
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'access-editor-reads')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify the app overview stays in place as publishing access settles
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
+      - name: Verify access editors start independent reads together
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name 'asks for groups without waiting' --workers 1
+      - name: Verify Cloud access editors start independent reads together
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: access-editor-reads-e2e
+          path: .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   contributed-accounts:
     needs: select
     if: contains(fromJSON(needs.select.outputs.hosted_jobs), 'contributed-accounts')
@@ -857,8 +893,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify contributed account authority and recovery
         working-directory: .upstream
         run: >-
@@ -932,8 +967,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify reporting, retained data and registration isolation
         working-directory: .upstream
         run: >-
@@ -973,13 +1007,14 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the suite's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify the Cloud inventory and exact-ID token retirement tooling
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
+      - name: Verify the banked reset control in a browser with a synthetic provider
+        run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -989,6 +1024,9 @@ jobs:
             .generated/pool-reset-checks/**/failure.json
             .generated/pool-reset-checks/**/runtime-cloud.log
             .generated/pool-reset-checks/**/runtime-diagnostics.json
+            .generated/pool-reset-ui/**/report.json
+            .generated/pool-reset-ui/**/failure.json
+            .generated/pool-reset-ui/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -1013,8 +1051,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the scenario's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
         run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable|^Google OAuth choices keep'
@@ -1078,8 +1115,7 @@ jobs:
           bun run e2e:prepare
           node scripts/build-basalt-framework.ts
       - name: Install Chromium for the hosted AWS paste proof
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Exercise AWS sign-in and tools through the real runtime
         run: |
           node --test e2e/aws/diagnostics.test.mjs
@@ -1115,8 +1151,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the account-site UI proof
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Exercise GitLab accounts against the real runtime
         run: node scripts/check-connectors.ts
         env:
@@ -1150,8 +1185,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install the renderer scenario's browser engine
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
         run: bun run e2e:self-host --test-name '^MCP Apps retain native|^MCP Apps preserve remote source|^MCP Apps render original|^App builds retain their selected npm framework' --workers 1
@@ -1427,7 +1461,7 @@ jobs:
 
   check:
     name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
-    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
+    needs: [select, fast, cpa-pipeline, client-connection, client-mobile, client-desktop, client-native-product, slack-health, catalog-compat, host-managed-accounts, host-managed-accounts-local, host-managed-accounts-cloud, google-account-recovery, oauth-account-regressions, pool-account-recovery, sso-service-binding, production-ops, production-ops-migrations, production-ops-identity, compiler-diagnostics, human-in-the-loop, access-editor-reads, contributed-accounts, contributed-account-recipes, personal-data-reporting, pool-inventory, dashboard-batch, aws-connectors, gitlab-connectors, mcp-apps, pool-runtime, production-build, docs-build, upstream-contracts, account-acquisition, vercel-sign-in, elevenlabs-sign-in, boat-bundle, boat-check]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1482,8 +1516,7 @@ jobs:
         working-directory: .upstream
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
-        working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        uses: ./.github/actions/setup-browser
       - name: Verify reusable acquisition, health and retained account compatibility
         working-directory: .upstream
         run: >-
@@ -1497,7 +1530,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall|^account rows show a mapped pool account's requests"
+          "^account rows show retained usage and health|^usage cells show only reported limited windows|^a Home-bound account with no reading offers Refresh|^compact account rows stay about one line tall|^account rows show a mapped pool account's requests|^app Accounts tabs show a mapped pool account's requests"
           --workers 1
       - name: Collect bounded E2E evidence
         if: always()

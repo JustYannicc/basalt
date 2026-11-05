@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Account rows name at most two using apps. Longer lists keep one app and a count that opens the complete list without increasing the row height."
+    }
+  }
+}

@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "One provider colour mapping supplies provider icons, healthy quota bars and chart series; low, critical and stale usage retain their status colours and stale readings identify themselves."
+    }
+  }
+}

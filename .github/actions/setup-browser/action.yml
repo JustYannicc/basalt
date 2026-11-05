@@ -1,0 +1,36 @@
+name: Set up Chromium
+description: Install the pinned Chromium and retain its system dependency downloads.
+inputs:
+  prepare-upstream:
+    description: Prepare the pinned runtime inside the caller's existing setup deadline.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Prepare the pinned runtime
+      if: inputs.prepare-upstream == 'true'
+      shell: bash
+      run: npm run prepare:upstream
+    - name: Identify the system dependency package set
+      id: packages
+      shell: bash
+      working-directory: .upstream
+      run: node ../scripts/ci-browser-packages.ts
+    - uses: actions/cache/restore@v4
+      id: debs
+      with:
+        path: ${{ runner.temp }}/playwright-apt/*.deb
+        key: playwright-debs-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.packages.outputs.fingerprint }}
+    - name: Install system dependencies with bounded mirror downloads
+      shell: bash
+      working-directory: .upstream
+      run: bash "$GITHUB_ACTION_PATH/install-deps.sh"
+    - uses: actions/cache/save@v4
+      if: steps.debs.outputs.cache-hit != 'true'
+      with:
+        path: ${{ runner.temp }}/playwright-apt/*.deb
+        key: ${{ steps.debs.outputs.cache-primary-key }}
+    - name: Install the pinned Chromium engine
+      shell: bash
+      working-directory: .upstream
+      run: bunx playwright install chromium

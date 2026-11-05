@@ -5,12 +5,18 @@ const base =
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-[background-color,color,box-shadow,opacity] duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 max-[740px]:min-h-11";
 const variants = {
   default: "bg-primary text-primary-foreground hover:bg-primary/90",
-  outline: "border border-border bg-background shadow-xs hover:bg-accent dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+  outline:
+    "border border-border bg-background shadow-xs hover:bg-accent dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
   ghost: "hover:bg-accent",
   destructive: "bg-destructive text-white hover:bg-destructive/90 dark:bg-destructive/60",
   link: "text-foreground underline underline-offset-4 decoration-muted-foreground/50 hover:decoration-foreground",
 } as const;
-const sizes = { default: "h-9 px-4", sm: "h-8 px-3 gap-1.5", xs: "h-6 px-2 text-xs gap-1", inline: "h-auto p-0" } as const;
+const sizes = {
+  default: "h-9 px-4",
+  sm: "h-8 px-3 gap-1.5",
+  xs: "h-6 px-2 text-xs gap-1",
+  inline: "h-auto p-0",
+} as const;
 
 type Variant = keyof typeof variants;
 type Size = keyof typeof sizes;
@@ -47,23 +53,88 @@ export function Button({
   );
 }
 
+/** The dashboard's segmented switch: one choice, arrow keys move it. */
+export function Segmented<T extends string | number>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly { readonly id: T; readonly label: string }[];
+  onChange: (value: T) => void;
+}) {
+  const move = (step: number, from: HTMLElement) => {
+    const index = options.findIndex((option) => option.id === value);
+    const next = options[(index + step + options.length) % options.length];
+    if (!next) return;
+    onChange(next.id);
+    const buttons = from.parentElement?.querySelectorAll("button");
+    buttons?.[options.indexOf(next)]?.focus();
+  };
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="inline-flex h-8 w-fit rounded-md border border-border p-0.5 max-[740px]:h-11"
+    >
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="radio"
+          aria-checked={value === option.id}
+          tabIndex={value === option.id ? 0 : -1}
+          onClick={() => onChange(option.id)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            move(event.key === "ArrowRight" ? 1 : -1, event.currentTarget);
+          }}
+          className={`rounded-[4px] px-3 text-xs font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-[740px]:min-w-11 ${
+            value === option.id
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Spinner({ className = "size-3.5" }: { className?: string }) {
   return (
     <svg className={`${className} animate-spin`} viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="1.5" />
-      <path d="M14.5 8A6.5 6.5 0 0 0 8 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <path
+        d="M14.5 8A6.5 6.5 0 0 0 8 1.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 
-export function Badge({ tone = "muted", children }: { tone?: "muted" | "warning" | "destructive"; children: ReactNode }) {
+export function Badge({
+  tone = "muted",
+  children,
+}: {
+  tone?: "muted" | "warning" | "destructive";
+  children: ReactNode;
+}) {
   const tones = {
     muted: "border-border text-muted-foreground",
     warning: "border-warning/30 text-warning",
     destructive: "border-destructive/30 text-destructive",
   };
   return (
-    <span className={`inline-flex h-5 items-center rounded-sm border px-1.5 text-xs font-medium ${tones[tone]}`}>
+    <span
+      className={`inline-flex h-5 items-center rounded-sm border px-1.5 text-xs font-medium ${tones[tone]}`}
+    >
       {children}
     </span>
   );
@@ -109,7 +180,13 @@ export function Dialog({
 export function ExternalIcon() {
   return (
     <svg className="size-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M6 3.5H3.5v9h9V10M9 3.5h3.5V7M12.5 3.5 7 9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M6 3.5H3.5v9h9V10M9 3.5h3.5V7M12.5 3.5 7 9"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -117,7 +194,90 @@ export function ExternalIcon() {
 export function CheckIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="m3.5 8.5 3 3 6-7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="m3.5 8.5 3 3 6-7"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** State icons from the overview: shape and words carry the state, never colour alone. */
+export function StateIcon({
+  tone,
+  className = "size-4",
+}: {
+  tone: "ok" | "warn" | "bad" | "learn" | "info";
+  className?: string;
+}) {
+  const paths = {
+    ok: (
+      <path
+        d="m3.5 8.5 3 3 6-7"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    ),
+    warn: (
+      <>
+        <path
+          d="M8 1.8 14.6 13.4H1.4L8 1.8Z"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M8 6.2v3.3M8 11.4v.1"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </>
+    ),
+    bad: (
+      <>
+        <circle cx="8" cy="8" r="6.3" stroke="currentColor" strokeWidth="1.4" />
+        <path
+          d="m5.8 5.8 4.4 4.4m0-4.4-4.4 4.4"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </>
+    ),
+    learn: (
+      <>
+        <circle
+          cx="8"
+          cy="8"
+          r="6.3"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeDasharray="2.2 2"
+        />
+        <path d="M8 4.8V8l2.2 1.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </>
+    ),
+    info: (
+      <>
+        <circle cx="8" cy="8" r="6.3" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M8 7.3v3.6M8 5v.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      className={`${className} mt-0.5 shrink-0`}
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      {paths[tone]}
     </svg>
   );
 }

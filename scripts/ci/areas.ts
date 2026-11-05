@@ -40,6 +40,7 @@ export const heavyJobs = [
   ...operations,
   "compiler-diagnostics",
   "human-in-the-loop",
+  "access-editor-reads",
   "contributed-accounts",
   "personal-data-reporting",
   "contributed-account-recipes",
@@ -175,6 +176,16 @@ export const areas = [
   {
     paths: [".upstream/**/*approval*", ".upstream/**/*workflow*", ".upstream/**/*workflow*/**"],
     jobs: ["human-in-the-loop"],
+  },
+  {
+    paths: [
+      ".upstream/apps/hosted/web/src/implementation/pages/{resource-settings,app-detail,account-actions}.tsx",
+      ".upstream/e2e/tests/access-editor-reads.spec.ts",
+      ".upstream/e2e/support/read-dispatch.ts",
+      ".upstream/e2e/tests/member-controls.spec.ts",
+      ".upstream/e2e/tests/publishing-off.spec.ts",
+    ],
+    jobs: ["access-editor-reads"],
   },
   {
     paths: [

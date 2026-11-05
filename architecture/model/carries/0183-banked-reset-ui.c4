@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "A reset spends only an explicitly selected saved credit after current account and pool authority are checked. Catalog and receipt reads never spend; uncertain attempts retain their request identity and cannot retry automatically."
+    }
+  }
+}

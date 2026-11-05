@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-stable-publishing-header",
+  "file": "0283-stable-publishing-header.patch",
+  "content_sha256": "3c42d813a3b4415c1702cb252e32cb956829acafefbd8ce2be2d1c482aa10936",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

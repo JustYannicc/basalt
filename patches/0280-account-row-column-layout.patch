@@ -1,0 +1,1057 @@
+diff --git a/e2e/support/account-row-layout.ts b/e2e/support/account-row-layout.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/account-row-layout.ts
+@@ -0,0 +1,77 @@
++import type { Page } from "playwright";
++
++/** Compare the rendered columns and both identity lines with the row's action hit boxes. */
++export const accountRowLayout = (page: Page) =>
++  page.evaluate(() => {
++    const header = document.querySelector<HTMLElement>(".inventory-header");
++    const rows = [...document.querySelectorAll<HTMLElement>(".inventory-row")];
++    const wide = header !== null && getComputedStyle(header).display !== "none";
++    const columns = header === null ? undefined : getComputedStyle(header).gridTemplateColumns;
++    const type = header?.querySelector("[data-account-type-header]")?.getBoundingClientRect();
++    return {
++      rows: rows.length,
++      columnsAligned:
++        !wide ||
++        rows.every((row) => {
++          const cell = row.querySelector("[data-account-type]")?.getBoundingClientRect();
++          return (
++            getComputedStyle(row).gridTemplateColumns === columns &&
++            cell !== undefined &&
++            cell.x === type?.x
++          );
++        }),
++      namesUnobscured: rows.every((row) => {
++        const lines = [
++          ...row.querySelectorAll<HTMLElement>("[data-account-name], [data-account-identity]"),
++        ];
++        return (
++          lines.length > 0 &&
++          lines.every((line) => {
++            const identity = line.getBoundingClientRect();
++            return (
++              identity.width > 0 &&
++              line.scrollWidth <= line.clientWidth &&
++              [...row.querySelectorAll("[data-account-row-menu] button")].every((button) => {
++                const action = button.getBoundingClientRect();
++                return (
++                  action.right <= identity.left ||
++                  action.left >= identity.right ||
++                  action.bottom <= identity.top ||
++                  action.top >= identity.bottom
++                );
++              })
++            );
++          })
++        );
++      }),
++      identityLabelsReadable: rows.every((row) =>
++        [
++          ...row.querySelectorAll<HTMLElement>("[data-account-name], [data-account-identity]"),
++        ].every((line) => line.scrollWidth <= line.clientWidth),
++      ),
++      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
++    };
++  });
++
++/** Observe a stable row from its first complete paint through delayed hydration and setup. */
++export const trackAccountRowHeight = (page: Page, label: string) =>
++  page.addInitScript((label) => {
++    const heights: number[] = [];
++    Object.defineProperty(window, "accountRowHeights", { value: heights });
++    let queued = false;
++    new MutationObserver(() => {
++      if (queued) return;
++      queued = true;
++      requestAnimationFrame(() => {
++        queued = false;
++        const button = [...document.querySelectorAll("[data-account-row-menu] button")].find(
++          (button) => button.getAttribute("aria-label") === `Manage ${label}`,
++        );
++        const row = button?.closest(".inventory-row");
++        if (row?.querySelector("[data-account-name]") && row.querySelector("[data-account-type]")) {
++          const height = row.getBoundingClientRect().height;
++          if (height > 0 && heights.at(-1) !== height) heights.push(height);
++        }
++      });
++    }).observe(document, { subtree: true, childList: true, attributes: true });
++  }, label);
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -18,6 +18,7 @@
+   observationFixture,
+   observationSource,
+ } from "../support/account-observation-fixture.ts";
++import { accountRowLayout, trackAccountRowHeight } from "../support/account-row-layout.ts";
+ import { accountRow, openRowMenu } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -310,6 +311,9 @@
+             `/org/${plain.actors.organization.slug}/apps/${usage.app.id}?view=accounts`,
+           ],
+         ] as const;
++        yield* browser.use("Observe the verified row through hydration and setup", (page) =>
++          trackAccountRowHeight(page, "Verified mail"),
++        );
+         for (const width of [1280, 390])
+           for (const scheme of ["light", "dark"] as const)
+             for (const [name, url] of surfaces) {
+@@ -328,15 +332,64 @@
+                   ),
+               );
+               if (name === "accounts") {
++                const layout = yield* browser.use(
++                  "Account columns share tracks and actions leave names readable",
++                  accountRowLayout,
++                );
++                expect(layout.rows).toBeGreaterThan(0);
++                expect(layout.columnsAligned).toBe(true);
++                expect(layout.namesUnobscured).toBe(true);
++                expect(layout.noHorizontalOverflow).toBe(true);
++                expect(layout.identityLabelsReadable).toBe(true);
++                const menuLayout = yield* browser.use(
++                  "The Add app action lives in the row menu with its full label",
++                  (page) => {
++                    const row = accountRow(page, "Verified mail");
++                    return row
++                      .scrollIntoViewIfNeeded()
++                      .then(() =>
++                        Promise.all([
++                          page.evaluate(() => Reflect.get(window, "accountRowHeights") as number[]),
++                          row.boundingBox(),
++                        ]),
++                      )
++                      .then(([heights, before]) =>
++                        openRowMenu(page, row, "Verified mail").then((menu) => {
++                          const add = menu.getByRole("menuitem", {
++                            name: "Add Fixture identity app",
++                            exact: true,
++                          });
++                          return add
++                            .waitFor()
++                            .then(() =>
++                              add.evaluate((item) => item.scrollWidth <= item.clientWidth),
++                            )
++                            .then((readable) =>
++                              page.keyboard
++                                .press("Escape")
++                                .then(() => row.boundingBox())
++                                .then((after) => ({ heights, before, after, readable })),
++                            );
++                        }),
++                      );
++                  },
++                );
++                expect(menuLayout.heights.length).toBeGreaterThan(0);
++                expect(
++                  new Set(menuLayout.heights).size,
++                  "hydration and setup do not change the compact row height",
++                ).toBe(1);
++                expect(menuLayout.readable).toBe(true);
++                expect(menuLayout.after).toEqual(menuLayout.before);
+                 const [identity, action] = yield* browser.use(
+-                  "The verified name and Add app action both keep space",
++                  "The verified name and row menu both keep space",
+                   (page) =>
+                     Promise.all([
+                       accountRow(page, "Verified mail")
+                         .locator("[data-account-name]")
+                         .boundingBox(),
+                       accountRow(page, "Verified mail")
+-                        .getByRole("button", { name: "Add Fixture identity app", exact: true })
++                        .getByRole("button", { name: "Manage Verified mail", exact: true })
+                         .boundingBox(),
+                     ]),
+                 );
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -1,3 +1,4 @@
++import { accountRowLayout } from "../support/account-row-layout.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import type { Page } from "playwright";
+@@ -220,12 +221,35 @@
+           page.getByRole("status").filter({ hasText: "5 sign-ins verified." }).waitFor(),
+         );
+         yield* browser.use("The refreshed inventory groups all five retained bindings", (page) => {
+-          let row = page.locator(".inventory-row").filter({ hasText: "same@example.test" });
+-          for (let index = 0; index < 5; index++)
+-            row = row.filter({
+-              has: page.getByRole("link", { name: `Connected app ${index + 1}` }),
+-            });
+-          return row.waitFor();
++          const row = page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first();
++          return row
++            .getByRole("link")
++            .filter({ hasText: /^Connected app [1-5]$/ })
++            .first()
++            .waitFor()
++            .then(() =>
++              row.getByRole("button", { name: "Used by 4 more apps", exact: true }).click(),
++            )
++            .then(() =>
++              Promise.all(
++                [1, 2, 3, 4, 5].map((index) =>
++                  row
++                    .getByRole("link")
++                    .filter({ hasText: new RegExp(`^Connected app ${index}$`) })
++                    .or(
++                      page
++                        .locator("[data-used-by-list]")
++                        .getByRole("link")
++                        .filter({ hasText: new RegExp(`^Connected app ${index}$`) }),
++                    )
++                    .waitFor(),
++                ),
++              ),
++            )
++            .then(() => page.keyboard.press("Escape"));
+         });
+         expect(
+           yield* browser.use(
+@@ -261,14 +285,26 @@
+             page.locator(".inventory-row").filter({ hasText: "same@example.test" }).count(),
+           ),
+         ).toBe(1);
++        yield* browser.use("Open every retained app reference", (page) =>
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("button", { name: "Used by 4 more apps", exact: true })
++            .click(),
++        );
+         for (let index = 0; index < 5; index++)
+           yield* browser.use("Each retained app remains linked", (page) =>
+             page
+               .locator(".inventory-row")
+               .filter({ hasText: "same@example.test" })
+-              .getByRole("link", { name: `Connected app ${index + 1}` })
++              .getByRole("link")
++              .or(page.locator("[data-used-by-list]").getByRole("link"))
++              .filter({ hasText: new RegExp(`^Connected app ${index + 1}$`) })
+               .waitFor(),
+           );
++        yield* browser.use("Close retained app references", (page) =>
++          page.keyboard.press("Escape"),
++        );
+         yield* browser.use(
+           "The verified group shows its issuer rather than its first app",
+           (page) =>
+@@ -312,7 +348,15 @@
+           page.getByPlaceholder("Search accounts…").fill(""),
+         );
+         yield* browser.use("Add a later app from the saved account", (page) =>
+-          page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first()
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() =>
++              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
++            ),
+         );
+         yield* browser.use("Choose the later app", (page) =>
+           page
+@@ -362,10 +406,15 @@
+             page
+               .locator(".inventory-row")
+               .filter({ hasText: "same@example.test" })
+-              .getByRole("link", { includeHidden: true })
+-              .filter({ hasText: /^Later app$/ })
++              .getByRole("button", {
++                name: "Used by 6 more apps",
++                exact: true,
++                includeHidden: true,
++              })
+               .waitFor(),
+         );
++        expect((yield* product.read(later)).status).toBe(200);
++        expect((yield* product.read(additional)).status).toBe(200);
+         yield* browser.checkpoint("The covered app is connected at phone width");
+         yield* browser.use("Finish the confirmed connection", (page) =>
+           page
+@@ -376,23 +425,32 @@
+         yield* browser.use("Return to desktop width", (page) =>
+           page.setViewportSize({ width: 1280, height: 900 }),
+         );
+-        yield* browser.use("The added app appears on the same identity row", (page) =>
++        yield* browser.use("The added app appears on the same identity row", (page) => {
++          const row = page.locator(".inventory-row").filter({ hasText: "same@example.test" });
++          return row
++            .getByRole("button", { name: "Used by 6 more apps", exact: true })
++            .click()
++            .then(() =>
++              row
++                .getByRole("link")
++                .or(page.locator("[data-used-by-list]").getByRole("link"))
++                .filter({ hasText: /^Later app$/ })
++                .waitFor(),
++            );
++        });
++        expect((yield* issuer.metrics).authorizations).toBe(5);
++        expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
++        yield* browser.use("Both selected apps refresh on the same row", (page) =>
+           page
+             .locator(".inventory-row")
+             .filter({ hasText: "same@example.test" })
+             .getByRole("link")
+-            .filter({ hasText: /^Later app$/ })
+-            .waitFor(),
+-        );
+-        expect((yield* issuer.metrics).authorizations).toBe(5);
+-        expect((yield* unverifiedIssuer.metrics).authorizations).toBe(1);
+-        yield* browser.use("Both selected apps refresh on the same row", (page) =>
+-          page
+-            .locator(".inventory-row")
+-            .filter({ hasText: "same@example.test" })
+-            .getByRole("link")
++            .or(page.locator("[data-used-by-list]").getByRole("link"))
+             .filter({ hasText: /^Another later app$/ })
+             .waitFor(),
++        );
++        yield* browser.use("Close the connected app references", (page) =>
++          page.keyboard.press("Escape"),
+         );
+         expect((yield* product.read(later)).status).toBe(200);
+         expect((yield* product.read(additional)).status).toBe(200);
+@@ -406,7 +464,13 @@
+           ).toBe(retainedBinding.account);
+         }
+         yield* browser.use("Inspect each binding's independent actions", (page) =>
+-          page.getByRole("button", { name: "Manage apps", exact: true }).click(),
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first()
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() => page.getByRole("menuitem", { name: "Manage apps", exact: true }).click()),
+         );
+         yield* browser.checkpoint("Every binding remains independently manageable");
+         yield* browser.use("Close binding actions and inspect the phone layout", (page) =>
+@@ -518,9 +582,9 @@
+             .then(() => page.getByRole("heading", { name: /^Accounts/ }).waitFor()),
+         );
+         const row = (page: Page, app: string) =>
+-          page
+-            .locator(".inventory-row")
+-            .filter({ has: page.getByRole("link", { name: app, exact: true }) });
++          page.locator(".inventory-row").filter({
++            has: page.getByRole("link").filter({ has: page.getByText(app, { exact: true }) }),
++          });
+         const mark = (page: Page, app: string) =>
+           row(page, app)
+             .getByRole("img")
+@@ -547,6 +611,45 @@
+             );
+         const expectMarks = (width: string) =>
+           Effect.gen(function* () {
++            yield* browser.use(`${width}: each fixture row is loaded`, (page) =>
++              Promise.all(
++                ["Mail fixture", "Issues fixture", "Solo fixture", "Unverified fixture"].map(
++                  (app) => row(page, app).waitFor(),
++                ),
++              ),
++            );
++            const layout = yield* browser.use(
++              `${width}: grouped and ordinary rows share columns without covering names`,
++              accountRowLayout,
++            );
++            expect(layout.rows).toBeGreaterThanOrEqual(4);
++            expect(layout.columnsAligned).toBe(true);
++            expect(layout.namesUnobscured).toBe(true);
++            expect(layout.identityLabelsReadable).toBe(true);
++            expect(layout.noHorizontalOverflow).toBe(true);
++            const menuLabels = yield* browser.use(
++              `${width}: grouped actions are readable menu items`,
++              (page) =>
++                row(page, "Mail fixture")
++                  .getByRole("button", { name: /^Manage / })
++                  .click()
++                  .then(() =>
++                    Promise.all(
++                      ["Add Google app", "Manage apps"].map((name) => {
++                        const item = page
++                          .getByRole("menu")
++                          .getByRole("menuitem", { name, exact: true });
++                        return item
++                          .waitFor()
++                          .then(() =>
++                            item.evaluate((element) => element.scrollWidth <= element.clientWidth),
++                          );
++                      }),
++                    ),
++                  )
++                  .then((readable) => page.keyboard.press("Escape").then(() => readable)),
++            );
++            expect(menuLabels).toEqual([true, true]);
+             for (const [app, name, domain] of [
+               ["Mail fixture", "Google", "google.com"],
+               ["Issues fixture", "Atlassian", "atlassian.com"],
+@@ -616,13 +719,16 @@
+           page
+             .goto("/accounts")
+             .then(() =>
+-              page.getByRole("button", { name: "Add Fixture identity app", exact: true }).waitFor(),
++              page.getByRole("button", { name: "Manage same@example.test", exact: true }).waitFor(),
+             ),
+         );
+         yield* browser.use("Connect Writer", (page) =>
+           page
+-            .getByRole("button", { name: "Add Fixture identity app", exact: true })
+-            .click()
++            .getByRole("button", { name: "Manage same@example.test", exact: true })
++            .click()
++            .then(() =>
++              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
++            )
+             .then(() => page.getByRole("combobox", { name: "App", exact: true }).click())
+             .then(() => page.getByRole("option", { name: "Writer", exact: true }).click()),
+         );
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -26,17 +26,23 @@
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountTitle } from "../../contracts/account-title.ts";
+ 
+-/** Account management lives on its list row; products supply the menu items they support. */
++/**
++ * Account management lives on its list row; products supply the menu items they support. The row's
++ * own actions (usage, details, adding an app) come first. A menu with `rowActions` false, such as a
++ * grouped identity row's, leaves the row's details in view and lists only its children.
++ */
+ export function AccountActionsMenu({
+   account,
+   children,
++  rowActions = true,
+ }: {
+   readonly account: Pick<AccountSummary, "label">;
+   readonly children: ReactNode;
++  readonly rowActions?: boolean;
+ }) {
+   return (
+     <DropdownMenu>
+-      <AccountRowMenuPresence />
++      {rowActions && <AccountRowMenuPresence />}
+       <DropdownMenuTrigger asChild>
+         <Button
+           variant="ghost"
+@@ -46,8 +52,9 @@
+           <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden />
+         </Button>
+       </DropdownMenuTrigger>
+-      <DropdownMenuContent align="end" className="min-w-44">
+-        <AccountRowMenuItems />
++      {/* Long labels, such as an identity's app name, wrap within a phone's width. */}
++      <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
++        {rowActions && <AccountRowMenuItems />}
+         {children}
+       </DropdownMenuContent>
+     </DropdownMenu>
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -130,6 +130,22 @@
+   readonly disabledReason?: string | undefined;
+ }
+ 
++/** A row-level action a host control offers through the row's menu, such as adding an app. */
++export interface AccountRowMenuAction {
++  readonly label: string;
++  /** `returnFocus` is the menu's trigger, focused again when whatever opened closes. */
++  readonly open: (returnFocus: HTMLElement | null) => void;
++}
++
++/** The trigger of the menu an item sits in, so a dialog opened from it can hand focus back. */
++export const menuTrigger = (item: EventTarget | null): HTMLElement | null => {
++  const id =
++    item instanceof Element
++      ? item.closest('[role="menu"]')?.getAttribute("aria-labelledby")
++      : undefined;
++  return id ? document.getElementById(id) : null;
++};
++
+ interface AccountRowState {
+   /** A row menu is mounted, so row-level actions move into it. */
+   readonly menu: boolean;
+@@ -141,6 +157,9 @@
+   /** Row content that only Details shows, such as requested access or the description. */
+   readonly extra: boolean;
+   readonly setExtra: (present: boolean) => void;
++  /** Adding another app for the row's verified identity, offered from the row's menu. */
++  readonly identity: AccountRowMenuAction | undefined;
++  readonly setIdentity: (action: AccountRowMenuAction | undefined) => void;
+ }
+ 
+ const AccountRowContext = createContext<AccountRowState | undefined>(undefined);
+@@ -153,9 +172,21 @@
+   const [details, setDetails] = useState(false);
+   const [usage, setUsage] = useState<AccountRowUsage>();
+   const [extra, setExtra] = useState(false);
++  const [identity, setIdentity] = useState<AccountRowMenuAction>();
+   const value = useMemo(
+-    () => ({ menu, setMenu, details, setDetails, usage, setUsage, extra, setExtra }),
+-    [menu, details, usage, extra],
++    () => ({
++      menu,
++      setMenu,
++      details,
++      setDetails,
++      usage,
++      setUsage,
++      extra,
++      setExtra,
++      identity,
++      setIdentity,
++    }),
++    [menu, details, usage, extra, identity],
+   );
+   return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
+ }
+@@ -198,10 +229,22 @@
+   return shown ? children : null;
+ }
+ 
+-/** The row's own actions at the top of its menu: refreshing usage and opening details. */
++/** The identity action as a menu item; the label wraps rather than truncating on a phone. */
++export function AccountRowIdentityItem() {
++  const identity = useAccountRow()?.identity;
++  return identity === undefined ? null : (
++    <DropdownMenuItem onSelect={(event) => identity.open(menuTrigger(event.target))}>
++      {identity.label}
++    </DropdownMenuItem>
++  );
++}
++
++/** The row's own actions at the top of its menu: refreshing usage, details and adding an app. */
+ export function AccountRowMenuItems() {
+   const row = useAccountRow();
+-  if (row === undefined || (row.usage === undefined && !row.extra)) return null;
++  if (row === undefined) return null;
++  const details = row.usage !== undefined || row.extra;
++  if (!details && row.identity === undefined) return null;
+   const { refresh, pending = false, disabledReason } = row.usage ?? {};
+   return (
+     <>
+@@ -218,9 +261,12 @@
+           </span>
+         </DropdownMenuItem>
+       )}
+-      <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
+-        {row.details ? "Hide details" : "Details"}
+-      </DropdownMenuItem>
++      {details && (
++        <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
++          {row.details ? "Hide details" : "Details"}
++        </DropdownMenuItem>
++      )}
++      <AccountRowIdentityItem />
+       <DropdownMenuSeparator />
+     </>
+   );
+@@ -231,24 +277,26 @@
+ 
+ const narrow = {
+   plain:
+-    "@max-[640px]/account-rows:grid-cols-[24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
+-  lead: "@max-[640px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
++    "@max-[880px]/account-rows:grid-cols-[24px_minmax(0,_1fr)_auto] @max-[880px]/account-rows:gap-y-1",
++  lead: "@max-[880px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[880px]/account-rows:gap-y-1",
+ };
+ 
+ /**
+  * Columns: [choice] · logo · account · type · plan · [requests 7d] · health · used by · menu. A
+- * list with `requests` passes every row's `requests` cell, empty where nothing was counted.
++ * list with `requests` passes every row's `requests` cell, empty where nothing was counted. The
++ * menu track is a fixed 2rem in every list, so rows with and without a menu share their columns;
++ * every other row action lives in that menu.
+  */
+ export const accountRowGrid = (lead: boolean, requests = false) =>
+   cn(
+     "grid items-center gap-x-3",
+     lead
+       ? requests
+-        ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
+-        : "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
++        ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
++        : "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
+       : requests
+-        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
+-        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
++        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
++        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]",
+     lead ? narrow.lead : narrow.plain,
+   );
+ 
+@@ -276,12 +324,12 @@
+   /** Names the users cell where the column header is hidden, such as "Used by". */
+   readonly usersLabel?: string | undefined;
+ }) {
+-  const empty = "@max-[640px]/account-rows:empty:hidden";
++  const empty = "@max-[880px]/account-rows:empty:hidden";
+   return (
+     <div
+       className={cn(
+-        "contents @max-[640px]/account-rows:row-start-2 @max-[640px]/account-rows:col-end-[-1] @max-[640px]/account-rows:flex @max-[640px]/account-rows:min-w-0 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:items-center @max-[640px]/account-rows:gap-x-2.5 @max-[640px]/account-rows:gap-y-1",
+-        lead ? "@max-[640px]/account-rows:col-start-3" : "@max-[640px]/account-rows:col-start-2",
++        "contents @max-[880px]/account-rows:row-start-2 @max-[880px]/account-rows:col-end-[-1] @max-[880px]/account-rows:flex @max-[880px]/account-rows:min-w-0 @max-[880px]/account-rows:flex-wrap @max-[880px]/account-rows:items-center @max-[880px]/account-rows:gap-x-2.5 @max-[880px]/account-rows:gap-y-1",
++        lead ? "@max-[880px]/account-rows:col-start-3" : "@max-[880px]/account-rows:col-start-2",
+       )}
+     >
+       <span
+@@ -296,7 +344,7 @@
+       {requests !== undefined && (
+         <span
+           data-account-requests-cell
+-          className={cn("flex min-w-0 justify-end @max-[640px]/account-rows:justify-start", empty)}
++          className={cn("flex min-w-0 justify-end @max-[880px]/account-rows:justify-start", empty)}
+         >
+           {requests}
+         </span>
+@@ -306,12 +354,12 @@
+         className={cn(
+           // On a phone the users cell fills the rest of its line, or a line of its own when less
+           // than 10rem is left, so a long app chip truncates instead of stacking.
+-          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground @max-[640px]/account-rows:min-w-40 @max-[640px]/account-rows:flex-1",
++          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground @max-[880px]/account-rows:min-w-40 @max-[880px]/account-rows:flex-1",
+           empty,
+         )}
+       >
+         {users !== undefined && users !== null && users !== false && usersLabel !== undefined && (
+-          <span className="hidden @max-[640px]/account-rows:inline">{usersLabel}</span>
++          <span className="hidden @max-[880px]/account-rows:inline">{usersLabel}</span>
+         )}
+         {users}
+       </span>
+@@ -320,15 +368,28 @@
+ }
+ 
+ /**
+- * The menu cell. On narrow lists it stays on the first line, centred on the name: the cell is one
+- * name line tall and a larger button overflows it evenly.
++ * The menu cell: one ⋯ button in the fixed menu track. On narrow lists it stays on the first line,
++ * centred on the name: the cell is one name line tall and a larger button overflows it evenly. A
++ * status mark beside the button, such as a spinner, sits outside the track (`AccountRowMenuMark`).
+  */
+ export function AccountRowMenu({ children }: { readonly children?: ReactNode }) {
+   return (
+     <span
+       data-account-row-menu
+-      className="flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
++      className="relative flex min-w-7 items-center justify-end gap-2 @max-[880px]/account-rows:col-start-[-2] @max-[880px]/account-rows:row-start-1 @max-[880px]/account-rows:h-[16.9px] @max-[880px]/account-rows:self-start"
+     >
++      {children}
++    </span>
++  );
++}
++
++/**
++ * A small mark beside the menu button, such as a pending spinner. On wide lists it hangs into the
++ * gap before the menu track instead of widening it; narrow lists keep it in line.
++ */
++export function AccountRowMenuMark({ children }: { readonly children: ReactNode }) {
++  return (
++    <span className="pointer-events-none absolute top-1/2 right-full flex -translate-y-1/2 @max-[880px]/account-rows:static @max-[880px]/account-rows:mr-0 @max-[880px]/account-rows:translate-y-0">
+       {children}
+     </span>
+   );
+@@ -347,11 +408,11 @@
+     <div
+       className={cn(
+         accountRowGrid(false, requests !== undefined),
+-        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
++        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[880px]/account-rows:hidden",
+       )}
+     >
+       <span className="col-span-2">Account</span>
+-      <span>Type</span>
++      <span data-account-type-header>Type</span>
+       <span>Plan</span>
+       {requests !== undefined && (
+         <span
+@@ -402,7 +463,7 @@
+           ? undefined
+           : { text: reported, verified: false };
+   return (
+-    <div className="grid min-w-0 leading-[1.3] @max-[640px]/account-rows:self-start">
++    <div className="grid min-w-0 leading-[1.3] @max-[880px]/account-rows:self-start">
+       <span className="flex min-w-0 items-center gap-1.5">
+         <strong
+           className="min-w-0 truncate text-[13px] font-medium"
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -7,6 +7,7 @@
+   AccountRowDescription,
+   AccountRowDetails,
+   AccountRowHeader,
++  AccountRowIdentityItem,
+   AccountRowLogo,
+   AccountRowMenu,
+   AccountRowName,
+@@ -19,6 +20,8 @@
+   accountRowGrid,
+   accountRowType,
+   accountRowsContainer,
++  menuTrigger,
++  useAccountRow,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
+ import {
+@@ -31,6 +34,7 @@
+ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
++import { AccountActionsMenu } from "./account-actions.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -48,7 +52,9 @@
+ } from "../../contracts/account-identities.ts";
+ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
++import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
++import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+@@ -352,36 +357,37 @@
+                     }
+                   />
+                   <AccountRowMenu>
++                    {/* Renders only its dialog here; it offers itself from the row's one menu. */}
+                     {account.identity !== undefined && identityActions?.(bindings, data)}
+-                    {bindings.length === 1 ? (
+-                      accountActions?.(account, { binding: false })
++                    {bindings.length > 1 ? (
++                      <IdentityRowMenu
++                        title={accountTitle(account)}
++                        manage={
++                          <OutsideAccountRow>
++                            <div className="divide-y divide-border rounded-md border border-border">
++                              {bindings.map((binding) => (
++                                <div
++                                  key={binding.id}
++                                  className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
++                                >
++                                  <span className="min-w-0 text-[13px] wrap-anywhere">
++                                    {bindingApps(data, [binding])
++                                      .map((app) => app.name)
++                                      .join(", ") ||
++                                      binding.providerName ||
++                                      "Saved sign-in"}
++                                  </span>
++                                  {accountActions?.(binding, { binding: true })}
++                                </div>
++                              ))}
++                            </div>
++                          </OutsideAccountRow>
++                        }
++                      />
++                    ) : accountActions === undefined ? (
++                      <IdentityRowMenu title={accountTitle(account)} />
+                     ) : (
+-                      <OutsideAccountRow>
+-                        <Popover>
+-                          <PopoverTrigger asChild>
+-                            <Button variant="outline" size="sm">
+-                              Manage apps
+-                            </Button>
+-                          </PopoverTrigger>
+-                          <PopoverContent align="end" className="w-72 p-2">
+-                            {bindings.map((binding) => (
+-                              <div
+-                                key={binding.id}
+-                                className="flex items-center justify-between gap-3 px-2 py-2"
+-                              >
+-                                <span className="min-w-0 break-words text-[12px]">
+-                                  {bindingApps(data, [binding])
+-                                    .map((app) => app.name)
+-                                    .join(", ") ||
+-                                    binding.providerName ||
+-                                    "Saved sign-in"}
+-                                </span>
+-                                {accountActions?.(binding, { binding: true })}
+-                              </div>
+-                            ))}
+-                          </PopoverContent>
+-                        </Popover>
+-                      </OutsideAccountRow>
++                      accountActions(account, { binding: false })
+                     )}
+                   </AccountRowMenu>
+                   {family !== undefined && (
+@@ -435,3 +441,57 @@
+     </>
+   );
+ }
++
++/**
++ * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: adding an app for
++ * the identity, and each grouped sign-in's own actions in a dialog. The row's details stay in view.
++ */
++function IdentityRowMenu({
++  title,
++  manage,
++}: {
++  readonly title: string;
++  readonly manage?: ReactNode;
++}) {
++  const identity = useAccountRow()?.identity;
++  const [managing, setManaging] = useState(false);
++  const returnFocus = useRef<HTMLElement | null>(null);
++  if (identity === undefined && manage === undefined) return null;
++  return (
++    <>
++      <AccountActionsMenu account={{ label: title }} rowActions={false}>
++        <AccountRowIdentityItem />
++        {manage !== undefined && (
++          <DropdownMenuItem
++            onSelect={(event) => {
++              returnFocus.current = menuTrigger(event.target);
++              setManaging(true);
++            }}
++          >
++            Manage apps
++          </DropdownMenuItem>
++        )}
++      </AccountActionsMenu>
++      {manage !== undefined && (
++        <Dialog open={managing} onOpenChange={setManaging}>
++          <DialogContent
++            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
++            onCloseAutoFocus={(event) => {
++              const target = returnFocus.current;
++              returnFocus.current = null;
++              if (target?.isConnected !== true) return;
++              event.preventDefault();
++              target.focus({ preventScroll: true });
++            }}
++          >
++            <DialogTitle>Manage apps</DialogTitle>
++            <DialogDescription>
++              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
++            </DialogDescription>
++            {manage}
++          </DialogContent>
++        </Dialog>
++      )}
++    </>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -34,6 +34,7 @@
+   AccountRowLogo,
+   AccountRowMenu,
+   AccountRowMenuItems,
++  AccountRowMenuMark,
+   AccountRowMenuPresence,
+   AccountRowName,
+   AccountRowProvider,
+@@ -1485,7 +1486,11 @@
+             }
+           />
+           <AccountRowMenu>
+-            {pending && <Spinner className="size-3.5 text-muted-foreground" />}
++            {pending && (
++              <AccountRowMenuMark>
++                <Spinner className="size-3 text-muted-foreground" />
++              </AccountRowMenuMark>
++            )}
+             {hostProvisioned || automatic
+               ? undefined
+               : data.accountMenu?.(account, slot, requirement, linked)}
+diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+--- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+@@ -1,5 +1,9 @@
+-/** Start from the verified account row, then use the product's existing app connection form. */
+-import { useState, type ReactNode } from "react";
++/**
++ * Start from the verified account row, then use the product's existing app connection form. In a
++ * row, the picker offers itself from the row's menu and renders only its dialog; elsewhere it
++ * keeps its own button.
++ */
++import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { AccountId, AccountRequirement, App } from "@executor-js/sdk";
+ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { identityAppTargets } from "../../contracts/identity-consent.ts";
+@@ -13,6 +17,7 @@
+   SelectValue,
+ } from "../components/select.tsx";
+ import { Label } from "../components/label.tsx";
++import { useAccountRow } from "./account-row.tsx";
+ 
+ export function IdentityAppPicker({
+   bindings,
+@@ -36,6 +41,22 @@
+   const [open, setOpen] = useState(false);
+   const [selected, setSelected] = useState("");
+   const [busy, setBusy] = useState(false);
++  // The row menu's trigger, focused again when the dialog closes.
++  const returnFocus = useRef<HTMLElement | null>(null);
++  const setIdentity = useAccountRow()?.setIdentity;
++  const label = identity === undefined ? undefined : `Add ${identity.name} app`;
++  useEffect(() => {
++    if (setIdentity === undefined || label === undefined) return;
++    setIdentity({
++      label,
++      open: (target) => {
++        returnFocus.current = target;
++        setSelected("");
++        setOpen(true);
++      },
++    });
++    return () => setIdentity(undefined);
++  }, [setIdentity, label]);
+   if (identity === undefined || account === undefined) return null;
+   const targets = identityAppTargets(inventory, identity.issuer);
+   const choices = targets.filter(
+@@ -51,25 +72,36 @@
+   const chosen = targets.find((entry) => `${entry.app.id}:${entry.requirement}` === selected);
+   return (
+     <>
+-      <Button
+-        variant="outline"
+-        size="sm"
+-        className="max-w-24 sm:max-w-32"
+-        onClick={() => {
+-          setSelected("");
+-          setOpen(true);
+-        }}
+-      >
+-        <span className="truncate">Add {identity.name} app</span>
+-      </Button>
++      {setIdentity === undefined && (
++        <Button
++          variant="outline"
++          size="sm"
++          onClick={() => {
++            returnFocus.current = null;
++            setSelected("");
++            setOpen(true);
++          }}
++        >
++          {label}
++        </Button>
++      )}
+       <Dialog
+         open={open}
+         onOpenChange={(value) => {
+           if (!busy) setOpen(value);
+         }}
+       >
+-        <DialogContent className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]">
+-          <DialogTitle>Add {identity.name} app</DialogTitle>
++        <DialogContent
++          className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]"
++          onCloseAutoFocus={(event) => {
++            const target = returnFocus.current;
++            returnFocus.current = null;
++            if (target?.isConnected !== true) return;
++            event.preventDefault();
++            target.focus({ preventScroll: true });
++          }}
++        >
++          <DialogTitle>{label}</DialogTitle>
+           <DialogDescription>Use {identity.label} with another app.</DialogDescription>
+           {choices.length === 0 && chosen === undefined ? (
+             <p className="text-sm text-muted-foreground">
+diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+--- a/packages/ui/src/implementation/dashboard/account-traffic.tsx
++++ b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+@@ -152,7 +152,7 @@
+   return (
+     <span
+       className={cn(
+-        "text-[13px] whitespace-nowrap tabular-nums @max-[640px]/account-rows:text-[12px]",
++        "text-[13px] whitespace-nowrap tabular-nums @max-[880px]/account-rows:text-[12px]",
+         traffic.requests === 0 && "text-muted-foreground",
+       )}
+       title={title}
+@@ -162,7 +162,7 @@
+       <span className={traffic.requests === 0 ? undefined : "font-medium"}>{count}</span>
+       <span
+         aria-hidden
+-        className={cn("text-muted-foreground", !unit && "hidden @max-[640px]/account-rows:inline")}
++        className={cn("text-muted-foreground", !unit && "hidden @max-[880px]/account-rows:inline")}
+         data-requests-unit
+       >
+         {" req"}
+@@ -201,7 +201,7 @@
+     .join(" · ");
+   return (
+     <span
+-      className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[640px]/account-rows:text-[12px]"
++      className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[880px]/account-rows:text-[12px]"
+       title={`${title}${via(traffic.gateways)}${check === undefined ? "" : `\n${check}`}`}
+       data-account-health-cell
+       data-health-state="traffic"
+diff --git a/e2e/tests/account-traffic.spec.ts b/e2e/tests/account-traffic.spec.ts
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -301,6 +301,27 @@
+           /^Requests: 41 in 7 days · 92\.6% succeeded · last success 12 min ago · counted by Traffic pool$/,
+         );
+ 
++        const intermediate = yield* browser.use("Read request units at 900px", (page) =>
++          page.setViewportSize({ width: 900, height: 900 }).then(() => {
++            const row = accountRow(page, "Traffic account");
++            const container = page.locator('[class*="@container/account-rows"]').first();
++            return Promise.all([
++              container.boundingBox(),
++              page.locator("[data-requests-header]").isVisible(),
++              row.locator("[data-requests-unit]").isVisible(),
++              row.locator("[data-account-requests]").getAttribute("data-account-requests"),
++            ]).then(([box, header, unit, count]) => ({ width: box?.width, header, unit, count }));
++          }),
++        );
++        expect(intermediate.width).toBeGreaterThan(640);
++        expect(intermediate.width).toBeLessThan(880);
++        expect(intermediate.header).toBe(false);
++        expect(
++          intermediate.unit,
++          "a compact count keeps its request unit at intermediate widths",
++        ).toBe(true);
++        expect(intermediate.count).toBe("41");
++
+         const phone = yield* browser.use("Read the rows at 390px", (page) =>
+           page
+             .setViewportSize({ width: 390, height: 900 })
+diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
+--- a/e2e/tests/account-identity-reconciliation.spec.ts
++++ b/e2e/tests/account-identity-reconciliation.spec.ts
+@@ -135,8 +135,16 @@
+         );
+         yield* browser.use("Add the second app from its saved identity", (page) =>
+           page
+-            .getByRole("button", { name: "Add Reconciliation identity app", exact: true })
+-            .click(),
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() =>
++              page
++                .getByRole("menu")
++                .getByRole("menuitem", { name: "Add Reconciliation identity app", exact: true })
++                .click(),
++            ),
+         );
+         yield* browser.use("Choose the target app", (page) =>
+           page

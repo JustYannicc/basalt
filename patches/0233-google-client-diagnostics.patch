@@ -1,0 +1,419 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+index b61b879..5fd6bc4 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -51,6 +51,7 @@ export interface ProductionMigration {
+ /** Network proof collection has a separate, read-only operation before migration inspection. */
+ export interface ProductionPreparation {
+   readonly name: string;
++  readonly readOnly?: true;
+   readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
+ }
+ 
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-client-diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-client-diagnostics.ts
+new file mode 100644
+index 0000000..b8f5ee0
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-client-diagnostics.ts
+@@ -0,0 +1,90 @@
++import { Context, Effect, Redacted, Schema } from "effect";
++import { AccountId, ProviderDefinition, type Credentials } from "@executor-js/sdk/core";
++import type { Json } from "../contracts.ts";
++import { RetainedIdentityRefused, readRetainedAccount } from "./retained-identity-records.ts";
++
++export class GoogleClientDiagnosticsRuntime extends Context.Service<
++  GoogleClientDiagnosticsRuntime,
++  {
++    readonly credentials: Pick<Credentials, "decrypt">;
++    readonly configuredClientId: string | undefined;
++  }
++>()("basalt/production-ops/GoogleClientDiagnosticsRuntime") {}
++
++const Request = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  accounts: Schema.Array(Schema.NonEmptyString.check(Schema.isMaxLength(256))).check(
++    Schema.isMinLength(1),
++    Schema.isMaxLength(50),
++  ),
++});
++
++// Decode provenance only. Token contents, lifetime and refresh capability are irrelevant here.
++const SavedClient = Schema.Struct({
++  firstParty: Schema.optionalKey(Schema.NonEmptyString),
++  authorizationClient: Schema.optionalKey(Schema.NonEmptyString),
++});
++
++const Comparison = Schema.Struct({
++  savedClientPresent: Schema.Boolean,
++  firstPartyRegistrationMatches: Schema.Boolean,
++  clientIdMatches: Schema.Boolean,
++});
++
++/** The result reveals equality, never either side of a client comparison. */
++export const diagnoseGoogleClients = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(Request)(request);
++    const selected = [...new Set(input.accounts)].sort();
++    if (selected.length !== input.accounts.length)
++      return yield* new RetainedIdentityRefused({ reason: "duplicate-account-selection" });
++    const runtime = yield* GoogleClientDiagnosticsRuntime;
++    const accounts = new Map<string, typeof Comparison.Type>();
++    for (const account of selected) {
++      const row = yield* readRetainedAccount(account);
++      if (
++        row.organization !== input.organization ||
++        row.owner !== `organization:${input.organization}`
++      )
++        return yield* new RetainedIdentityRefused({ reason: "account-outside-organization" });
++      const definition = yield* Schema.decodeUnknownEffect(ProviderDefinition)(row.definition);
++      const method = definition.auth[row.method];
++      if (
++        method?.type !== "oauth2" ||
++        method.grant === "client_credentials" ||
++        (method.identity !== undefined &&
++          method.identity.issuer !== "https://accounts.google.com") ||
++        (method.discover === undefined
++          ? ![
++              "https://accounts.google.com/o/oauth2/v2/auth",
++              "https://accounts.google.com/o/oauth2/auth",
++            ].includes(method.authorizationUrl ?? "") ||
++            ![
++              "https://oauth2.googleapis.com/token",
++              "https://accounts.google.com/o/oauth2/token",
++            ].includes(method.tokenUrl ?? "")
++          : ![
++              "https://accounts.google.com",
++              "https://accounts.google.com/",
++              "https://accounts.google.com/.well-known/openid-configuration",
++            ].includes(method.discover))
++      )
++        return yield* new RetainedIdentityRefused({ reason: "provider-not-google" });
++      const fields = yield* runtime.credentials.decrypt(
++        AccountId.make(row.grant),
++        Redacted.make(row.encrypted),
++      );
++      const saved = yield* Schema.decodeUnknownEffect(SavedClient)(Redacted.value(fields));
++      accounts.set(account, {
++        savedClientPresent: saved.authorizationClient !== undefined,
++        firstPartyRegistrationMatches: saved.firstParty === "google",
++        clientIdMatches:
++          runtime.configuredClientId !== undefined &&
++          saved.authorizationClient === runtime.configuredClientId,
++      });
++    }
++    return {
++      configuredClientAvailable: runtime.configuredClientId !== undefined,
++      accounts: Object.fromEntries(accounts),
++    };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -16,6 +16,10 @@
+   prepareAtlassianAccountProofs,
+ } from "./migrations/atlassian-account-proofs.ts";
+ import type { ProductionPreparation } from "./contracts.ts";
++import {
++  GoogleClientDiagnosticsRuntime,
++  diagnoseGoogleClients,
++} from "./migrations/google-client-diagnostics.ts";
+ 
+ /** Key access runs inside the signed invocation; preparation never initializes a mutating executor. */
+ export const cloudProductionPreparations = Effect.gen(function* () {
+@@ -45,6 +49,20 @@
+           );
+         }),
+     },
++    "google-client-diagnostics": {
++      name: "google-client-diagnostics",
++      readOnly: true,
++      run: (request) =>
++        Effect.gen(function* () {
++          const credentials = yield* aesGcmCredentials(yield* key, globalThis.crypto);
++          return yield* diagnoseGoogleClients(request).pipe(
++            Effect.provideService(GoogleClientDiagnosticsRuntime, {
++              credentials,
++              configuredClientId: clients.find((client) => client.id === "google")?.clientId,
++            }),
++          );
++        }),
++    },
+     "google-account-proofs": {
+       name: "google-account-proofs",
+       run: (request) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+index 1bfaefc..a61f7a9 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -179,7 +179,8 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+         : undefined;
+       if (preparation === undefined || preparation.name !== operation.selection)
+         return yield* fail("Unknown preparation selection");
+-      const result = yield* preparation.run(operation.request);
++      const work = preparation.run(operation.request);
++      const result = yield* preparation.readOnly === true ? readOnly(work) : work;
+       return {
+         action: "prepare",
+         artifact: yield* protect({
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index b548a9a..b67fe4d 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -331,6 +333,19 @@ export const startCloudEnvironment = (input: {
+       BETTER_AUTH_URL: input.origin,
+       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
++      ...(process.env.BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS === undefined
++        ? {}
++        : {
++            EXECUTOR_ENCRYPTION_KEY: "cd".repeat(32),
++            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID:
++              process.env.BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS === "configured"
++                ? "synthetic-google-diagnostic-client"
++                : "",
++            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET:
++              process.env.BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS === "configured"
++                ? "synthetic-google-diagnostic-secret"
++                : "",
++          }),
+       // Fresh test installs use the encrypted native journal, as production does.
+       EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+       ...(process.env.BASALT_E2E_POOL_SETUP === "1" || mapsRoutes !== undefined
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index a57b0b7..3697336 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -299,6 +299,26 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  googleClientDiagnostics: {
++    fixtures: "actors",
++    file: "google-client-diagnostics.spec.ts",
++    title: "Google client diagnostics compare saved clients without exposing credentials",
++    targets: {
++      local: na("The signed operator endpoint is Cloud-only."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
++  googleClientUnavailable: {
++    fixtures: "actors",
++    file: "google-client-diagnostics.spec.ts",
++    title: "Google client diagnostics distinguish an unavailable configured client",
++    targets: {
++      local: na("The signed operator endpoint is Cloud-only."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
+   googleIdentityBinding: {
+     fixtures: "actors",
+     file: "google-identity-migration.spec.ts",
+diff --git a/e2e/tests/google-client-diagnostics.spec.ts b/e2e/tests/google-client-diagnostics.spec.ts
+new file mode 100644
+index 0000000..51aa7bf
+--- /dev/null
++++ b/e2e/tests/google-client-diagnostics.spec.ts
+@@ -0,0 +1,201 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { createCipheriv, randomBytes, randomUUID } from "node:crypto";
++import type { TestContext } from "vitest";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Artifact, productionOpsClient } from "../support/production-ops-client.ts";
++import { scenarios } from "../test-plan.ts";
++
++const clientId = "synthetic-google-diagnostic-client";
++const privateValues = [
++  clientId,
++  "synthetic-google-diagnostic-secret",
++  "private-access-canary",
++  "private-refresh-canary",
++  "another-client-canary",
++];
++
++// Legacy grants may omit provenance that today's sign-in always records.
++const seal = (id: string, metadata: object) => {
++  const nonce = randomBytes(12);
++  const cipher = createCipheriv("aes-256-gcm", Buffer.from("cd".repeat(32), "hex"), nonce);
++  cipher.setAAD(Buffer.from(id));
++  const encrypted = Buffer.concat([
++    cipher.update(
++      JSON.stringify({
++        grant: "authorization_code",
++        generation: 3,
++        response: {},
++        fields: { access_token: privateValues[2] },
++        refreshToken: privateValues[3],
++        expiresAt: 0,
++        ...metadata,
++      }),
++    ),
++    cipher.final(),
++  ]);
++  return Buffer.concat([Buffer.from([1]), nonce, encrypted, cipher.getAuthTag()]).toString("hex");
++};
++
++layer(HostedLive, { excludeTestServices: true })("Google client diagnostics", (it) => {
++  const diagnose = (context: TestContext, configured: boolean) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          database = yield* cloudLocks;
++        const client = yield* productionOpsClient;
++        const organization = actors.organization.id,
++          owner = `organization:${organization}`;
++        const person = (yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        )).user.id;
++        const provider = `prv_${randomUUID()}`,
++          otherProvider = `prv_${randomUUID()}`;
++        const variants = [
++          { firstParty: "google", authorizationClient: clientId },
++          { firstParty: "google", authorizationClient: privateValues[4] },
++          { firstParty: "google" },
++          { firstParty: "synthetic-cloud-mail", authorizationClient: clientId },
++          { authorizationClient: clientId },
++        ];
++        const selected = variants.map(() => `acc_${randomUUID()}`);
++        const unreadable = `acc_${randomUUID()}`,
++          foreign = `acc_${randomUUID()}`,
++          nonGoogle = `acc_${randomUUID()}`;
++        const ids = [...selected, unreadable, foreign, nonGoogle];
++        const rows = (sql: string, params: readonly (string | number | null)[] = []) =>
++          database.run({ sql, params });
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const id of ids) {
++              yield* rows("delete from executor_accounts where id = $1", [id]);
++              yield* rows("delete from executor_oauth_grants where id = $1", [id]);
++            }
++            yield* rows("delete from executor_providers where id in ($1,$2)", [
++              provider,
++              otherProvider,
++            ]);
++          }).pipe(Effect.orDie),
++        );
++        for (const [id, google] of [
++          [provider, true],
++          [otherProvider, false],
++        ] as const) {
++          yield* rows("insert into executor_providers (id,definition) values ($1,$2::jsonb)", [
++            id,
++            JSON.stringify({
++              name: "Synthetic diagnostic provider",
++              auth: {
++                oauth: {
++                  type: "oauth2",
++                  authorizationUrl: google
++                    ? "https://accounts.google.com/o/oauth2/v2/auth"
++                    : "https://outside.example.test/authorize",
++                  tokenUrl: google
++                    ? "https://oauth2.googleapis.com/token"
++                    : "https://outside.example.test/token",
++                  scopes: ["openid", "email"],
++                  response: {
++                    type: "object",
++                    properties: { access_token: { type: "string" } },
++                    required: ["access_token"],
++                  },
++                },
++              },
++            }),
++          ]);
++        }
++        for (const [index, id] of ids.entries()) {
++          const accountOwner = id === foreign ? "organization:another-organization" : owner;
++          yield* rows(
++            `insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation)
++          values ($1,$2,$3,'oauth','Retained account',decode('123456','hex'),now(),3)`,
++            [id, accountOwner, id === nonGoogle ? otherProvider : provider],
++          );
++          yield* rows(
++            `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
++          values ($1,decode($2,'hex'),'ready_fixture',now(),$3)`,
++            [
++              id,
++              id === unreadable ? "abcdef" : seal(id, variants[index] ?? variants[0]!),
++              accountOwner,
++            ],
++          );
++          yield* rows(
++            `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
++          values ($1,$2,$3,'personal',$3)`,
++            [id, organization, person],
++          );
++        }
++        const snapshot = () =>
++          rows(
++            `select
++        (select jsonb_agg(to_jsonb(a) order by a.id) from executor_accounts a where a.id in (select jsonb_array_elements_text($1::jsonb))) as accounts,
++        (select jsonb_agg(to_jsonb(g) order by g.id) from executor_oauth_grants g where g.id in (select jsonb_array_elements_text($1::jsonb))) as grants,
++        (select jsonb_agg(to_jsonb(h) order by h.account_id) from hosted_account_access h where h.account_id in (select jsonb_array_elements_text($1::jsonb))) as access`,
++            [JSON.stringify(ids)],
++          );
++        const before = yield* snapshot();
++        const operation = (accounts: readonly string[]) => ({
++          action: "prepare",
++          selection: "google-client-diagnostics",
++          request: { organization, accounts },
++          recipient: client.recipient,
++        });
++        expect(
++          (yield* client.request(operation(selected), { secret: "00".repeat(32) })).status,
++        ).toBe(401);
++        const response = yield* client.request(operation(selected));
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const decoded = client.decrypt(
++          (yield* body(Schema.Struct({ artifact: Artifact }), response)).artifact,
++        );
++        const report = Schema.decodeUnknownSync(
++          Schema.Struct({ selection: Schema.String, result: Schema.Unknown }),
++        )(decoded);
++        expect(report.selection).toBe("google-client-diagnostics");
++        expect(report.result).toEqual({
++          configuredClientAvailable: configured,
++          accounts: Object.fromEntries(
++            selected.map((account, index) => [
++              account,
++              {
++                savedClientPresent: index !== 2,
++                firstPartyRegistrationMatches: index < 3,
++                clientIdMatches: configured && index !== 1 && index !== 2,
++              },
++            ]),
++          ),
++        });
++        for (const privateValue of privateValues) {
++          expect(JSON.stringify(response.body)).not.toContain(privateValue);
++          expect(JSON.stringify(decoded)).not.toContain(privateValue);
++        }
++        for (const selection of [
++          [],
++          [selected[0]!, selected[0]!],
++          Array.from({ length: 51 }, () => selected[0]!),
++          ["x".repeat(257)],
++          [unreadable],
++          [foreign],
++          [nonGoogle],
++          [`acc_${randomUUID()}`],
++        ]) {
++          const refused = yield* client.request(operation(selection));
++          expect(refused.status, JSON.stringify(refused.body)).toBe(409);
++          for (const privateValue of privateValues)
++            expect(JSON.stringify(refused.body)).not.toContain(privateValue);
++        }
++        expect(yield* snapshot()).toEqual(before);
++      }),
++    );
++
++  it.effect(scenarios.googleClientDiagnostics.title, (context) => diagnose(context, true));
++  it.effect(scenarios.googleClientUnavailable.title, (context) => diagnose(context, false));
++});

@@ -82,11 +82,22 @@ Zendesk stays available in the catalog without hosted credentials. Each account 
 
 Preserve existing public OAuth clients and confidential BYO clients through the native connection form. A pre-existing compatible public client lets a person sign in without creating a client or entering a secret. Advanced BYO remains available, but asking a person to register their own client does not meet site-plus-sign-in onboarding. If no compatible client is available for the selected site, the connection must report that provider limitation.
 
-A customer's own Zendesk OAuth client is only for that customer's own Zendesk account and is never shared across customers; we continue pursuing a separate global hosted client for cross-customer use.
+Hosted one-click sign-in requires a [Zendesk-approved global OAuth client](https://developer.zendesk.com/documentation/marketplace/building-a-marketplace-app/set-up-a-global-oauth-client/) owned by Signalbox's publisher. Never create that client in a customer's or employer's Zendesk account. Existing customer-owned clients remain available through Advanced for their own sites; they do not provide the hosted cross-company connection.
 
-The optional hosted Zendesk client uses `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` and `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET`; neither selects a deployment tenant. An operator distributing a public integration must satisfy Zendesk's applicable registration, approval and request-metadata rules. The internal-company exception remains separate. Configured credentials alone do not prove registration eligibility or unrelated-company consent. The former `EXECUTOR_ZENDESK_SUBDOMAIN` setting is ignored and not forwarded.
+The publisher needs its own Zendesk Marketplace developer-portal organization and a sponsored developer account whose subdomain starts with `d3v-`. In that developer account, prepare a client with a product-specific `zdg-` identifier and complete every registration field. Register `https://app.signalbox.run/api/oauth/callback` for the hosted service, or the deployed connection form's callback for a self-hosted service. The current connector requests `read`, `write` and `impersonate`; the global client's approved scopes must cover them. Save the identifier and secret securely before requesting conversion through the portal's Global OAuth page. Zendesk approval is required, and conversion removes access to the original client administration page.
 
-For an approved public integration, set the nonsecret Actions variables `ZENDESK_MARKETPLACE_ORGANIZATION_ID` and `ZENDESK_MARKETPLACE_APP_ID` to the IDs Zendesk assigns. The catalog adds them and the product name to API request headers, including health. Both IDs must be present or both absent; header injection is rejected. No placeholder IDs are sent. Token-endpoint header applicability and live registration remain unverified.
+After approval, [claim the global client and associate it with the app listing](https://developer.zendesk.com/documentation/apps/app-developer-guide/managing-global-oauth-clients-and-app-associations/). Supply these values through GitHub Actions before deploying:
+
+| Setting | Store | Destination |
+| --- | --- | --- |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Secret containing the approved global identifier | Tools API Worker secret binding |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Secret | Tools API Worker secret binding |
+| `ZENDESK_MARKETPLACE_ORGANIZATION_ID` | Variable containing the assigned publisher organization ID | Catalog Worker binding |
+| `ZENDESK_MARKETPLACE_APP_ID` | Variable containing the assigned app ID | Catalog Worker binding |
+
+The catalog adds the assigned IDs and product name to [Marketplace request headers](https://developer.zendesk.com/documentation/marketplace/building-a-marketplace-app/request-header-requirements-for-marketplace-apps/), including health checks. Both IDs must be present or both absent. No placeholder IDs are sent, and neither ID selects a customer's site. The former `EXECUTOR_ZENDESK_SUBDOMAIN` setting is ignored and not forwarded.
+
+Missing credentials leave the optional hosted client unavailable. Deployment wiring and synthetic two-site tests do not establish global-client approval or live consent. Verify sign-in, refresh and a read from unrelated company sites before marking the catalog's one-click deferral as verified. Token-endpoint header applicability remains unverified.
 
 Run `node scripts/check-connectors.ts --preflight` to verify that the prepared runtime matches `upstream.json`, every carried patch, and the generated pool source. For the local connector proof, prepare upstream's E2E runtime with `bun run e2e:prepare` from `.upstream`, then run `node scripts/check-connectors.ts` from this repository. The pinned E2E collector requires Bun 1.4.2 on PATH. Chromium and an installed Claude Code CLI are required. The runner acquires heavy slots for its install and native CLI processes; start the runner normally so its local servers do not hold a slot.
 

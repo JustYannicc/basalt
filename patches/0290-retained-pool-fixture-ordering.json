@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-retained-pool-fixture-ordering",
+  "file": "0290-retained-pool-fixture-ordering.patch",
+  "content_sha256": "54dc6bcebaf071c5b6ea4cb7cc12667b56fec8bf7793570abfb229ca30a0ee47",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
