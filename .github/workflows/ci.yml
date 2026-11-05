@@ -452,22 +452,26 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 2
-        run: npm run prepare:upstream
+        run: |
+          npm run prepare:upstream
+          cd .upstream
+          bunx playwright install --with-deps chromium
       - name: Build the isolated Google recovery test assets
         timeout-minutes: 2
         working-directory: .upstream
         run: bun run e2e:prepare
-      - name: Install the Google recovery browser engine
+      - name: Verify the prepared Google recovery browser engine
         timeout-minutes: 1
         working-directory: .upstream
-        run: bunx playwright install --with-deps chromium
+        run: node ../scripts/check-e2e-browser.mjs
       - name: Verify Google recovery through signed Cloud operations
         timeout-minutes: 6
-        working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_PREBOOT_BINDING: "alternate"
-        run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
+          BASALT_ADOPTION_PROOF_WORKERS: "1"
+          BASALT_ADOPTION_PROOF_PATTERN: '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)'
+        run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
         if: always()
@@ -477,7 +481,8 @@ jobs:
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
@@ -506,6 +511,10 @@ jobs:
       - name: Verify discarded rotated refresh revocation after account deletion
         timeout-minutes: 5
         run: node scripts/oauth-discard-tests/prove.ts
+      - name: Keep OAuth naming independent of account reads and health
+        timeout-minutes: 5
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name 'OAuth naming stays editable while account details and health are pending'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -736,7 +745,8 @@ jobs:
             .generated/ci-flakes/**
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/cloud*.log
+            .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
             .upstream/.local/e2e/**/physical-state-digests.ndjson
             .upstream/.local/e2e/**/physical-provisioning-completed.json
             .upstream/.local/e2e/**/report/**
@@ -1081,6 +1091,8 @@ jobs:
           path: |
             .generated/aws-proof/run-*/aws-*.png
             .generated/aws-proof/run-*/failure-summary.json
+            .generated/aws-proof/run-*/phase-context.json
+            .generated/aws-proof/run-*/child-output-tail.json
           if-no-files-found: warn
           include-hidden-files: true
   gitlab-connectors:
@@ -1215,12 +1227,13 @@ jobs:
         run: |
           bunx vitest run --config e2e/alchemy-dev-output.config.ts
           bunx vitest run --config e2e/cloud-app-listener.config.ts
+          bunx vitest run --config e2e/emulator-failures.config.ts
       - name: Check the pool acceptance runner
         run: node --test scripts/pool-acceptance/*.test.ts
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"
@@ -1479,7 +1492,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts|^Pools select reusable provider accounts|^Retained pool subscriptions keep|^Pools pick accounts saved on provider apps|^Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced"
+          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted acquisition status outages|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts|^Pools select reusable provider accounts|^Retained pool subscriptions keep|^Pools pick accounts saved on provider apps|^Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream

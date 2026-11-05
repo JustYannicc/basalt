@@ -3,7 +3,7 @@ import { Schema } from "effect";
 export { importRemovalPath, importRemovalName, importRemovalRevision } from "./paths.ts";
 
 const Credential = Schema.Struct({ id: Schema.String, provider: Schema.String });
-const Selection = Schema.Struct({
+export const Selection = Schema.Struct({
   organization: Schema.String,
   pool: Schema.String,
   remove: Schema.Array(Credential),

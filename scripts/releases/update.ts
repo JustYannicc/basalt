@@ -5,8 +5,18 @@ import { GitHubApi } from "./github.ts";
 import { activePatchFiles, decidePatchRemovals, readPatchManifest } from "./patches.ts";
 import { patchManifestPath, updatedManifest } from "./patch-registry.ts";
 import { parseRegistrySource, patchRecordPath } from "./patch-layout.ts";
-import { githubRepository, latestReleasedArtifact, latestToolsCandidate, sameArtifact } from "./sources.ts";
-import { buildProviderTable, extractOAuthProviderIds, renderProviderTable, type PoolProvider } from "../pool-providers.ts";
+import {
+  githubRepository,
+  latestReleasedArtifact,
+  latestToolsCandidate,
+  sameArtifact,
+} from "./sources.ts";
+import {
+  buildProviderTable,
+  extractOAuthProviderIds,
+  renderProviderTable,
+  type PoolProvider,
+} from "../pool-providers.ts";
 import { pluginOAuthProviderIds } from "../pool-plugin-providers.ts";
 import type { ArtifactPin, PatchRemovalReceipt, ReleasePins } from "./types.ts";
 
@@ -26,10 +36,17 @@ export type UpdatePlan = {
   files: PlannedFile[];
 };
 
-export async function planUpdate(rootPath: string, source: UpdateSource, api: Pick<GitHubApi, "get" | "compare">): Promise<UpdatePlan> {
+export async function planUpdate(
+  rootPath: string,
+  source: UpdateSource,
+  api: Pick<GitHubApi, "get" | "compare">,
+): Promise<UpdatePlan> {
   const upstreamPath = join(rootPath, "upstream.json");
   const poolPath = join(rootPath, "containers/pool/releases.json");
-  const upstream = JSON.parse(readFileSync(upstreamPath, "utf8")) as { repository: string; commit: string };
+  const upstream = JSON.parse(readFileSync(upstreamPath, "utf8")) as {
+    repository: string;
+    commit: string;
+  };
   const pool = JSON.parse(readFileSync(poolPath, "utf8")) as PoolReleases;
   const manifest = readPatchManifest(rootPath);
   if (manifest.repository !== githubRepository(upstream.repository))
@@ -53,7 +70,12 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
       });
     }
 
-    patchDecisions = await decidePatchRemovals(manifest, activePatchFiles(rootPath), candidate.commit, api);
+    patchDecisions = await decidePatchRemovals(
+      manifest,
+      activePatchFiles(rootPath),
+      candidate.commit,
+      api,
+    );
     const removed = patchDecisions.filter((decision) => decision.remove);
     const removedIdentities = new Set(removed.map((decision) => decision.identity));
     removedPatches = removed
@@ -61,8 +83,12 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
       .sort((left, right) => left.identity.localeCompare(right.identity));
     for (const patch of removed) files.push({ path: `patches/${patch.file}`, content: null });
     if (removed.length) {
-      if (parseRegistrySource(readFileSync(join(rootPath, patchManifestPath), "utf8")).format_version === 4) {
-        for (const patch of removed) files.push({ path: patchRecordPath(patch.file), content: null });
+      if (
+        parseRegistrySource(readFileSync(join(rootPath, patchManifestPath), "utf8"))
+          .format_version === 4
+      ) {
+        for (const patch of removed)
+          files.push({ path: patchRecordPath(patch.file), content: null });
       } else {
         const updated = updatedManifest(manifest, removedIdentities);
         files.push({ path: patchManifestPath, content: `${JSON.stringify(updated, null, 2)}\n` });
@@ -76,6 +102,13 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
     const changed = !sameArtifact(next, current);
     releaseKey = `${kind}-${slug(next.tag)}`;
     if (changed) {
+      if (kind === "home") {
+        const policy = JSON.parse(
+          readFileSync(join(rootPath, "containers/pool/billing-settings.json"), "utf8"),
+        );
+        if (policy.allow_unpriced_models !== true || Object.keys(policy).length !== 1)
+          throw new Error("Home updates require the explicit unpriced-model pool policy");
+      }
       const artifacts = { ...pool.artifacts, [kind]: next };
       files.push({
         path: "containers/pool/releases.json",
@@ -92,7 +125,10 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
     }
   }
 
-  const changes = files.filter((file) => file.content === null || readFileSync(join(rootPath, file.path), "utf8") !== file.content);
+  const changes = files.filter(
+    (file) =>
+      file.content === null || readFileSync(join(rootPath, file.path), "utf8") !== file.content,
+  );
   const changedPaths = changes.map((file) => file.path).sort();
   if (changes.length) {
     const receiptPath = `scripts/releases/receipts/${source}.json`;
@@ -105,7 +141,10 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
       removedPatches,
     };
     const receiptContent = `${JSON.stringify(receipt, null, 2)}\n`;
-    if (!existsSync(join(rootPath, receiptPath)) || readFileSync(join(rootPath, receiptPath), "utf8") !== receiptContent) {
+    if (
+      !existsSync(join(rootPath, receiptPath)) ||
+      readFileSync(join(rootPath, receiptPath), "utf8") !== receiptContent
+    ) {
       changes.push({ path: receiptPath, content: receiptContent });
       if (!changedPaths.includes(receiptPath)) changedPaths.push(receiptPath);
     }
@@ -134,7 +173,10 @@ export function applyUpdatePlan(rootPath: string, plan: UpdatePlan): void {
   }
 }
 
-function releasePins(upstream: { repository: string; commit: string }, pool: PoolReleases): ReleasePins {
+function releasePins(
+  upstream: { repository: string; commit: string },
+  pool: PoolReleases,
+): ReleasePins {
   return {
     tools: { repository: upstream.repository, commit: upstream.commit },
     home: pool.artifacts.home,
@@ -142,18 +184,30 @@ function releasePins(upstream: { repository: string; commit: string }, pool: Poo
   };
 }
 
-async function generateProviderTable(rootPath: string, api: Pick<GitHubApi, "get">, home: ArtifactPin): Promise<string> {
+async function generateProviderTable(
+  rootPath: string,
+  api: Pick<GitHubApi, "get">,
+  home: ArtifactPin,
+): Promise<string> {
   const path = `repos/${home.repository}/contents/internal/cluster/management/oauth_v8.go?ref=${encodeURIComponent(home.commit)}`;
   const file = await api.get<{ encoding: string; content: string }>(path);
-  if (file.encoding !== "base64") throw new Error("Pinned Home provider source was not returned as base64");
+  if (file.encoding !== "base64")
+    throw new Error("Pinned Home provider source was not returned as base64");
   const source = Buffer.from(file.content, "base64").toString("utf8");
-  const existing = JSON.parse(readFileSync(join(rootPath, "src/pool/providers.json"), "utf8")) as PoolProvider[];
-  const ids = [...new Set([...extractOAuthProviderIds(source), ...pluginOAuthProviderIds(rootPath)])];
+  const existing = JSON.parse(
+    readFileSync(join(rootPath, "src/pool/providers.json"), "utf8"),
+  ) as PoolProvider[];
+  const ids = [
+    ...new Set([...extractOAuthProviderIds(source), ...pluginOAuthProviderIds(rootPath)]),
+  ];
   return renderProviderTable(buildProviderTable(ids, existing));
 }
 
 function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^-|-$/g, "");
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 type PoolReleases = {
@@ -163,7 +217,8 @@ type PoolReleases = {
 
 function cliSource(args: string[]): UpdateSource {
   const value = args.find((arg) => arg.startsWith("--source="))?.slice("--source=".length);
-  if (value !== "tools" && value !== "home" && value !== "node") throw new Error("Usage: node scripts/releases/update.ts --source=tools|home|node [--write]");
+  if (value !== "tools" && value !== "home" && value !== "node")
+    throw new Error("Usage: node scripts/releases/update.ts --source=tools|home|node [--write]");
   return value;
 }
 

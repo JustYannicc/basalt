@@ -1,3 +1,5 @@
+import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
+import { HomeTransportFailure } from "./json.ts";
 import { accountsView } from "./accounts-view.ts";
 import { mapBounded } from "./bounded.ts";
 import { poolGroupPrefix } from "./pool-group.ts";
@@ -253,9 +255,15 @@ export class HomeClient {
     if (mutation) await this.changed?.();
     try {
       return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal);
-    } catch {
+    } catch (error) {
       init?.signal?.throwIfAborted();
-      return unavailable();
+      throw new HomeTransportFailure(
+        error instanceof PoolRuntimeUnhealthy
+          ? "runtime_unhealthy"
+          : error instanceof DOMException && error.name === "TimeoutError"
+            ? "timeout"
+            : "transport",
+      );
     } finally {
       // Unknown mutation outcomes must not retain a view from before the attempt.
       if (mutation) await this.changed?.();

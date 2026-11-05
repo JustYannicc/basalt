@@ -8,7 +8,12 @@ import { sha256PatchContent } from "./patch-registry.ts";
 export const sha = (digit: string) => digit.repeat(40);
 export const digest = (digit: string) => digit.repeat(64);
 
-export function artifact(kind: "home" | "node", tag: string, commit: string, digit: string): ArtifactPin {
+export function artifact(
+  kind: "home" | "node",
+  tag: string,
+  commit: string,
+  digit: string,
+): ArtifactPin {
   const prefix = kind === "home" ? "CLIProxyAPIHome" : "CLIProxyAPI";
   const version = tag.slice(1);
   return {
@@ -63,19 +68,31 @@ export function patchFixtureContent(file: string): string {
 export function makeReleaseRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "basalt-release-test-"));
   mkdirSync(join(root, "containers/pool"), { recursive: true });
+  writeFileSync(
+    join(root, "containers/pool/billing-settings.json"),
+    '{"allow_unpriced_models":true}\n',
+  );
   mkdirSync(join(root, "patches"), { recursive: true });
   mkdirSync(join(root, "scripts/releases"), { recursive: true });
   mkdirSync(join(root, "src/pool"), { recursive: true });
   const current = pins();
   writeFileSync(join(root, "upstream.json"), `${JSON.stringify(current.tools, null, 2)}\n`);
-  writeFileSync(join(root, "containers/pool/releases.json"), `${JSON.stringify({
-    format_version: 1,
-    artifacts: { home: current.home, node: current.node },
-  }, null, 2)}\n`);
+  writeFileSync(
+    join(root, "containers/pool/releases.json"),
+    `${JSON.stringify(
+      {
+        format_version: 1,
+        artifacts: { home: current.home, node: current.node },
+      },
+      null,
+      2,
+    )}\n`,
+  );
   writeFileSync(join(root, "containers/pool/sources.json"), '{"format_version":1,"plugins":{}}\n');
   writePatchLayout(root, patchManifest);
   writeFileSync(join(root, "src/pool/providers.json"), '[\n  {"id":"claude","name":"Claude"}\n]\n');
-  for (const patch of patchManifest.patches) writeFileSync(join(root, "patches", patch.file), patchFixtureContent(patch.file));
+  for (const patch of patchManifest.patches)
+    writeFileSync(join(root, "patches", patch.file), patchFixtureContent(patch.file));
   return root;
 }
 
@@ -103,5 +120,6 @@ func (c *Client) StartOAuthV8() {
 }`;
 
 export function writePatchLayout(root: string, manifest: PatchManifestV3): void {
-  for (const [path, content] of serializePatchLayout(manifest)) writeFileSync(join(root, path), content);
+  for (const [path, content] of serializePatchLayout(manifest))
+    writeFileSync(join(root, path), content);
 }

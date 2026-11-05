@@ -1,0 +1,722 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,3 +1,5 @@
++import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { runAccountRechecks } from "@executor-js/hosted-server";
+ import {
+   observationPublishPath,
+   publishAccountObservations,
+@@ -448,6 +450,12 @@
+       Effect.scoped,
+       Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
+     );
++    const accountRechecks = runAccountRechecks.pipe(
++      Effect.provide(Layer.mergeAll(executor, BrowserCrypto.layer)),
++      reportErrors,
++      Effect.scoped,
++      Effect.tapError(() => Effect.logWarning("Automatic account health rechecks failed")),
++    );
+     const jobs = yield* cloudBackgroundJobs;
+     yield* jobs.schedule(
+       "* * * * *",
+@@ -458,6 +466,7 @@
+       "repository-recovery",
+       "schedule-wake",
+       "site-assets",
++      "account-health-rechecks",
+     );
+     yield* jobs.schedule(
+       "*/5 * * * *",
+@@ -499,6 +508,7 @@
+       "agent-grant-expiry": agentGrantExpiry,
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+       "personal-data-reporting": personalDataReporting,
++      "account-health-rechecks": accountRechecks,
+     } satisfies Record<BackgroundJob, unknown>;
+ 
+     const egress = yield* cloudEgress;
+@@ -658,7 +668,11 @@
+         "/api/internal/v1-import/orgs/:organization/rollback",
+         v1Import.rollback,
+       ).pipe(HttpRouter.provideRequest(executor)),
+-      jobs.route((job) => backgroundJobs[job]),
++      jobs.route((job) =>
++        Effect.gen(function* () {
++          yield* backgroundJobs[job];
++        }),
++      ),
+       authoringRoutes,
+       ...(["login", "login/sso", "create"] as const).map((page) =>
+         HttpRouter.add(
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -15,6 +15,7 @@
+ 
+ /** Every job a Cron Trigger starts. */
+ export const BackgroundJob = Schema.Literals([
++  "account-health-rechecks",
+   "organization-removal",
+   "provisioning",
+   "contributed-departures",
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -1,4 +1,5 @@
+ import { ProviderAppConnectionRequired } from "./provider-account-policy.ts";
++import { AccountRecheckStatus } from "./account-rechecks.ts";
+ import { AccountSelectionInvalid } from "@executor-js/sdk/core";
+ import { VersionNotFound } from "@executor-js/sdk/core";
+ import { HostedAccountObservations, ObservationPolicy } from "./account-observations.ts";
+@@ -168,6 +169,18 @@
+ /** Credentials travel directly to the authorized host and never appear in successful responses. */
+ export const HostedAccounts = HttpApiGroup.make("accounts")
+   .add(
++    HttpApiEndpoint.get("recheckStatus", `${prefix}/account-health-rechecks`, {
++      params,
++      success: AccountRecheckStatus,
++      error: [StorageError, OrganizationForbidden],
++    })
++      .annotate(RequiredAction, "read")
++      .annotate(
++        OpenApi.Description,
++        "Administrator readout of automatic account health checks: six-hour cadence, provider spacing and the last dispatched batch. Does not start checks or read credentials.",
++      ),
++  )
++  .add(
+     HttpApiEndpoint.get("observations", `${prefix}/accounts/:account/observations`, {
+       params: { ...params, account: AccountId },
+       success: HostedAccountObservations,
+diff --git a/apps/hosted/server/src/contracts/account-rechecks.ts b/apps/hosted/server/src/contracts/account-rechecks.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/account-rechecks.ts
+@@ -0,0 +1,17 @@
++import { Schema } from "effect";
++
++export const AccountRecheckRun = Schema.Struct({
++  run: Schema.String,
++  startedAt: Schema.Date,
++  finishedAt: Schema.NullOr(Schema.Date),
++  outcome: Schema.Literals(["running", "healthy", "failed", "skipped"]),
++  accounts: Schema.Int,
++});
++
++/** Last batch that dispatched accounts; reading status never starts a check. */
++export const AccountRecheckStatus = Schema.Struct({
++  intervalHours: Schema.Int,
++  maximumPerRun: Schema.Int,
++  providerSpacingSeconds: Schema.Int,
++  lastRun: Schema.NullOr(AccountRecheckRun),
++});
+diff --git a/apps/hosted/server/src/implementation/account-recheck-authority.ts b/apps/hosted/server/src/implementation/account-recheck-authority.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-recheck-authority.ts
+@@ -0,0 +1,60 @@
++import { Context, Effect } from "effect";
++import type { Account } from "@executor-js/sdk/core";
++import type { SqlClient } from "effect/sql";
++import type { RecheckCandidate } from "./account-recheck-queue.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { linkedAccounts } from "./app-accounts.ts";
++import { usableAppLinks } from "./app-link-policy.ts";
++
++/** Only the claimed check receives this capability; normal requests still require their actor. */
++export const AutomaticAccountCheck = Context.Reference<
++  (RecheckCandidate & { readonly lease: string }) | undefined
++>("hosted/AutomaticAccountCheck", { defaultValue: () => undefined });
++
++export const automaticCheckAccounts = (
++  sql: SqlClient.SqlClient,
++  accounts: readonly Pick<Account, "id" | "owner">[],
++) =>
++  Effect.gen(function* () {
++    const target = yield* AutomaticAccountCheck;
++    if (
++      target === undefined ||
++      accounts.length !== 1 ||
++      accounts[0]?.id !== target.account ||
++      accounts[0]?.owner !== target.owner
++    )
++      return new Set<Account["id"]>();
++    const held = yield* sql`select q.account_id from hosted_account_rechecks q
++      join hosted_account_access p on p.account_id = q.account_id and p.organization_id = q.organization_id
++      join executor_accounts a on a.id = q.account_id and a.owner = ${target.owner}
++      where q.account_id = ${target.account} and q.lease = ${target.lease} and q.lease_until > now()
++        and q.organization_id = ${target.organization}
++        and not exists (select 1 from hosted_organization_removal removed where removed.organization_id = q.organization_id)
++        and (p.kind <> 'personal' or exists (select 1 from member m
++          where m."organizationId" = p.organization_id and m."userId" = p.personal_user_id))`;
++    if (held.length !== 1) return new Set<Account["id"]>();
++    if (target.app !== null) {
++      const subject = yield* CurrentUserId;
++      if (subject === undefined) {
++        const linked = yield* sql`select a.id from ${yield* usableAppLinks(sql, [target.app])}
++          and a.id = ${target.account} limit 1`;
++        if (linked.length !== 1) return new Set<Account["id"]>();
++      } else {
++        const permitted = yield* sql`select p.id from hosted_app_access p
++          join member m on m."organizationId" = p.organization_id and m."userId" = ${subject}
++          where p.id = ${target.app} and p.organization_id = ${target.organization}
++            and (p.audience = 'everyone' or (p.audience = 'private' and p.creator_id = ${subject})
++              or (p.audience = 'groups' and exists (
++                select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
++                where g.app_id = p.id and gm.member_id = m.id)))`;
++        if (
++          permitted.length !== 1 ||
++          !(yield* linkedAccounts(sql, { subject, apps: [target.app] })).some(
++            (link) => link.id === target.account,
++          )
++        )
++          return new Set<Account["id"]>();
++      }
++    }
++    return new Set([target.account]);
++  });
+diff --git a/apps/hosted/server/src/implementation/account-recheck-schema.ts b/apps/hosted/server/src/implementation/account-recheck-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-recheck-schema.ts
+@@ -0,0 +1,31 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Additive leases survive Worker replacement without changing saved credentials or checks. */
++export const migrateAccountRechecks = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_account_rechecks (
++    account_id text primary key references executor_accounts(id) on delete cascade,
++    organization_id text not null references organization(id) on delete cascade,
++    provider_key text not null,
++    next_at timestamptz not null,
++    provider_next_at timestamptz not null,
++    lease text,
++    lease_until timestamptz,
++    run_id text not null,
++    started_at timestamptz not null,
++    finished_at timestamptz,
++    outcome text not null check (outcome in ('running', 'healthy', 'failed', 'skipped'))
++  )`;
++  // No account or organization foreign key: deleting either cannot reset a provider's rate limit.
++  yield* sql`create table if not exists hosted_account_recheck_families (
++    provider_key text primary key,
++    next_at timestamptz not null,
++    account_id text not null,
++    lease text not null
++  )`;
++  yield* sql`create index if not exists hosted_account_rechecks_provider
++    on hosted_account_rechecks(provider_key, started_at)`;
++  yield* sql`create index if not exists hosted_account_rechecks_organization
++    on hosted_account_rechecks(organization_id, started_at)`;
++});
+diff --git a/apps/hosted/server/src/implementation/account-recheck-queue.ts b/apps/hosted/server/src/implementation/account-recheck-queue.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-recheck-queue.ts
+@@ -0,0 +1,149 @@
++import { AccountId, AppId, OwnerId, StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { OrganizationId } from "../contracts/organization.ts";
++
++export const recheckBatchSize = 4;
++const Candidate = Schema.Struct({
++  account: AccountId,
++  owner: OwnerId,
++  organization: OrganizationId,
++  provider: Schema.String,
++  app: Schema.NullOr(AppId),
++});
++export type RecheckCandidate = typeof Candidate.Type;
++
++/** A minute tick observes new deployments; unchanged successful or failed checks wait six hours. */
++export const makeAccountRecheckQueue = (sql: SqlClient.SqlClient) => {
++  const candidates = Effect.gen(function* () {
++    const rows = yield* sql`
++      with targets as (
++        select distinct a.id as account, a.owner, p.organization_id as organization,
++          coalesce(provider.definition::jsonb -> 'family' ->> 'id', a.provider) as provider,
++          app.id as app, c.checked_at
++        from executor_accounts a
++        join hosted_account_access p on p.account_id = a.id
++          and a.owner = 'organization:' || p.organization_id
++        join executor_providers provider on provider.id = a.provider
++        join hosted_app_account_links l on l.account = a.id
++        join executor_apps app on app.id = l.app and app.owner = a.owner
++        join executor_deployments d on d.id = app.active_deployment
++        left join executor_account_checks c on c.account = a.id and c.app = app.id
++        where not exists (select 1 from hosted_organization_removal removed
++            where removed.organization_id = p.organization_id)
++          and (p.kind <> 'personal' or exists (select 1 from member m
++            where m."organizationId" = p.organization_id and m."userId" = p.personal_user_id))
++          and (l.subject is null or exists (select 1 from member m
++            where m."organizationId" = p.organization_id and m."userId" = l.subject))
++          and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider' = a.provider
++          and (d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'health' = 'true'
++            or d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'interactiveHealth' = 'true')
++          and (c.account is null or c.deployment <> app.active_deployment
++            or c.credential_generation <> a.credential_generation
++            or c.checked_at <= now() - interval '6 hours')
++        union all
++        select a.id, a.owner, p.organization_id,
++          coalesce(provider.definition::jsonb -> 'family' ->> 'id', a.provider),
++          null::text, c.checked_at
++        from executor_accounts a
++        join hosted_account_access p on p.account_id = a.id
++          and a.owner = 'organization:' || p.organization_id
++        join executor_providers provider on provider.id = a.provider
++        join executor_account_acquisitions b on b.account = a.id and b.owner = a.owner
++          and b.provider = a.provider and b.method = a.method
++          and b.generation = a.credential_generation and b.removal is null
++        left join executor_account_driver_checks c on c.account = a.id
++        where (c.account is null or c.checkable or c.driver_revision <> b.driver_revision
++            or c.binding_revision <> b.revision)
++          and not exists (select 1 from hosted_organization_removal removed
++            where removed.organization_id = p.organization_id)
++          and (p.kind <> 'personal' or exists (select 1 from member m
++            where m."organizationId" = p.organization_id and m."userId" = p.personal_user_id))
++          and (c.account is null or c.driver_revision <> b.driver_revision
++            or c.binding_revision <> b.revision or c.generation <> a.credential_generation
++            or c.checked_at <= now() - interval '6 hours')
++      ), due as (
++        select distinct on (t.account) t.* from targets t
++        left join hosted_account_rechecks q on q.account_id = t.account
++        where (q.next_at is null or q.next_at <= now())
++          and (q.lease_until is null or q.lease_until <= now())
++          and not exists (select 1 from hosted_account_recheck_families family
++            where family.provider_key = t.provider and family.next_at > now())
++          and not exists (select 1 from hosted_account_rechecks recent
++            where recent.provider_key = t.provider
++              and (recent.provider_next_at > now() or recent.lease_until > now()))
++        order by t.account, t.checked_at nulls first, t.app nulls first limit 128
++      ), spaced as (
++        select due.*, row_number() over (partition by provider order by checked_at nulls first, account) as position
++        from due
++      ) select account, owner, organization, provider, app from spaced
++        where position = 1 order by checked_at nulls first, account limit ${recheckBatchSize}`;
++    return yield* Schema.decodeUnknownEffect(Schema.Array(Candidate))(rows);
++  });
++  // A transaction-scoped lock covers discovery and reservation, never a provider request.
++  const claim = (run: string) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          const [lock] =
++            yield* sql`select pg_try_advisory_xact_lock(hashtext('basalt:account-rechecks')) as acquired`;
++          if (lock?.acquired !== true) return [];
++          const due = yield* candidates;
++          for (const entry of due)
++            yield* sql`insert into hosted_account_rechecks
++      (account_id, organization_id, provider_key, next_at, provider_next_at, lease, lease_until, run_id, started_at, finished_at, outcome)
++      values (${entry.account}, ${entry.organization}, ${entry.provider}, now() + interval '5 minutes', now() + interval '1 minute',
++        ${run}, now() + interval '5 minutes', ${run}, now(), null, 'running')
++      on conflict (account_id) do update set organization_id = excluded.organization_id, provider_key = excluded.provider_key,
++        next_at = excluded.next_at, provider_next_at = excluded.provider_next_at, lease = excluded.lease, lease_until = excluded.lease_until,
++        run_id = excluded.run_id, started_at = excluded.started_at, finished_at = null, outcome = 'running'`;
++          return due;
++        }),
++      )
++      .pipe(Effect.mapError(() => new StorageError()));
++  // The 55-second attempt ceiling plus 15 minutes remains reserved if completion is lost.
++  const start = (target: RecheckCandidate, lease: string) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          const held = yield* sql`select account_id from hosted_account_rechecks
++        where account_id = ${target.account} and lease = ${lease} and lease_until > now() for update`;
++          if (held.length !== 1) return false;
++          const reserved =
++            yield* sql`insert into hosted_account_recheck_families (provider_key, next_at, account_id, lease)
++        values (${target.provider}, now() + interval '16 minutes', ${target.account}, ${lease})
++        on conflict (provider_key) do update set next_at = excluded.next_at,
++          account_id = excluded.account_id, lease = excluded.lease
++        where hosted_account_recheck_families.next_at <= now()
++        returning provider_key`;
++          return reserved.length === 1;
++        }),
++      )
++      .pipe(Effect.mapError(() => new StorageError()));
++  const finish = (
++    account: AccountId,
++    lease: string,
++    outcome: "healthy" | "failed" | "skipped",
++    retry: boolean,
++    cooldown = false,
++  ) =>
++    sql
++      .withTransaction(
++        Effect.gen(function* () {
++          const completed =
++            yield* sql`update hosted_account_rechecks set lease = null, lease_until = null, finished_at = now(),
++        next_at = now() + ${retry ? 15 * 60 : 60} * interval '1 second',
++        provider_next_at = now() + ${cooldown ? 15 * 60 : 60} * interval '1 second', outcome = ${outcome}
++        where account_id = ${account} and lease = ${lease} returning provider_key`;
++          for (const row of completed)
++            yield* sql`insert into hosted_account_recheck_families (provider_key, next_at, account_id, lease)
++          values (${row.provider_key}, now() + ${cooldown ? 15 * 60 : 60} * interval '1 second', ${account}, ${lease})
++          on conflict (provider_key) do update set next_at = excluded.next_at,
++            account_id = excluded.account_id, lease = excluded.lease
++          where hosted_account_recheck_families.next_at <= now()
++            or (hosted_account_recheck_families.account_id = ${account} and hosted_account_recheck_families.lease = ${lease})`;
++        }),
++      )
++      .pipe(Effect.mapError(() => new StorageError()));
++  return { claim, start, finish };
++};
+diff --git a/apps/hosted/server/src/implementation/account-rechecks.ts b/apps/hosted/server/src/implementation/account-rechecks.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-rechecks.ts
+@@ -0,0 +1,159 @@
++import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { StorageError, type Executor } from "@executor-js/sdk/core";
++import { Clock, Crypto, Effect, Result, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import { currentResourceAuthority, policyDatabase } from "./resource-policy.ts";
++import { appLinkedAccounts, linkedAccounts } from "./app-accounts.ts";
++import { makeAccountRecheckQueue, type RecheckCandidate } from "./account-recheck-queue.ts";
++import { AccountRecheckRun } from "../contracts/account-rechecks.ts";
++
++const Subject = Schema.Struct({ subject: Schema.NullOr(Schema.String) });
++
++/** Re-read links after claiming: a removed link never becomes background account use. */
++const stillLinked = (sql: SqlClient.SqlClient, target: RecheckCandidate) =>
++  Effect.gen(function* () {
++    if (target.app === null) return null;
++    const app = target.app;
++    if ((yield* appLinkedAccounts(sql, [app])).some((link) => link.id === target.account))
++      return null;
++    const rows = yield* sql`select distinct l.subject from hosted_app_account_links l
++      join member m on m."userId" = l.subject and m."organizationId" = ${target.organization}
++      join hosted_app_access p on p.id = l.app and p.organization_id = m."organizationId"
++      where l.app = ${app} and l.account = ${target.account} and
++        (p.audience = 'everyone' or (p.audience = 'private' and p.creator_id = l.subject)
++          or (p.audience = 'groups' and exists (
++            select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
++            where g.app_id = p.id and gm.member_id = m.id)))
++      order by l.subject limit 16`;
++    const subjects = yield* Schema.decodeUnknownEffect(Schema.Array(Subject))(rows);
++    for (const { subject } of subjects) {
++      if (
++        subject !== null &&
++        (yield* linkedAccounts(sql, { subject, apps: [app] })).some(
++          (link) => link.id === target.account,
++        )
++      )
++        return subject;
++    }
++    return undefined;
++  });
++
++type RecheckExecutor = { readonly accounts: Pick<Executor["accounts"], "health" | "check"> };
++
++const runOne = (
++  sql: SqlClient.SqlClient,
++  executor: RecheckExecutor,
++  target: RecheckCandidate,
++  lease: string,
++) =>
++  Effect.gen(function* () {
++    const subject = yield* stillLinked(sql, target);
++    if (subject === undefined) return { outcome: "skipped" as const, retry: true, cooldown: false };
++    return yield* Effect.gen(function* () {
++      const apps = target.app === null ? [] : [target.app];
++      const before = yield* executor.accounts.health({
++        owner: target.owner,
++        account: target.account,
++        apps,
++      });
++      const check = target.app === null ? before.driver?.check : before.apps[0]?.check;
++      const now = yield* Clock.currentTimeMillis;
++      if (check?.current === true && check.checkedAt.getTime() > now - 6 * 60 * 60_000)
++        return { outcome: "skipped" as const, retry: false, cooldown: false };
++      if (target.app === null && before.driver?.checkable !== true)
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
++      const authorized = yield* automaticCheckAccounts(sql, [
++        { id: target.account, owner: target.owner },
++      ]);
++      if (
++        !authorized.has(target.account) ||
++        !(yield* makeAccountRecheckQueue(sql).start(target, lease))
++      )
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
++      // The explicit SDK path owns diagnostics and persistence, including phase/tag/vendor reason.
++      const health = yield* executor.accounts.check({
++        owner: target.owner,
++        account: target.account,
++        apps,
++      });
++      const after = target.app === null ? health.driver?.check : health.apps[0]?.check;
++      const rateLimited = [health.driver?.check, ...health.apps.map((app) => app.check)].some(
++        (result) => result?.reason === "rate_limited",
++      );
++      return {
++        outcome:
++          after?.status === "healthy" && !rateLimited ? ("healthy" as const) : ("failed" as const),
++        retry: after === null || after === undefined || !after.current || rateLimited,
++        cooldown: rateLimited,
++      };
++    }).pipe(Effect.provideService(CurrentUserId, subject ?? undefined));
++  });
++
++/** Claims at most four accounts, one per provider family. Each attempt has a 55-second ceiling. */
++export const makeAccountRechecks =
++  (sql: SqlClient.SqlClient, executor: RecheckExecutor) => (run: string) =>
++    Effect.gen(function* () {
++      const queue = makeAccountRecheckQueue(sql);
++      const targets = yield* queue.claim(run);
++      yield* Effect.forEach(
++        targets,
++        (target) =>
++          Effect.gen(function* () {
++            const result = yield* runOne(sql, executor, target, run).pipe(
++              Effect.provideService(AutomaticAccountCheck, { ...target, lease: run }),
++              Effect.timeout(55_000),
++              Effect.result,
++            );
++            const outcome = Result.isSuccess(result)
++              ? result.success
++              : { outcome: "failed" as const, retry: true, cooldown: true };
++            yield* queue.finish(
++              target.account,
++              run,
++              outcome.outcome,
++              outcome.retry,
++              outcome.cooldown,
++            );
++            yield* Effect.logInfo("Automatic account health recheck finished", {
++              outcome: outcome.outcome,
++            });
++          }),
++        { concurrency: 2, discard: true },
++      );
++    }).pipe(Effect.mapError(() => new StorageError()));
++
++export const runAccountRechecks = Effect.gen(function* () {
++  const sql = yield* Effect.flatten(GroupDatabase);
++  const executor = yield* Effect.flatten(HostedExecutor);
++  const crypto = yield* Crypto.Crypto;
++  const run = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
++  yield* makeAccountRechecks(sql, executor)(run);
++}).pipe(Effect.withSpan("job.account-health.recheck"));
++
++/** Organization administrators can inspect job activity without reading anyone's credentials. */
++export const accountRecheckStatus = Effect.gen(function* () {
++  const actor = yield* currentResourceAuthority;
++  if (actor.role === "member") return yield* new OrganizationForbidden();
++  const sql = yield* policyDatabase;
++  const rows = yield* sql`select run_id as "run", min(started_at) as "startedAt",
++      case when bool_and(finished_at is not null) then max(finished_at) else null end as "finishedAt",
++      case when bool_or(outcome = 'running' and lease_until > now()) then 'running'
++        when bool_or(outcome = 'failed' or (outcome = 'running' and lease_until <= now())) then 'failed'
++        when bool_and(outcome = 'skipped') then 'skipped' else 'healthy' end as outcome,
++      count(*)::int as accounts
++    from hosted_account_rechecks where organization_id = ${actor.organization}
++    group by run_id order by min(started_at) desc limit 1`;
++  const lastRun = yield* Schema.decodeUnknownEffect(Schema.Array(AccountRecheckRun))(rows);
++  return {
++    intervalHours: 6,
++    maximumPerRun: 4,
++    providerSpacingSeconds: 60,
++    lastRun: lastRun[0] ?? null,
++  };
++}).pipe(
++  Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++);
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -1,4 +1,5 @@
+ import { requireProviderConnectionTarget } from "./provider-account-policy.ts";
++import { accountRecheckStatus } from "./account-rechecks.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { getAccountObservations, refreshAccountObservations } from "./account-observations.ts";
+ import { readObservationPolicy, updateObservationPolicy } from "./account-observation-policy.ts";
+@@ -394,6 +395,7 @@
+     const api = yield* ApiAuthentication;
+     const redirectUri = accountOAuthRedirectUri(auth);
+     return handlers
++      .handle("recheckStatus", () => accountRecheckStatus)
+       .handle("get", () => getAccount)
+       .handle("observations", () => getAccountObservations)
+       .handle("refreshObservations", () => refreshAccountObservations)
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
+ import { hostedToolPolicy } from "./tool-policy-evaluation.ts";
+ import { requireAppAccess } from "./resource-policy.ts";
+ import { requireOrganizationAppWrite } from "./organization-app-write.ts";
+@@ -346,6 +347,15 @@
+       // it has no user accounts.
+       appResolving: (app, accounts, appUses) =>
+         Effect.gen(function* () {
++          const automatic = yield* AutomaticAccountCheck;
++          if (
++            automatic !== undefined &&
++            (automatic.app !== app.id ||
++              !(yield* automaticCheckAccounts(sql, [
++                { id: automatic.account, owner: automatic.owner },
++              ])).has(automatic.account))
++          )
++            return yield* new StorageError();
+           const user = yield* CurrentUserId;
+           const organization = yield* organizationOf(app.owner);
+           // The SDK resolved each account with its owner; only the product's policy is checked here.
+@@ -454,7 +464,9 @@
+       accountsResolving: (accounts) =>
+         Effect.gen(function* () {
+           const user = yield* CurrentUserId;
+-          if (user === undefined) return yield* new StorageError();
++          if ((yield* AutomaticAccountCheck) !== undefined)
++            return yield* automaticCheckAccounts(sql, accounts);
++          if (user === undefined) return new Set<AccountId>();
+           const owned = organizationAccounts(accounts);
+           if (owned.length === 0) return new Set<AccountId>();
+           // The SDK resolved each account with its owner; only the product's policy is checked here.
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -20,6 +20,7 @@
+ import { migrateAccountIdentityIndex } from "./account-identity-schema.ts";
+ import { migrateContributedDepartureObservability } from "./contributed-departure-observability-schema.ts";
+ import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
++import { migrateAccountRechecks } from "./account-recheck-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ 
+ /**
+@@ -146,6 +147,7 @@
+   "14_model_bindings": migrateModelBindings,
+   "15_hosted_routes": migrateHostedRoutes,
+   "16_tool_policies": migrateToolPolicies,
++  "17_account_rechecks": migrateAccountRechecks,
+ });
+ 
+ /**
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -116,3 +116,5 @@
+ 
+ export * from "./contracts/schedules.ts";
+ export { makeScheduledAuthority } from "./implementation/schedules.ts";
++
++export { runAccountRechecks } from "./implementation/account-rechecks.ts";
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -38,7 +38,7 @@
+ import { AppNotFound } from "../contracts/apps.ts";
+ import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
+ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
+-import { storedAccount } from "./accounts.ts";
++import { accountMetadata, storedAccount } from "./accounts.ts";
+ import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
+ import {
+@@ -186,6 +186,16 @@
+     acquisition,
+     { status: statusOf, message: messageOf },
+     recordObservation,
++    lifecycle === undefined
++      ? undefined
++      : (account) =>
++          lifecycle
++            .accountsResolving([accountMetadata(account)])
++            .pipe(
++              Effect.flatMap((allowed) =>
++                allowed.has(account.id) ? Effect.void : Effect.fail(new StorageError()),
++              ),
++            ),
+   );
+   /** One account's health from the apps that use it and its recorded checks. */
+   const project = (
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -28,6 +28,7 @@
+   recordObservation?: ReturnType<
+     typeof import("./account-observations.ts").makeAccountObservations
+   >["fromHealth"],
++  beforeCheck?: (account: StoredAccount) => Effect.Effect<void, StorageError>,
+ ) => {
+   const rows = (accounts: readonly DriverAccount[]) =>
+     query(() =>
+@@ -137,6 +138,7 @@
+         );
+         return;
+       }
++      if (beforeCheck !== undefined) yield* beforeCheck(account);
+       const outcome = yield* hook().pipe(
+         Effect.flatMap((value) =>
+           Schema.decodeUnknownEffect(AccountCheckResult)(value === undefined ? {} : value).pipe(
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -20,9 +20,17 @@
+     { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+   ] as const;
+
++/** Remove the latest hosted objects and journal together so earlier migrations can replay. */
++export const beforeHostedAccountRechecks = () =>
++  [
++    { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
++  ] as const;
++
+ /** Remove policy state and its journal row before replaying an earlier hosted migration. */
+ export const beforeHostedToolPolicies = () =>
+   [
++    ...beforeHostedAccountRechecks(),
+     { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
+   ] as const;
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+--- a/e2e/tests/contributed-departure-observability.spec.ts
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -164,15 +164,37 @@
+         expect(retained.items).toMatchObject([
+           { account, status: "failed", attempts: 8, queuedAt: null, lastError: null },
+         ]);
++        const journalQuery = {
++          sql: "SELECT migration_id, created_at FROM private_hosted_migrations WHERE migration_id IN (13, 17) ORDER BY migration_id",
++        };
++        const [upgraded, recheckTables] = yield* legacyStorage([
++          journalQuery,
++          {
++            sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('hosted_account_rechecks', 'hosted_account_recheck_families') ORDER BY table_name",
++          },
++        ]);
++        expect(upgraded?.map((row) => row.migration_id)).toEqual([13, 17]);
++        expect(recheckTables).toEqual([
++          { table_name: "hosted_account_recheck_families" },
++          { table_name: "hosted_account_rechecks" },
++        ]);
++        yield* serverControl("start");
+         yield* serverControl("restart");
+         expect(yield* read).toEqual(retained);
+         yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
+-        const [journal] = yield* legacyStorage([
++        const [journal, repeated] = yield* legacyStorage([
+           {
+             sql: "SELECT count(*)::integer AS count FROM private_hosted_migrations WHERE migration_id = 13",
+           },
++          journalQuery,
+         ]);
+         expect(journal).toEqual([{ count: 1 }]);
++        expect(repeated).toEqual(upgraded);
++        yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
++          upgraded,
++          recheckTables,
++          repeated,
++        });
+         yield* serverControl("start");
+       }),
+     ),

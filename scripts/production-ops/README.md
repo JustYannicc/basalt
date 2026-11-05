@@ -82,8 +82,35 @@ The pool persists a started receipt before the first DELETE. A failed or uncerta
 apply is never retried automatically. Use `action=inventory` with the original
 request and `plan_sha256` to inspect its encrypted receipt and current row state.
 A completed replay verifies without repeating DELETEs. An incomplete receipt
-requires a reviewed recovery operation. Restoring the encrypted rows also needs
-its own reviewed operation and GO.
+blocks fresh normal applies, including plans with unchanged rows. Restoring the
+encrypted rows needs its own reviewed operation and GO.
+
+For removal recovery, use `selection=home-agent-import-recovery-v1`,
+`action=prepare`, the original exact request, `source_run` set to the original
+successful dry run, and `plan_sha256` set to that original plan's hash. Preparation
+is read-only. It verifies the original plan, backup checksum and incomplete receipt,
+then returns a fresh encrypted backup and expiring recovery plan. Review the exact
+row hashes, retained checksum and any already-deleted rows before obtaining GO.
+Token refreshes can change a credential row; they require review of its fresh hash.
+
+Apply that recovery with the same recovery selection and request,
+`action=migrate`, `mode=apply`, `source_run` set to the successful preparation run,
+and the new recovery plan's exact hash and GO. Readiness finishes before each
+DELETE's 10-second deadline starts. The runtime rechecks the approved snapshot
+after readiness, before sending a DELETE.
+
+Recovery preserves the original receipt and writes separate linked progress.
+Already-verified tombstones are skipped. A failed recovery is not retried with
+the same GO: prepare again from the original successful dry run, review the fresh
+plan bound to the latest recovery receipt, and obtain a new GO. This reconciles
+committed deletions whose acknowledgements were lost. Inventory of the original
+plan exposes the latest recovery plan hash; inventory of that hash exposes its
+progress. Successful replay verifies completion without repeating deletions.
+
+Removal failures retain the actual phase, fixed error code, elapsed milliseconds
+and selected row ID. A Home HTTP failure also retains its status and an allowlisted
+Home error code. Readiness and DELETE timeouts are distinct from precondition
+refusals. Raw response bodies, exception text and tokens stay out of these receipts.
 
 ## Prepare a repair
 
@@ -120,6 +147,23 @@ The successful workflow upload must finish before apply. Download and decrypt
 `backup` object into a private JSON file and use the same decrypt command. Keep
 that snapshot and recipient key available for recovery. A snapshot alone is not
 a verified restore. Restoring data needs its own reviewed operation and GO.
+
+## Retire redundant Google bindings
+
+Use `google-duplicate-bindings-v1` with
+`{"organization":"<organization-id>","pairs":[{"remove":"<legacy-account-id>","retain":"<verified-account-id>","identity":"<verified-identity-id>"}]}`.
+Select at most 20 disjoint pairs. The verified replacement must already cover
+every app selection with the same provider, method, host policy and placement.
+The operation refuses active workflow or webhook consumers, acquisitions,
+pending connections and shared legacy grants. Webhook registration also locks and
+rereads newly referenced accounts before recording secondary dependencies, so a
+concurrent retirement cannot leave an orphaned selection. Labels never establish identity.
+
+Review every deletion in the signed dry run and retain its complete affected-table
+backup. The ordinary `accounts` backup does not cover all retired check and source
+history. Deployment only registers the operation. Apply still needs GO for the
+exact plan. Retirement deletes the selected redundant bindings and their own
+grants locally, preserves verified replacements, and never revokes Google consent.
 
 ## Apply the reviewed plan
 

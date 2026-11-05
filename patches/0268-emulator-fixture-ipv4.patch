@@ -1,0 +1,54 @@
+diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provisioning.spec.ts
+--- a/e2e/tests/emulator-provisioning.spec.ts
++++ b/e2e/tests/emulator-provisioning.spec.ts
+@@ -6,6 +6,7 @@
+ import { createServer } from "node:http";
+ import type { AddressInfo } from "node:net";
+ import { emulatorRequest, provisionEmulatorRequest } from "../support/emulators.ts";
++import { holdPort } from "../support/ports.ts";
+ 
+ const secret = "SYNTHETIC_PRIVATE_TOKEN";
+ const ray = "0123456789abcdef-AAA";
+@@ -47,7 +48,7 @@
+               );
+           });
+         });
+-        http.listen(0, () => {
++        http.listen(0, "127.0.0.1", () => {
+           const { port } = http.address() as AddressInfo;
+           resume(
+             Effect.succeed({
+@@ -71,6 +72,21 @@
+   );
+ 
+ layer(NodeServices.layer, { excludeTestServices: true })("Emulator provisioning", (it) => {
++  it.effect("the local emulator fixture owns its advertised IPv4 origin", () =>
++    Effect.gen(function* () {
++      const stub = yield* server(() => 200);
++      const competitor = yield* Effect.exit(
++        Effect.scoped(holdPort(Number(new URL(stub.origin).port))),
++      );
++      expect(competitor._tag).toBe("Failure");
++      const result = yield* emulatorRequest(stub.origin, "/ready").pipe(
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect(result).toMatchObject({ ready: true });
++      expect(stub.calls()).toBe(1);
++    }),
++  );
++
+   it.effect("transient setup HTTP errors recover within the operation budget", () =>
+     Effect.gen(function* () {
+       for (const status of [500, 502, 503, 504]) {
+diff --git a/e2e/tests/emulator-fixture-provisioning.spec.ts b/e2e/tests/emulator-fixture-provisioning.spec.ts
+--- a/e2e/tests/emulator-fixture-provisioning.spec.ts
++++ b/e2e/tests/emulator-fixture-provisioning.spec.ts
+@@ -67,7 +67,7 @@
+         server.closeAllConnections();
+         server.close();
+       };
+-      server.listen(0, () => {
++      server.listen(0, "127.0.0.1", () => {
+         const { port } = server.address() as AddressInfo;
+         resume(Effect.succeed({ origin: `http://127.0.0.1:${port}`, workosTokens, counts, close }));
+       });

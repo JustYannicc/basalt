@@ -12,7 +12,15 @@ export interface PoolStatus {
 
 /** A warm runtime lost readiness. The caller can retry after its protection recovers. */
 export class PoolRuntimeUnhealthy extends Error {
-  constructor() { super("The pool runtime is temporarily unhealthy"); }
+  constructor() {
+    super("The pool runtime is temporarily unhealthy");
+  }
+}
+
+export class PoolStartupDeadline extends Error {
+  constructor() {
+    super("The pool did not become ready within the startup budget");
+  }
 }
 
 export interface RuntimeDriver {
@@ -45,7 +53,10 @@ export class PoolLifecycle {
     driver: RuntimeDriver,
     storage: RuntimeStorage,
     revision: string,
-    clock = { now: () => Date.now(), sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) },
+    clock = {
+      now: () => Date.now(),
+      sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    },
   ) {
     this.driver = driver;
     this.storage = storage;
@@ -55,7 +66,9 @@ export class PoolLifecycle {
 
   warm(): Promise<PoolStatus> {
     if (this.warming) return this.warming;
-    const work = this.ensureWarm().finally(() => { if (this.warming === work) this.warming = undefined; });
+    const work = this.ensureWarm().finally(() => {
+      if (this.warming === work) this.warming = undefined;
+    });
     this.warming = work;
     return this.warming;
   }
@@ -69,7 +82,9 @@ export class PoolLifecycle {
       this.served = false;
       return this.ensureWarm();
     })();
-    const work = restart.finally(() => { if (this.warming === work) this.warming = undefined; });
+    const work = restart.finally(() => {
+      if (this.warming === work) this.warming = undefined;
+    });
     this.warming = work;
     return this.warming;
   }
@@ -77,8 +92,10 @@ export class PoolLifecycle {
   private async ensureWarm(): Promise<PoolStatus> {
     try {
       const previousRevision = await this.storage.get<string>("revision");
-      this.served = this.driver.running() && previousRevision === this.revision
-        && (this.served || await this.storage.get<string>("ready-revision") === this.revision);
+      this.served =
+        this.driver.running() &&
+        previousRevision === this.revision &&
+        (this.served || (await this.storage.get<string>("ready-revision")) === this.revision);
       if (this.driver.running() && previousRevision !== this.revision) await this.driver.stop();
       if (!this.driver.running()) {
         // Record the target before launch so retries can keep a running boot.
@@ -92,7 +109,8 @@ export class PoolLifecycle {
       while (this.clock.now() < deadline) {
         try {
           const status = await this.driver.status();
-          if (!status.boot_id || !status.started_at) throw new Error("Missing pool runtime identity");
+          if (!status.boot_id || !status.started_at)
+            throw new Error("Missing pool runtime identity");
           this.served = true;
           await this.storage.put("ready-revision", this.revision);
           return status;
@@ -102,7 +120,7 @@ export class PoolLifecycle {
           await this.clock.sleep(1_000);
         }
       }
-      throw new Error("The pool did not become ready within the startup budget");
+      throw new PoolStartupDeadline();
     } finally {
       // An alarm retries failed starts too. The container can outlive a sleeping DO.
       const next = this.clock.now() + poolLifecycle.refreshMs;

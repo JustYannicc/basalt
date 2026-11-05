@@ -34,6 +34,15 @@
           }
         },
         {
+          "identity": "cliproxy-home-conditional-deletion",
+          "file": "0267-home-conditional-deletion.patch",
+          "sha256": "3ad72e2e39ed9342a819d63078d1d90057a9fdb17eebceb060fc1e4519895ac8",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after native Home exposes dedicated conditional credential and membership deletion routes which compare the approved PostgreSQL full-row checksum under the mutation lock, refuse stale rows without deletion, and pass refresh-race and unchanged-row deletion regressions."
+          }
+        },
+        {
           "identity": "cliproxy-home-bounded-db-pool",
           "file": "0284-home-db-pool.patch",
           "sha256": "2ae92de34d0cd52dd3f22bc26a18b32e5cbeda786e33cf073f79d7cc90bc22b0",

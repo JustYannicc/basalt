@@ -1,0 +1,150 @@
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -460,21 +460,25 @@
+     const oauth = (service: "google" | "github") =>
+       Effect.gen(function* () {
+         const instance = yield* create(service);
+-        const issued = yield* emulatorRequest(instance.providerBaseUrl, "/_emulate/credentials", {
+-          type: "oauth-authorization-code",
+-          name: "Executor onboarding E2E",
+-          redirect_uris: [`${roleHost(origin, "edge")}/api/auth/callback/${service}`],
+-        }).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({
+-                credential: Schema.Struct({
+-                  client_id: Schema.NonEmptyString,
+-                  client_secret: Schema.NonEmptyString,
+-                }),
+-              }),
+-            ),
+-          ),
++        // Explicit credentials make an ambiguous response safe to repeat without creating another client.
++        const clientId = `executor_e2e_${randomUUID().replaceAll("-", "")}`;
++        const clientSecret = randomUUID();
++        const issued = yield* provisionEmulatorRequest(
++          instance.providerBaseUrl,
++          "/_emulate/credentials",
++          {
++            type: "oauth-authorization-code",
++            name: "Executor onboarding E2E",
++            client_id: clientId,
++            client_secret: clientSecret,
++            redirect_uris: [`${roleHost(origin, "edge")}/api/auth/callback/${service}`],
++          },
++          Schema.Struct({
++            credential: Schema.Struct({
++              client_id: Schema.Literal(clientId),
++              client_secret: Schema.Literal(clientSecret),
++            }),
++          }),
+         );
+         return {
+           baseUrl: instance.providerBaseUrl,
+diff --git a/e2e/tests/emulator-fixture-provisioning.spec.ts b/e2e/tests/emulator-fixture-provisioning.spec.ts
+--- a/e2e/tests/emulator-fixture-provisioning.spec.ts
++++ b/e2e/tests/emulator-fixture-provisioning.spec.ts
+@@ -9,3 +9,3 @@
+ /** The real fixture client talks HTTP to this control-plane stand-in instead of the hosted service. */
+-const controlPlane = (failOauth: boolean) =>
++const controlPlane = (failOauth: boolean | "once" | "mismatch") =>
+   Effect.acquireRelease(
+@@ -14,2 +14,3 @@
+       workosTokens: unknown[];
++      oauthRequests: unknown[];
+       counts: Map<string, number>;
+@@ -18,2 +19,3 @@
+       const workosTokens: unknown[] = [];
++      const oauthRequests: unknown[] = [];
+       const counts = new Map<string, number>();
+@@ -35,2 +37,4 @@
+                 token: Schema.optional(Schema.String),
++                client_id: Schema.optional(Schema.String),
++                client_secret: Schema.optional(Schema.String),
+               }),
+@@ -54,4 +58,11 @@
+           } else if (body.type === "oauth-authorization-code") {
+-            send(failOauth ? 503 : 200, {
+-              credential: { client_id: "synthetic-client", client_secret: "synthetic-secret" },
++            oauthRequests.push({ service, ...body });
++            send(failOauth === true || (failOauth === "once" && count === 1) ? 503 : 200, {
++              credential: {
++                client_id:
++                  failOauth === "mismatch"
++                    ? "wrong-client"
++                    : (body.client_id ?? "synthetic-client"),
++                client_secret: body.client_secret ?? "synthetic-secret",
++              },
+             });
+@@ -71,3 +82,11 @@
+         const { port } = server.address() as AddressInfo;
+-        resume(Effect.succeed({ origin: `http://127.0.0.1:${port}`, workosTokens, counts, close }));
++        resume(
++          Effect.succeed({
++            origin: `http://127.0.0.1:${port}`,
++            workosTokens,
++            oauthRequests,
++            counts,
++            close,
++          }),
++        );
+       });
+@@ -103,3 +122,50 @@
+ 
+-  it.effect("OAuth client creation remains outside setup retries", () =>
++  it.effect(
++    "fixture OAuth setup repeats the exact keyed credential after an ambiguous failure",
++    () =>
++      Effect.gen(function* () {
++        const stub = yield* controlPlane("once");
++        const http = yield* HttpClient.HttpClient;
++        const fixture = yield* createEmulatorFixture(stub.origin).pipe(
++          Effect.provideService(HttpClient.HttpClient, routed(http, stub.origin)),
++        );
++        for (const service of ["google", "github"] as const) {
++          const config = Redacted.value(fixture).services[service];
++          expect(stub.counts.get(`${service} /_emulate/credentials`)).toBe(2);
++          const requests = stub.oauthRequests.filter((value) =>
++            Schema.is(Schema.Struct({ service: Schema.Literal(service) }))(value),
++          );
++          expect(requests).toEqual([
++            expect.objectContaining({
++              service,
++              client_id: config.clientId,
++              client_secret: config.clientSecret,
++            }),
++            expect.objectContaining({
++              service,
++              client_id: config.clientId,
++              client_secret: config.clientSecret,
++            }),
++          ]);
++          expect(config.clientId.length).toBeGreaterThan(0);
++          expect(config.clientSecret.length).toBeGreaterThan(0);
++        }
++      }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++
++  it.effect("a response that changes the requested OAuth identity fails without retry", () =>
++    Effect.gen(function* () {
++      const stub = yield* controlPlane("mismatch");
++      const http = yield* HttpClient.HttpClient;
++      const error = yield* createEmulatorFixture(stub.origin).pipe(
++        Effect.provideService(HttpClient.HttpClient, routed(http, stub.origin)),
++        Effect.flip,
++      );
++      expect(error.category).toBe("schema");
++      expect(error.attempts).toBe(1);
++      expect(stub.counts.get("google /_emulate/credentials")).toBe(1);
++    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++
++  it.effect("persistent OAuth setup failure remains blocking after bounded keyed attempts", () =>
+     Effect.gen(function* () {
+@@ -112,3 +178,4 @@
+       expect(error.status).toBe(503);
+-      expect(stub.counts.get("google /_emulate/credentials")).toBe(1);
++      expect(stub.counts.get("google /_emulate/credentials")).toBe(4);
++      expect(error.attempts).toBe(4);
+     }).pipe(Effect.provide(FetchHttpClient.layer)),

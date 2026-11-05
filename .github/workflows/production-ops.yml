@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       source_run:
-        description: Successful dry-run workflow ID required for apply
+        description: Successful source workflow ID required for apply or import-recovery preparation
         required: false
         type: string
       plan_sha256:
@@ -62,8 +62,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      - name: Load the completed encrypted dry-run before apply
-        if: inputs.action == 'migrate' && inputs.mode == 'apply'
+      - name: Load the completed encrypted source operation
+        if: (inputs.action == 'migrate' && inputs.mode == 'apply') || (inputs.action == 'prepare' && inputs.selection == 'home-agent-import-recovery-v1')
         uses: actions/download-artifact@v4
         with:
           name: production-ops-${{ inputs.source_run }}

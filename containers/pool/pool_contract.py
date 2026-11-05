@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .billing_policy import provision_billing_policy
 from .recovery_deadline import current_deadline
 from .recovery_http import request_with_deadline
 
@@ -309,6 +310,15 @@ def apply_pool_config(management_key: str, allow_remote: bool) -> None:
     )
     if status != 200:
         raise StartupError(f"Home routing configuration failed (HTTP {status})")
+    provision_billing_policy(
+        lambda method, payload: request_json(
+            f"{HOME_URL}/v8/management/billing/settings",
+            method,
+            management_key,
+            payload,
+            timeout=10,
+        )
+    )
 
 
 def create_node_jwt(management_key: str) -> tuple[str, str]:

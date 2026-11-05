@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "OAuth naming guards hold account details and health reads while proving editing and metadata saving at desktop and phone widths, including failed optional reads, without increasing timeouts or weakening assertions."
+    }
+  }
+}
