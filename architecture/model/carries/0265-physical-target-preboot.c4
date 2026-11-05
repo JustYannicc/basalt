@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Physical database proofs preboot the required target and wait for committed app, account and link rows before capturing equivalent fixture data."
+    }
+  }
+}
