@@ -376,7 +376,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:bounded-per-account-usage-through-the-public-host-api)"
+          "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api)"
           --workers 1
       - name: Collect bounded E2E evidence
         if: always()

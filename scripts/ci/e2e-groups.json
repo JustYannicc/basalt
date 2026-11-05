@@ -14,11 +14,6 @@
     "target": "self-host",
     "mode": "managed"
   },
-  "host-managed-accounts:bounded-per-account-usage-through-the-public-host-api": {
-    "job": "host-managed-accounts",
-    "target": "self-host",
-    "mode": "managed"
-  },
   "host-managed-accounts-local:shared-identities-and-incremental-consent": {
     "job": "host-managed-accounts-local",
     "target": "local",
@@ -301,6 +296,11 @@
     "mode": "managed"
   },
   "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior": {
+    "job": "host-managed-accounts-pool",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api": {
     "job": "host-managed-accounts-pool",
     "target": "self-host",
     "mode": "managed"

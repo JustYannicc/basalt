@@ -22,7 +22,7 @@
   },
   "runs": {
     "poolUsageSeries": [
-      "host-managed-accounts:bounded-per-account-usage-through-the-public-host-api"
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
     ]
   },
   "inputs": [

@@ -123,7 +123,7 @@ test("account and pool jobs retain every original scenario, command and executio
     {
       job: "host-managed-accounts-pool",
       name: "Verify bounded per-account usage through the public host API",
-      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:bounded-per-account-usage-through-the-public-host-api)" --workers 1',
+      run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api)" --workers 1',
       env: null,
       cwd: ".upstream",
       minutes: null,
