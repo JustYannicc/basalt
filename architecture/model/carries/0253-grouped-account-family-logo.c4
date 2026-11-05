@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "A verified identity shared by several visible apps uses its verified issuer and family name for the row mark, independently of consumer order. Single-app identities, unverified accounts and app-specific views retain their provider marks; grouping preserves saved IDs, credentials, access and app selections."
+    }
+  }
+}
