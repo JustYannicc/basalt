@@ -85,7 +85,7 @@ diff --git a/e2e/support/read-dispatch.ts b/e2e/support/read-dispatch.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/read-dispatch.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,82 @@
 +/**
 + * When the page asks for one public read, whether it sends it on its own or inside a dashboard
 + * batch. Watching changes no request, so the batching a scenario sees is the product's own.
@@ -106,7 +106,10 @@ new file mode 100644
 +}) =>
 +  Effect.gen(function* () {
 +    const browser = yield* Browser;
-+    const arrived = yield* Deferred.make<"alone" | "batched">();
++    const arrived = yield* Deferred.make<{
++      readonly via: "alone" | "batched";
++      readonly request: Request;
++    }>();
 +    let count = 0;
 +    const requested = (request: Request) => {
 +      const url = new URL(request.url());
@@ -126,7 +129,7 @@ new file mode 100644
 +      if (via === undefined) return;
 +      count += 1;
 +      // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright request listeners are plain callbacks
-+      Effect.runSync(Deferred.succeed(arrived, via));
++      Effect.runSync(Deferred.succeed(arrived, { via, request }));
 +    };
 +    const label = `${read.group}.${read.endpoint}`;
 +    yield* browser.use(`Observe ${label} reads`, (page) =>
@@ -146,14 +149,30 @@ new file mode 100644
 +       * How the first read went out, or none when the page sends none within the same 30 seconds
 +       * a held query waits for its request.
 +       */
-+      dispatched: Deferred.await(arrived).pipe(Effect.timeoutOption("30 seconds")),
++      dispatched: Deferred.await(arrived).pipe(
++        Effect.map(({ via }) => via),
++        Effect.timeoutOption("30 seconds"),
++      ),
++      completed: Deferred.await(arrived).pipe(
++        Effect.flatMap(({ request }) =>
++          browser.use(`Wait for the first ${label} response`, () =>
++            request.response().then((response) => {
++              if (response === null) throw new Error(`${label} returned no response`);
++              return response.finished().then((error) => {
++                if (error !== null) throw error;
++              });
++            }),
++          ),
++        ),
++        Effect.timeout("30 seconds"),
++      ),
 +    };
 +  });
 diff --git a/e2e/tests/access-editor-reads.spec.ts b/e2e/tests/access-editor-reads.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/access-editor-reads.spec.ts
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,263 @@
 +/**
 + * App Settings and a shared account's Manage access each show a sharing form that needs an access
 + * read and the organization's groups. The groups read must not wait for the reads in front of the
@@ -330,6 +349,9 @@ new file mode 100644
 +        Option.isSome(yield* groups.dispatched),
 +        "Settings asks for the groups while the app's access is held",
 +      ).toBe(true);
++      yield* groups.completed;
++      // The form must use the early result even if every later groups request is held.
++      yield* holdQuery(paths("/groups"), "continue", { allRequests: true });
 +      expect(
 +        yield* browser.use("The sharing form waits for the held access", (page) =>
 +          page.getByRole("combobox", { name: "Who can use this app?", exact: true }).count(),
@@ -366,6 +388,8 @@ new file mode 100644
 +        Option.isSome(yield* groups.dispatched),
 +        "Manage access asks for the groups while the account and its access are held",
 +      ).toBe(true);
++      yield* groups.completed;
++      yield* holdQuery(paths("/groups"), "continue", { allRequests: true });
 +      yield* access.requested;
 +      expect(
 +        yield* browser.use("The sharing form waits for the held reads", (page) =>
