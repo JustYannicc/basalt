@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-google-cleanup-diagnostics",
+  "file": "0296-google-cleanup-diagnostics.patch",
+  "content_sha256": "d316f1cc60e45fbc2cca2d45ab09cc88859b34790dbfe98908744230b6dc7a2b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
