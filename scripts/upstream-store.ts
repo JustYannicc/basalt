@@ -83,9 +83,25 @@ export function rememberDependencyConsumer(root: string, store: string, pending:
 
 /** Call only while holding collection.lock, including publication and consumer transitions. */
 export function collectDependencyStore() {
+  const entries = directories(join(upstreamCache(), "prepared"))
+    .flatMap((pin) => directories(pin))
+    .filter((entry) => record(join(entry, "store-format.json"))?.version === 3);
+  const attempts = entries
+    .flatMap((entry) => directories(join(entry, "attempts")))
+    .map((path) => ({
+      path,
+      parent: record(join(path, "parent.json")),
+      installer: record(join(path, "installer.json")),
+    }));
+  const groups = attempts.flatMap(({ installer }) =>
+    typeof installer?.group === "number" ? [installer.group] : [],
+  );
+  const live = processSnapshot(groups);
+  if (!live.complete) return;
   const cache = upstreamCache(),
     protectedStores = new Set<string>();
   const consumers = join(cache, "consumers");
+  const abandonedConsumers: string[] = [];
   if (existsSync(consumers))
     for (const entry of readdirSync(consumers, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -94,7 +110,7 @@ export function collectDependencyStore() {
       if (typeof consumer?.root !== "string" || !Array.isArray(consumer.stores))
         throw new Error("Cannot validate a dependency consumer reference");
       if (!existsSync(consumer.root)) {
-        rmSync(file);
+        abandonedConsumers.push(file);
         continue;
       }
       const installed = record(join(consumer.root, ".basalt-dependencies.json"));
@@ -104,20 +120,23 @@ export function collectDependencyStore() {
           : consumer.stores;
       for (const store of stores) if (typeof store === "string") protectedStores.add(store);
     }
-  const live = processSnapshot();
-  for (const pin of directories(join(cache, "prepared")))
-    for (const entry of directories(pin)) {
-      if (record(join(entry, "store-format.json"))?.version !== 3) continue;
-      for (const attempt of directories(join(entry, "attempts"))) {
-        const parent = record(join(attempt, "parent.json"));
-        const installer = record(join(attempt, "installer.json"));
-        if (ownerInSnapshot(parent, live)) continue;
-        if (installerGroupAlive(installer, live)) continue;
-        removeDirectory(attempt);
-      }
-      for (const generation of directories(join(entry, "generations")))
-        if (!protectedStores.has(realpathSync(generation))) removeDirectory(generation);
-    }
+  let abandoned: string[];
+  try {
+    abandoned = attempts
+      .filter(
+        ({ parent, installer }) =>
+          !ownerInSnapshot(parent, live) && !installerGroupAlive(installer, live),
+      )
+      .map(({ path }) => path);
+  } catch {
+    // Unknown ownership must not authorize even a partial collection pass.
+    return;
+  }
+  const retired = entries
+    .flatMap((entry) => directories(join(entry, "generations")))
+    .filter((generation) => !protectedStores.has(realpathSync(generation)));
+  for (const file of abandonedConsumers) rmSync(file);
+  for (const path of [...abandoned, ...retired]) removeDirectory(path);
 }
 
 export const collectUpstreamDependencies = () => withDependencyStoreLock(collectDependencyStore);
@@ -147,7 +166,7 @@ export async function installPrivateAttempt(attempt: string) {
     child.once("exit", resolve);
   });
   if (result !== 0) throw new Error(`Bun dependency install failed with exit ${result}`);
-  if (installerGroupAlive(record(join(attempt, "installer.json")), processSnapshot()))
+  if (installerGroupAlive(record(join(attempt, "installer.json")), processSnapshot([child.pid!])))
     throw new Error("Installer descendants still hold their private attempt");
 }
 

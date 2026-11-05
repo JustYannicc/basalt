@@ -56,25 +56,19 @@ test("recycled parent and group numbers do not retain abandoned attempts", async
   mkdirSync(protectedAttempt, { recursive: true });
   writeFileSync(join(protectedAttempt, "parent.json"), JSON.stringify(current));
   for (const kind of ["parent", "installer"]) {
-    for (const incarnation of ["boot", "start", "legacy"]) {
+    for (const incarnation of ["boot", "start"]) {
       const attempt = join(entry, "attempts", `${kind}-${incarnation}`);
       mkdirSync(attempt, { recursive: true });
       writeFileSync(join(attempt, "package-bytes"), "abandoned payload");
       writeFileSync(
         join(attempt, `${kind}.json`),
-        JSON.stringify(
-          incarnation === "legacy"
-            ? kind === "parent"
-              ? { pid: child.pid }
-              : { group: child.pid }
-            : {
-                pid: child.pid,
-                group: child.pid,
-                boot: incarnation === "boot" ? "previous-boot" : boot(),
-                start: incarnation === "start" ? "0" : readProcessOwner(child.pid!)!.start,
-                token: "previous-installer-incarnation",
-              },
-        ),
+        JSON.stringify({
+          pid: child.pid,
+          group: child.pid,
+          boot: incarnation === "boot" ? "previous-boot" : boot(),
+          start: incarnation === "start" ? "0" : readProcessOwner(child.pid!)!.start,
+          token: "previous-installer-incarnation",
+        }),
       );
       await collectUpstreamDependencies();
       assert.equal(existsSync(attempt), false, `${kind} ${incarnation} mismatch must expire`);
@@ -88,7 +82,7 @@ test("recycled parent and group numbers do not retain abandoned attempts", async
   }
 });
 
-for (const incarnation of ["boot", "start", "legacy"]) {
+for (const incarnation of ["boot", "start"]) {
   test(
     `collection and recovery locks ignore a live PID from another ${incarnation} incarnation`,
     { timeout: 5000 },
@@ -103,16 +97,12 @@ for (const incarnation of ["boot", "start", "legacy"]) {
       });
       await once(owner, "message");
       const lock = join(fixture, "collection.lock");
-      const stale = JSON.stringify(
-        incarnation === "legacy"
-          ? { pid: owner.pid, id: "previous-lock-incarnation" }
-          : {
-              pid: owner.pid,
-              boot: incarnation === "boot" ? "previous-boot" : boot(),
-              start: incarnation === "start" ? "0" : readProcessOwner(owner.pid!)!.start,
-              id: "previous-lock-incarnation",
-            },
-      );
+      const stale = JSON.stringify({
+        pid: owner.pid,
+        boot: incarnation === "boot" ? "previous-boot" : boot(),
+        start: incarnation === "start" ? "0" : readProcessOwner(owner.pid!)!.start,
+        id: "previous-lock-incarnation",
+      });
       symlinkSync(stale, lock);
       symlinkSync(stale, `${lock}.recovery`);
       waiter = spawn(
