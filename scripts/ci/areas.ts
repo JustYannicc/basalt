@@ -182,6 +182,7 @@ export const areas = [
       ".upstream/**/*batch*",
       ".upstream/**/*prefetch*",
       ".upstream/e2e/tests/cached-account-controls.spec.ts",
+      ".upstream/apps/hosted/web/src/implementation/pages/{app-accounts-client,connection-dialog}.tsx",
       ".upstream/**/*route*",
       ".upstream/**/*loading*",
     ],

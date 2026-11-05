@@ -389,3 +389,13 @@ test("Google recovery provisions Chromium before its bounded offline verificatio
   assert.equal(job["timeout-minutes"], 10);
   assert.doesNotMatch(job.steps[verification].run, /install|curl|wget|bunx/);
 });
+
+test("connection control changes select their retained-data browser guard", () => {
+  for (const path of [
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/connection-dialog.tsx",
+    ".upstream/e2e/tests/cached-account-controls.spec.ts",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+
+});
