@@ -14,26 +14,18 @@ import {
   type RemovalSelection,
 } from "./contract.ts";
 import { removalComplete, removalProjection, type RemovalSnapshot } from "./snapshot.ts";
+import {
+  databaseHash,
+  executeRemoval,
+  removalResult,
+  readRemoval,
+  saveReceipt,
+  type RemovalDependencies,
+} from "./execute.ts";
+import { RemovalExecutionFailure } from "./failure.ts";
+import { receiptKey, recoveryKey, unresolvedRemoval, type RemovalReceipt } from "./receipt.ts";
+import { prepareRecovery, resumeRecovery } from "./recovery.ts";
 
-interface Receipt {
-  status: "started" | "incomplete" | "complete";
-  planSha256: string;
-  retainSha256: string;
-  removed: string[];
-  memberships: string[];
-}
-export interface RemovalDependencies {
-  read(selection: RemovalSelection): Promise<RemovalSnapshot>;
-  home(path: string, init: RequestInit): Promise<Response>;
-  storage: {
-    get<T>(key: string): Promise<T | undefined>;
-    put(key: string, value: unknown): Promise<void>;
-  };
-  secret: string;
-  release: string;
-  databaseOrigin: string;
-  now?: () => number;
-}
 const Approval = Schema.Struct({
   artifact: ProtectedArtifact,
   planSha256: Schema.String,
@@ -55,7 +47,9 @@ export class ImportRemoval {
     recipient: string,
     target: string,
     approval?: unknown,
+    signal?: AbortSignal,
   ) {
+    signal?.throwIfAborted();
     if (this.busy) throw new RemovalRefused();
     this.busy = true;
     try {
@@ -65,6 +59,7 @@ export class ImportRemoval {
         recipient,
         target,
         approval,
+        signal,
       );
     } finally {
       this.busy = false;
@@ -72,7 +67,7 @@ export class ImportRemoval {
   }
 
   private database(snapshot: RemovalSnapshot) {
-    return sha256(canonical({ origin: this.deps.databaseOrigin, database: snapshot.database }));
+    return databaseHash(this.deps, snapshot);
   }
 
   private async perform(
@@ -81,13 +76,18 @@ export class ImportRemoval {
     recipient: string,
     target: string,
     rawApproval: unknown,
+    signal?: AbortSignal,
   ) {
     const now = this.deps.now?.() ?? Date.now();
     const protect = (value: unknown) => protectArtifact(value, this.deps.secret, recipient, target);
-    if (action === "apply") return this.apply(selection, target, rawApproval, now);
+    if (action === "prepare")
+      return prepareRecovery(this.deps, selection, rawApproval, recipient, target);
+    if (action === "resume")
+      return resumeRecovery(this.deps, selection, rawApproval, target, signal);
+    if (action === "apply") return this.apply(selection, target, rawApproval, now, signal);
     if (action !== "inventory" && action !== "backup" && action !== "dry-run")
       throw new RemovalRefused(400);
-    const snapshot = await this.deps.read(selection);
+    const snapshot = await readRemoval(this.deps, selection);
     const database = this.database(snapshot);
     if (action === "inventory") {
       const query = Schema.decodeUnknownSync(
@@ -98,7 +98,7 @@ export class ImportRemoval {
       const receipt =
         query.planSha256 === undefined
           ? undefined
-          : await this.deps.storage.get<Receipt>(`import-removal:${query.planSha256}`);
+          : await this.deps.storage.get<RemovalReceipt>(receiptKey(query.planSha256));
       return {
         action,
         rows: snapshot.credentials.length,
@@ -108,7 +108,13 @@ export class ImportRemoval {
           observedAt: now,
           database,
           ...removalProjection(snapshot),
-          ...(query.planSha256 === undefined ? {} : { receipt: receipt ?? null }),
+          ...(query.planSha256 === undefined
+            ? {}
+            : {
+                receipt: receipt ?? null,
+                recoveryPlanSha256:
+                  (await this.deps.storage.get<string>(recoveryKey(query.planSha256))) ?? null,
+              }),
         }),
       };
     }
@@ -151,6 +157,7 @@ export class ImportRemoval {
     target: string,
     rawApproval: unknown,
     now: number,
+    signal?: AbortSignal,
   ) {
     const approval = Schema.decodeUnknownSync(Approval)(rawApproval);
     if (
@@ -173,71 +180,35 @@ export class ImportRemoval {
       canonical(plan.selection) !== canonical(selection)
     )
       throw new RemovalRefused();
-    const key = `import-removal:${approval.planSha256}`;
-    const saved = await this.deps.storage.get<Receipt>(key);
-    const snapshot = await this.deps.read(selection);
+    const key = receiptKey(approval.planSha256);
+    const saved = await this.deps.storage.get<RemovalReceipt>(key);
+    const snapshot = await readRemoval(this.deps, selection);
     if (this.database(snapshot) !== plan.database) throw new RemovalRefused();
     if (saved) {
       if (saved.status !== "complete" || !removalComplete(snapshot, saved.retainSha256))
         throw new RemovalRefused();
-      return this.result(saved, true);
+      return removalResult(saved, "apply", true);
     }
+    // Legacy receipts predate a selection index. Refuse any uncertain removal in this controller.
+    if (await unresolvedRemoval(this.deps.storage))
+      throw new RemovalExecutionFailure({
+        phase: "receipt",
+        code: "recovery_required",
+        elapsedMs: 0,
+      });
     if (sha256(canonical(snapshot)) !== plan.snapshotSha256) throw new RemovalRefused();
-    const receipt: Receipt = {
+    const receipt: RemovalReceipt = {
       status: "started",
       planSha256: approval.planSha256,
       retainSha256: snapshot.retain.sha256,
       removed: [],
       memberships: [],
     };
-    await this.deps.storage.put(key, receipt);
-    try {
-      for (const credential of selection.remove) {
-        await this.remove(`/credentials?id=${encodeURIComponent(credential.id)}`);
-        receipt.removed.push(credential.id);
-        await this.deps.storage.put(key, receipt);
-      }
-      for (const member of snapshot.memberships.filter((row) => !row.deleted)) {
-        if (
-          (typeof member.id !== "string" && typeof member.id !== "number") ||
-          !/^[1-9][0-9]*$/.test(String(member.id))
-        )
-          throw new RemovalRefused();
-        await this.remove(`/channel-group-details/${member.id}`);
-        receipt.memberships.push(String(member.id));
-        await this.deps.storage.put(key, receipt);
-      }
-      const after = await this.deps.read(selection);
-      if (this.database(after) !== plan.database || !removalComplete(after, snapshot.retain.sha256))
-        throw new RemovalRefused();
-      receipt.status = "complete";
-      await this.deps.storage.put(key, receipt);
-      return this.result(receipt, false);
-    } catch {
-      receipt.status = "incomplete";
-      await this.deps.storage.put(key, receipt);
-      throw new RemovalRefused();
-    }
-  }
-
-  private async remove(path: string) {
-    const response = await this.deps.home(path, {
-      method: "DELETE",
-      signal: AbortSignal.timeout(10_000),
-    });
-    await response.body?.cancel();
-    if (!response.ok) throw new RemovalRefused();
-  }
-
-  private result(receipt: Receipt, repeated: boolean) {
-    return {
-      action: "apply",
-      planSha256: receipt.planSha256,
-      repeated,
-      verification: {
-        ok: true,
-        checks: { credentialsRemoved: true, membershipsRemoved: true, retainedUnchanged: true },
-      },
-    };
+    await saveReceipt(this.deps, key, receipt);
+    return removalResult(
+      await executeRemoval(this.deps, selection, snapshot, receipt, key, plan.expiresAt, signal),
+      "apply",
+      false,
+    );
   }
 }

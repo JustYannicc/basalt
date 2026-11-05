@@ -40,6 +40,21 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /formatter and real-child snapshot\/exit-receipt injection regressions/,
         );
         assert.match(patch.retirement.requires, /without changing request handling/);
+      } else if (patch.identity === "cliproxy-home-conditional-deletion") {
+        assert.equal(name, "home");
+        assert.match(
+          patch.retirement.requires,
+          /conditional credential and membership deletion routes/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /approved PostgreSQL full-row checksum under the mutation lock/,
+        );
+        assert.match(patch.retirement.requires, /refuse stale rows without deletion/);
+        assert.match(
+          patch.retirement.requires,
+          /refresh-race and unchanged-row deletion regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

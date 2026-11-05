@@ -6,7 +6,7 @@
   "scripts": {
     "prepare:upstream": "node scripts/prepare-upstream.ts",
     "ci:fast": "node scripts/ci/fast-local.ts",
-    "check": "node --test src/catalog/*.test.ts src/catalog/recipes/*.test.ts src/*.test.ts src/pool/*.test.ts src/pool/capacity/*.test.ts src/tunnel/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/pool-reset-fixture.test.mjs e2e/slack/*.test.mjs e2e/scale-test.test.mjs e2e/scale-verdict.test.mjs scripts/pool-tests/sharing-cleanup.test.ts",
+    "check": "node --test src/catalog/*.test.ts src/catalog/recipes/*.test.ts src/*.test.ts src/pool/*.test.ts src/pool/capacity/*.test.ts src/tunnel/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/automatic-account-rechecks.test.ts e2e/account-recheck-cooldowns.test.ts e2e/account-recheck-dispatch.test.ts e2e/pool-reset-fixture.test.mjs e2e/slack/*.test.mjs e2e/scale-test.test.mjs e2e/scale-verdict.test.mjs scripts/pool-tests/sharing-cleanup.test.ts",
     "typecheck": "node scripts/typecheck.ts",
     "typecheck:upstream": "bun run --cwd .upstream typecheck",
     "build": "node scripts/build.ts",

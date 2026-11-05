@@ -1,0 +1,439 @@
+diff --git a/e2e/tests/oauth-callback-new-tab.spec.ts b/e2e/tests/oauth-callback-new-tab.spec.ts
+--- a/e2e/tests/oauth-callback-new-tab.spec.ts
++++ b/e2e/tests/oauth-callback-new-tab.spec.ts
+@@ -3,92 +3,16 @@
+  * there has none of the starting tab's context; the server finds the connection from its state.
+  */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
+-import { FetchHttpClient, HttpClient } from "effect/http";
++import { Effect } from "effect";
+ import { Actors } from "../support/actors.ts";
+-import { Api, body } from "../support/api.ts";
++import { Api } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { Resource } from "../support/contracts.ts";
+-import { oauthInteropIssuer } from "../support/oauth-interop-issuer.ts";
+-import { appsManifest } from "../support/apps-release.ts";
+ import { scenarios } from "../test-plan.ts";
+-import { connectionsPath } from "../support/app-accounts.ts";
++import { pendingSignIn } from "../support/oauth-link-sign-in.ts";
+ 
+ /** React reports a server/browser markup difference with one of these messages or codes. */
+ const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
+-const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
+-const Connection = Schema.Struct({
+-  state: Schema.Struct({
+-    status: Schema.String,
+-    account: Schema.optional(Schema.Struct({ id: Schema.String })),
+-  }),
+-});
+-
+-/**
+- * The owner starts sign-in through the API, so no browser holds its context, and the service
+- * returns the callback URL it would put in the emailed link.
+- */
+-const pendingSignIn = Effect.gen(function* () {
+-  const api = yield* Api,
+-    actors = yield* Actors,
+-    http = yield* HttpClient.HttpClient;
+-  const prefix = `/api/organizations/${actors.organization.id}`;
+-  const issuer = yield* oauthInteropIssuer("apple");
+-  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-    name: "Emailed sign-in link",
+-    files: [
+-      {
+-        path: "index.ts",
+-        content: `import { defineApp, defineProvider, oauth2, router } from "apps";
+-const service=defineProvider({name:"Link service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
+-export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
+-      },
+-      appsManifest,
+-    ],
+-  });
+-  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+-  const app = yield* body(Resource, deployed);
+-  yield* Effect.addFinalizer(() =>
+-    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+-  );
+-  const connection = yield* body(
+-    Resource,
+-    yield* api.request(
+-      actors.owner,
+-      "POST",
+-      connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+-      {},
+-    ),
+-  );
+-  const started = yield* api.request(
+-    actors.owner,
+-    "POST",
+-    `${prefix}/connections/${connection.id}/oauth/start`,
+-    { method: "oauth" },
+-  );
+-  expect(started.status, JSON.stringify(started.body)).toBe(200);
+-  const { authorizationUrl } = yield* body(SignIn, started);
+-  const callbackUrl = yield* Effect.scoped(
+-    Effect.gen(function* () {
+-      const response = yield* HttpClient.withScope(http).get(authorizationUrl);
+-      expect(response.status).toBe(302);
+-      const location = response.headers.location;
+-      if (location === undefined) return yield* Effect.die("Service did not return a callback");
+-      return new URL(location);
+-    }),
+-  ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+-  expect(callbackUrl.searchParams.get("code")).not.toBeNull();
+-  const read = api
+-    .request(actors.owner, "GET", `${prefix}/connections/${connection.id}`)
+-    .pipe(Effect.flatMap((response) => body(Connection, response)));
+-  const removeAccount = (account: string) =>
+-    Effect.addFinalizer(() =>
+-      api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
+-    );
+-  return { prefix, app: app.id, connection: connection.id, callbackUrl, read, removeAccount };
+-});
+-
+ /** Open the emailed link and wait until the callback page settles on success or failure. */
+ const openLink = (label: string, callbackUrl: URL, organizationSlug: string, app: string) =>
+   Effect.flatMap(Browser, (browser) =>
+@@ -117,7 +41,7 @@
+       Effect.gen(function* () {
+         const actors = yield* Actors,
+           browser = yield* Browser;
+-        const signIn = yield* pendingSignIn;
++        const signIn = yield* pendingSignIn();
+         yield* browser.omitNetworkTrace;
+         // A fresh browser context: it shares the session cookie but nothing from the start.
+         yield* browser.login(actors.owner);
+@@ -169,7 +93,7 @@
+         const api = yield* Api,
+           actors = yield* Actors,
+           browser = yield* Browser;
+-        const signIn = yield* pendingSignIn;
++        const signIn = yield* pendingSignIn();
+         yield* browser.omitNetworkTrace;
+         yield* browser.login(actors.member);
+         const refused = yield* openLink(
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5050,6 +5050,16 @@
+       "self-host": scheduled,
+       cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+       local: na("Hosted account dialogs and callback recovery."),
++    },
++  },
++  oauthNameReady: {
++    fixtures: "actors",
++    file: "oauth-name-ready.spec.ts",
++    title: "OAuth naming stays editable while account details and health are pending",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a scoped loopback OAuth issuer."),
++      local: na("Hosted callback handoff; local naming has separate coverage."),
+     },
+   },
+   oauthNameAfterConnect: {
+diff --git a/e2e/support/oauth-link-sign-in.ts b/e2e/support/oauth-link-sign-in.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/oauth-link-sign-in.ts
+@@ -0,0 +1,86 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { Resource } from "./contracts.ts";
++import { oauthInteropIssuer } from "./oauth-interop-issuer.ts";
++import { appsManifest } from "./apps-release.ts";
++import { connectionsPath } from "./app-accounts.ts";
++
++const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
++const Connection = Schema.Struct({
++  state: Schema.Struct({
++    status: Schema.String,
++    account: Schema.optional(Schema.Struct({ id: Schema.String })),
++  }),
++});
++
++/**
++ * The owner starts sign-in through the API, so no browser holds its context, and the service
++ * returns the callback URL it would put in the emailed link.
++ */
++export const pendingSignIn = (displayName?: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      http = yield* HttpClient.HttpClient;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const issuer = yield* oauthInteropIssuer("apple");
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Emailed sign-in link",
++      files: [
++        {
++          path: "index.ts",
++          content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service=defineProvider({
++  name:"Link service",
++  auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})},
++  ${displayName === undefined ? "" : `async health() { return { accountInfo: { displayName: ${JSON.stringify(displayName)} } }; },`}
++});
++export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
++        },
++        appsManifest,
++      ],
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(Resource, deployed);
++    yield* Effect.addFinalizer(() =>
++      api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++    );
++    const connection = yield* body(
++      Resource,
++      yield* api.request(
++        actors.owner,
++        "POST",
++        connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++        {},
++      ),
++    );
++    const started = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${connection.id}/oauth/start`,
++      { method: "oauth" },
++    );
++    expect(started.status, JSON.stringify(started.body)).toBe(200);
++    const { authorizationUrl } = yield* body(SignIn, started);
++    const callbackUrl = yield* Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* HttpClient.withScope(http).get(authorizationUrl);
++        expect(response.status).toBe(302);
++        const location = response.headers.location;
++        if (location === undefined) return yield* Effect.die("Service did not return a callback");
++        return new URL(location);
++      }),
++    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++    expect(callbackUrl.searchParams.get("code")).not.toBeNull();
++    const read = api
++      .request(actors.owner, "GET", `${prefix}/connections/${connection.id}`)
++      .pipe(Effect.flatMap((response) => body(Connection, response)));
++    const removeAccount = (account: string) =>
++      Effect.addFinalizer(() =>
++        api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
++      );
++    return { prefix, app: app.id, connection: connection.id, callbackUrl, read, removeAccount };
++  });
+diff --git a/e2e/tests/oauth-name-ready.spec.ts b/e2e/tests/oauth-name-ready.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/oauth-name-ready.spec.ts
+@@ -0,0 +1,206 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountNameField, nameAccountDialog } from "../support/name-account.ts";
++import { pendingSignIn } from "../support/oauth-link-sign-in.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Detail = Schema.Struct({
++  account: Schema.Struct({ label: Schema.String, description: Schema.NullOr(Schema.String) }),
++});
++
++layer(HostedLive, { excludeTestServices: true })("OAuth naming readiness", (it) => {
++  it.effect(scenarios.oauthNameReady.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          browser = yield* Browser;
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        for (const { width, failDetails, typeDraft } of [
++          { width: 1440, failDetails: false, typeDraft: true },
++          { width: 390, failDetails: false, typeDraft: true },
++          { width: 390, failDetails: true, typeDraft: false },
++        ]) {
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const signIn = yield* pendingSignIn("Suggested account");
++              const detail = yield* holdQuery(
++                /\/accounts\/[^/]+$/,
++                failDetails ? "fail" : "continue",
++                {
++                  allRequests: true,
++                },
++              );
++              const health = yield* holdQuery(/\/accounts\/[^/]+\/health$/, "continue", {
++                method: "POST",
++                allRequests: true,
++              });
++              yield* browser.use(`Open the OAuth return at ${width}px`, (page) =>
++                page
++                  .setViewportSize({ width, height: 960 })
++                  .then(() =>
++                    page.goto(`${signIn.callbackUrl.pathname}${signIn.callbackUrl.search}`),
++                  )
++                  .then(() => nameAccountDialog(page).waitFor({ state: "visible" })),
++              );
++              yield* detail.requested;
++              yield* browser.checkpoint(`OAuth return before background details ${width}px`);
++              expect(
++                yield* browser.use("The account read does not gate the name field", (page) =>
++                  accountNameField(page).count(),
++                ),
++              ).toBe(1);
++              yield* health.requested;
++              const state = yield* browser.use(
++                "The form is usable before either read answers",
++                (page) =>
++                  Promise.all([
++                    accountNameField(page).isEnabled(),
++                    accountNameField(page).inputValue(),
++                    accountNameField(page).evaluate((node) => node === document.activeElement),
++                    nameAccountDialog(page)
++                      .getByRole("textbox", { name: "Description for agents", exact: true })
++                      .isEnabled(),
++                    nameAccountDialog(page)
++                      .getByRole("button", { name: "Save name", exact: true })
++                      .isEnabled(),
++                  ]),
++              );
++              expect(state).toEqual([true, "Default", true, true, true]);
++              const label = typeDraft ? `Work ${width}` : "Suggested account";
++              const description = `Synthetic description ${width}`;
++              yield* browser.use("Type a name and description while details are held", (page) =>
++                Promise.resolve(typeDraft ? accountNameField(page).fill(label) : undefined).then(
++                  () =>
++                    nameAccountDialog(page)
++                      .getByRole("textbox", { name: "Description for agents", exact: true })
++                      .fill(description),
++                ),
++              );
++              yield* browser.checkpoint(`OAuth name ready before details ${width}px`);
++              const completed = yield* signIn.read;
++              expect(completed.state.status).toBe("completed");
++              const account = completed.state.account;
++              if (account === undefined) return yield* Effect.die("OAuth did not save an account");
++              yield* signIn.removeAccount(account.id);
++              const healthResponse = yield* browser.use(
++                "Observe the background health reply",
++                (page) =>
++                  Promise.resolve({
++                    finished: page.waitForResponse(
++                      (response) =>
++                        response.request().method() === "POST" &&
++                        new URL(response.url()).pathname.endsWith(`/accounts/${account.id}/health`),
++                    ),
++                  }),
++              );
++              if (width === 1440) {
++                const saved = yield* browser.use("Save metadata while health is pending", (page) =>
++                  Promise.all([
++                    page.waitForResponse(
++                      (response) =>
++                        response.request().method() === "PATCH" &&
++                        new URL(response.url()).pathname.endsWith(`/accounts/${account.id}`),
++                    ),
++                    nameAccountDialog(page)
++                      .getByRole("button", { name: "Save name", exact: true })
++                      .click(),
++                  ]).then(([response]) => response.status()),
++                );
++                expect(saved).toBe(200);
++                yield* browser.use("Saving closes the form without waiting for health", (page) =>
++                  nameAccountDialog(page).waitFor({ state: "hidden" }),
++                );
++              } else {
++                const failedRead = failDetails
++                  ? yield* browser.use("Observe the optional account-read failure", (page) =>
++                      Promise.resolve({
++                        finished: page.waitForEvent("requestfailed", {
++                          predicate: (request) =>
++                            request.method() === "GET" &&
++                            new URL(request.url()).pathname.endsWith(`/accounts/${account.id}`),
++                        }),
++                      }),
++                    )
++                  : undefined;
++                yield* detail.release;
++                if (failedRead !== undefined) {
++                  yield* browser.use("The optional read fails without disabling naming", () =>
++                    failedRead.finished.then(() => undefined),
++                  );
++                  expect(
++                    yield* browser.use(
++                      "Missing provider details use a neutral description",
++                      (page) =>
++                        nameAccountDialog(page)
++                          .getByText("Name the account you connected.", { exact: true })
++                          .count(),
++                    ),
++                  ).toBe(1);
++                } else {
++                  yield* browser.use(
++                    "Provider details arrive without remounting the draft",
++                    (page) =>
++                      nameAccountDialog(page)
++                        .getByText("Link service is connected. Choose a name you’ll recognize.", {
++                          exact: true,
++                        })
++                        .waitFor(),
++                  );
++                }
++                yield* health.release;
++                expect(
++                  yield* browser.use("The background health check still completes", () =>
++                    healthResponse.finished.then((response) => response.status()),
++                  ),
++                ).toBe(200);
++                if (!typeDraft)
++                  yield* browser.use("An untouched name adopts the reported identity", (page) =>
++                    accountNameField(page)
++                      .and(page.locator('input[value="Suggested account"]'))
++                      .waitFor(),
++                  );
++                yield* browser.checkpoint(
++                  `OAuth identity received ${width}px ${typeDraft ? "typed" : "untouched"}`,
++                );
++                expect(
++                  yield* browser.use("The optional details preserve both drafts", (page) =>
++                    Promise.all([
++                      accountNameField(page).inputValue(),
++                      nameAccountDialog(page)
++                        .getByRole("textbox", { name: "Description for agents", exact: true })
++                        .inputValue(),
++                    ]),
++                  ),
++                ).toEqual([label, description]);
++                yield* browser.use("Save the retained phone draft", (page) =>
++                  nameAccountDialog(page)
++                    .getByRole("button", { name: "Save name", exact: true })
++                    .click()
++                    .then(() => nameAccountDialog(page).waitFor({ state: "hidden" })),
++                );
++              }
++              const saved = yield* body(
++                Detail,
++                yield* api.request(actors.owner, "GET", `${signIn.prefix}/accounts/${account.id}`),
++              );
++              expect(saved.account).toEqual({ label, description });
++              yield* detail.release;
++              yield* health.release;
++              yield* browser.use("Drain the completed health response", () =>
++                healthResponse.finished.then((response) => response.finished()),
++              );
++            }),
++          );
++        }
++      }),
++    ),
++  );
++});

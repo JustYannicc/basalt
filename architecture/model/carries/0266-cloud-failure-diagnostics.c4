@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Managed runtime startup failures retain sanitized forwarding output and emulator causes through completion or a bounded quiet period. Successful readiness has no extra wait and raw credentials remain private."
+    }
+  }
+}

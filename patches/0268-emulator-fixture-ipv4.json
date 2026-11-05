@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-emulator-fixture-ipv4",
+  "file": "0268-emulator-fixture-ipv4.patch",
+  "content_sha256": "21ad6be5663b06a1030333705588877b12eb139e870198c268a71a7acce6738a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

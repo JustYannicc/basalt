@@ -1,0 +1,515 @@
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -1,3 +1,4 @@
++import { acquisitionTransport } from "./pool-acquisition-transport.ts";
+ import {
+   accountAcquisitionDriver,
+   AccountAcquisitionUnavailable,
+@@ -76,17 +77,12 @@
+           expiresAt: Math.min(context.deadline, at + 30_000),
+           ...input,
+         });
+-        const response = await context.fetch(new URL(accountAcquisitionPath, origin), {
+-          method: "POST",
+-          signal: context.signal,
+-          headers: { "content-type": "application/json" },
+-          body: JSON.stringify({ envelope }),
+-        });
+-        if (!response.ok) {
+-          await response.body?.cancel();
+-          throw new Error("Account backend unavailable");
+-        }
+-        return await response.json();
++        return acquisitionTransport(
++          context,
++          new URL(accountAcquisitionPath, origin),
++          JSON.stringify({ envelope }),
++          action,
++        );
+       };
+       const oauth = capability.connection === "home-oauth";
+       const family = nativeProviderFamilies[capability.lab] ?? "openai-compatibility";
+diff --git a/apps/hosted/server/src/implementation/pool-acquisition-transport.ts b/apps/hosted/server/src/implementation/pool-acquisition-transport.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-acquisition-transport.ts
+@@ -0,0 +1,86 @@
++import {
++  AcquisitionFailureReceipt,
++  InteractiveConnectionFailed,
++  type AccountAcquisitionContext,
++} from "@executor-js/sdk/core";
++import { Schema } from "effect";
++
++const failure = Schema.Struct({ receipt: AcquisitionFailureReceipt });
++
++/** Only read-only status requests repeat; mutation outcomes may be uncertain. */
++export async function acquisitionTransport(
++  context: AccountAcquisitionContext,
++  url: URL,
++  body: string,
++  action: string,
++): Promise<unknown> {
++  const limit = action === "status" ? 3 : 1;
++  for (let attempt = 0; attempt < limit; attempt++) {
++    let receipt: typeof AcquisitionFailureReceipt.Type = {
++      phase: "request",
++      errorClass: "transport",
++      retryable: true,
++    };
++    const remaining = context.deadline - Date.now() - 500;
++    const signal = AbortSignal.any([
++      context.signal,
++      AbortSignal.timeout(
++        Math.max(1, action === "status" ? Math.min(4_000, remaining) : remaining),
++      ),
++    ]);
++    if (remaining <= 0)
++      throw new InteractiveConnectionFailed({
++        reason: "step",
++        receipt: { phase: "request", errorClass: "timeout", retryable: true },
++      });
++    try {
++      const response = await context.fetch(url, {
++        method: "POST",
++        signal,
++        headers: { "content-type": "application/json" },
++        body,
++      });
++      if (response.ok) {
++        try {
++          return await response.json();
++        } catch {
++          receipt = { phase: "request", errorClass: "invalid_response", retryable: true };
++        }
++      } else {
++        // Decode only the endpoint's closed receipt; never retain or log its body.
++        const value: unknown = await response.json().catch(() => undefined);
++        const decoded = Schema.decodeUnknownOption(failure)(value);
++        receipt =
++          decoded._tag === "Some"
++            ? decoded.value.receipt
++            : {
++                phase: "request",
++                errorClass:
++                  response.status >= 500 || response.status === 429
++                    ? "home_unavailable"
++                    : "home_rejected",
++                retryable: response.status >= 500 || response.status === 429,
++              };
++      }
++    } catch {
++      receipt = {
++        phase: "request",
++        errorClass: signal.aborted ? "timeout" : "transport",
++        retryable: true,
++      };
++    }
++    console.warn(
++      "POOL_ACQUISITION_DRIVER_FAILURE",
++      JSON.stringify({ ...receipt, attempt: attempt + 1 }),
++    );
++    if (
++      !receipt.retryable ||
++      attempt + 1 >= limit ||
++      context.signal.aborted ||
++      Date.now() + 750 >= context.deadline
++    )
++      throw new InteractiveConnectionFailed({ reason: "step", receipt });
++    await new Promise<void>((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
++  }
++  throw new InteractiveConnectionFailed({ reason: "step" });
++}
+diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
+--- a/e2e/support/acquisition-product.ts
++++ b/e2e/support/acquisition-product.ts
+@@ -21,7 +21,7 @@
+     const source = `
+ import * as Runtime from ${JSON.stringify(hosted ? "@effect/platform-bun/BunRuntime" : "@effect/platform-node/NodeRuntime")};
+ ${hosted ? 'import { main } from "@executor-js/hosted-self-host/server";' : 'import { launch } from "@executor-js/local-server";\nimport * as NodeServices from "@effect/platform-node/NodeServices";'}
+-import { AccountAcquisitionConfiguration, ProviderId, type AccountAcquisitionContext } from "@executor-js/sdk/core";
++import { AccountAcquisitionConfiguration, InteractiveConnectionFailed, ProviderId, type AccountAcquisitionContext } from "@executor-js/sdk/core";
+ import { accountAcquisitionDriver } from "@executor-js/sdk";
+ import { InteractiveStart, InteractiveStatus, AccountCheckResult, AccountObservationResult, HostOperationFailed } from "apps/contracts";
+ import { Effect, Redacted, Schema } from "effect";
+@@ -32,7 +32,10 @@
+       headers: { authorization: "Bearer synthetic-backend-key", "content-type": "application/json" },
+       body: JSON.stringify({ step, method: context.method, caller: context.owner, operation: context.operation, ...data }),
+     });
+-    if (!response.ok) throw new HostOperationFailed({});
++    if (!response.ok) {
++      if (response.status === 503 || response.status === 401) throw new InteractiveConnectionFailed({ reason: "step", receipt: { phase: "oauth_status", errorClass: response.status === 503 ? "runtime_unhealthy" : "home_rejected", retryable: response.status === 503 } });
++      throw new HostOperationFailed({});
++    }
+     return Schema.decodeUnknownSync(schema)(await response.json());
+ };
+ const driver = accountAcquisitionDriver({
+diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
+--- a/e2e/support/interactive-account-backend.ts
++++ b/e2e/support/interactive-account-backend.ts
+@@ -48,6 +48,7 @@
+   const driverGates = yield* Ref.make<ReadonlyMap<DriverStep, DriverGate>>(new Map());
+   const accountInfo = yield* Ref.make<FixtureAccountInfo | undefined>(undefined);
+   const acquisitionFailure = yield* Ref.make<string | undefined>(undefined);
++  const statusResponse = yield* Ref.make(200);
+   const startExposure = yield* Ref.make<StartExposure | undefined>(undefined);
+   const refuseRemoval = yield* Ref.make(false);
+   const refuseCancellation = yield* Ref.make(false);
+@@ -178,6 +179,8 @@
+         return yield* HttpServerResponse.json(null);
+       }
+       if (input.step === "status") {
++        const responseStatus = yield* Ref.get(statusResponse);
++        if (responseStatus !== 200) return HttpServerResponse.empty({ status: responseStatus });
+         const gate = yield* Ref.get(statusGate);
+         const started = yield* Ref.get(statusStarted);
+         if (started !== undefined) yield* Deferred.succeed(started, undefined);
+@@ -314,6 +317,7 @@
+       yield* Effect.addFinalizer(() => release);
+       return { started: Deferred.await(started), release };
+     }),
++    statusResponse: (value: 200 | 401 | 503) => Ref.set(statusResponse, value),
+     holdStatus: Effect.gen(function* () {
+       const gate = yield* Deferred.make<void>(),
+         started = yield* Deferred.make<void>();
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9029,6 +9029,16 @@
+       "self-host": scheduled,
+       local: na("Uses hosted app-account access policies."),
+       cloud: na("Uses a process-owned driver registration and synthetic credential custodian."),
++    },
++  },
++  accountAcquisitionRecovery: {
++    fixtures: "actors",
++    file: "account-acquisition.spec.ts",
++    title: "hosted acquisition status outages retain the session and terminal failure receipt",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted account routes and a process-owned driver."),
++      cloud: na("Requires a process-owned product and loopback credential service."),
+     },
+   },
+   accountAcquisition: {
+diff --git a/e2e/tests/account-acquisition.spec.ts b/e2e/tests/account-acquisition.spec.ts
+--- a/e2e/tests/account-acquisition.spec.ts
++++ b/e2e/tests/account-acquisition.spec.ts
+@@ -8,6 +8,81 @@
+ import { scenarios } from "../test-plan.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Reusable hosted accounts", (it) => {
++  it.effect(scenarios.accountAcquisitionRecovery.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const { api, actors, backend } = f;
++        const pending = yield* f.pending(actors.member);
++        const connection = (yield* body(Resource, pending)).id;
++        expect((yield* f.start(actors.member, connection)).status).toBe(200);
++        const status = () =>
++          api.request(actors.member, "GET", `${f.connectPath(connection)}/status`);
++        yield* backend.statusResponse(503);
++        for (let poll = 0; poll < 2; poll++) {
++          const unavailable = yield* status();
++          expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(200);
++          expect(unavailable.body).toEqual({ state: "waiting" });
++        }
++        yield* backend.statusResponse(200);
++        const recovered = yield* f.submit(actors.member, connection);
++        expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
++        const { account } = yield* body(Schema.Struct({ account: Resource }), recovered);
++        f.trackAccount(actors.member, account.id);
++        expect((yield* backend.calls).filter((call) => call.step === "status")).toHaveLength(2);
++        expect((yield* backend.calls).filter((call) => call.step === "start")).toHaveLength(1);
++        expect((yield* backend.calls).filter((call) => call.step === "submit")).toHaveLength(1);
++
++        const stale = (yield* body(
++          Resource,
++          yield* f.pending(actors.member, f.manager.app.id, account.id),
++        )).id;
++        expect((yield* f.start(actors.member, stale)).status).toBe(200);
++        const fresh = (yield* body(
++          Resource,
++          yield* f.pending(actors.member, f.manager.app.id, account.id),
++        )).id;
++        expect((yield* f.start(actors.member, fresh)).status).toBe(200);
++        expect((yield* f.submit(actors.member, fresh)).status).toBe(200);
++        const staleStatus = () =>
++          api.request(actors.member, "GET", `${f.connectPath(stale)}/status`);
++        const superseded = yield* staleStatus();
++        expect(superseded.status, JSON.stringify(superseded.body)).toBe(422);
++        expect(superseded.body).toMatchObject({
++          receipt: { phase: "state", errorClass: "binding_changed", retryable: false },
++        });
++        const staleCalls = (yield* backend.calls).length;
++        const retainedSuperseded = yield* staleStatus();
++        expect(retainedSuperseded.status).toBe(422);
++        expect(retainedSuperseded.body).toEqual(superseded.body);
++        expect((yield* backend.calls).length).toBe(staleCalls);
++
++        const second = (yield* body(Resource, yield* f.pending(actors.member))).id;
++        expect((yield* f.start(actors.member, second)).status).toBe(200);
++        yield* backend.statusResponse(401);
++        const rejected = yield* api.request(
++          actors.member,
++          "GET",
++          `${f.connectPath(second)}/status`,
++        );
++        expect(rejected.status).toBe(422);
++        expect(rejected.body).toMatchObject({
++          receipt: { phase: "oauth_status", errorClass: "home_rejected", retryable: false },
++        });
++        const calls = (yield* backend.calls).length;
++        yield* backend.statusResponse(200);
++        const retained = yield* api.request(
++          actors.member,
++          "GET",
++          `${f.connectPath(second)}/status`,
++        );
++        expect(retained.status).toBe(422);
++        expect(retained.body).toEqual(rejected.body);
++        expect((yield* backend.calls).length).toBe(calls);
++      }),
++    ),
++  );
+   it.effect(scenarios.accountAcquisition.title, (context) =>
+     withHostedCase(
+       context,
+diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
+--- a/packages/sdk/src/contracts/interactive-accounts.ts
++++ b/packages/sdk/src/contracts/interactive-accounts.ts
+@@ -15,17 +15,66 @@
+   type StorageError,
+ } from "./shared.ts";
+ 
++export const AcquisitionFailureReceipt = Schema.Struct({
++  phase: Schema.Literals([
++    "request",
++    "state",
++    "credentials",
++    "attribution",
++    "oauth_start",
++    "oauth_status",
++    "oauth_callback",
++    "oauth_cancel",
++    "cleanup",
++  ]),
++  errorClass: Schema.Literals([
++    "runtime_unhealthy",
++    "transport",
++    "timeout",
++    "home_unavailable",
++    "home_rejected",
++    "binding_changed",
++    "invalid_response",
++    "internal",
++  ]),
++  retryable: Schema.Boolean,
++});
++export type AcquisitionFailureReceipt = typeof AcquisitionFailureReceipt.Type;
++
+ export const InteractiveConnectionFailed = UserFacingError.define({
+   tag: "InteractiveConnectionFailed",
+   status: 422,
+-  fields: { reason: Schema.Literal("step") },
+-  title: "Sign-in could not finish",
+-  description: "The app could not complete this sign-in step.",
+-  recovery: {
+-    action: "Cancel this sign-in and start a new connection.",
+-    instructions:
+-      "Inspect the app's interactive connection handlers and backend. Keep its session private. Start a fresh connection after resolving the failure.",
++  fields: {
++    reason: Schema.Literal("step"),
++    receipt: Schema.optionalKey(AcquisitionFailureReceipt),
+   },
++  recorded: ({ receipt }) =>
++    receipt === undefined
++      ? "InteractiveConnectionFailed"
++      : `Acquisition ${receipt.phase}: ${receipt.errorClass}`,
++  presentation: ({ receipt }) => ({
++    title: "Sign-in could not finish",
++    description:
++      receipt === undefined
++        ? "The app could not complete this sign-in step."
++        : receipt.errorClass === "binding_changed"
++          ? "A newer sign-in replaced this account connection."
++          : receipt.errorClass === "runtime_unhealthy"
++            ? "The sign-in backend is temporarily unhealthy."
++            : receipt.errorClass === "home_rejected"
++              ? "The sign-in backend rejected this step."
++              : receipt.errorClass === "timeout"
++                ? "The sign-in backend did not answer in time."
++                : `The sign-in backend could not finish the ${receipt.phase.replaceAll("_", " ")} step.`,
++    retryable: receipt?.retryable ?? false,
++    recovery: {
++      action: receipt?.retryable
++        ? "Try again after the sign-in backend recovers."
++        : "Cancel this sign-in and start a new connection.",
++      instructions:
++        "Inspect the app's interactive connection handlers and backend. Keep its session private. Start a fresh connection after resolving the failure.",
++    },
++  }),
+ });
+ export type InteractiveConnectionFailed = typeof InteractiveConnectionFailed.Type;
+ 
+@@ -36,6 +85,7 @@
+   session: Schema.optionalKey(Schema.NonEmptyString),
+   instructions: Schema.optionalKey(InteractiveInstructions),
+   failed: Schema.optionalKey(Schema.NonEmptyString),
++  failureReceipt: Schema.optionalKey(AcquisitionFailureReceipt),
+   driver: Schema.optionalKey(
+     Schema.Struct({
+       id: Schema.NonEmptyString,
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -63,3 +63,8 @@
+ 
+ export * from "./contracts/app-views.ts";
+ export * from "./contracts/app-calls.ts";
++
++export {
++  AcquisitionFailureReceipt,
++  InteractiveConnectionFailed,
++} from "./contracts/interactive-accounts.ts";
+diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
+--- a/packages/sdk/src/implementation/interactive-accounts.ts
++++ b/packages/sdk/src/implementation/interactive-accounts.ts
+@@ -1,6 +1,6 @@
+ import { AccountProvisioned } from "../contracts/provider.ts";
+ /** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
+-import { Clock, type Crypto, Effect, Schema } from "effect";
++import { Cause, Clock, type Crypto, Effect, Schema } from "effect";
+ import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
+ import {
+   InteractiveConnectionFailed,
+@@ -51,6 +51,7 @@
+ const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+   effect.pipe(
+     Effect.mapError((error) =>
++      Schema.is(InteractiveConnectionFailed)(error) ||
+       Schema.is(AccountProvisioned)(error) ||
+       Schema.is(StorageError)(error) ||
+       // An edited requirement keeps the connection's conflict answer instead of a step failure.
+@@ -141,8 +142,14 @@
+       if (existing.state.status === "completed")
+         return { state: "connected" as const, account: existing.state.account };
+       const previous = pendingInteractive(existing);
+-      if (previous?.failed !== undefined)
++      if (previous?.failed !== undefined) {
++        if (previous.failureReceipt !== undefined)
++          return yield* new InteractiveConnectionFailed({
++            reason: "step",
++            receipt: previous.failureReceipt,
++          });
+         return { state: "failed" as const, message: previous.failed };
++      }
+       if (
+         previous?.instructions?.expiresAt !== undefined &&
+         previous.instructions.expiresAt <= (yield* Clock.currentTimeMillis)
+@@ -173,7 +180,49 @@
+       const invoke = yield* prepareContext(input, claimed.row, claimed.session, command);
+       const result = yield* invoke(command).pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),
+-        Effect.onError(() => recordFailure(input, claimed)),
++        Effect.catch((error) => {
++          const changedBinding =
++            Schema.is(AccountAcquisitionUnavailable)(error) && error.reason === "changed";
++          const receipt = changedBinding
++            ? { phase: "state" as const, errorClass: "binding_changed" as const, retryable: false }
++            : Schema.is(InteractiveConnectionFailed)(error)
++              ? error.receipt
++              : claimed.session.driver === undefined ||
++                  Schema.is(AccountAcquisitionUnavailable)(error)
++                ? undefined
++                : {
++                    phase: "request" as const,
++                    errorClass: Cause.isTimeoutError(error)
++                      ? ("timeout" as const)
++                      : ("internal" as const),
++                    retryable: true,
++                  };
++          if (receipt?.retryable) {
++            if (step === "status")
++              return Effect.logWarning("INTERACTIVE_ACQUISITION_RETRY", receipt).pipe(
++                Effect.as({ state: "waiting" as const }),
++              );
++            return transaction(db, (tx) =>
++              Effect.gen(function* () {
++                const row = yield* current(tx, input, claimed);
++                yield* writeInteractive(tx, row, settled(claimed.session));
++              }),
++            ).pipe(
++              Effect.andThen(
++                Effect.fail(new InteractiveConnectionFailed({ reason: "step", receipt })),
++              ),
++            );
++          }
++          return recordFailure(input, claimed, receipt).pipe(
++            Effect.andThen(
++              Effect.fail(
++                changedBinding && receipt !== undefined
++                  ? new InteractiveConnectionFailed({ reason: "step", receipt })
++                  : error,
++              ),
++            ),
++          );
++        }),
+       );
+       const persist = transaction(db, (tx) =>
+         Effect.gen(function* () {
+@@ -342,7 +391,13 @@
+             input: { method: input.method },
+           }).pipe(
+             Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStart)),
+-            Effect.onError(() => recordFailure(input, claimed)),
++            Effect.catch((error) =>
++              recordFailure(
++                input,
++                claimed,
++                Schema.is(InteractiveConnectionFailed)(error) ? error.receipt : undefined,
++              ).pipe(Effect.andThen(Effect.fail(error))),
++            ),
+           );
+           const { session, ...instructions } = started;
+           yield* transaction(db, (tx) =>
+diff --git a/packages/sdk/src/implementation/interactive-state.ts b/packages/sdk/src/implementation/interactive-state.ts
+--- a/packages/sdk/src/implementation/interactive-state.ts
++++ b/packages/sdk/src/implementation/interactive-state.ts
+@@ -182,7 +182,11 @@
+     const { running: _running, leaseExpiresAt: _lease, ...rest } = session;
+     return rest;
+   };
+-  const recordFailure = (input: InteractiveInput, claimed: InteractiveClaim) =>
++  const recordFailure = (
++    input: InteractiveInput,
++    claimed: InteractiveClaim,
++    receipt?: import("../contracts/interactive-accounts.ts").AcquisitionFailureReceipt,
++  ) =>
+     transaction(db, (tx) =>
+       Effect.gen(function* () {
+         const row = yield* lockConnection(tx, input, crypto);
+@@ -190,10 +194,19 @@
+           return;
+         yield* writeInteractive(tx, row, {
+           ...settled(claimed.session),
+-          failed: "The app could not finish this sign-in step. Cancel and start again.",
++          failed:
++            receipt === undefined
++              ? "The app could not finish this sign-in step. Cancel and start again."
++              : new InteractiveConnectionFailed({ reason: "step", receipt }).message,
++          ...(receipt === undefined ? {} : { failureReceipt: receipt }),
+         });
+       }),
+     ).pipe(
++      Effect.tap(() =>
++        receipt === undefined
++          ? Effect.void
++          : Effect.logWarning("INTERACTIVE_ACQUISITION_FAILURE", receipt),
++      ),
+       Effect.catch(() => Effect.logWarning("Interactive sign-in failure could not be recorded")),
+     );
+   return { claim, current, recordFailure, settled };

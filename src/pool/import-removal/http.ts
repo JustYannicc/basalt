@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import { openEnvelope } from "../token.ts";
 import { importRemovalName, RemovalRefused } from "./contract.ts";
 import type { ImportRemoval } from "./operation.ts";
+import { importRecoveryName } from "./paths.ts";
+import { executionResponse, RemovalExecutionFailure } from "./failure.ts";
 
 const Signed = Schema.Struct({
   version: Schema.Literal(1),
@@ -11,13 +13,16 @@ const Signed = Schema.Struct({
   expiresAt: Schema.Number,
   operation: Schema.Struct({
     action: Schema.String,
-    selection: Schema.Literal(importRemovalName),
+    selection: Schema.Literals([importRemovalName, importRecoveryName]),
     request: Schema.Unknown,
     recipient: Schema.String,
     artifact: Schema.optional(Schema.Unknown),
     planSha256: Schema.optional(Schema.String),
     backupSha256: Schema.optional(Schema.String),
     go: Schema.optional(Schema.String),
+    originalArtifact: Schema.optional(Schema.Unknown),
+    originalPlanSha256: Schema.optional(Schema.String),
+    originalBackupSha256: Schema.optional(Schema.String),
   }),
 });
 
@@ -69,24 +74,41 @@ export async function handleImportRemoval(
       signed.expiresAt > signed.at + 60_000
     )
       throw new RemovalRefused(401);
+    const recovery = signed.operation.selection === importRecoveryName;
+    if (
+      recovery
+        ? !["prepare", "resume"].includes(signed.operation.action)
+        : ["prepare", "resume"].includes(signed.operation.action)
+    )
+      throw new RemovalRefused(400);
     const result = await operation.run(
       signed.operation.action,
       signed.operation.request,
       signed.operation.recipient,
       target,
       signed.operation,
+      request.signal,
     );
     return Response.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
+    const diagnostic = error instanceof RemovalExecutionFailure ? error.diagnostic : undefined;
+    const result = diagnostic
+      ? executionResponse(diagnostic)
+      : {
+          status: error instanceof RemovalRefused ? error.status : 409,
+          category: error instanceof RemovalRefused ? "refused" : "unknown",
+          error: "operation_refused",
+        };
     return Response.json(
       {
-        error: "operation_refused",
-        failure: { format: "basalt-production-ops-failure-v1", category: "unknown", phase: "sql" },
+        error: result.error,
+        failure: {
+          format: "basalt-production-ops-failure-v1",
+          category: result.category,
+          ...(diagnostic ?? { phase: "decode" }),
+        },
       },
-      {
-        status: error instanceof RemovalRefused ? error.status : 409,
-        headers: { "Cache-Control": "no-store" },
-      },
+      { status: result.status, headers: { "Cache-Control": "no-store" } },
     );
   }
 }

@@ -91,3 +91,12 @@ export async function readBody(request: Request, limit: number): Promise<Uint8Ar
   }
   return bytes.subarray(0, size);
 }
+
+/** The transport retains only a closed class, never the backend's exception or body. */
+export class HomeTransportFailure extends ControlFailure {
+  readonly errorClass: "runtime_unhealthy" | "transport" | "timeout";
+  constructor(errorClass: "runtime_unhealthy" | "transport" | "timeout") {
+    super(503, "backend_unavailable", "The pool backend is temporarily unavailable.");
+    this.errorClass = errorClass;
+  }
+}

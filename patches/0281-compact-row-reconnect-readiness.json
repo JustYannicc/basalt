@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compact-row-reconnect-readiness",
+  "file": "0281-compact-row-reconnect-readiness.patch",
+  "content_sha256": "b1333dcb1f619ed47f244ccce192e85093c2a9cfd16e6011530df8d33d0eeaa8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -32,6 +32,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home escapes embedded CR and LF after formatting all log fields, emits exactly one physical line per record, and passes formatter and real-child snapshot/exit-receipt injection regressions without changing request handling."
           }
+        },
+        {
+          "identity": "cliproxy-home-conditional-deletion",
+          "file": "0267-home-conditional-deletion.patch",
+          "sha256": "3ad72e2e39ed9342a819d63078d1d90057a9fdb17eebceb060fc1e4519895ac8",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after native Home exposes dedicated conditional credential and membership deletion routes which compare the approved PostgreSQL full-row checksum under the mutation lock, refuse stale rows without deletion, and pass refresh-race and unchanged-row deletion regressions."
+          }
         }
       ]
     },

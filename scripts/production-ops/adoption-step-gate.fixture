@@ -22,6 +22,7 @@ export const withAdoptionStepGate = <A, E, R, B, E2, R2>(
   return transaction(Effect.gen(function* () {
     const previous = yield* Statement.CurrentTransformer;
     if (yield* active) return yield* work;
+    let consumerScan: string | undefined;
     let connectionClaimed = false;
     let accountClaim: string | undefined;
     let purgeClaim: string | undefined;
@@ -30,6 +31,15 @@ export const withAdoptionStepGate = <A, E, R, B, E2, R2>(
         const statement = previous === undefined ? input : yield* previous(input, sql, fiber, span);
         const [source, params] = statement.compile();
         const query = source.replaceAll('"', "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (consumerScan !== undefined) {
+          const id = consumerScan;
+          consumerScan = undefined;
+          yield* arrive("duplicate-consumers", id);
+        }
+        if (query.includes("executor_workflow_accounts") && query.includes("union all select 1 from executor_webhook_accounts")) {
+          const id = params.find((value) => typeof value === "string" && value.startsWith("acc_"));
+          if (typeof id === "string") consumerScan = id;
+        }
         if (purgeClaim !== undefined) {
           const id = purgeClaim;
           purgeClaim = undefined;

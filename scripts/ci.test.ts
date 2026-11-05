@@ -364,3 +364,28 @@ test("batch pushes compare with main even when a force push removes the previous
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Google recovery provisions Chromium before its bounded offline verification", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const job = workflow.jobs["google-account-recovery"];
+  const verification = job.steps.findIndex((step: { run?: string }) =>
+    step.run?.includes("check-e2e-browser.mjs"),
+  );
+  assert.ok(
+    verification >= 0,
+    "The one-minute step must launch the prepared engine without downloading it",
+  );
+  const preparation = job.steps.findIndex((step: { run?: string }) =>
+    step.run?.includes("playwright install --with-deps chromium"),
+  );
+  assert.ok(
+    preparation >= 0 && preparation < verification,
+    "Browser acquisition belongs to preparation",
+  );
+  assert.equal(job.steps[verification]["timeout-minutes"], 1);
+  assert.equal(job.steps[preparation]["timeout-minutes"], 2);
+  assert.equal(job["timeout-minutes"], 10);
+  assert.doesNotMatch(job.steps[verification].run, /install|curl|wget|bunx/);
+});

@@ -48,10 +48,10 @@ export function App({ api }: { api: PoolApi }) {
         }
       });
     read();
-    const timer = setInterval(read, 4 * 60_000);
+    const stop = api.poll(read, 4 * 60_000);
     return () => {
       live = false;
-      clearInterval(timer);
+      stop();
     };
   }, [api]);
 
@@ -120,15 +120,13 @@ export function App({ api }: { api: PoolApi }) {
         ) : (
           <PoolCapacity accounts={view.accounts} providers={view.providers} now={now} />
         )}
-        {view !== undefined && (
-          <Usage
-            load={api.usage}
-            poll={api.poll}
-            providers={view.providers}
-            now={now}
-            shareHref={shareHref}
-          />
-        )}
+        <Usage
+          load={api.usage}
+          poll={api.poll}
+          providers={view?.providers}
+          now={now}
+          shareHref={shareHref}
+        />
       </main>
     </div>
   );

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "OAuth completion supplies the saved label to immediately editable name and description fields. Detail and health reads run independently; later suggestions never replace typed drafts, and metadata saving does not wait for those reads."
+    }
+  }
+}

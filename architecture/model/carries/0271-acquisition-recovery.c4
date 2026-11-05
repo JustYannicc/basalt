@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Status-only retries stay bounded by the caller deadline and preserve the same pending connection through transient backend failures. Callback submissions never repeat automatically. Closed failure receipts survive terminal persistence, including a reconnect superseded by a newer saved binding."
+    }
+  }
+}
