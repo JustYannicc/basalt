@@ -342,7 +342,7 @@ jobs:
         if: always()
         run: |
           node --test scripts/ci/collect-e2e-evidence.test.mjs
-          node scripts/ci/collect-e2e-evidence.mjs .upstream/.local/e2e .generated/ci-evidence/host-managed-accounts
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence .generated/ci-evidence/host-managed-accounts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -381,10 +381,10 @@ jobs:
         with:
           name: host-managed-accounts-local-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-cloud:
     needs: select
@@ -432,10 +432,10 @@ jobs:
         with:
           name: host-managed-accounts-cloud-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-recovery:
     needs: select
@@ -475,10 +475,10 @@ jobs:
         with:
           name: google-account-recovery-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
     needs: select
@@ -511,10 +511,10 @@ jobs:
         with:
           name: oauth-account-regressions-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
     needs: select
@@ -553,10 +553,10 @@ jobs:
         with:
           name: pool-account-recovery-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
     needs: select
@@ -586,10 +586,10 @@ jobs:
         with:
           name: sso-service-binding-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/sso-idp.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/sso-idp.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops:
     needs: select
@@ -636,11 +636,11 @@ jobs:
           include-hidden-files: true
           path: |
             .generated/ci-flakes/**
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/postgres.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/postgres.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
     needs: select
@@ -676,10 +676,10 @@ jobs:
           name: production-ops-migrations-e2e
           include-hidden-files: true
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
     needs: select
@@ -734,12 +734,12 @@ jobs:
           include-hidden-files: true
           path: |
             .generated/ci-flakes/**
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/physical-state-digests.ndjson
-            .upstream/.local/e2e/**/physical-provisioning-completed.json
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/physical-state-digests.ndjson
+            .generated/e2e-evidence/**/physical-provisioning-completed.json
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
     needs: select
@@ -771,9 +771,9 @@ jobs:
           name: compiler-diagnostics-e2e
           include-hidden-files: true
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   human-in-the-loop:
     needs: select
@@ -820,7 +820,7 @@ jobs:
         if: always()
         with:
           name: human-in-the-loop-e2e
-          path: .upstream/.local/e2e/**/report/**
+          path: .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-accounts:
     needs: select
@@ -859,10 +859,10 @@ jobs:
         with:
           name: contributed-accounts-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
     needs: select
@@ -893,9 +893,9 @@ jobs:
             .generated/alerting-checks/*/report.json
             .generated/alerting-checks/*/partial-checks.json
             .generated/alerting-checks/*/failure.txt
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
     needs: select
@@ -934,9 +934,9 @@ jobs:
         with:
           name: personal-data-reporting-e2e
           path: |
-            .upstream/.local/e2e/**/report/**
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
+            .generated/e2e-evidence/**/report/**
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
     needs: select
@@ -972,9 +972,9 @@ jobs:
             .generated/pool-reset-checks/**/failure.json
             .generated/pool-reset-checks/**/runtime-cloud.log
             .generated/pool-reset-checks/**/runtime-diagnostics.json
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/cloud.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/cloud.log
+            .generated/e2e-evidence/**/report/**
           if-no-files-found: warn
   dashboard-batch:
     needs: select
@@ -1144,9 +1144,9 @@ jobs:
         with:
           name: mcp-apps-e2e
           path: |
-            .upstream/.local/e2e/**/results.json
-            .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/report/**
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/server.log
+            .generated/e2e-evidence/**/report/**
           include-hidden-files: true
           if-no-files-found: warn
   fast:
@@ -1483,7 +1483,7 @@ jobs:
         if: always()
         run: |
           node --test scripts/ci/collect-e2e-evidence.test.mjs
-          node scripts/ci/collect-e2e-evidence.mjs .upstream/.local/e2e .generated/ci-evidence/account-acquisition
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence .generated/ci-evidence/account-acquisition
       - uses: actions/upload-artifact@v4
         if: always()
         with:

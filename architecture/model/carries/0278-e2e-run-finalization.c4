@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "E2E finalization runs after runtime shutdown and records a verdict before removing only its owned run. CI exports selected evidence and owners may retain reports explicitly. A recording or export failure preserves the original run and fails the command."
+    }
+  }
+}

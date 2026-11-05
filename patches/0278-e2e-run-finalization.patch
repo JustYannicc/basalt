@@ -1,0 +1,72 @@
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -1,5 +1,5 @@
+ /** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
+-import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
++import { Config, Console, Effect, Exit, FileSystem, Option, Path, Redacted, Schema } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { randomBytes } from "node:crypto";
+ import {
+@@ -178,6 +178,48 @@
+         `${new Date().toISOString().replaceAll(":", "-")}-${selected}-${randomBytes(3).toString("hex")}`,
+       );
+       yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 });
++      const policy = path.resolve(".local/e2e-finalizer.json");
++      if (yield* fs.exists(policy)) {
++        const finalizer = yield* fs.readFileString(policy).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.fromJsonString(
++                Schema.Struct({
++                  command: Schema.NonEmptyString,
++                  args: Schema.Array(Schema.String),
++                }),
++              ),
++            ),
++          ),
++        );
++        yield* fs.writeFileString(
++          path.join(root, ".basalt-run-owner.json"),
++          JSON.stringify({ pid: process.pid }),
++        );
++        // Registered before runtime resources, so export starts only after their scopes have closed.
++        yield* Effect.addFinalizer((exit) =>
++          processes
++            .exitCode(
++              ChildProcess.make(
++                finalizer.command,
++                [...finalizer.args, root, Exit.isSuccess(exit) ? "passed" : "failed"],
++                { stdout: "inherit", stderr: "inherit" },
++              ),
++            )
++            .pipe(
++              Effect.flatMap((code) =>
++                Number(code) === 0
++                  ? Effect.void
++                  : Effect.fail(
++                      new RunFailed({
++                        message: "Evidence finalization failed; original run retained.",
++                      }),
++                    ),
++              ),
++              Effect.orDie,
++            ),
++        );
++      }
+       const commit = (yield* processes.string(
+         ChildProcess.make("git", ["rev-parse", "HEAD"]),
+       )).trim();
+@@ -474,8 +516,10 @@
+         plan,
+       );
+       yield* fs.writeFileString(path.join(root, "evidence.json"), JSON.stringify(report, null, 2));
+-      yield* Console.log(`Raw test evidence: ${root}`);
+-      yield* Console.log(`Render on request: bun run e2e:render --directory ${root}`);
++      if (!(yield* fs.exists(policy))) {
++        yield* Console.log(`Raw test evidence: ${root}`);
++        yield* Console.log(`Render on request: bun run e2e:render --directory ${root}`);
++      }
+       if (results.some((result) => result.report.entries.length === 0))
+         return yield* new RunFailed({
+           message: "No scenarios produced evidence for a selected target. Check the test filter.",
