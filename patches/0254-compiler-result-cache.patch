@@ -927,7 +927,7 @@ index dd61523..8e3a987 100644
 +              actors.owner,
 +              "POST",
 +              `${prefix}/deploy`,
-+              { name: `Cache bypass ${outcomes.length + 1}`, files },
++              { name: `Cache bypass ${trace}`, files },
 +              { traceparent: `00-${trace}-0123456789abcdef-01` },
 +            );
 +            expect(response.status, JSON.stringify(response.body)).toBe(200);
