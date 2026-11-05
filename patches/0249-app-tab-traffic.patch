@@ -695,10 +695,9 @@ index 0d93255..88cba04 100644
          const check = (account: string) =>
 diff --git a/e2e/tests/app-account-traffic.spec.ts b/e2e/tests/app-account-traffic.spec.ts
 new file mode 100644
-index 0000000..308be43
 --- /dev/null
 +++ b/e2e/tests/app-account-traffic.spec.ts
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,291 @@
 +/** An app's Accounts tab shows what the account's pool counted, beside the app's own check. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -758,7 +757,8 @@ index 0000000..308be43
 +        });
 +        if (traffic === undefined || quiet === undefined)
 +          return yield* Effect.die("The pool saved fewer accounts than asked");
-+        yield* observed.answer({ status: 200, body: weekly() });
++        const reading = weekly();
++        yield* observed.answer({ status: 200, body: reading });
 +        expect(
 +          (yield* api.request(
 +            actors.owner,
@@ -860,20 +860,42 @@ index 0000000..308be43
 +              ]),
 +            ),
 +        );
-+        // The tab reads only the accounts linked to it, never the organization's whole list.
++        // Directory counts include both linked accounts; token windows only read the named one.
 +        const reads = (yield* pool.calls)
 +          .slice(before)
-+          .flatMap((call) =>
-+            call.action === "lastSuccessAt"
-+              ? []
-+              : [
-+                  Schema.decodeUnknownSync(
-+                    Schema.Struct({ accounts: Schema.optional(Schema.Array(Schema.String)) }),
-+                  )(call.input).accounts,
-+                ],
++          .filter((call) => call.action === "poolUsageSeries")
++          .map((call) =>
++            Schema.decodeUnknownSync(
++              Schema.Struct({
++                accounts: Schema.Array(Schema.String),
++                bucket: Schema.Literals(["hour", "day"]),
++                from: Schema.String,
++                to: Schema.String,
++              }),
++            )(call.input),
 +          );
-+        expect(reads.length).toBeGreaterThan(0);
-+        for (const accounts of reads) expect(accounts).toEqual([traffic, quiet].sort());
++        const weeklyReads = reads.filter(
++          (read) =>
++            read.bucket === "day" && Date.parse(read.to) - Date.parse(read.from) > 6 * 86_400_000,
++        );
++        const hourlyReads = reads.filter((read) => read.bucket === "hour");
++        const tokenReads = reads.filter(
++          (read) =>
++            read.bucket === "day" && Date.parse(read.to) - Date.parse(read.from) <= 6 * 86_400_000,
++        );
++        expect(weeklyReads.length).toBeGreaterThan(0);
++        expect(hourlyReads.length).toBeGreaterThan(0);
++        expect(tokenReads.length).toBeGreaterThan(0);
++        for (const read of [...weeklyReads, ...hourlyReads])
++          expect(read.accounts).toEqual([traffic, quiet].sort());
++        for (const read of tokenReads) {
++          expect(read.accounts).toEqual([traffic]);
++          expect(read.from).toBe(
++            new Date(
++              Date.parse(reading.observation.windows[0].resetsAt) - 7 * 86_400_000,
++            ).toISOString(),
++          );
++        }
 +        // A linked account the series doesn't name says why its count is missing, never 0.
 +        const quietCell = yield* browser.use("Read the quiet account's count", (page) =>
 +          tabRow(page, "App accounts", "Tab quiet")
