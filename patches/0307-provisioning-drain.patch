@@ -1,22 +1,27 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-@@ -59,9 +59,11 @@
-     const services: ProvisioningServices = {
-       requireVerifiedEmail: true,
-       member: (id) =>
--        onboarding
--          .ensurePersonalOrganization(id)
--          .pipe(Effect.mapError(() => new ProvisioningFailed())),
-+        onboarding.ensurePersonalOrganization(id).pipe(
-+          // Personal-team triggers enqueue more jobs outside any HTTP request finalizer.
-+          Effect.andThen(jobs.request("provisioning")),
-+          Effect.mapError(() => new ProvisioningFailed()),
-+        ),
-       user: (id) =>
-         emails.deliverUser(id).pipe(
-           Effect.provide(RuntimeContext.phantom),
-@@ -224,68 +226,71 @@
+@@ -25,6 +25,7 @@
+ import { BillingMeter } from "../contracts/billing-meter.ts";
+ import { cloudAnalytics } from "../implementation/product-analytics.ts";
+ import { cloudBackgroundJobs } from "./background-jobs.ts";
++import { deferredProvisioningWake } from "./provisioning-wake.ts";
+ import {
+   encryptedWorkflowParams,
+   workflowEncryptionEnabled,
+@@ -173,6 +174,11 @@
+                     : Effect.logError("Schedule wake after provisioning failed", { job: id }),
+                 ),
+               );
++              yield* deferredProvisioningWake(jobs.request("provisioning"), results).pipe(
++                Effect.provide(executor),
++                Effect.scoped,
++                Effect.provideContext(context),
++              );
+             });
+             if (results === undefined) {
+               yield* work.pipe(Effect.orDie);
+@@ -224,68 +230,71 @@
      const encrypted = yield* workflowEncryptionEnabled;
      const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
      const sql = yield* Effect.flatten(GroupDatabase);
@@ -169,3 +174,58 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
            return;
          }
        }
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning-wake.ts b/apps/hosted/cloud/src/infrastructure/provisioning-wake.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/provisioning-wake.ts
+@@ -0,0 +1,50 @@
++import * as Cloudflare from "alchemy/Cloudflare";
++import { Effect, Schema } from "effect";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { ProvisioningFailed } from "@executor-js/hosted-server/provisioning";
++import { encryptedWorkflowTask, type WorkflowResults } from "./workflow-results.ts";
++
++/** A native Workflow alarm resumes after setup commits; Cron uses the same placed job. */
++export const deferredProvisioningWake = <E, R>(
++  wake: Effect.Effect<void, E, R>,
++  results?: WorkflowResults,
++) =>
++  Effect.gen(function* () {
++    const step = yield* Cloudflare.Workflows.WorkflowStep;
++    const name = "provisioning-wake-delay";
++    const storedName =
++      results === undefined ? name : yield* results.storedStepName(name).pipe(Effect.orDie);
++    yield* step.sleep(storedName, 3_000);
++    const context = yield* Effect.context<R | GroupDatabase>();
++    const dispatch = Effect.gen(function* () {
++      const sql = yield* Effect.flatten(GroupDatabase);
++      const [state] = yield* sql`select exists (
++      select 1 from hosted_provisioning where available_at <= now()
++        and (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))
++    ) as pending`.pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(Schema.Tuple([Schema.Struct({ pending: Schema.Boolean })])),
++        ),
++      );
++      // Other continuations may already have dispatched the work while this one slept.
++      if (state.pending) yield* wake;
++    }).pipe(
++      Effect.provideContext(context),
++      Effect.mapError(() => new ProvisioningFailed()),
++    );
++    const options = {
++      retries: { limit: 5, delay: "2 seconds", backoff: "exponential" as const },
++      timeout: "1 minute" as const,
++    };
++    yield* results === undefined
++      ? step.do({ name: "provisioning-wake", ...options, effect: dispatch })
++      : encryptedWorkflowTask({
++          results,
++          name: "provisioning-wake",
++          options,
++          work: () => dispatch,
++          encodeFailure: () => "Provisioning wake failed",
++          isRetryable: () => true,
++          restoreFailure: () => new ProvisioningFailed(),
++        }).pipe(Effect.provideService(Cloudflare.Workflows.WorkflowStep, step));
++  });
