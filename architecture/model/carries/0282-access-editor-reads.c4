@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App Settings starts its groups read before the app access gate. Shared-account Manage access starts access and groups before the account detail gate. Public desktop and phone guards require group dispatch while those earlier reads remain held. Existing sharing authority, drafts, failure and retry behavior remain authoritative."
+    }
+  }
+}
