@@ -17,10 +17,11 @@ const [accounts, pool] = ids.map((id) => workflow.jobs[id]);
 const selectedScenarios = (pattern: string) =>
   Object.values(readDeclarations().files)
     .flatMap((file) => Object.entries(file.scenarios))
-    .filter(
-      ([, plan]) =>
-        plan.targets["self-host"].status === "scheduled" && new RegExp(pattern).test(plan.title),
-    )
+    .filter(([, plan]) => {
+      const target = plan.targets["self-host"];
+      assert.ok(target !== null && typeof target === "object" && "status" in target);
+      return target.status === "scheduled" && new RegExp(pattern).test(plan.title);
+    })
     .map(([key]) => key)
     .sort();
 

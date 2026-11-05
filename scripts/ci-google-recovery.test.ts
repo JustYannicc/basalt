@@ -70,11 +70,11 @@ test("Google recovery and diagnostics retain every original command, environment
   );
   const selected = (group: string) =>
     plans
-      .filter(
-        ([, plan]) =>
-          plan.targets.cloud.status === "scheduled" &&
-          new RegExp(patternForGroup(group)).test(plan.title),
-      )
+      .filter(([, plan]) => {
+        const target = plan.targets.cloud;
+        assert.ok(target !== null && typeof target === "object" && "status" in target);
+        return target.status === "scheduled" && new RegExp(patternForGroup(group)).test(plan.title);
+      })
       .map(([key]) => key)
       .sort();
   assert.deepEqual(
