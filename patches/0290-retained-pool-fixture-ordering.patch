@@ -1,7 +1,37 @@
 diff --git a/e2e/tests/pool-retained-defaults.spec.ts b/e2e/tests/pool-retained-defaults.spec.ts
 --- a/e2e/tests/pool-retained-defaults.spec.ts
 +++ b/e2e/tests/pool-retained-defaults.spec.ts
-@@ -130,14 +130,19 @@
+@@ -30,7 +30,8 @@
+           Schema.Struct({ userId: Schema.String }),
+           yield* api.request(actors.owner, "GET", "/api/viewer"),
+         );
+-        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++        const rows = (sql: string, params: readonly (string | null)[] = []) =>
++          database.run({ sql, params });
+         const defer = () =>
+           rows(
+             `update hosted_provisioning set available_at = now() + interval '1 day'
+@@ -41,7 +42,9 @@
+         const [original] = yield* rows(`select metadata from organization where id = $1`, [
+           actors.organization.id,
+         ]);
+-        expect(typeof original?.metadata).toBe("string");
++        const originalMetadata = yield* Schema.decodeUnknownEffect(Schema.NullOr(Schema.String))(
++          original?.metadata,
++        );
+         const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: "Retained recovery's pool",
+           files: files(retainedWithPool),
+@@ -59,7 +62,7 @@
+                 app.activeVersion,
+               ]);
+             yield* rows(`update organization set metadata = $1 where id = $2`, [
+-              String(original?.metadata),
++              originalMetadata,
+               actors.organization.id,
+             ]);
+             yield* api.request(actors.owner, "DELETE", path);
+@@ -130,14 +133,19 @@
            `select id from executor_deployments where code = (select code from executor_apps where id = $1) order by id`,
            [app.id],
          );
@@ -24,7 +54,7 @@ diff --git a/e2e/tests/pool-retained-defaults.spec.ts b/e2e/tests/pool-retained-
              );
              yield* Effect.scoped(
                http
-@@ -185,7 +190,8 @@
+@@ -185,7 +193,8 @@
            expect(serving.status, JSON.stringify(serving.body)).toBe(200);
            expect(serving.body).toEqual({ accounts: [account] });
          });
