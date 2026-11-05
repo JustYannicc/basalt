@@ -1,5 +1,5 @@
 import { subscriptionFailure } from "../../apps/pool/account-health.ts";
-import { identityOf } from "../../apps/pool/sign-in.ts";
+import { identityOf } from "./account-identity.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { readCredentialAccount } from "./account-check.ts";
 import type { HomeClient } from "./control.ts";

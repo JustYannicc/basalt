@@ -386,6 +386,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     if (pathname === poolUsageSeriesPath || pathname === lastSuccessAtPath)
       return handleUsageSeries(request, {
+        home: this.mirrorHome,
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
