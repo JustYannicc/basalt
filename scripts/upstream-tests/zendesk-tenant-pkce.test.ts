@@ -16,7 +16,7 @@ test("Zendesk uses a public tenant client without hosted credentials or publishe
   const configured = await clients();
   assert.deepEqual(
     configured.map((client) => client.id),
-    ["zendesk-tenant"],
+    ["zendesk-tenant", "zendesk-tenant-paste"],
   );
   const tenant = configured[0]!;
   assert.equal(tenant.tokenEndpointAuthMethod, "none");
@@ -24,6 +24,9 @@ test("Zendesk uses a public tenant client without hosted credentials or publishe
   assert.deepEqual(tenant.defaultScopes, ["read", "write"]);
   assert.deepEqual(tenant.allowedScopes, ["read", "write"]);
   assert.equal(tenant.checkAuthorization, true);
+  assert.equal(configured[1]!.loopbackRedirectUri, "http://localhost:27439/callback");
+  assert.equal(configured[1]!.tokenEndpointAuthMethod, "none");
+  assert.equal(configured[1]!.clientSecret, undefined);
   for (const site of ["alpha", "beta"]) {
     const selected = firstPartyClientAtSite(
       tenant,
@@ -61,7 +64,7 @@ test("the configured global Zendesk client comes first and partial configuration
   });
   assert.deepEqual(
     configured.map((client) => client.id),
-    ["zendesk", "zendesk-tenant"],
+    ["zendesk", "zendesk-tenant", "zendesk-tenant-paste"],
   );
   const global = firstPartyClientAtSite(
     configured[0]!,
