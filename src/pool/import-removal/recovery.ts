@@ -19,7 +19,7 @@ import { importRecoveryRevision } from "./paths.ts";
 import { Receipt, receiptHash, receiptKey, recoveryKey, type RemovalReceipt } from "./receipt.ts";
 import { removalComplete, removalProjection } from "./snapshot.ts";
 
-const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const Link = Schema.Struct({ planSha256: Hash, receiptSha256: Hash });
 const RecoveryPlan = Schema.Struct({
   format: Schema.Literal("basalt-home-import-recovery-v1"),
