@@ -188,6 +188,19 @@ index 000000000..496284241
 +  return yield* Effect.never;
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
 +`;
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 6ac072345..7946a73c5 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,6 +1,7 @@
+-/** Remove the 4.0.27 app-call tables before reconstructing an earlier SDK layout. */
++/** Remove account targets and app calls before reconstructing an earlier SDK layout. */
+ export const beforeAppCalls = () =>
+   [
++    { sql: "DROP TABLE executor_account_targets" },
+     { sql: "DROP TABLE executor_app_call_receipts" },
+     { sql: "DROP TABLE executor_app_connections" },
+   ] as const;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 990350439..b58dc5609 100644
 --- a/e2e/test-plan.ts
@@ -209,6 +222,41 @@ index 990350439..b58dc5609 100644
    appCallReceipts: {
      file: "app-call-receipts.spec.ts",
      title: "app call receipts fence concurrent dispatch and retain terminal outcomes after restart",
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index e788afd32..f182db33f 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -57,7 +57,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.27" }]]);
++        expect(storage).toEqual([[{ value: "4.0.28" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 8be69ecf3..17f9ed15d 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -57,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+         expect(afterInput.slice(0, retainedTables.length)).toEqual(
+           beforeInput.slice(0, retainedTables.length),
+         );
+-        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.27" }]);
++        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.28" }]);
+         expect(afterInput[retainedTables.length + 1]).toEqual([
+           { table_name: "executor_workflow_inputs" },
+         ]);
+@@ -89,7 +89,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.28" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
 diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
 new file mode 100644
 index 000000000..d0c8a8a4f
@@ -294,6 +342,45 @@ index 000000000..d0c8a8a4f
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index dbae4501e..8b20ee2ec 100644
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.28" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index b449418d4..d4c737281 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -136,7 +136,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.27" }]);
++  expect(version).toEqual([{ value: "4.0.28" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index 0c51ad1fa..cb3e07dc8 100644
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.27" }]);
++        expect(version).toEqual([{ value: "4.0.28" }]);
+ 
+         expect(credentials).toEqual([
+           { client: ids.a },
 diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/execute.ts
 index 50e6928c5..97a58f3ab 100644
 --- a/packages/mcp/src/contracts/execute.ts
