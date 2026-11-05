@@ -523,10 +523,36 @@ test(
             );
             await settled();
             await capture(page, `usage-awaits-provider-names-${width}`);
+            const byModel = frame.getByRole("list", { name: "By model", exact: true });
+            assert.deepEqual(
+              await Promise.all([
+                frame.getByRole("heading", { name: "Usage", exact: true }).isVisible(),
+                frame
+                  .getByText("tokens · $0.02 at API prices · 1 request", { exact: true })
+                  .isVisible(),
+                frame
+                  .getByText("100 input · 0 cached · 0 cache writes · 28 output", { exact: true })
+                  .isVisible(),
+                byModel.getByText("Synthetic model", { exact: true }).isVisible(),
+                byModel.getByText("128", { exact: true }).isVisible(),
+              ]),
+              [true, true, true, true, true],
+              "The completed usage response must be visible while capacity is still held",
+            );
             assert.equal(
               await frame.getByText("codex", { exact: true }).count(),
               0,
               "Provider IDs must not flash before capacity supplies their names",
+            );
+            assert.equal(
+              await frame.getByText("Codex", { exact: true }).count(),
+              0,
+              "Usage must not guess provider names before capacity supplies them",
+            );
+            assert.equal(
+              await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
+              0,
+              "Account advice waits for provider names instead of naming raw IDs",
             );
             assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
             const usageReads = queries.filter((name) => name === "overviewUsage").length;
@@ -547,6 +573,65 @@ test(
           { viewport: { width, height: 860 }, usage: populatedUsage },
         );
       });
+    for (const width of [1440, 390])
+      await t.test(
+        `usage failure and retry stay usable without capacity at ${width}px`,
+        async () => {
+          viewResult = { ok: true, value: { ...empty, providers } };
+          await session(
+            async ({ frame, settled, accepted }) => {
+              await frame.waitForFunction(
+                () =>
+                  Reflect.get(window, "completedQueries").filter((name) => name === "usage")
+                    .length >= 2,
+              );
+              await settled();
+              assert.equal(
+                await frame.getByText("Synthetic pool failure", { exact: true }).isVisible(),
+                true,
+              );
+              assert.equal(
+                await frame.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
+                true,
+              );
+              const before = await frame.evaluate(
+                () => Reflect.get(window, "queries").filter((name) => name === "usage").length,
+              );
+              usageResult = { ok: true, value: { ...emptyUsage.value, scope: "you" } };
+              await frame.getByRole("button", { name: "Try again", exact: true }).click();
+              await frame.getByRole("heading", { name: "Your usage", exact: true }).waitFor();
+              assert.equal(
+                await frame
+                  .getByText(/^You haven't sent a request through this pool yet\./)
+                  .isVisible(),
+                true,
+              );
+              assert.equal(
+                await frame.getByText("Synthetic pool failure", { exact: true }).count(),
+                0,
+              );
+              assert.equal(
+                await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
+                0,
+              );
+              const after = await frame.evaluate(
+                () => Reflect.get(window, "queries").filter((name) => name === "usage").length,
+              );
+              assert.equal(
+                after,
+                before + 1,
+                "Retry sends one usage read without waiting for capacity",
+              );
+              assert.deepEqual(
+                await accepted(),
+                [],
+                "Usage recovery does not claim capacity is ready",
+              );
+            },
+            { viewport: { width, height: 860 }, usage: failed },
+          );
+        },
+      );
     for (const width of sourceRef ? [] : [1440, 390])
       await t.test(
         `hidden pool links stop refreshing and resume once overdue at ${width}px`,
