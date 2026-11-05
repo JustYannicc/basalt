@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Account headers and ordinary, grouped and actionless rows reserve the same fixed 2rem desktop menu track. Identity actions live in the row's single menu, with full labels on phones, so hydration cannot add an action band or move the Type column."
+    }
+  }
+}
