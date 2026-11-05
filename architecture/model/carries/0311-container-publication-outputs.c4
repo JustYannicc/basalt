@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A changed external container context must invalidate its publication outputs before unresolved Worker attachments defer the rest of the provider diff. The deployed digest, verified receipt and Worker image revision must describe the same publication. Unchanged contexts, real resource changes and drift repair retain their existing behavior."
+    }
+  }
+}
