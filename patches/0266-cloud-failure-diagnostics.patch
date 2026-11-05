@@ -1,0 +1,339 @@
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -1,8 +1,20 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
++import {
++  Effect,
++  Fiber,
++  FileSystem,
++  Layer,
++  Path,
++  Queue,
++  Ref,
++  Schema,
++  Stream,
++  type Cause,
++} from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer, request } from "node:http";
++import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
+
+ const access = "/pool/v1/access";
+ const acquisition = "/pool/v1/account-acquisitions";
+@@ -12,6 +24,15 @@
+   provider: Schema.optionalKey(Schema.String),
+   at: Schema.Number,
+   expiresAt: Schema.Number,
++});
++
++const ForwardingDiagnostic = Schema.Struct({
++  phase: Schema.Literals(["request-error", "upstream-response"]),
++  service: Schema.Literals(["api", "pool"]),
++  reusedSocket: Schema.Boolean,
++  status: Schema.optional(Schema.Int),
++  code: Schema.optional(TransportDiagnostic.fields.code),
++  errno: TransportDiagnostic.fields.errno,
+ });
+
+ /** The outer pool service is external to the Cloud Worker, including for its own-origin callbacks. */
+@@ -121,27 +142,58 @@
+     const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
+     if (!("port" in server.address)) return yield* Effect.die("Expected a TCP pool backend");
+     const backendPort = server.address.port;
++    const failures = yield* Queue.unbounded<typeof ForwardingDiagnostic.Type, Cause.Done>();
++    const writer = yield* Stream.fromQueue(failures).pipe(
++      Stream.runForEach((record) =>
++        fs.writeFileString(
++          path.join(directory, "cloud-forwarding-errors.ndjson"),
++          JSON.stringify(record) + "\n",
++          { flag: "a", mode: 0o600 },
++        ),
++      ),
++      Effect.forkScoped,
++    );
++    // Gateway connections close before this finalizer drains their diagnostic events.
++    yield* Effect.addFinalizer(() =>
++      Queue.end(failures).pipe(Effect.andThen(Fiber.join(writer)), Effect.orDie),
++    );
+     const gateway = yield* Effect.acquireRelease(
+       Effect.promise(() => {
+         const gateway = createServer((incoming, outgoing) => {
+           const url = new URL(incoming.url ?? "/", origin).pathname;
++          const service =
++            url.startsWith("/pool/v1/") || url.startsWith("/native-provider-fixture/")
++              ? "pool"
++              : "api";
+           const forwarded = request(
+             {
+               hostname: "127.0.0.1",
+-              port:
+-                url.startsWith("/pool/v1/") || url.startsWith("/native-provider-fixture/")
+-                  ? backendPort
+-                  : Number(api.port),
++              port: service === "pool" ? backendPort : Number(api.port),
+               path: incoming.url,
+               method: incoming.method,
+               headers: incoming.headers,
+             },
+             (response) => {
++              if ((response.statusCode ?? 0) >= 500)
++                Queue.offerUnsafe(failures, {
++                  phase: "upstream-response",
++                  service,
++                  reusedSocket: forwarded.reusedSocket,
++                  status: response.statusCode,
++                });
+               outgoing.writeHead(response.statusCode ?? 502, response.headers);
+               response.pipe(outgoing);
+             },
+           );
+-          forwarded.on("error", () => outgoing.writeHead(502).end());
++          forwarded.on("error", (cause) => {
++            Queue.offerUnsafe(failures, {
++              phase: "request-error",
++              service,
++              reusedSocket: forwarded.reusedSocket,
++              ...transportDiagnostic(cause),
++            });
++            outgoing.writeHead(502).end();
++          });
+           incoming.pipe(forwarded);
+         });
+         return new Promise<typeof gateway>((resolve, reject) => {
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -18,6 +18,7 @@
+ import { createHash, randomUUID } from "node:crypto";
+ import { Target } from "./platform.ts";
+ import { roleHost } from "./role-hosts.ts";
++import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
+
+ export const BaseUrl = Schema.String.check(
+   Schema.makeFilter((value) => {
+@@ -225,6 +226,8 @@
+   category: Schema.optional(
+     Schema.Literals(["transport", "http", "json", "schema", "request", "timeout"]),
+   ),
++  code: Schema.optional(TransportDiagnostic.fields.code),
++  errno: TransportDiagnostic.fields.errno,
+   attempts: Schema.optional(Schema.Int),
+   retryAfterMs: Schema.optional(Schema.Number),
+   /** Cloudflare's request id: finds the request in emulators.dev's Workers Logs. */
+@@ -236,6 +239,8 @@
+     const target = this.emulator === undefined ? "" : ` on ${this.emulator}`;
+     const detail = [
+       this.status === undefined ? this.reason : `HTTP ${this.status}`,
++      this.code,
++      this.errno === undefined ? undefined : `errno ${this.errno}`,
+       this.ray === undefined ? undefined : `cf-ray ${this.ray}`,
+       this.attempts === undefined ? undefined : `${this.category}, ${this.attempts} attempt(s)`,
+     ].filter((part) => part !== undefined);
+@@ -344,6 +349,7 @@
+               operation,
+               emulator,
+               reason: "request",
++              ...transportDiagnostic(error),
+               category:
+                 HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError"
+                   ? "transport"
+diff --git a/e2e/support/transport-diagnostic.ts b/e2e/support/transport-diagnostic.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/transport-diagnostic.ts
+@@ -0,0 +1,55 @@
++import { Schema } from "effect";
++
++export const TransportCode = Schema.Literals([
++  "ECONNREFUSED",
++  "ECONNRESET",
++  "ECONNABORTED",
++  "ETIMEDOUT",
++  "EHOSTUNREACH",
++  "ENETUNREACH",
++  "ENOTFOUND",
++  "EAI_AGAIN",
++  "EPIPE",
++  "EMFILE",
++  "ENFILE",
++  "ENOBUFS",
++  "ENOMEM",
++  "ERR_SOCKET_CLOSED",
++  "UND_ERR_SOCKET",
++  "UND_ERR_CONNECT_TIMEOUT",
++  "UND_ERR_HEADERS_TIMEOUT",
++  "UND_ERR_BODY_TIMEOUT",
++  "ERR_TLS_CERT_ALTNAME_INVALID",
++  "DEPTH_ZERO_SELF_SIGNED_CERT",
++  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
++  "CERT_HAS_EXPIRED",
++  "UNKNOWN",
++]);
++export const TransportDiagnostic = Schema.Struct({
++  code: TransportCode,
++  errno: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: -65535, maximum: 65535 }))),
++});
++
++/** Error messages and request objects can contain capabilities; retain only closed OS codes. */
++export const transportDiagnostic = (cause: unknown): typeof TransportDiagnostic.Type => {
++  const pending: unknown[] = [cause];
++  for (let inspected = 0; pending.length > 0 && inspected < 16; inspected++) {
++    const value = pending.shift();
++    if (typeof value !== "object" || value === null) continue;
++    const code =
++      "code" in value ? TransportCode.literals.find((code) => code === value.code) : undefined;
++    if (code !== undefined) {
++      const errno = "errno" in value ? value.errno : undefined;
++      return {
++        code,
++        ...(typeof errno === "number" && Number.isInteger(errno) && Math.abs(errno) <= 65535
++          ? { errno }
++          : {}),
++      };
++    }
++    if ("cause" in value) pending.push(value.cause);
++    if ("reason" in value) pending.push(value.reason);
++    if ("errors" in value && Array.isArray(value.errors)) pending.push(...value.errors.slice(0, 8));
++  }
++  return { code: "UNKNOWN" };
++};
+diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener.spec.ts
+--- a/e2e/tests/cloud-app-listener.spec.ts
++++ b/e2e/tests/cloud-app-listener.spec.ts
+@@ -1,10 +1,13 @@
++import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, FileSystem, Schema } from "effect";
++import { cloudPoolGateway } from "../support/cloud-pool-gateway.ts";
++import { cloudListener } from "../support/cloud-listener.ts";
+ import { HttpClient } from "effect/http";
+ import { cloudAppListener } from "../support/cloud-app-listener.ts";
+ import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
+-import { freePort, holdPort } from "../support/ports.ts";
++import { freePort, holdPort, refusingPort } from "../support/ports.ts";
+
+ // Node fetch replaces a custom Host header, so use native HTTP to test host preservation.
+ layer(NodeHttpClient.layerNodeHttp, { excludeTestServices: true })("Cloud app listeners", (it) => {
+@@ -72,6 +75,54 @@
+     }).pipe(Effect.scoped),
+   );
+
++  for (const upstreamResponse of [false, true]) {
++    it.effect(
++      `pool forwarding distinguishes ${upstreamResponse ? "an upstream 502" : "a refused connection"} in retained evidence`,
++      () =>
++        Effect.gen(function* () {
++          const fs = yield* FileSystem.FileSystem;
++          const directory = yield* fs.makeTempDirectoryScoped();
++          const secret = "SYNTHETIC_UPSTREAM_SECRET";
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const api = yield* cloudListener;
++              if (upstreamResponse) yield* api.fail(secret);
++              const destination = upstreamResponse
++                ? api.url
++                : new URL(`http://127.0.0.1:${yield* refusingPort}`);
++              const gateway = yield* cloudPoolGateway(api.url.origin, directory, destination);
++              const http = yield* HttpClient.HttpClient;
++              const response = yield* http.get(`${gateway.origin}/private/${secret}`, {
++                headers: { authorization: `Bearer ${secret}` },
++              });
++              expect(response.status).toBe(502);
++              const body = yield* response.text;
++              if (upstreamResponse) expect(body).toContain(secret);
++              else expect(body).toBe("");
++            }),
++          );
++          const text = yield* fs.readFileString(`${directory}/cloud-forwarding-errors.ndjson`);
++          const record = yield* Schema.decodeUnknownEffect(
++            Schema.fromJsonString(
++              Schema.Struct({
++                phase: Schema.String,
++                service: Schema.Literal("api"),
++                reusedSocket: Schema.Boolean,
++                status: Schema.optional(Schema.Number),
++                code: Schema.optional(Schema.String),
++              }),
++            ),
++          )(text);
++          expect(record.phase).toBe(upstreamResponse ? "upstream-response" : "request-error");
++          if (upstreamResponse) expect(record.status).toBe(502);
++          else expect(record.code).toBe("ECONNREFUSED");
++          expect(text).not.toContain(secret);
++          expect(text).not.toContain("127.0.0.1");
++          expect(text).not.toContain("localhost");
++        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++    );
++  }
++
+   for (const fail of [false, true]) {
+     it.effect(`releases the held origin on scope ${fail ? "failure" : "completion"}`, () =>
+       Effect.gen(function* () {
+diff --git a/e2e/tests/emulator-failures.spec.ts b/e2e/tests/emulator-failures.spec.ts
+--- a/e2e/tests/emulator-failures.spec.ts
++++ b/e2e/tests/emulator-failures.spec.ts
+@@ -89,6 +89,10 @@
+   Effect.callback<{ readonly origin: string; readonly close: () => void }>((resume) => {
+     const server = createServer((request, response) => {
+       const name = (request.url ?? "").split("/")[2]?.split("-")[0] ?? "";
++      if (name === "disconnect") {
++        request.socket.destroy();
++        return;
++      }
+       const answer = responses[name] ?? { status: 404, headers: {}, body: "" };
+       response.writeHead(answer.status, answer.headers).end(answer.body);
+     });
+@@ -206,6 +210,48 @@
+     }),
+   );
+
++  it.effect("a disconnected emulator retains a closed transport code without request secrets", () =>
++    Effect.gen(function* () {
++      const { origin } = yield* stub;
++      const { tracer, exported } = recording();
++      const error = yield* failingCall(origin, "disconnect", tracer);
++      expect(error.code).toBe("UND_ERR_SOCKET");
++      expect(error.message).toContain("UND_ERR_SOCKET");
++      expect(leaked(JSON.stringify(error))).toEqual([]);
++      expect(leaked(Cause.pretty(Cause.fail(error)))).toEqual([]);
++      expect(leaked(exported())).toEqual([]);
++    }),
++  );
++
++  for (const known of [false, true]) {
++    it.effect(
++      `transport diagnostics ${known ? "find a nested closed code" : "drop unknown codes and invalid errno values"}`,
++      () =>
++        Effect.gen(function* () {
++          const { tracer, exported } = recording();
++          const error = yield* failingCall("https://google.emulators.dev", "tainted", tracer).pipe(
++            Effect.provideService(FetchHttpClient.Fetch, () =>
++              Promise.reject(
++                Object.assign(new Error(token), {
++                  code: token,
++                  errno: 1_000_000,
++                  cause: Object.assign(new Error(email), {
++                    code: known ? "ECONNRESET" : email,
++                    errno: known ? -54 : Infinity,
++                  }),
++                }),
++              ),
++            ),
++          );
++          expect(error.code).toBe(known ? "ECONNRESET" : "UNKNOWN");
++          expect(error.errno).toBe(known ? -54 : undefined);
++          expect(leaked(JSON.stringify(error))).toEqual([]);
++          expect(leaked(Cause.pretty(Cause.fail(error)))).toEqual([]);
++          expect(leaked(exported())).toEqual([]);
++        }),
++    );
++  }
++
+   it.effect("the recorder sees the URL an ordinary traced request exports", () =>
+     Effect.gen(function* () {
+       const { origin } = yield* stub;
