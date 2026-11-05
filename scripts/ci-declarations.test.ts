@@ -154,15 +154,23 @@ test("unmapped cases, unknown jobs and incompatible targets fail closed", () =>
     assert.throws(() => readDeclarations(root), /Unknown declared job/);
   }));
 
-test("an affected Maps declaration selects its file rather than every newly adopted scenario", () => {
-  const selected = selectPaths(["src/catalog/google-maps/hosted-routes.ts"]);
+test("an affected telemetry declaration selects its file rather than every newly adopted scenario", () => {
+  const selected = selectPaths([".upstream/e2e/tests/telemetry-relay.spec.ts"]);
   assert.ok(selected.jobs.includes("declared-cloud"));
   const matrix = declaredMatrices(selected.declaredFiles)["declared-cloud"]!.include;
   assert.deepEqual(
     matrix.map((item) => item.file),
-    ["hosted-routes.spec.ts"],
+    ["telemetry-relay.spec.ts"],
   );
   assert.ok(!selected.jobs.includes("declared-self-host"));
+});
+
+test("an unrun Maps declaration cannot establish runtime coverage", () => {
+  const selected = selectPaths(["src/catalog/google-maps/hosted-routes.ts"]);
+  assert.deepEqual(selected.jobs, heavyJobs);
+  assert.equal(selected.declaredFiles, null);
+  const matrix = declaredMatrices(selected.declaredFiles)["declared-cloud"]!.include;
+  assert.ok(!matrix.some((item) => item.file === "hosted-routes.spec.ts"));
 });
 
 test("undeclared E2E helpers retain every heavy job and every declaration matrix", () => {
