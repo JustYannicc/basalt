@@ -1072,7 +1072,7 @@ diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-accoun
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/listed-account-bindings.spec.ts
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,239 @@
 +/** Removing one verified sign-in opens on that binding and preserves its sibling. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1198,20 +1198,24 @@ new file mode 100644
 +          const paths = [actors.organization.id, actors.organization.slug].map(
 +            (organization) => `/api/organizations/${organization}/accounts/${fixture.first.id}`,
 +          );
-+          yield* browser.login(actors.owner);
++          const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
++        yield* browser.login(actors.owner);
 +          yield* browser.use("Open the grouped sign-ins", (page) =>
 +            page
 +              .setViewportSize({ width, height: 900 })
 +              .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
-+              .then(() => page.getByRole("button", { name: "Manage apps", exact: true }).waitFor()),
++              .then(() => page.getByRole("button", { name: `Manage ${groupTitle}`, exact: true }).waitFor()),
 +          );
 +          yield* Effect.scoped(
 +            Effect.gen(function* () {
 +              const held = yield* holdQuery(paths, "continue");
 +              yield* browser.use("Remove the first saved sign-in", (page) =>
 +                page
-+                  .getByRole("button", { name: "Manage apps", exact: true })
++                  .getByRole("button", { name: `Manage ${groupTitle}`, exact: true })
 +                  .click()
++                  .then(() =>
++                    page.getByRole("menuitem", { name: "Manage apps", exact: true }).click(),
++                  )
 +                  .then(() =>
 +                    page
 +                      .getByRole("button", { name: `Manage ${fixture.first.label}`, exact: true })

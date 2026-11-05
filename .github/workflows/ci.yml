@@ -925,11 +925,17 @@ jobs:
       - name: Verify Cloud access editors start independent reads together
         working-directory: .upstream
         run: bun run e2e:cloud --test-name 'asks for groups without waiting' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: access-editor-reads-e2e
-          path: .upstream/.local/e2e/**/report/**
+          path: |
+            .upstream/.local/e2e/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-accounts:
     needs: select
