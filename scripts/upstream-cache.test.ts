@@ -74,9 +74,16 @@ test("two carried checkouts share installed package bytes and retain their own w
   const a = await installUpstreamDependencies(first, pin.commit);
   const b = await installUpstreamDependencies(second, pin.commit);
   assert.equal(a.store, b.store);
+  const originalPackage = realpathSync(join(second, "node_modules/is-number"));
+  writeFileSync(join(a.store, "ready.json"), "{");
+  const recovered = await installUpstreamDependencies(first, pin.commit);
+  assert.equal(JSON.parse(readFileSync(join(recovered.store, "ready.json"), "utf8")).key, a.key);
   // An interrupted publication may leave read-only packages without a completion marker.
-  unlinkSync(join(a.store, "ready.json"));
+  assert.notEqual(recovered.store, a.store);
+  assert.equal(realpathSync(join(second, "node_modules/is-number")), originalPackage);
+  unlinkSync(join(recovered.store, "ready.json"));
   await installUpstreamDependencies(first, pin.commit);
+  await installUpstreamDependencies(second, pin.commit);
   assert.equal(
     realpathSync(join(first, "node_modules/is-number")),
     realpathSync(join(second, "node_modules/is-number")),

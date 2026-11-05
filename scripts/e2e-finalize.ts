@@ -1,61 +1,36 @@
 import {
-  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { copyE2eEvidence } from "./e2e-evidence.ts";
 import { pathToFileURL } from "node:url";
-
-const diagnosticFiles = new Set([
-  "compiler-cache-host.log",
-  "compiler-cache-production.json",
-  "physical-state-digests.ndjson",
-  "physical-provisioning-completed.json",
-  "sso-idp.log",
-]);
 
 const within = (parent: string, child: string) => child.startsWith(`${parent}${sep}`);
 
-/** Copy selected regular evidence only; runtime package links and database state are never evidence. */
-function copyEvidence(source: string, destination: string, full: boolean) {
-  let files = 0;
-  const visit = (directory: string, inReport = false) => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name),
-        rel = relative(source, path);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        if (entry.name === "scenarios" && !inReport) {
-          for (const scenario of readdirSync(path, { withFileTypes: true }))
-            if (scenario.isDirectory()) visit(join(path, scenario.name));
-        } else if (
-          inReport ||
-          ["cloud", "local", "self-host", "report", "diagnostics"].includes(entry.name)
-        )
-          visit(path, inReport || entry.name === "report");
-      } else if (
-        entry.isFile() &&
-        (inReport ||
-          diagnosticFiles.has(entry.name) ||
-          /^(?:evidence|results|result|run|trace-ids)\.json$/.test(entry.name) ||
-          /^(?:server|cloud[^/]*|[a-z-]*postgres)\.log$/.test(entry.name) ||
-          (full && /\.(?:png|webm|mp4|zip)$/.test(entry.name)))
-      ) {
-        mkdirSync(dirname(join(destination, rel)), { recursive: true, mode: 0o700 });
-        copyFileSync(path, join(destination, rel));
-        files++;
-      }
-    }
-  };
-  visit(source);
-  return files;
+function assertOwnedRunPath(root: string, run: string) {
+  if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink())
+    throw new Error("The checkout root must be a real directory");
+  const runs = join(root, ".upstream/.local/e2e");
+  if (dirname(run) !== runs)
+    throw new Error("Refusing to finalize a directory outside this checkout's E2E run root");
+  let ancestor = root;
+  for (const component of relative(root, run).split(sep)) {
+    ancestor = join(ancestor, component);
+    const info = lstatSync(ancestor);
+    if (!info.isDirectory() || info.isSymbolicLink())
+      throw new Error("E2E run paths must be directories without symbolic links");
+  }
+  const canonicalRuns = join(realpathSync(root), ".upstream/.local/e2e");
+  if (realpathSync(runs) !== canonicalRuns || dirname(realpathSync(run)) !== canonicalRuns)
+    throw new Error("E2E run escaped this checkout's canonical run root");
 }
 
 export function finalizeE2e(
@@ -70,9 +45,7 @@ export function finalizeE2e(
 ) {
   root = resolve(root);
   run = resolve(run);
-  const runs = join(root, ".upstream/.local/e2e");
-  if (dirname(run) !== runs || !lstatSync(run).isDirectory() || lstatSync(run).isSymbolicLink())
-    throw new Error("Refusing to finalize a directory outside this checkout's E2E run root");
+  assertOwnedRunPath(root, run);
   const owner = JSON.parse(readFileSync(join(run, ".basalt-run-owner.json"), "utf8")) as {
     pid: number;
   };
@@ -101,14 +74,15 @@ export function finalizeE2e(
         throw new Error("Retention paths must not traverse symbolic links");
     }
     destination = join(retention, name);
-  }
+  } else if (verdict.outcome === "failed")
+    destination = join(root, ".generated/e2e-evidence", name);
   if (destination) {
     if (existsSync(destination))
       throw new Error("Evidence destination already exists; original run preserved");
     const pending = `${destination}.pending-${process.pid}`;
     mkdirSync(pending, { recursive: true, mode: 0o700 });
     try {
-      const files = copyEvidence(run, pending, Boolean(options.retain));
+      const { files } = copyE2eEvidence(run, pending, { full: Boolean(options.retain) });
       writeFileSync(join(pending, "retention.json"), JSON.stringify({ ...verdict, files }), {
         mode: 0o600,
       });
@@ -123,6 +97,7 @@ export function finalizeE2e(
     JSON.stringify({ ...verdict, ...(destination ? { destination } : {}) }),
     { mode: 0o600 },
   );
+  assertOwnedRunPath(root, run);
   rmSync(run, { recursive: true });
   console.log(
     `E2E ${verdict.outcome}: ${name}. ${destination ? `Selected evidence retained at ${destination}.` : "Summary recorded; temporary run pruned."}`,

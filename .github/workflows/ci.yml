@@ -342,12 +342,12 @@ jobs:
         if: always()
         run: |
           node --test scripts/ci/collect-e2e-evidence.test.mjs
-          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence .generated/ci-evidence/host-managed-accounts
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: host-managed-accounts-self-host-e2e
-          path: .generated/ci-evidence/host-managed-accounts
+          path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts-local:
@@ -376,15 +376,19 @@ jobs:
           bun run e2e:local --test-name
           "^Verified account rows retain|^An existing identity batches|^Existing Google declarations gain|^One consent connects|^Incremental consent retains|^Wrong identities denial|^Refresh and changed targets|^Additive identity storage|^Verified subjects group|^Covering grants share|^Separate grants never"
           --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: host-managed-accounts-local-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   host-managed-accounts-cloud:
     needs: select
@@ -427,15 +431,19 @@ jobs:
       - name: Verify immutable account declarations across runtime protocols
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-definition.config.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: host-managed-accounts-cloud-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   google-account-recovery:
     needs: select
@@ -468,17 +476,21 @@ jobs:
           BASALT_E2E_PRODUCTION_OPS: "1"
           BASALT_E2E_PREBOOT_BINDING: "alternate"
         run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
         if: always()
         timeout-minutes: 1
         with:
+          include-hidden-files: true
           name: google-account-recovery-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
     needs: select
@@ -506,15 +518,19 @@ jobs:
       - name: Verify discarded rotated refresh revocation after account deletion
         timeout-minutes: 5
         run: node scripts/oauth-discard-tests/prove.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: oauth-account-regressions-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   pool-account-recovery:
     needs: select
@@ -548,15 +564,19 @@ jobs:
         env:
           BASALT_E2E_POOL_SETUP: "1"
         run: bun run e2e:cloud --test-name '^Cloud pool account recovery publishes' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: pool-account-recovery-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   sso-service-binding:
     needs: select
@@ -581,15 +601,19 @@ jobs:
       - name: Verify OIDC and SAML through the private service binding
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud SSO (OIDC protocol|SAML)' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: sso-service-binding-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/sso-idp.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/sso-idp.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops:
     needs: select
@@ -629,6 +653,9 @@ jobs:
       - name: Verify isolated billing policy and OIDC sign-in
         working-directory: .upstream
         run: bun run e2e:cloud --test-name '^Cloud (billing gates SSO|SSO OIDC setup preserves drafts)' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -636,11 +663,11 @@ jobs:
           include-hidden-files: true
           path: |
             .generated/ci-flakes/**
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/postgres.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/postgres.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
     needs: select
@@ -670,16 +697,19 @@ jobs:
         env:
           BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (stable identities through apply and replay|organization references before verification)$
         run: node scripts/production-ops/prove-scope.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: production-ops-migrations-e2e
           include-hidden-files: true
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-identity:
     needs: select
@@ -727,6 +757,9 @@ jobs:
         env:
           BASALT_SCOPE_PROOF_PATTERN: '^Cloud production operations enforce ${{ matrix.scenario }}$'
         run: node scripts/ci/run-e2e.ts --job production-ops-identity -- node scripts/production-ops/prove-scope.ts
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -734,12 +767,12 @@ jobs:
           include-hidden-files: true
           path: |
             .generated/ci-flakes/**
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/physical-state-digests.ndjson
-            .generated/e2e-evidence/**/physical-provisioning-completed.json
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
+            ${{ runner.temp }}/basalt-e2e-evidence/**/physical-provisioning-completed.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
     needs: select
@@ -770,17 +803,20 @@ jobs:
         env:
           BASALT_E2E_COMPILER_CACHE_INHERITED: "1"
         run: bun run e2e:cloud --test-name '^(Cloud deploys fail promptly when the compiler does not answer|Production compiler cache reuses only intact output from the same release|Cloud test stages bypass inherited production compiler cache settings)$' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: compiler-diagnostics-e2e
           include-hidden-files: true
           path: |
-            .generated/e2e-evidence/**/compiler-cache-host.log
-            .generated/e2e-evidence/**/compiler-cache-production.json
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/compiler-cache-host.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/compiler-cache-production.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   human-in-the-loop:
     needs: select
@@ -823,11 +859,15 @@ jobs:
           bun run e2e:cloud --test-name
           "^Cloud product events preserve identity|^Cloud product events record onboarding replay|^Cloud support dialog lists"
           --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: human-in-the-loop-e2e
-          path: .generated/e2e-evidence/**/report/**
+          path: ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-accounts:
     needs: select
@@ -861,15 +901,19 @@ jobs:
           bun run e2e:cloud --test-name
           "^Cloud encrypted workflow|^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
           --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: contributed-accounts-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   contributed-account-recipes:
     needs: select
@@ -892,17 +936,21 @@ jobs:
         run: |
           node e2e/recipe-checks.mjs .generated/alerting-checks/workflow-fields
           node e2e/departure-recipe-checks.mjs .generated/alerting-checks/departures
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: contributed-account-recipes
           path: |
             .generated/alerting-checks/*/report.json
             .generated/alerting-checks/*/partial-checks.json
             .generated/alerting-checks/*/failure.txt
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
     needs: select
@@ -936,14 +984,18 @@ jobs:
           bun run e2e:cloud --test-name
           "^scheduled personal-data reports|^personal-data reports use each organization"
           --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: personal-data-reporting-e2e
           path: |
-            .generated/e2e-evidence/**/report/**
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
     needs: select
@@ -970,18 +1022,22 @@ jobs:
         run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
       - name: Verify banked reset recovery with a synthetic provider
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          include-hidden-files: true
           name: pool-inventory-e2e
           path: |
             .generated/pool-reset-checks/**/report.json
             .generated/pool-reset-checks/**/failure.json
             .generated/pool-reset-checks/**/runtime-cloud.log
             .generated/pool-reset-checks/**/runtime-diagnostics.json
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/cloud.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   dashboard-batch:
     needs: select
@@ -1146,14 +1202,17 @@ jobs:
       - name: Verify encrypted retention, concurrent limits and restart
         working-directory: .upstream
         run: bun run e2e:local --test-name '^Local MCP Apps survive' --workers 1
+      - name: Collect bounded E2E evidence with original-run fallback
+        if: always()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mcp-apps-e2e
           path: |
-            .generated/e2e-evidence/**/results.json
-            .generated/e2e-evidence/**/server.log
-            .generated/e2e-evidence/**/report/**
+            ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
+            ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           include-hidden-files: true
           if-no-files-found: warn
   fast:
@@ -1490,12 +1549,12 @@ jobs:
         if: always()
         run: |
           node --test scripts/ci/collect-e2e-evidence.test.mjs
-          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence .generated/ci-evidence/account-acquisition
+          node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: account-acquisition-e2e
-          path: .generated/ci-evidence/account-acquisition
+          path: ${{ runner.temp }}/basalt-e2e-evidence
           include-hidden-files: true
           if-no-files-found: warn
 

@@ -7,6 +7,7 @@ import {
   readFileSync,
   symlinkSync,
   rmSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,65 @@ test("an owner retention symlink cannot export outside the artifact directory", 
   symlinkSync(join(root, "outside"), join(artifacts, "link"));
   assert.throws(() =>
     finalizeE2e(root, run, "failed", { ci: false, retain: join(artifacts, "link"), artifacts }),
+  );
+  assert.equal(existsSync(run), true);
+});
+
+test("default local failures export their reports and logs before pruning", (t) => {
+  const { root, run, artifacts } = fixture(t);
+  writeFileSync(join(run, "cloud/cloud.log"), "failed-cloud-startup");
+  finalizeE2e(root, run, "failed", { ci: false, retain: undefined, artifacts });
+  const retained = join(root, ".generated/e2e-evidence/run-one");
+  assert.equal(
+    readFileSync(join(retained, "cloud/report/diagnostics/result.json"), "utf8"),
+    "synthetic-evidence",
+  );
+  assert.equal(readFileSync(join(retained, "cloud/cloud.log"), "utf8"), "failed-cloud-startup");
+  assert.equal(existsSync(run), false);
+});
+
+test("a failed default-local export keeps the original reports and logs", (t) => {
+  const { root, run, artifacts } = fixture(t);
+  mkdirSync(join(root, ".generated"));
+  writeFileSync(join(root, ".generated/e2e-evidence"), "blocked export");
+  assert.throws(() =>
+    finalizeE2e(root, run, "failed", { ci: false, retain: undefined, artifacts }),
+  );
+  assert.equal(
+    readFileSync(join(run, "cloud/report/diagnostics/result.json"), "utf8"),
+    "synthetic-evidence",
+  );
+});
+
+for (const ancestor of [".upstream", ".upstream/.local", ".upstream/.local/e2e"]) {
+  test(`a symlinked run ancestor ${ancestor} cannot escape the prune boundary`, (t) => {
+    const { root, run, artifacts } = fixture(t);
+    const external = mkdtempSync(join(tmpdir(), "basalt-external-runs-"));
+    t.after(() => rmSync(external, { recursive: true, force: true }));
+    const moved = join(external, "moved");
+    renameSync(join(root, ancestor), moved);
+    symlinkSync(moved, join(root, ancestor));
+    assert.throws(() =>
+      finalizeE2e(root, run, "passed", { ci: false, retain: undefined, artifacts }),
+    );
+    assert.equal(
+      readFileSync(join(run, "cloud/report/diagnostics/result.json"), "utf8"),
+      "synthetic-evidence",
+    );
+  });
+}
+
+test("a symlinked checkout root cannot redirect pruning", (t) => {
+  const { root, run, artifacts } = fixture(t);
+  const alias = `${root}-alias`;
+  symlinkSync(root, alias);
+  t.after(() => rmSync(alias));
+  assert.throws(() =>
+    finalizeE2e(alias, join(alias, ".upstream/.local/e2e/run-one"), "passed", {
+      ci: false,
+      retain: undefined,
+      artifacts,
+    }),
   );
   assert.equal(existsSync(run), true);
 });

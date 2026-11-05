@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -8,12 +9,13 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
 import { run } from "./process.ts";
 
@@ -46,15 +48,45 @@ function moduleTrees(root: string, directory = root): string[] {
   return found;
 }
 
-function removeIncompleteStore(path: string) {
-  if (!existsSync(path)) return;
-  const writable = (directory: string) => {
-    chmodSync(directory, 0o755);
-    for (const entry of readdirSync(directory, { withFileTypes: true }))
-      if (entry.isDirectory()) writable(join(directory, entry.name));
-  };
-  writable(path);
-  rmSync(path, { recursive: true, force: true });
+function readyGeneration(store: string, key: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(store, "ready.json"), "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (typeof parsed !== "object" || parsed === null) return;
+  const record = parsed as Record<string, unknown>;
+  if (record.key !== key || !Array.isArray(record.trees) || !record.trees.includes("node_modules"))
+    return;
+  const trees: string[] = [];
+  for (const tree of record.trees) {
+    if (
+      typeof tree !== "string" ||
+      isAbsolute(tree) ||
+      tree.split(/[\\/]/).some((part) => part === ".." || part === ".") ||
+      !/(^|\/)node_modules$/.test(tree)
+    )
+      return;
+    if (!existsSync(join(store, tree)) || !lstatSync(join(store, tree)).isDirectory()) return;
+    trees.push(tree);
+  }
+  return { store: realpathSync(store), trees };
+}
+
+function publishedGeneration(entry: string, key: string) {
+  const pointer = join(entry, "current");
+  try {
+    const target = readlinkSync(pointer);
+    const store = realpathSync(join(entry, target));
+    if (!store.startsWith(`${realpathSync(join(entry, "generations"))}${sep}`)) return;
+    return readyGeneration(store, key);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "EINVAL") return;
+    throw error;
+  }
 }
 
 function readonlyTree(path: string) {
@@ -73,6 +105,7 @@ export async function installUpstreamDependencies(root: string, pin: string) {
   if (bun.status !== 0) throw new Error("Bun is required to prepare dependencies");
   const key = digest(
     JSON.stringify({
+      format: 2,
       pin,
       bun: bun.stdout.trim(),
       platform: process.platform,
@@ -80,19 +113,21 @@ export async function installUpstreamDependencies(root: string, pin: string) {
       inputs: files.map((path) => [path, digest(readFileSync(join(root, path), "utf8"))]),
     }),
   );
-  const store = join(upstreamCache(), "prepared", pin, key);
-  await withCacheLock(`${store}.lock`, () => {
-    if (!existsSync(join(store, "ready.json"))) {
-      // A crashed installer never publishes ready.json; only its private incomplete directory is rebuilt.
-      removeIncompleteStore(store);
-      mkdirSync(store, { recursive: true });
+  const entry = join(upstreamCache(), "prepared", pin, key);
+  const prepared = await withCacheLock(`${entry}.lock`, () => {
+    let generation = publishedGeneration(entry, key);
+    if (generation === undefined) {
+      const id = randomUUID();
+      // A surviving installer can only write its own unpublished attempt, never the next owner's.
+      const attempt = `${entry}.attempt-${id}`;
+      mkdirSync(attempt, { recursive: true });
       for (const file of files) {
-        mkdirSync(dirname(join(store, file)), { recursive: true });
-        cpSync(join(root, file), join(store, file));
+        mkdirSync(dirname(join(attempt, file)), { recursive: true });
+        cpSync(join(root, file), join(attempt, file));
       }
-      run("bun", ["install", "--frozen-lockfile"], store);
-      const trees = moduleTrees(store);
-      const packages = realpathSync(join(store, "node_modules/.bun"));
+      run("bun", ["install", "--frozen-lockfile"], attempt);
+      const trees = moduleTrees(attempt);
+      const packages = realpathSync(join(attempt, "node_modules/.bun"));
       // Package links inside Bun's store must not resolve into the canonical workspace's source.
       const check = (path: string) => {
         for (const entry of readdirSync(path, { withFileTypes: true })) {
@@ -107,11 +142,18 @@ export async function installUpstreamDependencies(root: string, pin: string) {
       for (const entry of readdirSync(packages, { withFileTypes: true }))
         if (entry.isDirectory() && entry.name !== "node_modules") check(join(packages, entry.name));
       readonlyTree(packages);
-      writeFileSync(join(store, "ready.json"), JSON.stringify({ key, trees }));
+      const marker = join(attempt, `.ready-${id}.json`);
+      writeFileSync(marker, JSON.stringify({ key, trees }), { flag: "wx", mode: 0o600 });
+      renameSync(marker, join(attempt, "ready.json"));
+      const store = join(entry, "generations", id);
+      mkdirSync(dirname(store), { recursive: true });
+      renameSync(attempt, store);
+      const pointer = join(entry, `.current-${id}`);
+      symlinkSync(join("generations", id), pointer);
+      renameSync(pointer, join(entry, "current"));
+      generation = { store: realpathSync(store), trees };
     }
-    const { trees } = JSON.parse(readFileSync(join(store, "ready.json"), "utf8")) as {
-      trees: string[];
-    };
+    const { store, trees } = generation;
     for (const tree of trees) {
       const source = join(store, tree),
         destination = join(root, tree);
@@ -137,7 +179,9 @@ export async function installUpstreamDependencies(root: string, pin: string) {
       rmSync(destination, { recursive: true, force: true });
       renameSync(temporary, destination);
     }
+    return generation;
   });
+  const { store } = prepared;
   writeFileSync(join(root, ".basalt-dependencies.json"), JSON.stringify({ key, store }));
   return { key, store };
 }
