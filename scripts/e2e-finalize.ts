@@ -14,8 +14,11 @@ import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
 const diagnosticFiles = new Set([
-  "compiler-cache-host.log", "compiler-cache-production.json", "physical-state-digests.ndjson",
-  "physical-provisioning-completed.json", "sso-idp.log",
+  "compiler-cache-host.log",
+  "compiler-cache-production.json",
+  "physical-state-digests.ndjson",
+  "physical-provisioning-completed.json",
+  "sso-idp.log",
 ]);
 
 const within = (parent: string, child: string) => child.startsWith(`${parent}${sep}`);
