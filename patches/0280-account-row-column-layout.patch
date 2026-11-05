@@ -1,19 +1,19 @@
 diff --git a/e2e/support/account-row-layout.ts b/e2e/support/account-row-layout.ts
 new file mode 100644
-index 000000000..7e695d72b
+index 000000000..5349f3283
 --- /dev/null
 +++ b/e2e/support/account-row-layout.ts
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,77 @@
 +import type { Page } from "playwright";
 +
-+/** Compare the rendered grid contract and action hit boxes in one browser task. */
++/** Compare the rendered columns and both identity lines with the row's action hit boxes. */
 +export const accountRowLayout = (page: Page) =>
 +  page.evaluate(() => {
 +    const header = document.querySelector<HTMLElement>(".inventory-header");
 +    const rows = [...document.querySelectorAll<HTMLElement>(".inventory-row")];
 +    const wide = header !== null && getComputedStyle(header).display !== "none";
 +    const columns = header === null ? undefined : getComputedStyle(header).gridTemplateColumns;
-+    const type = header?.children[1]?.getBoundingClientRect();
++    const type = header?.querySelector("[data-account-type-header]")?.getBoundingClientRect();
 +    return {
 +      rows: rows.length,
 +      columnsAligned:
@@ -27,37 +27,75 @@ index 000000000..7e695d72b
 +          );
 +        }),
 +      namesUnobscured: rows.every((row) => {
-+        const name = row.querySelector("[data-account-name]")?.getBoundingClientRect();
++        const lines = [
++          ...row.querySelectorAll<HTMLElement>("[data-account-name], [data-account-identity]"),
++        ];
 +        return (
-+          name !== undefined &&
-+          name.width > 0 &&
-+          [
-+            ...row.querySelectorAll(
-+              "[data-account-row-menu] button, [data-account-row-actions] button",
-+            ),
-+          ].every((button) => {
-+            const action = button.getBoundingClientRect();
++          lines.length > 0 &&
++          lines.every((line) => {
++            const identity = line.getBoundingClientRect();
 +            return (
-+              action.right <= name.left ||
-+              action.left >= name.right ||
-+              action.bottom <= name.top ||
-+              action.top >= name.bottom
++              identity.width > 0 &&
++              line.scrollWidth <= line.clientWidth &&
++              [...row.querySelectorAll("[data-account-row-menu] button")].every((button) => {
++                const action = button.getBoundingClientRect();
++                return (
++                  action.right <= identity.left ||
++                  action.left >= identity.right ||
++                  action.bottom <= identity.top ||
++                  action.top >= identity.bottom
++                );
++              })
 +            );
 +          })
 +        );
 +      }),
++      identityLabelsReadable: rows.every((row) =>
++        [
++          ...row.querySelectorAll<HTMLElement>("[data-account-name], [data-account-identity]"),
++        ].every((line) => line.scrollWidth <= line.clientWidth),
++      ),
 +      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth,
 +    };
 +  });
++
++/** Observe a stable row from its first complete paint through delayed hydration and setup. */
++export const trackAccountRowHeight = (page: Page, label: string) =>
++  page.addInitScript((label) => {
++    const heights: number[] = [];
++    Object.defineProperty(window, "accountRowHeights", { value: heights });
++    let queued = false;
++    new MutationObserver(() => {
++      if (queued) return;
++      queued = true;
++      requestAnimationFrame(() => {
++        queued = false;
++        const button = [...document.querySelectorAll("[data-account-row-menu] button")].find(
++          (button) => button.getAttribute("aria-label") === `Manage ${label}`,
++        );
++        const row = button?.closest(".inventory-row");
++        if (row?.querySelector("[data-account-name]") && row.querySelector("[data-account-type]")) {
++          const height = row.getBoundingClientRect().height;
++          if (height > 0 && heights.at(-1) !== height) heights.push(height);
++        }
++      });
++    }).observe(document, { subtree: true, childList: true, attributes: true });
++  }, label);
 diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
-index 8c3ec05ec..5a17a56d7 100644
+index 8c3ec05ec..c41a5776c 100644
 --- a/e2e/tests/account-compact-rows.spec.ts
 +++ b/e2e/tests/account-compact-rows.spec.ts
 @@ -16,2 +16,3 @@ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
  import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
-+import { accountRowLayout } from "../support/account-row-layout.ts";
++import { accountRowLayout, trackAccountRowHeight } from "../support/account-row-layout.ts";
  import { accountRow, openRowMenu } from "../support/account-rows.ts";
-@@ -254,2 +255,10 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+@@ -236,2 +237,5 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+         ] as const;
++        yield* browser.use("Observe the verified row through hydration and setup", (page) =>
++          trackAccountRowHeight(page, "Verified mail"),
++        );
+         for (const width of [1280, 390])
+@@ -254,4 +258,46 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
                if (name === "accounts") {
 +                const layout = yield* browser.use(
 +                  "Account columns share tracks and actions leave names readable",
@@ -67,25 +105,98 @@ index 8c3ec05ec..5a17a56d7 100644
 +                expect(layout.columnsAligned).toBe(true);
 +                expect(layout.namesUnobscured).toBe(true);
 +                expect(layout.noHorizontalOverflow).toBe(true);
++                expect(layout.identityLabelsReadable).toBe(true);
++                const menuLayout = yield* browser.use(
++                  "The Add app action lives in the row menu with its full label",
++                  (page) => {
++                    const row = accountRow(page, "Verified mail");
++                    return Promise.all([
++                      page.evaluate(() => Reflect.get(window, "accountRowHeights") as number[]),
++                      row.boundingBox(),
++                    ]).then(([heights, before]) =>
++                      openRowMenu(page, row, "Verified mail").then((menu) => {
++                        const add = menu.getByRole("menuitem", {
++                          name: "Add Fixture identity app",
++                          exact: true,
++                        });
++                        return add
++                          .waitFor()
++                          .then(() => add.evaluate((item) => item.scrollWidth <= item.clientWidth))
++                          .then((readable) =>
++                            page.keyboard
++                              .press("Escape")
++                              .then(() => row.boundingBox())
++                              .then((after) => ({ heights, before, after, readable })),
++                          );
++                      }),
++                    );
++                  },
++                );
++                expect(menuLayout.heights.length).toBeGreaterThan(0);
++                expect(
++                  new Set(menuLayout.heights).size,
++                  "hydration and setup do not change the compact row height",
++                ).toBe(1);
++                expect(menuLayout.readable).toBe(true);
++                expect(menuLayout.after).toEqual(menuLayout.before);
                  const [identity, action] = yield* browser.use(
-@@ -271,3 +280,7 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
-                   expect(action.width).toBeGreaterThan(0);
--                  expect(identity.x + identity.width).toBeLessThanOrEqual(action.x);
-+                  expect(
-+                    identity.x + identity.width <= action.x ||
-+                      action.y >= identity.y + identity.height,
-+                    "the identity and its action do not overlap",
-+                  ).toBe(true);
-                 }
+-                  "The verified name and Add app action both keep space",
++                  "The verified name and row menu both keep space",
+                   (page) =>
+@@ -262,3 +308,3 @@ layer(HostedLive, { excludeTestServices: true })("Compact account rows", (it) =>
+                       accountRow(page, "Verified mail")
+-                        .getByRole("button", { name: "Add Fixture identity app", exact: true })
++                        .getByRole("button", { name: "Manage Verified mail", exact: true })
+                         .boundingBox(),
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index 1d3f84b77..435a57e9b 100644
+index 1d3f84b77..5c873718a 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
 @@ -1 +1,2 @@
 +import { accountRowLayout } from "../support/account-row-layout.ts";
  import { expect, layer } from "@effect/vitest";
-@@ -549,2 +550,10 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -314,3 +315,11 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.use("Add a later app from the saved account", (page) =>
+-          page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first()
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() =>
++              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
++            ),
+         );
+@@ -408,3 +417,9 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.use("Inspect each binding's independent actions", (page) =>
+-          page.getByRole("button", { name: "Manage apps", exact: true }).click(),
++          page
++            .locator(".inventory-row")
++            .filter({ hasText: "same@example.test" })
++            .first()
++            .getByRole("button", { name: /^Manage / })
++            .click()
++            .then(() => page.getByRole("menuitem", { name: "Manage apps", exact: true }).click()),
+         );
+@@ -520,5 +535,5 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         const row = (page: Page, app: string) =>
+-          page
+-            .locator(".inventory-row")
+-            .filter({ has: page.getByRole("link", { name: app, exact: true }) });
++          page.locator(".inventory-row").filter({
++            has: page.getByRole("link").filter({ has: page.getByText(app, { exact: true }) }),
++          });
+         const mark = (page: Page, app: string) =>
+@@ -549,2 +564,41 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
            Effect.gen(function* () {
++            yield* browser.use(`${width}: each fixture row is loaded`, (page) =>
++              Promise.all(
++                ["Mail fixture", "Issues fixture", "Solo fixture", "Unverified fixture"].map(
++                  (app) => row(page, app).waitFor(),
++                ),
++              ),
++            );
 +            const layout = yield* browser.use(
 +              `${width}: grouped and ordinary rows share columns without covering names`,
 +              accountRowLayout,
@@ -93,60 +204,452 @@ index 1d3f84b77..435a57e9b 100644
 +            expect(layout.rows).toBeGreaterThanOrEqual(4);
 +            expect(layout.columnsAligned).toBe(true);
 +            expect(layout.namesUnobscured).toBe(true);
++            expect(layout.identityLabelsReadable).toBe(true);
 +            expect(layout.noHorizontalOverflow).toBe(true);
++            const menuLabels = yield* browser.use(
++              `${width}: grouped actions are readable menu items`,
++              (page) =>
++                row(page, "Mail fixture")
++                  .getByRole("button", { name: /^Manage / })
++                  .click()
++                  .then(() =>
++                    Promise.all(
++                      ["Add Google app", "Manage apps"].map((name) => {
++                        const item = page
++                          .getByRole("menu")
++                          .getByRole("menuitem", { name, exact: true });
++                        return item
++                          .waitFor()
++                          .then(() =>
++                            item.evaluate((element) => element.scrollWidth <= element.clientWidth),
++                          );
++                      }),
++                    ),
++                  )
++                  .then((readable) => page.keyboard.press("Escape").then(() => readable)),
++            );
++            expect(menuLabels).toEqual([true, true]);
              for (const [app, name, domain] of [
+@@ -618,3 +672,3 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+             .then(() =>
+-              page.getByRole("button", { name: "Add Fixture identity app", exact: true }).waitFor(),
++              page.getByRole("button", { name: "Manage same@example.test", exact: true }).waitFor(),
+             ),
+@@ -623,4 +677,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+           page
+-            .getByRole("button", { name: "Add Fixture identity app", exact: true })
++            .getByRole("button", { name: "Manage same@example.test", exact: true })
+             .click()
++            .then(() =>
++              page.getByRole("menuitem", { name: "Add Fixture identity app", exact: true }).click(),
++            )
+             .then(() => page.getByRole("combobox", { name: "App", exact: true }).click())
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 5038abb84..11df41729 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -27,3 +27,7 @@ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+-/** Account management lives on its list row; products supply the menu items they support. */
++/**
++ * Account management lives on its list row; products supply the menu items they support. The row's
++ * own actions (usage, details, adding an app) come first. A menu with `rowActions` false, such as a
++ * grouped identity row's, leaves the row's details in view and lists only its children.
++ */
+ export function AccountActionsMenu({
+@@ -31,2 +35,3 @@ export function AccountActionsMenu({
+   children,
++  rowActions = true,
+ }: {
+@@ -34,2 +39,3 @@ export function AccountActionsMenu({
+   readonly children: ReactNode;
++  readonly rowActions?: boolean;
+ }) {
+@@ -37,3 +43,3 @@ export function AccountActionsMenu({
+     <DropdownMenu>
+-      <AccountRowMenuPresence />
++      {rowActions && <AccountRowMenuPresence />}
+       <DropdownMenuTrigger asChild>
+@@ -47,4 +53,5 @@ export function AccountActionsMenu({
+       </DropdownMenuTrigger>
+-      <DropdownMenuContent align="end" className="min-w-44">
+-        <AccountRowMenuItems />
++      {/* Long labels, such as an identity's app name, wrap within a phone's width. */}
++      <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
++        {rowActions && <AccountRowMenuItems />}
+         {children}
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
-index 5d34eb47b..c9bb79f7b 100644
+index 5d34eb47b..996c7e2da 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -247,4 +247,4 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
+@@ -132,2 +132,18 @@ export interface AccountRowUsage {
+ 
++/** A row-level action a host control offers through the row's menu, such as adding an app. */
++export interface AccountRowMenuAction {
++  readonly label: string;
++  /** `returnFocus` is the menu's trigger, focused again when whatever opened closes. */
++  readonly open: (returnFocus: HTMLElement | null) => void;
++}
++
++/** The trigger of the menu an item sits in, so a dialog opened from it can hand focus back. */
++export const menuTrigger = (item: EventTarget | null): HTMLElement | null => {
++  const id =
++    item instanceof Element
++      ? item.closest('[role="menu"]')?.getAttribute("aria-labelledby")
++      : undefined;
++  return id ? document.getElementById(id) : null;
++};
++
+ interface AccountRowState {
+@@ -143,2 +159,5 @@ interface AccountRowState {
+   readonly setExtra: (present: boolean) => void;
++  /** Adding another app for the row's verified identity, offered from the row's menu. */
++  readonly identity: AccountRowMenuAction | undefined;
++  readonly setIdentity: (action: AccountRowMenuAction | undefined) => void;
+ }
+@@ -155,5 +174,17 @@ export function AccountRowProvider({ children }: { readonly children: ReactNode
+   const [extra, setExtra] = useState(false);
++  const [identity, setIdentity] = useState<AccountRowMenuAction>();
+   const value = useMemo(
+-    () => ({ menu, setMenu, details, setDetails, usage, setUsage, extra, setExtra }),
+-    [menu, details, usage, extra],
++    () => ({
++      menu,
++      setMenu,
++      details,
++      setDetails,
++      usage,
++      setUsage,
++      extra,
++      setExtra,
++      identity,
++      setIdentity,
++    }),
++    [menu, details, usage, extra, identity],
+   );
+@@ -200,6 +231,18 @@ export function AccountRowDetails({
+ 
+-/** The row's own actions at the top of its menu: refreshing usage and opening details. */
++/** The identity action as a menu item; the label wraps rather than truncating on a phone. */
++export function AccountRowIdentityItem() {
++  const identity = useAccountRow()?.identity;
++  return identity === undefined ? null : (
++    <DropdownMenuItem onSelect={(event) => identity.open(menuTrigger(event.target))}>
++      {identity.label}
++    </DropdownMenuItem>
++  );
++}
++
++/** The row's own actions at the top of its menu: refreshing usage, details and adding an app. */
+ export function AccountRowMenuItems() {
+   const row = useAccountRow();
+-  if (row === undefined || (row.usage === undefined && !row.extra)) return null;
++  if (row === undefined) return null;
++  const details = row.usage !== undefined || row.extra;
++  if (!details && row.identity === undefined) return null;
+   const { refresh, pending = false, disabledReason } = row.usage ?? {};
+@@ -220,5 +263,8 @@ export function AccountRowMenuItems() {
+       )}
+-      <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
+-        {row.details ? "Hide details" : "Details"}
+-      </DropdownMenuItem>
++      {details && (
++        <DropdownMenuItem onSelect={() => row.setDetails(!row.details)}>
++          {row.details ? "Hide details" : "Details"}
++        </DropdownMenuItem>
++      )}
++      <AccountRowIdentityItem />
+       <DropdownMenuSeparator />
+@@ -239,3 +285,5 @@ const narrow = {
+  * Columns: [choice] · logo · account · type · plan · [requests 7d] · health · used by · menu. A
+- * list with `requests` passes every row's `requests` cell, empty where nothing was counted.
++ * list with `requests` passes every row's `requests` cell, empty where nothing was counted. The
++ * menu track is a fixed 2rem in every list, so rows with and without a menu share their columns;
++ * every other row action lives in that menu.
+  */
+@@ -245,6 +293,6 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
+     lead
+-      ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
++      ? "grid-cols-[16px_24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
        : requests
 -        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]"
 -        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_auto]",
 +        ? "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]"
 +        : "grid-cols-[24px_minmax(0,_1fr)_10rem_4.5rem_8.5rem_minmax(7rem,_12rem)_2rem]",
      lead ? narrow.lead : narrow.plain,
-@@ -256,2 +256,14 @@ export const accountRowBand = (lead: boolean) =>
-
-+/** Wide identity actions have their own band, so they never resize columns or cover the name. */
-+export function AccountRowActions({ children }: { readonly children?: ReactNode }) {
+@@ -318,4 +366,5 @@ export function AccountRowCells({
+ /**
+- * The menu cell. On narrow lists it stays on the first line, centred on the name: the cell is one
+- * name line tall and a larger button overflows it evenly.
++ * The menu cell: one ⋯ button in the fixed menu track. On narrow lists it stays on the first line,
++ * centred on the name: the cell is one name line tall and a larger button overflows it evenly. A
++ * status mark beside the button, such as a spinner, sits outside the track (`AccountRowMenuMark`).
+  */
+@@ -325,3 +374,3 @@ export function AccountRowMenu({ children }: { readonly children?: ReactNode })
+       data-account-row-menu
+-      className="flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
++      className="relative flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
+     >
+@@ -332,2 +381,14 @@ export function AccountRowMenu({ children }: { readonly children?: ReactNode })
+ 
++/**
++ * A small mark beside the menu button, such as a pending spinner. On wide lists it hangs into the
++ * gap before the menu track instead of widening it; narrow lists keep it in line.
++ */
++export function AccountRowMenuMark({ children }: { readonly children: ReactNode }) {
 +  return (
-+    <span
-+      data-account-row-actions
-+      className={cn(accountRowBand(false), "flex flex-wrap items-center gap-2 empty:hidden")}
-+    >
++    <span className="pointer-events-none absolute top-1/2 right-full flex -translate-y-1/2 @max-[640px]/account-rows:static @max-[640px]/account-rows:mr-0 @max-[640px]/account-rows:translate-y-0">
 +      {children}
 +    </span>
 +  );
 +}
 +
- /** The cells after the name: grid columns on wide lists, one wrapping line on narrow ones. */
-@@ -345,3 +357,3 @@ export function AccountRowHeader({
+ /** Column names for a list of rows without a choice column; hidden where the cells wrap. */
+@@ -345,3 +406,3 @@ export function AccountRowHeader({
          accountRowGrid(false, requests !== undefined),
 -        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
 +        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
        )}
+@@ -349,3 +410,3 @@ export function AccountRowHeader({
+       <span className="col-span-2">Account</span>
+-      <span>Type</span>
++      <span data-account-type-header>Type</span>
+       <span>Plan</span>
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 113b68921..40bac1dc0 100644
+index 113b68921..5349224c7 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-@@ -5,2 +5,3 @@ import { AccountCheckDot } from "./account-health.tsx";
- import {
-+  AccountRowActions,
-   AccountRowCells,
-@@ -308,6 +309,7 @@ function AccountsList({
+@@ -9,2 +9,3 @@ import {
+   AccountRowHeader,
++  AccountRowIdentityItem,
+   AccountRowLogo,
+@@ -21,2 +22,4 @@ import {
+   accountRowsContainer,
++  menuTrigger,
++  useAccountRow,
+ } from "./account-row.tsx";
+@@ -29,2 +32,3 @@ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
++import { AccountActionsMenu } from "./account-actions.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+@@ -46,3 +50,4 @@ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+-import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
++import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
++import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+@@ -308,32 +313,33 @@ function AccountsList({
                    <AccountRowMenu>
-+                    {bindings.length === 1 && accountActions?.(account, { binding: false })}
-+                  </AccountRowMenu>
-+                  <AccountRowActions>
++                    {/* Renders only its dialog here; it offers itself from the row's one menu. */}
                      {account.identity !== undefined && identityActions?.(bindings, data)}
 -                    {bindings.length === 1 ? (
 -                      accountActions?.(account, { binding: false })
--                    ) : (
-+                    {bindings.length > 1 && (
-                       <OutsideAccountRow>
-@@ -339,3 +341,3 @@ function AccountsList({
++                    {bindings.length > 1 ? (
++                      <IdentityRowMenu
++                        title={accountTitle(account)}
++                        manage={
++                          <OutsideAccountRow>
++                            <div className="divide-y divide-border rounded-md border border-border">
++                              {bindings.map((binding) => (
++                                <div
++                                  key={binding.id}
++                                  className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
++                                >
++                                  <span className="min-w-0 text-[13px] wrap-anywhere">
++                                    {bindingApps(data, [binding])
++                                      .map((app) => app.name)
++                                      .join(", ") ||
++                                      binding.providerName ||
++                                      "Saved sign-in"}
++                                  </span>
++                                  {accountActions?.(binding, { binding: true })}
++                                </div>
++                              ))}
++                            </div>
++                          </OutsideAccountRow>
++                        }
++                      />
++                    ) : accountActions === undefined ? (
++                      <IdentityRowMenu title={accountTitle(account)} />
+                     ) : (
+-                      <OutsideAccountRow>
+-                        <Popover>
+-                          <PopoverTrigger asChild>
+-                            <Button variant="outline" size="sm">
+-                              Manage apps
+-                            </Button>
+-                          </PopoverTrigger>
+-                          <PopoverContent align="end" className="w-72 p-2">
+-                            {bindings.map((binding) => (
+-                              <div
+-                                key={binding.id}
+-                                className="flex items-center justify-between gap-3 px-2 py-2"
+-                              >
+-                                <span className="min-w-0 break-words text-[12px]">
+-                                  {bindingApps(data, [binding])
+-                                    .map((app) => app.name)
+-                                    .join(", ") ||
+-                                    binding.providerName ||
+-                                    "Saved sign-in"}
+-                                </span>
+-                                {accountActions?.(binding, { binding: true })}
+-                              </div>
+-                            ))}
+-                          </PopoverContent>
+-                        </Popover>
+-                      </OutsideAccountRow>
++                      accountActions(account, { binding: false })
                      )}
--                  </AccountRowMenu>
-+                  </AccountRowActions>
-                   {family !== undefined && (
+@@ -403 +409,55 @@ function AccountsList({
+ }
++
++/**
++ * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: adding an app for
++ * the identity, and each grouped sign-in's own actions in a dialog. The row's details stay in view.
++ */
++function IdentityRowMenu({
++  title,
++  manage,
++}: {
++  readonly title: string;
++  readonly manage?: ReactNode;
++}) {
++  const identity = useAccountRow()?.identity;
++  const [managing, setManaging] = useState(false);
++  const returnFocus = useRef<HTMLElement | null>(null);
++  if (identity === undefined && manage === undefined) return null;
++  return (
++    <>
++      <AccountActionsMenu account={{ label: title }} rowActions={false}>
++        <AccountRowIdentityItem />
++        {manage !== undefined && (
++          <DropdownMenuItem
++            onSelect={(event) => {
++              returnFocus.current = menuTrigger(event.target);
++              setManaging(true);
++            }}
++          >
++            Manage apps
++          </DropdownMenuItem>
++        )}
++      </AccountActionsMenu>
++      {manage !== undefined && (
++        <Dialog open={managing} onOpenChange={setManaging}>
++          <DialogContent
++            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
++            onCloseAutoFocus={(event) => {
++              const target = returnFocus.current;
++              returnFocus.current = null;
++              if (target?.isConnected !== true) return;
++              event.preventDefault();
++              target.focus({ preventScroll: true });
++            }}
++          >
++            <DialogTitle>Manage apps</DialogTitle>
++            <DialogDescription>
++              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
++            </DialogDescription>
++            {manage}
++          </DialogContent>
++        </Dialog>
++      )}
++    </>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 5eead0583..bc19dabc2 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -36,2 +36,3 @@ import {
+   AccountRowMenuItems,
++  AccountRowMenuMark,
+   AccountRowMenuPresence,
+@@ -1461,3 +1462,7 @@ function ChoiceRow<E>({
+           <AccountRowMenu>
+-            {pending && <Spinner className="size-3.5 text-muted-foreground" />}
++            {pending && (
++              <AccountRowMenuMark>
++                <Spinner className="size-3 text-muted-foreground" />
++              </AccountRowMenuMark>
++            )}
+             {hostProvisioned || automatic
+diff --git a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+index 104f83100..fd3fe7737 100644
+--- a/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-app-picker-client.tsx
+@@ -1,3 +1,7 @@
+-/** Start from the verified account row, then use the product's existing app connection form. */
+-import { useState, type ReactNode } from "react";
++/**
++ * Start from the verified account row, then use the product's existing app connection form. In a
++ * row, the picker offers itself from the row's menu and renders only its dialog; elsewhere it
++ * keeps its own button.
++ */
++import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { AccountId, AccountRequirement, App } from "@executor-js/sdk";
+@@ -15,2 +19,3 @@ import {
+ import { Label } from "../components/label.tsx";
++import { useAccountRow } from "./account-row.tsx";
+ 
+@@ -38,2 +43,18 @@ export function IdentityAppPicker({
+   const [busy, setBusy] = useState(false);
++  // The row menu's trigger, focused again when the dialog closes.
++  const returnFocus = useRef<HTMLElement | null>(null);
++  const setIdentity = useAccountRow()?.setIdentity;
++  const label = identity === undefined ? undefined : `Add ${identity.name} app`;
++  useEffect(() => {
++    if (setIdentity === undefined || label === undefined) return;
++    setIdentity({
++      label,
++      open: (target) => {
++        returnFocus.current = target;
++        setSelected("");
++        setOpen(true);
++      },
++    });
++    return () => setIdentity(undefined);
++  }, [setIdentity, label]);
+   if (identity === undefined || account === undefined) return null;
+@@ -53,13 +74,15 @@ export function IdentityAppPicker({
+     <>
+-      <Button
+-        variant="outline"
+-        size="sm"
+-        className="max-w-24 sm:max-w-32"
+-        onClick={() => {
+-          setSelected("");
+-          setOpen(true);
+-        }}
+-      >
+-        <span className="truncate">Add {identity.name} app</span>
+-      </Button>
++      {setIdentity === undefined && (
++        <Button
++          variant="outline"
++          size="sm"
++          onClick={() => {
++            returnFocus.current = null;
++            setSelected("");
++            setOpen(true);
++          }}
++        >
++          {label}
++        </Button>
++      )}
+       <Dialog
+@@ -70,4 +93,13 @@ export function IdentityAppPicker({
+       >
+-        <DialogContent className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]">
+-          <DialogTitle>Add {identity.name} app</DialogTitle>
++        <DialogContent
++          className="max-h-[85dvh] min-w-0 overflow-y-auto wrap-anywhere sm:max-w-[560px]"
++          onCloseAutoFocus={(event) => {
++            const target = returnFocus.current;
++            returnFocus.current = null;
++            if (target?.isConnected !== true) return;
++            event.preventDefault();
++            target.focus({ preventScroll: true });
++          }}
++        >
++          <DialogTitle>{label}</DialogTitle>
+           <DialogDescription>Use {identity.label} with another app.</DialogDescription>
