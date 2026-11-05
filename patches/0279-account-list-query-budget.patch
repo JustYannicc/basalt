@@ -1,3 +1,46 @@
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -74,7 +74,8 @@
+     "@executor-js/utils": "workspace:*",
+     "apps": "workspace:*",
+     "better-auth": "1.7.5",
+-    "effect": "4.0.1"
++    "effect": "4.0.1",
++    "fumadb-effect": "workspace:*"
+   },
+   "devDependencies": {}
+ }
+diff --git a/apps/hosted/testing/package.json b/apps/hosted/testing/package.json
+--- a/apps/hosted/testing/package.json
++++ b/apps/hosted/testing/package.json
+@@ -15,6 +15,7 @@
+     "@executor-js/telemetry": "workspace:*",
+     "better-auth": "1.7.5",
+     "effect": "4.0.1",
++    "fumadb-effect": "workspace:*",
+     "pg": "8.16.3",
+     "samlify": "2.13.1"
+   },
+diff --git a/bun.lock b/bun.lock
+--- a/bun.lock
++++ b/bun.lock
+@@ -221,6 +221,7 @@
+         "apps": "workspace:*",
+         "better-auth": "1.7.5",
+         "effect": "4.0.1",
++        "fumadb-effect": "workspace:*",
+       },
+     },
+     "apps/hosted/testing": {
+@@ -235,6 +236,7 @@
+         "@executor-js/telemetry": "workspace:*",
+         "better-auth": "1.7.5",
+         "effect": "4.0.1",
++        "fumadb-effect": "workspace:*",
+         "pg": "8.16.3",
+         "samlify": "2.13.1",
+       },
 diff --git a/apps/hosted/server/src/implementation/account-identity-placement.ts b/apps/hosted/server/src/implementation/account-identity-placement.ts
 new file mode 100644
 index 0000000..4a7de75

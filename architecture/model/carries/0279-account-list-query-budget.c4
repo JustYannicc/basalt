@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountRuntime {
     metadata {
-      constraint "Account health and identity lists deduplicate identities and bind PostgreSQL text ID sets as one parameter; MySQL keeps native parameter comparisons for column collation and lossless values. Batched metadata preserves request-local owner and placement checks without caching authorization. The lifecycle placement import composes after earlier automatic-check imports without a start-of-file anchor. Server reads remain reactive and initial reads start before reconciliation; only observed failures or prolonged pending health back off. Mounted account reads share a bounded cadence that backs off unavailable or prolonged pending health."
+      constraint "Account health and identity lists deduplicate identities and bind PostgreSQL text ID sets as one parameter; MySQL keeps native parameter comparisons for column collation and lossless values. Batched metadata preserves request-local owner and placement checks without caching authorization. The lifecycle placement import composes after earlier automatic-check imports without a start-of-file anchor. Hosted server and its query fixture declare the workspace SQL helper dependency so isolated package and image builds resolve it. Server reads remain reactive and initial reads start before reconciliation; only observed failures or prolonged pending health back off. Mounted account reads share a bounded cadence that backs off unavailable or prolonged pending health."
     }
   }
 }
