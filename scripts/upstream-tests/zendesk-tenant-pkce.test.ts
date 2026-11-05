@@ -29,7 +29,7 @@ test("Zendesk uses a public tenant client without hosted credentials or publishe
   }
   for (const site of [undefined, "https://zendesk.com", "https://x.y.zendesk.com",
     "http://alpha.zendesk.com", "https://alpha.zendesk.com.evil.test", "https://alpha.zendesk.com/path"]) {
-    assert.equal(firstPartyClientAtSite(tenant, site, defaultUrlPolicy), undefined, site);
+    assert.equal(firstPartyClientAtSite(tenant, site, defaultUrlPolicy), undefined, site ?? "no site");
   }
 });
 
