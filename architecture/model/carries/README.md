@@ -1,7 +1,9 @@
 # Carry constraints
 
 Each added or changed carry records its durable constraint in `<stem>.c4`, matching
-`patches/<stem>.patch` and its JSON record. Record-only updates also update this file.
+`patches/<stem>.patch` and its JSON record. Pool carries match
+`containers/pool/patches/<stem>.patch`, whose record lives in the pool source manifest.
+Record-only updates also update this file.
 Rename the file when renumbering a carry. On retirement, remove its constraint file
 and update any affected model responsibilities or relationships.
 

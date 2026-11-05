@@ -1,0 +1,56 @@
+package cluster
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+)
+
+func TestHomeDBPoolPostgresPrivacyMaintenance(t *testing.T) {
+	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
+	repo := newHomeDBPoolRepository(t, 0)
+	seedPrivacyHistory(t, repo.db, 1)
+	legacyLog := AppLogRecord{Timestamp: time.Now().UTC(), Level: "warning", Line: "legacy-body-sentinel", ClientIP: "legacy-client-sentinel"}
+	if errSeed := repo.db.Create(&legacyLog).Error; errSeed != nil {
+		t.Fatal(errSeed)
+	}
+	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
+	if errMigrate := AutoMigrateContext(t.Context(), repo.db); errMigrate != nil {
+		t.Fatal(errMigrate)
+	}
+	testHomeDBPoolMixedWorkload(t, repo, func(ctx context.Context, repo *Repository) error {
+		for range 32 {
+			result, errBatch := repo.RunDiagnosticsPrivacyBatch(ctx)
+			if errBatch != nil {
+				return errBatch
+			}
+			if !result.Done {
+				continue
+			}
+			var state diagnosticsPrivacyMigrationRecord
+			if errState := repo.db.WithContext(ctx).First(&state, "name = ?", diagnosticPrivacyStepName).Error; errState != nil {
+				return errState
+			}
+			if !state.Completed || !state.AppLogsDone || state.UsageRowsUpdated != 1 || state.LastUsageID == 0 || state.AppLogRowsUpdated < 1 || state.LastAppLogID < legacyLog.ID {
+				return fmt.Errorf("cleanup did not commit its scrub cursors: %+v", state)
+			}
+			var usage UsageRecord
+			if errUsage := repo.db.WithContext(ctx).First(&usage).Error; errUsage != nil {
+				return errUsage
+			}
+			if usage.FailBody != "" {
+				return fmt.Errorf("legacy usage was not scrubbed")
+			}
+			var storedLog AppLogRecord
+			if errLog := repo.db.WithContext(ctx).First(&storedLog, legacyLog.ID).Error; errLog != nil {
+				return errLog
+			}
+			if storedLog.Line != diagnosticAppLogLine || storedLog.ClientIP != "" {
+				return fmt.Errorf("legacy application log was not scrubbed")
+			}
+			return nil
+		}
+		return fmt.Errorf("cleanup did not complete within 32 bounded batches")
+	})
+}

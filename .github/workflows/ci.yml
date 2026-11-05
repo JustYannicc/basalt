@@ -1365,6 +1365,10 @@ jobs:
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
+      - name: Verify Home connection limits and concurrent liveness on Postgres
+        run: |
+          docker build --target home-db-pool-tests --tag basalt-home-db-pool:test containers/pool
+          docker run --rm --network host -e HOME_TEST_POSTGRES_DSN=postgresql://fixture_root:fixture-only@localhost:5432/postgres basalt-home-db-pool:test
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
@@ -1377,7 +1381,7 @@ jobs:
         run: |
           echo "Runner disk before pool cleanup (bytes)"
           df -B1 /
-          for image in basalt-1409-pool:test basalt-1409-pool:privacy-legacy basalt-1409-pool:usage-privacy-baseline; do
+          for image in basalt-1409-pool:test basalt-1409-pool:privacy-legacy basalt-1409-pool:usage-privacy-baseline basalt-home-db-pool:test; do
             if docker image inspect "$image" > /dev/null 2>&1; then
               docker image rm "$image"
             fi

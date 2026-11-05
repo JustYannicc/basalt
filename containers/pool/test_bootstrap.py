@@ -6,6 +6,7 @@ import io
 import json
 import threading
 import unittest
+import urllib.parse
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 from typing import Any, cast
@@ -68,7 +69,26 @@ class BootstrapContractTests(unittest.TestCase):
         line = next(
             item for item in cluster_yaml(dsn).splitlines() if "postgres_uri:" in item
         )
-        self.assertEqual(json.loads(line.split(":", 1)[1].strip()), dsn)
+        actual = urllib.parse.urlsplit(json.loads(line.split(":", 1)[1].strip()))
+        expected = urllib.parse.urlsplit(dsn)
+        self.assertEqual(actual._replace(query=""), expected._replace(query=""))
+        self.assertEqual(
+            urllib.parse.parse_qs(actual.query),
+            {**urllib.parse.parse_qs(expected.query), "application_name": ["basalt-home"]},
+        )
+        config = cluster_yaml(dsn)
+        for field in ("max-open-conns: 6", "max-idle-conns: 6", "conn-max-idle-time: 5m", "conn-max-lifetime: 30m"):
+            self.assertIn(field, config)
+
+    def test_cluster_overrides_only_home_application_name(self) -> None:
+        dsn = "postgresql://pool:fixture@db.example:5432/pool?application_name=old&options=-c%20role%3Downer&sslmode=require"
+        config = cluster_yaml(dsn)
+        line = next(item for item in config.splitlines() if "postgres_uri:" in item)
+        actual = urllib.parse.urlsplit(json.loads(line.split(":", 1)[1].strip()))
+        self.assertEqual(actual.port, 5432)
+        self.assertEqual(urllib.parse.parse_qs(actual.query), {
+            "application_name": ["basalt-home"], "options": ["-c role=owner"], "sslmode": ["require"],
+        })
 
     def test_bootstrap_import_requires_home_empty_config_diagnostic(self) -> None:
         self.assertTrue(home_boot_requires_import(1, True))
