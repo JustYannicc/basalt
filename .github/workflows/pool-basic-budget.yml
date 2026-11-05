@@ -89,12 +89,12 @@ jobs:
             result=$?
             set -e
             echo "$result" > "$POOL_BUDGET_OUTPUT/exit-code"
-            cat "$POOL_BUDGET_OUTPUT/test.log"
+            echo "Trial $trial test exit: $result"
           done
           python3 "$probe/summarize.py" "$RUNNER_TEMP/pool-budget" "$SOURCE_REF"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pool-basic-${{ matrix.version }}
-          path: ${{ runner.temp }}/pool-budget
+          path: ${{ runner.temp }}/pool-budget/summary.json
           if-no-files-found: error

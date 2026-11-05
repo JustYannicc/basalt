@@ -13,7 +13,8 @@ for trial in sorted(root.glob('trial-*')):
     ready = next((event for event in readiness if event.get('status') == 200), None)
     stream = next((event for event in events if event['path'] == '/v1/chat/completions'), None)
     pong = json.loads((trial / 'pong.json').read_text()) if (trial / 'pong.json').exists() else {}
-    pongs = pong.get('pongArrivalMs', [])
+    pongs = [offset for offset in pong.get('pongArrivalMs', [])
+             if offset < cutoff - state.get('startedMs', 0)]
     row = {'trial': trial.name, 'exitCode': int((trial / 'exit-code').read_text()),
            'coldReadyMs': round(ready['atMs'] - state['startedMs'], 3) if ready else None,
            'coldReadinessProbes': len(readiness), 'coldReadiness200': sum(e.get('status') == 200 for e in readiness),
