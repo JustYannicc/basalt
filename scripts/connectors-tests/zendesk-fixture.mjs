@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 
-export const zendeskScopes = Object.freeze(["read", "write", "impersonate"]);
+export const zendeskScopes = Object.freeze(["read", "write"]);
 export const marketplaceHeaderNames = Object.freeze([
   "X-Zendesk-Marketplace-Name",
   "X-Zendesk-Marketplace-Organization-Id",
@@ -26,10 +26,18 @@ const readJson = async (request) => {
 };
 
 const s256 = (value) => createHash("sha256").update(value).digest("base64url");
-const scopesOf = (value) => String(value ?? "").split(/\s+/).filter(Boolean).sort();
+const scopesOf = (value) =>
+  String(value ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort();
 
 /** Two independent loopback Zendesk sites with OAuth, rotating grants and ticket API records. */
-export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
+export async function startZendeskFixtures({
+  marketplaceHeaders = {},
+  tenantPublicClients = false,
+  expiresIn = 1,
+} = {}) {
   const observations = [];
   const failures = [];
   const servers = [];
@@ -39,24 +47,44 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
   const refreshTokens = new Map();
   const flows = new Map();
   let sequence = 0;
+  let clockOffset = 0;
+  const now = () => Date.now() + clockOffset;
 
   const clientDefinitions = new Map();
+  const tenantCallbacks = new Map();
+  const authorizationStatuses = new Map();
   for (const id of ["site-a", "site-b"]) {
-    for (const mode of ["public", "confidential", "hosted"]) {
-      const clientId = mode === "hosted" ? "zendesk-fixture-client" : `synthetic-${id}-${mode}-client`;
+    for (const mode of [
+      "public",
+      "confidential",
+      "hosted",
+      ...(tenantPublicClients ? ["tenant"] : []),
+    ]) {
+      const clientId =
+        mode === "tenant"
+          ? `${id}_zendesk`
+          : mode === "hosted"
+            ? "zendesk-fixture-client"
+            : `synthetic-${id}-${mode}-client`;
       clientDefinitions.set(`${id}:${clientId}`, {
         id,
         mode,
         clientId,
-        ...(mode === "public" ? {} : {
-          secret: mode === "hosted" ? "zendesk-fixture-secret" : `synthetic-${id}-confidential-secret`,
-        }),
+        ...(mode === "public" || mode === "tenant"
+          ? {}
+          : {
+              secret:
+                mode === "hosted"
+                  ? "zendesk-fixture-secret"
+                  : `synthetic-${id}-confidential-secret`,
+            }),
       });
     }
   }
 
   const flowClient = (siteId, mode) => {
-    const clientId = mode === "hosted" ? "zendesk-fixture-client" : `synthetic-${siteId}-${mode}-client`;
+    const clientId =
+      mode === "hosted" ? "zendesk-fixture-client" : `synthetic-${siteId}-${mode}-client`;
     const value = clientDefinitions.get(`${siteId}:${clientId}`);
     if (!value) throw new Error("Unknown synthetic Zendesk client");
     return mode === "public"
@@ -72,20 +100,19 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
     observations.push({ site: site.id, host: site.host, ...fields });
   };
 
-
   const issueTokens = (site, flow, generation, response) => {
     const accessToken = `synthetic-access-${site.id}-${randomUUID()}`;
     const refreshToken = `synthetic-refresh-${site.id}-${randomUUID()}`;
     const previous = flows.get(flow.id);
     if (previous?.accessToken) accessTokens.delete(previous.accessToken);
     if (previous?.refreshToken) refreshTokens.delete(previous.refreshToken);
-    const expiresIn = generation === 0 ? 1 : 3600;
+    const lifetime = generation === 0 ? expiresIn : 3600;
     const value = {
       ...flow,
       generation,
       accessToken,
       refreshToken,
-      expiresAt: Date.now() + expiresIn * 1000,
+      expiresAt: now() + lifetime * 1000,
     };
     flows.set(flow.id, value);
     accessTokens.set(accessToken, value);
@@ -95,7 +122,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
       refresh_token: refreshToken,
       token_type: "Bearer",
       scope: zendeskScopes.join(" "),
-      expires_in: expiresIn,
+      expires_in: lifetime,
     });
   };
 
@@ -111,17 +138,49 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
       try {
         if (request.method === "GET" && endpoint === "/oauth/authorizations/new") {
           const url = new URL(request.url ?? "/", site.origin);
-          const client = [...clientDefinitions.values()].find((candidate) =>
-            candidate.id === id && candidate.clientId === url.searchParams.get("client_id"),
+          const refused = authorizationStatuses.get(id);
+          if (refused !== undefined) {
+            if (refused === 429) response.setHeader("retry-after", "60");
+            return json(response, refused, { error: "temporarily_unavailable" });
+          }
+          const client = [...clientDefinitions.values()].find(
+            (candidate) =>
+              candidate.id === id && candidate.clientId === url.searchParams.get("client_id"),
           );
           const state = url.searchParams.get("state") ?? "";
           const redirectUri = url.searchParams.get("redirect_uri") ?? "";
           const challenge = url.searchParams.get("code_challenge") ?? "";
           const scopes = scopesOf(url.searchParams.get("scope"));
           const method = url.searchParams.get("code_challenge_method");
-          if (!client || client.id !== id || !state || !redirectUri || !challenge || method !== "S256"
-            || url.searchParams.get("response_type") !== "code"
-            || JSON.stringify(scopes) !== JSON.stringify([...zendeskScopes].sort())) {
+          if (!client && tenantPublicClients)
+            return json(response, 400, { error: "invalid_client" });
+          if (
+            client?.mode === "tenant" &&
+            tenantCallbacks.has(id) &&
+            redirectUri !== tenantCallbacks.get(id)
+          )
+            return json(response, 422, { error: "invalid_redirect_uri" });
+          if (client?.mode === "tenant" && url.searchParams.get("prompt") !== "consent") {
+            // Anonymous preflight sees the sign-in redirect, never consent or a code.
+            record(site, {
+              phase: "authorization_check",
+              clientId: client.clientId,
+              cookiePresent: request.headers.cookie !== undefined,
+              authHeaderPresent: request.headers.authorization !== undefined,
+            });
+            response.writeHead(302, { location: `${site.origin}/auth/v2/login` });
+            return response.end();
+          }
+          if (
+            !client ||
+            client.id !== id ||
+            !state ||
+            !redirectUri ||
+            !challenge ||
+            method !== "S256" ||
+            url.searchParams.get("response_type") !== "code" ||
+            JSON.stringify(scopes) !== JSON.stringify([...zendeskScopes].sort())
+          ) {
             safeFailure(site, endpoint, "invalid_authorization_request");
             return json(response, 400, { error: "invalid_request" });
           }
@@ -131,7 +190,9 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             siteId: id,
             clientId: client.clientId,
             mode: client.mode,
-            authMethod: client.mode === "public" ? "none" : "client_secret_post",
+            authMethod:
+              client.mode === "public" || client.mode === "tenant" ? "none" : "client_secret_post",
+            userId: url.searchParams.get("fixture_user") === "second" ? 9102 : undefined,
           };
           const code = `synthetic-code-${randomUUID()}`;
           codes.set(code, { siteId: id, client, redirectUri, challenge, scopes, flow, state });
@@ -157,26 +218,41 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
         if (request.method === "POST" && endpoint === "/oauth/tokens") {
           const contentType = String(request.headers["content-type"] ?? "").toLowerCase();
           const payload = await readJson(request);
-          const client = [...clientDefinitions.values()].find((candidate) =>
-            candidate.id === id && candidate.clientId === String(payload.client_id ?? ""),
+          const client = [...clientDefinitions.values()].find(
+            (candidate) =>
+              candidate.id === id && candidate.clientId === String(payload.client_id ?? ""),
           );
-          if (!contentType.includes("application/json") || !client || client.id !== id
-            || request.headers.authorization !== undefined) {
+          if (!client && tenantPublicClients)
+            return json(response, 401, { error: "invalid_client" });
+          if (
+            !contentType.includes("application/json") ||
+            !client ||
+            client.id !== id ||
+            request.headers.authorization !== undefined
+          ) {
             safeFailure(site, endpoint, "invalid_token_request");
             return json(response, 400, { error: "invalid_request" });
           }
-          const authMethod = client.mode === "public" ? "none" : "client_secret_post";
+          const authMethod =
+            client.mode === "public" || client.mode === "tenant" ? "none" : "client_secret_post";
           const hasSecret = Object.hasOwn(payload, "client_secret");
-          if ((client.mode === "public" && hasSecret)
-            || (client.mode !== "public" && payload.client_secret !== client.secret)) {
+          if (
+            (authMethod === "none" && hasSecret) ||
+            (authMethod !== "none" && payload.client_secret !== client.secret)
+          ) {
             safeFailure(site, endpoint, "invalid_client_auth");
             return json(response, 401, { error: "invalid_client" });
           }
 
           if (payload.grant_type === "authorization_code") {
             const code = codes.get(String(payload.code ?? ""));
-            if (!code || code.siteId !== id || code.client.clientId !== client.clientId
-              || code.redirectUri !== payload.redirect_uri || s256(String(payload.code_verifier ?? "")) !== code.challenge) {
+            if (
+              !code ||
+              code.siteId !== id ||
+              code.client.clientId !== client.clientId ||
+              code.redirectUri !== payload.redirect_uri ||
+              s256(String(payload.code_verifier ?? "")) !== code.challenge
+            ) {
               safeFailure(site, endpoint, "invalid_code_or_pkce");
               return json(response, 400, { error: "invalid_grant" });
             }
@@ -226,8 +302,8 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
           const authorization = String(request.headers.authorization ?? "");
           const token = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
           const owner = accessTokens.get(token ?? "");
-          const metadataHeadersMatched = marketplaceHeaderNames.every((name) =>
-            request.headers[name.toLowerCase()] === marketplaceHeaders[name],
+          const metadataHeadersMatched = marketplaceHeaderNames.every(
+            (name) => request.headers[name.toLowerCase()] === marketplaceHeaders[name],
           );
           const event = {
             phase: "api",
@@ -236,21 +312,29 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             authMethod: "bearer",
             bearerPresent: token !== undefined,
             credentialSiteMatches: owner?.siteId === id,
-            tokenActive: owner !== undefined && owner.expiresAt > Date.now(),
+            tokenActive: owner !== undefined && owner.expiresAt > now(),
             flowMode: owner?.mode,
             tokenGeneration: owner?.generation,
             marketplaceHeaderNames: [...marketplaceHeaderNames],
             marketplaceHeadersMatched: metadataHeadersMatched,
           };
           record(site, event);
-          if (!owner || owner.siteId !== id || owner.expiresAt <= Date.now())
+          if (!owner || owner.siteId !== id || owner.expiresAt <= now())
             return json(response, 401, { error: "invalid_token" });
           if (!metadataHeadersMatched) {
             safeFailure(site, endpoint, "marketplace_headers_missing");
             return json(response, 400, { error: "missing_integration_headers" });
           }
-          if (["/api/v2/users/me.json", "/api/v2/users/me"].includes(endpoint) && request.method === "GET")
-            return json(response, 200, { user: { id: id === "site-a" ? 9101 : 9202, name: `Zendesk fixture ${id}` } });
+          if (
+            ["/api/v2/users/me.json", "/api/v2/users/me"].includes(endpoint) &&
+            request.method === "GET"
+          )
+            return json(response, 200, {
+              user: {
+                id: owner.userId ?? (id === "site-a" ? 9101 : 9202),
+                name: `Zendesk fixture ${id}`,
+              },
+            });
           if (endpoint === "/api/v2/tickets.json" && request.method === "GET") {
             const ticket = {
               id: id === "site-a" ? 7101 : 7202,
@@ -271,14 +355,19 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             };
             return json(response, 200, { ticket });
           }
-          if (["/api/v2/tickets.json", "/api/v2/tickets"].includes(endpoint) && request.method === "POST") {
-            return json(response, 201, { ticket: {
-              id: id === "site-a" ? 7101 : 7202,
-              subject: "Synthetic ticket",
-              status: "open",
-              created_at: "2026-01-01T00:00:00Z",
-              updated_at: "2026-01-01T00:00:00Z",
-            } });
+          if (
+            ["/api/v2/tickets.json", "/api/v2/tickets"].includes(endpoint) &&
+            request.method === "POST"
+          ) {
+            return json(response, 201, {
+              ticket: {
+                id: id === "site-a" ? 7101 : 7202,
+                subject: "Synthetic ticket",
+                status: "open",
+                created_at: "2026-01-01T00:00:00Z",
+                updated_at: "2026-01-01T00:00:00Z",
+              },
+            });
           }
           return json(response, 404, { error: "unmocked_route" });
         }
@@ -307,10 +396,16 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
   server.listen(0, "::1");
   await once(server, "listening");
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Zendesk fixture did not bind an IPv6 loopback port");
+  if (!address || typeof address === "string")
+    throw new Error("Zendesk fixture did not bind an IPv6 loopback port");
   for (const id of ["site-a", "site-b"]) {
     const hostName = `${id}.localhost`;
-    const site = { id, host: `${hostName}:${address.port}`, hostName, origin: `http://${hostName}:${address.port}` };
+    const site = {
+      id,
+      host: `${hostName}:${address.port}`,
+      hostName,
+      origin: `http://${hostName}:${address.port}`,
+    };
     handlersByHost.set(site.host.toLowerCase(), siteHandler(site));
     sites.push(site);
   }
@@ -326,17 +421,44 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
     client: flowClient,
     observations: () => structuredClone(observations),
     failures: () => structuredClone(failures),
-    rotations: () => [...flows.values()].map((flow) => ({
-      site: flow.siteId,
-      mode: flow.mode,
-      generation: flow.generation,
-      rotated: flow.generation > 0,
-    })),
+    rotations: () =>
+      [...flows.values()].map((flow) => ({
+        site: flow.siteId,
+        mode: flow.mode,
+        generation: flow.generation,
+        rotated: flow.generation > 0,
+      })),
+    advanceClock(milliseconds) {
+      clockOffset += milliseconds;
+    },
+    setTenantCallback(siteId, callback) {
+      tenantCallbacks.set(siteId, callback);
+    },
+    setAuthorizationStatus(siteId, status) {
+      if (status === undefined) authorizationStatuses.delete(siteId);
+      else authorizationStatuses.set(siteId, status);
+    },
+    removeTenantClient(siteId) {
+      clientDefinitions.delete(`${siteId}:${siteId}_zendesk`);
+    },
+    revokeTenantUser(userId) {
+      for (const [token, flow] of accessTokens) {
+        if (flow.mode === "tenant" && (flow.userId ?? 9101) === userId) accessTokens.delete(token);
+      }
+      for (const [token, flow] of refreshTokens) {
+        if (flow.mode === "tenant" && (flow.userId ?? 9101) === userId) refreshTokens.delete(token);
+      }
+    },
     async stop() {
-      await Promise.all(servers.map((server) => new Promise((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-        server.closeAllConnections();
-      })));
+      await Promise.all(
+        servers.map(
+          (server) =>
+            new Promise((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()));
+              server.closeAllConnections();
+            }),
+        ),
+      );
     },
   };
 }
