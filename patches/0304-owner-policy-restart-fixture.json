@@ -1,0 +1,9 @@
+{
+  "identity": "executor-owner-policy-restart-fixture",
+  "file": "0304-owner-policy-restart-fixture.patch",
+  "content_sha256": "fbedfe4119b7d3061759b55176ef3f60c0c411ec55d527d6182c402462dea29d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
