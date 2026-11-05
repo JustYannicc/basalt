@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "accountToolCalls": {
+      "fixtures": "actors",
+      "title": "tool calls count toward the account they used on the Accounts list and its app's tab, and a member reads no counts for an account they cannot inspect",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The counts are the SDK's own storage on every host; self-host proves the path."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account rows."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountToolCalls": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/server/src/contracts/account-traffic.ts",
+    ".upstream/apps/hosted/server/src/contracts/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-traffic.ts",
+    ".upstream/apps/hosted/server/src/implementation/api.ts",
+    ".upstream/apps/hosted/server/src/implementation/proofs/account-access.ts",
+    ".upstream/apps/hosted/web/src/contracts/connector-traffic.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-traffic.tsx",
+    ".upstream/packages/sdk/src/contracts/account-traffic.ts",
+    ".upstream/packages/sdk/src/contracts/executor.ts",
+    ".upstream/packages/sdk/src/core.ts",
+    ".upstream/packages/sdk/src/implementation/account-traffic-store.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx"
+  ]
+}

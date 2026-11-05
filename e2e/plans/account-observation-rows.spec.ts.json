@@ -20,8 +20,8 @@
   },
   "runs": {
     "accountObservationRows": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "account-acquisition:account-usage-rows-and-cells"
+      "account-acquisition:account-usage-rows-and-cells",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
   "inputs": [

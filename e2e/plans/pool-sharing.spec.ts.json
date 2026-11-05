@@ -20,7 +20,7 @@
     }
   },
   "runs": {
-    "poolSharing": ["host-managed-accounts:host-managed-visibility-and-existing-account-behavior"]
+    "poolSharing": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",

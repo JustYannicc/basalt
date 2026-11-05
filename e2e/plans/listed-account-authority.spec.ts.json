@@ -67,19 +67,19 @@
   },
   "runs": {
     "listedAccountDemotion": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountDemotionMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountReadonly": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountReadonlyMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ]
   },

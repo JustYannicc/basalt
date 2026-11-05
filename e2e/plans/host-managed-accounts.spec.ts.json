@@ -51,6 +51,7 @@
     ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/apps.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/connection-app-picker.tsx",
-    ".upstream/packages/ui/src/implementation/dashboard/scoped-connections.tsx"
+    ".upstream/packages/ui/src/implementation/dashboard/scoped-connections.tsx",
+    ".upstream/e2e/tests/listed-account-actions.spec.ts"
   ]
 }

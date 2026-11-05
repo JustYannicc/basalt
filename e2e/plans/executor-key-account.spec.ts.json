@@ -69,16 +69,16 @@
   },
   "runs": {
     "executorKeyAccount": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "declared:cloud"
+      "declared:cloud",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ],
     "executorInstallationLoading": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "declared:cloud"
+      "declared:cloud",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ],
     "executorAppCardAccount": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "declared:cloud"
+      "declared:cloud",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ],
     "executorKeyUnlinkSticks": [
       "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"

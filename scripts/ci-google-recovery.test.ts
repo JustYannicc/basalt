@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { gateErrors, fastJobs, bundleJobs } from "./ci/gate.ts";
+import { patternForGroup, readDeclarations } from "./ci/declarations.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
@@ -20,40 +21,77 @@ test("Google recovery and diagnostics retain every original command, environment
         (step: { run?: string }) =>
           step.run?.includes("prove-provider-adoption.ts") || step.run?.includes("e2e:cloud"),
       )
-      .map((step: { run: string; env: Record<string, string>; "timeout-minutes": number }) => ({
-        run: step.run,
-        env: step.env,
-        minutes: step["timeout-minutes"],
-      })),
+      .map(
+        (step: {
+          run: string;
+          env: Record<string, string>;
+          "working-directory"?: string;
+          "timeout-minutes": number;
+        }) => ({
+          run: step.run,
+          env: step.env,
+          minutes: step["timeout-minutes"],
+          cwd: step["working-directory"] ?? null,
+        }),
+      ),
   );
   assert.deepEqual(commands, [
     {
-      run: "node scripts/production-ops/prove-provider-adoption.ts",
+      run: 'BASALT_ADOPTION_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts google-account-recovery:google-recovery-through-signed-cloud-operations)"\nexport BASALT_ADOPTION_PROOF_PATTERN\nnode scripts/production-ops/prove-provider-adoption.ts\n',
       env: {
         BASALT_E2E_PRODUCTION_OPS: "1",
         BASALT_E2E_PREBOOT_BINDING: "alternate",
         BASALT_ADOPTION_PROOF_WORKERS: "1",
-        BASALT_ADOPTION_PROOF_PATTERN:
-          "^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after|retires exact duplicate bindings)",
       },
       minutes: 6,
+      cwd: null,
     },
     {
-      run: "bun run e2e:cloud --test-name '^Google client diagnostics compare saved clients without exposing credentials$' --workers 1",
+      run: 'bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-diagnostics:configured-client-diagnostics)" --workers 1',
       env: {
         BASALT_E2E_PRODUCTION_OPS: "1",
         BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: "configured",
       },
       minutes: 3,
+      cwd: ".upstream",
     },
     {
-      run: "bun run e2e:cloud --test-name '^Google client diagnostics distinguish an unavailable configured client$' --workers 1",
+      run: 'bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts google-account-diagnostics:unconfigured-client-diagnostics)" --workers 1',
       env: {
         BASALT_E2E_PRODUCTION_OPS: "1",
         BASALT_E2E_GOOGLE_CLIENT_DIAGNOSTICS: "unconfigured",
       },
       minutes: 3,
+      cwd: ".upstream",
     },
+  ]);
+  const plans = Object.values(readDeclarations().files).flatMap((file) =>
+    Object.entries(file.scenarios),
+  );
+  const selected = (group: string) =>
+    plans
+      .filter(
+        ([, plan]) =>
+          plan.targets.cloud.status === "scheduled" &&
+          new RegExp(patternForGroup(group)).test(plan.title),
+      )
+      .map(([key]) => key)
+      .sort();
+  assert.deepEqual(
+    selected("google-account-recovery:google-recovery-through-signed-cloud-operations"),
+    [
+      "atlassianIdentityMigration",
+      "googleDuplicateBindingRace",
+      "googleDuplicateBindings",
+      "googleIdentityBinding",
+      "googleIdentityMigration",
+    ],
+  );
+  assert.deepEqual(selected("google-account-diagnostics:configured-client-diagnostics"), [
+    "googleClientDiagnostics",
+  ]);
+  assert.deepEqual(selected("google-account-diagnostics:unconfigured-client-diagnostics"), [
+    "googleClientUnavailable",
   ]);
 });
 

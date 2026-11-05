@@ -35,11 +35,11 @@
   },
   "runs": {
     "listedBindingRemove": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedBindingRemoveMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ]
   },

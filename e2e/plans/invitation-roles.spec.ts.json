@@ -35,12 +35,12 @@
   },
   "runs": {
     "invitationRolePrivateAccounts": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ],
     "invitationRoles": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior",
-      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement"
+      "host-managed-accounts-cloud:the-private-oauth-transport-and-hosted-placement",
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
   "inputs": [

@@ -36,8 +36,8 @@
     }
   },
   "runs": {
-    "listedSetupAccount": ["host-managed-accounts:listed-account-actions"],
-    "listedSetupAccountMobile": ["host-managed-accounts:listed-account-actions"]
+    "listedSetupAccount": ["host-managed-accounts-pool:listed-account-actions"],
+    "listedSetupAccountMobile": ["host-managed-accounts-pool:listed-account-actions"]
   },
   "inputs": [
     ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",

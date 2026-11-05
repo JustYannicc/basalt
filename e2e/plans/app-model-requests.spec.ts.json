@@ -38,12 +38,8 @@
     }
   },
   "runs": {
-    "appModelRequests": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ],
-    "appModelLifecycle": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "appModelRequests": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"],
+    "appModelLifecycle": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",

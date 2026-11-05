@@ -21,7 +21,7 @@
   },
   "runs": {
     "nativePoolAccountMirrors": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
     ]
   },
   "inputs": [

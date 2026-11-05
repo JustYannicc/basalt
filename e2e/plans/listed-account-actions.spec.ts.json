@@ -99,27 +99,27 @@
   },
   "runs": {
     "listedAccountEdit": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountEditMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAppAccountEdit": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAppAccountEditMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountDelete": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ],
     "listedAccountDeleteMobile": [
-      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-pool:listed-account-actions",
       "host-managed-accounts-cloud:listed-account-actions"
     ]
   },

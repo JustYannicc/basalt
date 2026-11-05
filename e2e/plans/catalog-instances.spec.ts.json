@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "catalogInstances": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "catalogInstances": ["host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
