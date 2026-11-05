@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -96,7 +96,7 @@
+@@ -114,7 +114,7 @@
      return saved === undefined ? undefined : accountRowFromSaved(saved);
    };
    const reported = methodQuery.data;
@@ -10,7 +10,32 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
    const methods: RequirementMethods | undefined = Option.isSome(reported)
      ? {
          unavailable: (requirement, method) =>
-@@ -112,11 +112,7 @@
+@@ -125,17 +125,20 @@
+           reported.value.native.find((entry) => entry.requirement === requirement)?.name,
+       }
+     : undefined;
+-  // Only a settled read counts: while it loads again, or after it failed, a cached answer offers
+-  // no connection.
++  // Pools rely on provider apps' current connection policy; other apps keep their known choices.
++  const policyReady =
++    Option.isSome(reported) &&
++    (reported.value.providerApp === null ||
++      (AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting));
+   const connections: RequirementConnections =
+-    methodsReady && Option.isSome(reported)
++    policyReady && Option.isSome(reported)
+       ? {
+           state: "ready",
+           of: (requirement) =>
+             reported.value.connections.find((entry) => entry.requirement === requirement),
+         }
+       : { state: "pending" };
+-  // The host marks provider apps; nothing is assumed while its read loads or after it failed.
++  // Retain provider usage details while its connection policy refreshes.
+   const providerApp = methodsReady && Option.isSome(reported) ? reported.value.providerApp : null;
+   const connectsHere = (slot: string) =>
+     connections.state === "ready" && connections.of(slot)?.canConnect === true;
+@@ -145,11 +148,7 @@
    const copiedPackage = app.copiedFrom?.name;
    const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
    const catalogEntry = catalogEntries?.find((entry) => entry.package === copiedPackage);
@@ -23,6 +48,15 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
    const registry = useContext(RegistryContext);
    const revalidate = (account: AccountSummary["id"]) => {
      const check = checkAppAccountAtom({ organization, app: app.id, account });
+@@ -362,7 +361,7 @@
+       <div className="mb-4 empty:hidden">
+         <ProviderReturnLink app={app} />
+       </div>
+-      {!methodsReady && (
++      {!policyReady && (
+         <div className="mb-4">
+           {AsyncResult.isFailure(methodQuery.result) ? (
+             <HostedFailure
 diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 --- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
@@ -42,16 +76,36 @@ diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/ap
 -      catalog.result.waiting ||
 -      AsyncResult.isFailure(catalog.result));
 +  const catalogUnavailable = app?.copiedFrom?.name !== undefined && catalogEntries === undefined;
- 
+
    return (
      <>
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -111,6 +111,88 @@
- 
+@@ -111,6 +111,108 @@
+
  /** Scenario names and applicability used by both test declarations and test selection. */
  export const scenarios = plan({
++  cachedProviderPolicyDesktop: {
++    fixtures: "actors",
++    file: "cached-provider-policy.spec.ts",
++    title: "Provider account policy waits for a settled refresh 1440",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Uses hosted provider account policy."),
++    },
++  },
++  cachedProviderPolicyPhone: {
++    fixtures: "actors",
++    file: "cached-provider-policy.spec.ts",
++    title: "Provider account policy waits for a settled refresh 390",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Hosted read transitions run on self-host."),
++      local: na("Uses hosted provider account policy."),
++    },
++  },
 +  initialCatalogControlsDesktop: {
 +    fixtures: "actors",
 +    file: "cached-account-controls.spec.ts",
@@ -434,3 +488,216 @@ new file mode 100644
 +    }
 +  }
 +});
+diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/account-identity-reconciliation.spec.ts
+--- a/e2e/tests/account-identity-reconciliation.spec.ts
++++ b/e2e/tests/account-identity-reconciliation.spec.ts
+@@ -5,11 +5,12 @@
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { Resource } from "../support/contracts.ts";
++import { Inventory, Resource } from "../support/contracts.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { IdentityAccount } from "../support/account-identity-product.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { connectionsPath } from "../support/app-accounts.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+
+ const Links = Schema.Array(Schema.Struct({ account: Resource }));
+@@ -219,6 +220,52 @@
+             );
+         });
+         yield* browser.checkpoint("Read-only retry refreshed the account without another reuse");
++        const beforeReconnect = yield* body(
++          Inventory,
++          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
++        yield* browser.use("Open the already connected app", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${target}?view=accounts`),
++        );
++        yield* browser.use("The connected app still offers account choices", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++        );
++        const refresh = yield* holdQuery(
++          [actors.organization.slug, actors.organization.id].map(
++            (organization) => `/api/organizations/${organization}/apps/${target}/accounts/methods`,
++          ),
++          "continue",
++        );
++        yield* refreshVisiblePage;
++        yield* refresh.requested;
++        yield* browser.use("Use cached methods while their refresh is held", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++        );
++        yield* browser.use("Reuse the account already connected to this app", (page) =>
++          page.getByRole("dialog").getByRole("button", { name: "Add app", exact: true }).click(),
++        );
++        yield* browser.use("The repeated connection completes", (page) =>
++          page.getByRole("status").filter({ hasText: "Apps connected" }).waitFor(),
++        );
++        expect(saves).toBe(2);
++        expect((yield* issuer.metrics).authorizations).toBe(1);
++        expect(
++          yield* body(
++            Links,
++            yield* api.request(actors.owner, "GET", `${prefix}/apps/${target}/accounts/user`),
++          ),
++        ).toEqual(linked);
++        const afterReconnect = yield* body(
++          Inventory,
++          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
++        );
++        expect(afterReconnect.accounts.map((account) => account.id).sort()).toEqual(
++          beforeReconnect.accounts.map((account) => account.id).sort(),
++        );
++        yield* refresh.release;
++        yield* browser.checkpoint(
++          "Cached Connect reused the same account and binding without another authorization",
++        );
+       }),
+     ),
+   );
+diff --git a/e2e/tests/cached-provider-policy.spec.ts b/e2e/tests/cached-provider-policy.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/cached-provider-policy.spec.ts
+@@ -0,0 +1,123 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Provider account policy", (it) => {
++  for (const width of [1440, 390]) {
++    const scenario =
++      width === 1440 ? scenarios.cachedProviderPolicyDesktop : scenarios.cachedProviderPolicyPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser;
++          const catalog = yield* providerAppsCatalog;
++          yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "provider-openai",
++            name: "Provider policy choices",
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = yield* body(Resource, installed);
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++          );
++          yield* browser.login(actors.owner);
++          yield* browser.use("Open provider account choices", (page) =>
++            page
++              .setViewportSize({ width, height: 960 })
++              .then(() =>
++                page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
++              ),
++          );
++          yield* browser.use("The initial policy allows Connect", (page) =>
++            page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++          );
++          const path = new RegExp(`/apps/${app.id}/accounts/methods$`);
++          const committed = browser.use("Commit the policy transition", (page) =>
++            page.evaluate(
++              () =>
++                new Promise<void>((resolve) =>
++                  requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                ),
++            ),
++          );
++          const noConnect = (phase: string) =>
++            Effect.gen(function* () {
++              yield* committed;
++              expect(
++                yield* browser.use(phase, (page) =>
++                  page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++                ),
++              ).toBe(0);
++            });
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(path, "undeclared", { allRequests: true });
++              const response = yield* browser.use("Observe the failed policy response", (page) =>
++                Promise.resolve({
++                  done: page
++                    .waitForResponse((response) => path.test(new URL(response.url()).pathname))
++                    .then((response) => response.finished().then(() => response.status())),
++                }),
++              );
++              yield* refreshVisiblePage;
++              yield* held.requested;
++              yield* noConnect("A provider policy refresh offers no Connect");
++              yield* browser.checkpoint("Provider actions wait for a settled host policy");
++              yield* held.release;
++              expect(yield* browser.use("The policy refresh fails", () => response.done)).toBe(599);
++              yield* browser.use("Failed policy offers recovery", (page) =>
++                page.getByRole("button", { name: "Retry", exact: true }).waitFor(),
++              );
++              yield* noConnect("A failed provider policy offers no Connect");
++              yield* browser.checkpoint("A failed provider policy keeps Retry available");
++            }),
++          );
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(path, "continue", { allRequests: true });
++              const response = yield* browser.use("Observe policy recovery", (page) =>
++                Promise.resolve({
++                  done: page
++                    .waitForResponse(
++                      (response) => path.test(new URL(response.url()).pathname) && response.ok(),
++                    )
++                    .then((response) => response.finished()),
++                }),
++              );
++              yield* browser.use("Retry the provider policy", (page) =>
++                page.getByRole("button", { name: "Retry", exact: true }).click(),
++              );
++              yield* held.requested;
++              yield* noConnect("Provider policy recovery offers no Connect before its response");
++              yield* held.release;
++              yield* browser.use("The policy recovery response completes", () => response.done);
++              yield* browser.use("The settled policy restores Connect", (page) =>
++                page
++                  .getByRole("button", {
++                    name: "Connect new account",
++                    exact: true,
++                    disabled: false,
++                  })
++                  .waitFor(),
++              );
++              yield* browser.checkpoint("Fresh provider policy restores account choices");
++            }),
++          );
++        }),
++      ),
++    );
++  }
++});
+diff --git a/packages/ui/src/contracts/app-accounts.ts b/packages/ui/src/contracts/app-accounts.ts
+--- a/packages/ui/src/contracts/app-accounts.ts
++++ b/packages/ui/src/contracts/app-accounts.ts
+@@ -158,8 +158,9 @@
+ }
+
+ /**
+- * The host's connection policy for an app's requirements. `pending` while the read loads or after
+- * it failed, which offers no connection control. A host that states no policy passes none.
++ * The host's connection policy for an app's requirements. Callers that require a current policy
++ * pass `pending` until the read settles, offering no connection control. A host that states no
++ * policy passes none.
+  */
+ export type RequirementConnections =
+   | { readonly state: "pending" }
