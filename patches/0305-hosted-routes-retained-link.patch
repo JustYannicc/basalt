@@ -1,0 +1,202 @@
+diff --git a/apps/hosted/server/src/implementation/hosted-routes-relink.ts b/apps/hosted/server/src/implementation/hosted-routes-relink.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/hosted-routes-relink.ts
+@@ -0,0 +1,76 @@
++import { AccountId, StorageError, type AppId, type Executor } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import {
++  HostedRoutesConfiguration,
++  hostedRoutesMethod,
++  hostedRoutesRequirement,
++} from "../contracts/hosted-routes.ts";
++import { organizationOwner } from "../contracts/organization.ts";
++import { lockedChange, provisionAccountLink } from "./app-accounts.ts";
++import { ensureHostedRoutesAccount, isHostedRoutesApp } from "./hosted-routes-accounts.ts";
++
++const Retained = Schema.Struct({ account: AccountId });
++
++// Acquisition stays unavailable. Only the host's retained mapping can authorize restoration.
++export const restoreHostedRoutesLink = (
++  executor: Executor,
++  input: { readonly app: AppId; readonly requirement: string; readonly account: AccountId },
++) =>
++  Effect.gen(function* () {
++    const configuration = yield* HostedRoutesConfiguration;
++    const identity = configuration?.identity;
++    if (
++      input.requirement !== hostedRoutesRequirement ||
++      configuration === undefined ||
++      identity === undefined ||
++      !configuration.enabled
++    )
++      return undefined;
++
++    return yield* lockedChange(
++      executor,
++      { app: input.app, account: input.account, access: "use" },
++      (sql, actor) =>
++        Effect.gen(function* () {
++          const app = yield* executor.apps.get({
++            owner: organizationOwner(actor.organization),
++            app: input.app,
++          });
++          if (!isHostedRoutesApp(app, configuration)) return undefined;
++          const rows = yield* sql`
++          select mapping.account_id as account
++          from basalt_hosted_routes_accounts mapping
++          join executor_accounts account on account.id = mapping.account_id
++            and account.owner = ${organizationOwner(actor.organization)}
++          join hosted_account_access access on access.account_id = account.id
++          where mapping.app = ${app.id} and mapping.organization = ${actor.organization}
++            and mapping.user_id = ${actor.user} and mapping.account_id = ${input.account}
++            and mapping.state in ('linked', 'retired')
++            and account.provider = ${identity.provider} and account.method = ${hostedRoutesMethod}
++            and access.organization_id = ${actor.organization} and access.kind = 'personal'
++            and access.personal_user_id = ${actor.user}
++          for update of mapping`;
++          const retained = yield* Schema.decodeUnknownEffect(Schema.Array(Retained))(rows);
++          if (retained.length !== 1 || retained[0] === undefined) return undefined;
++          const changed = yield* provisionAccountLink(sql, executor.webhooks, {
++            app: app.id,
++            requirement: hostedRoutesRequirement,
++            account: retained[0].account,
++            subject: actor.user,
++            linkedBy: actor.user,
++          });
++          const restored = yield* ensureHostedRoutesAccount(executor, sql, {
++            organization: actor.organization,
++            user: actor.user,
++            app,
++          });
++          if (restored !== retained[0].account) return yield* new StorageError();
++          return changed;
++        }),
++    );
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new StorageError(),
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -56,6 +56,7 @@
+ import { accountOAuthRedirectUri } from "./auth.ts";
+ import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+ import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
++import { restoreHostedRoutesLink } from "./hosted-routes-relink.ts";
+ import { linkedAccountSignIn } from "./account-sign-in.ts";
+ import {
+   policyDatabase,
+@@ -634,6 +635,18 @@
+             if (binding !== undefined)
+               return yield* new RequirementMismatch({ ...params, scope: "user", reason: "legacy" });
+           }
++          const restored = yield* restoreHostedRoutesLink(executor, params);
++          if (restored !== undefined) {
++            if (restored) yield* wake;
++            return yield* savedLink(
++              executor,
++              owner,
++              params.app,
++              user,
++              params.requirement,
++              params.account,
++            );
++          }
+           yield* requireProviderAccountMethod(app, params.requirement, account.method);
+           const changed = yield* replacingAccounts(
+             executor,
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -553,7 +553,7 @@
+   input: Parameters<typeof writeLink>[2],
+ ) => writeLink(sql, webhooks, input, false);
+ 
+-/** Trusted host provisioning only. Never select this path from an HTTP or app-author input. */
++/** Host provisioning or verified retained mappings only. Request fields alone grant no authority. */
+ export const provisionAccountLink = (
+   sql: SqlClient.SqlClient,
+   webhooks: WebhookSources,
+diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
+--- a/e2e/tests/hosted-routes.spec.ts
++++ b/e2e/tests/hosted-routes.spec.ts
+@@ -3,7 +3,12 @@
+ import { Effect, Schema } from "effect";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+-import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
++import {
++  linkAccount,
++  linkAccountResponse,
++  linkedAccountIds,
++  unlinkAccount,
++} from "../support/app-accounts.ts";
+ import { withHostedHttpCase } from "../support/case.ts";
+ import { App } from "../support/contracts.ts";
+ import { cloudLocks } from "../support/cloud-locks.ts";
+@@ -132,7 +137,8 @@
+             const accounts = yield* linkedAccountIds(actor, app.path);
+             expect(accounts).toHaveLength(1);
+             return { actor, app, account: accounts[0]! };
+-          }));
++          }),
++        );
+         const results = yield* Effect.forEach(
+           selected,
+           ({ actor, app, account }) =>
+@@ -145,9 +151,7 @@
+         );
+         const completed = results.filter(
+           (result) =>
+-            result.status === 200 &&
+-            isRecord(result.body) &&
+-            Array.isArray(result.body.routes),
++            result.status === 200 && isRecord(result.body) && Array.isArray(result.body.routes),
+         );
+         const rejected = results.filter(
+           (result) =>
+@@ -232,14 +236,35 @@
+         ).toEqual([{ calls: 1 }]);
+ 
+         // Explicitly relinking the retained account restores access without provisioning another.
++        const wrongApp = yield* linkAccountResponse(
++          actors.member,
++          installed[0]!.path,
++          "hostedRoutes",
++          memberAccount,
++        );
++        expect(wrongApp.status).toBe(422);
++        expect(wrongApp.body).toMatchObject({ _tag: "AuthMethodInvalid" });
++        const wrongPerson = yield* linkAccountResponse(
++          actors.owner,
++          installed[1]!.path,
++          "hostedRoutes",
++          memberAccount,
++        );
++        expect(wrongPerson.status).toBe(403);
+         yield* linkAccount(actors.member, installed[1]!.path, "hostedRoutes", memberAccount);
+-        const restored = yield* api.request(actors.member, "GET", `${installed[1]!.path}/tools/index`);
++        const restored = yield* api.request(
++          actors.member,
++          "GET",
++          `${installed[1]!.path}/tools/index`,
++        );
+         expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+         expect(JSON.stringify(restored.body)).toContain("hosted.computeRoutes");
+-        expect(yield* database.run({
+-          sql: "select state, account_id from basalt_hosted_routes_accounts where app = $1 and user_id = $2",
+-          params: [installed[1]!.id, memberUser.user.id],
+-        })).toEqual([{ state: "linked", account_id: memberAccount }]);
++        expect(
++          yield* database.run({
++            sql: "select state, account_id from basalt_hosted_routes_accounts where app = $1 and user_id = $2",
++            params: [installed[1]!.id, memberUser.user.id],
++          }),
++        ).toEqual([{ state: "linked", account_id: memberAccount }]);
+         expect(yield* linkedAccountIds(actors.member, installed[1]!.path)).toEqual([memberAccount]);
+ 
+         // The monthly refusal stays observable even when shorter limits also apply.
