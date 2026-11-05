@@ -1,0 +1,423 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+@@ -1,4 +1,4 @@
+-import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
++import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
+ import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
+ import { CloudPagePending } from "../components/page-pending.tsx";
+ import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
+@@ -30,7 +30,7 @@
+           support={<CloudSupport />}
+         >
+           <OrganizationContent pending={<CloudPagePending />}>
+-            <Outlet />
++            <PageOutlet />
+             <NameAccountDialog />
+           </OrganizationContent>
+         </DashboardShell>
+@@ -51,3 +51,13 @@
+     </DashboardEntryPending>
+   );
+ }
++
++/**
++ * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
++ * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
++ * keep reading on focus and on poll timers. Keying by the child route unmounts the previous page.
++ */
++function PageOutlet() {
++  const page = useChildMatches({ select: (matches) => matches[0]?.routeId });
++  return <Outlet key={page} />;
++}
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+@@ -1,4 +1,4 @@
+-import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
++import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
+ import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
+ import { PagePending } from "@executor-js/hosted-web/page-pending";
+ import { DashboardShell } from "@executor-js/hosted-web/shell";
+@@ -18,7 +18,7 @@
+     <OrganizationBoundary slug={organizationSlug}>
+       <DashboardShell allowCreateOrganization={false} navigation={<Navigation />}>
+         <OrganizationContent pending={<PagePending />}>
+-          <Outlet />
++          <PageOutlet />
+           <NameAccountDialog />
+         </OrganizationContent>
+       </DashboardShell>
+@@ -34,3 +34,13 @@
+     </DashboardEntryPending>
+   );
+ }
++
++/**
++ * The router reuses one unkeyed child match, and its Suspense boundary, across pages. A page that
++ * suspends there keeps the previous page mounted under display:none, and that page's subscriptions
++ * keep reading on focus and on poll timers. Keying by the child route unmounts the previous page.
++ */
++function PageOutlet() {
++  const page = useChildMatches({ select: (matches) => matches[0]?.routeId });
++  return <Outlet key={page} />;
++}
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6013,6 +6013,26 @@
+       "self-host": scheduled,
+       cloud: scheduled,
+       local: na("Personal tokens are hosted only."),
++    },
++  },
++  hiddenSectionDesktop: {
++    fixtures: "actors",
++    file: "hidden-section-reads.spec.ts",
++    title: "Hidden console sections stop focus and poll reads at 1280px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted section router."),
++    },
++  },
++  hiddenSectionPhone: {
++    fixtures: "actors",
++    file: "hidden-section-reads.spec.ts",
++    title: "Hidden console sections stop focus and poll reads at 390px",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local does not share the hosted section router."),
+     },
+   },
+   dashboardClientLoading: {
+diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-client-loading.spec.ts
+--- a/e2e/tests/dashboard-client-loading.spec.ts
++++ b/e2e/tests/dashboard-client-loading.spec.ts
+@@ -17,6 +17,7 @@
+           browser = yield* Browser,
+           evidence = yield* Evidence;
+         yield* browser.login(actors.owner);
++        const hiddenMembershipReads: (readonly string[])[] = [];
+         for (const viewport of [
+           { name: "Desktop", width: 1280, height: 800 },
+           { name: "Mobile", width: 390, height: 844 },
+@@ -98,7 +99,7 @@
+                     page
+                       .getByText("Saved sign-ins, available to your apps.", { exact: true })
+                       .count(),
+-                    page.locator("section.page").count(),
++                    page.locator("section.page:visible").count(),
+                     page.getByRole("heading", { level: 1 }).evaluateAll((headings) => {
+                       const rect = headings[0]?.getBoundingClientRect();
+                       return rect ? { x: rect.x, y: rect.y } : null;
+@@ -124,6 +125,50 @@
+                 "Accounts keeps its page frame while its client module is held",
+               ).toBe(1);
+               expect(before[3]).not.toBeNull();
++              yield* evidence.json(
++                `${viewport.name.toLowerCase()}-departed-sections.json`,
++                yield* browser.use("Inspect the departed page before focus", (page) =>
++                  page.evaluate(() =>
++                    [...document.querySelectorAll("section.page")].map((section) => ({
++                      heading: section.querySelector("h1")?.textContent ?? null,
++                      visible: section.getBoundingClientRect().height > 0,
++                      memberHeadings: [...section.querySelectorAll("h2")].map(
++                        (node) => node.textContent,
++                      ),
++                    })),
++                  ),
++                ),
++              );
++              const hiddenReads = yield* browser.use(
++                "Observe focus reads while the previous frame is hidden",
++                (page) =>
++                  page.evaluate(() => {
++                    const reads: string[] = [];
++                    const original = window.fetch;
++                    window.fetch = (...args) => {
++                      const url = String(args[0]);
++                      if (url.includes("/api/")) reads.push(url.split("?")[0] ?? url);
++                      return original(...args);
++                    };
++                    window.dispatchEvent(new Event("visibilitychange"));
++                    return new Promise<readonly string[]>((resolve) =>
++                      requestAnimationFrame(() =>
++                        requestAnimationFrame(() => {
++                          window.fetch = original;
++                          resolve(reads);
++                        }),
++                      ),
++                    );
++                  }),
++              );
++              yield* evidence.json(`${viewport.name.toLowerCase()}-hidden-focus-reads.json`, {
++                hiddenReads,
++              });
++              hiddenMembershipReads.push(
++                hiddenReads.filter((url) =>
++                  /\/organization\/list-(?:members|invitations)$/.test(url),
++                ),
++              );
+               yield* chunk.release;
+               yield* browser.use("The account directory replaces the loading rows", (page) =>
+                 page
+@@ -173,6 +218,10 @@
+               );
+             }),
+           );
++        expect(
++          hiddenMembershipReads,
++          "Both hidden previous frames start zero membership reads on visibilitychange",
++        ).toEqual([[], []]);
+       }),
+     ),
+   );
+diff --git a/e2e/tests/hidden-section-reads.spec.ts b/e2e/tests/hidden-section-reads.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/hidden-section-reads.spec.ts
+@@ -0,0 +1,158 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
++import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++import { batchedReads, batchPath } from "../support/read-batches.ts";
++import type { Request } from "playwright";
++
++layer(HostedLive, { excludeTestServices: true })("Hidden section reads", (it) => {
++  for (const width of [1280, 390]) {
++    const scenario = width === 1280 ? scenarios.hiddenSectionDesktop : scenarios.hiddenSectionPhone;
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const browser = yield* Browser;
++          const evidence = yield* Evidence;
++          const reads: string[] = [];
++          const queueRead = (path: string) =>
++            /^\/api\/organizations\/[^/]+\/(?:workflow-inputs|scheduled-runs)$/.test(path);
++          const workflowRead = (operation: string) => operation === "workflowInputs.list";
++          const queueReads = (request: Request): readonly string[] => {
++            const path = new URL(request.url()).pathname;
++            if (request.method() === "POST" && path === batchPath)
++              return batchedReads(request.postData())
++                .filter(
++                  (read) =>
++                    (read.group === "workflowInputs" && read.endpoint === "list") ||
++                    (read.group === "schedules" && read.endpoint === "runs"),
++                )
++                .map((read) => `${read.group}.${read.endpoint}`);
++            if (request.method() !== "GET" || !queueRead(path)) return [];
++            return [path.endsWith("/workflow-inputs") ? "workflowInputs.list" : "schedules.runs"];
++          };
++          yield* browser.login(actors.owner);
++          yield* browser.use("Observe real queue reads with the browser clock", (page) =>
++            page.clock.install().then(() => {
++              page.on("request", (request) => {
++                reads.push(...queueReads(request));
++              });
++              return page.setViewportSize({ width, height: 844 });
++            }),
++          );
++          const prefix = `/org/${actors.organization.slug}`;
++          const loadedQueue = (label: string) =>
++            browser.use(label, (page) =>
++              page.getByText("Nothing needs you right now", { exact: true }).waitFor(),
++            );
++          const pollVisibleQueue = (label: string) =>
++            browser.use(label, (page) =>
++              Promise.all([
++                page.waitForRequest((request) => queueReads(request).some(workflowRead)),
++                page.clock.runFor(6_000),
++              ])
++                .then(([request]) => request.response())
++                .then((response) => {
++                  if (response === null) throw new Error("The queue poll received no response");
++                  return response.finished();
++                }),
++            );
++          const settle = (label: string) =>
++            browser.use(label, (page) =>
++              Promise.all([
++                page.evaluate(
++                  () =>
++                    new Promise<void>((resolve) =>
++                      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                    ),
++                ),
++                page.clock.runFor(50),
++              ]).then(() => undefined),
++            );
++
++          yield* openThroughBrowser("Open the queue in a fresh document", `${prefix}/approvals`);
++          yield* loadedQueue("The queue is loaded before testing its poll");
++          const beforeVisiblePoll = reads.length;
++          yield* pollVisibleQueue("A visible queue polls its real workflow endpoint");
++          const visiblePollReads = reads.slice(beforeVisiblePoll);
++          expect(visiblePollReads.some(workflowRead)).toBe(true);
++
++          yield* settle("The visible poll has reached the queue before leaving");
++          // A poll due during the registry's short cache window must also stay quiet after unmount.
++          yield* browser.use("Leave shortly before the next queue poll", (page) =>
++            page
++              .evaluate(() => Date.now() + 100)
++              .then((time) => page.clock.pauseAt(time))
++              .then(() => page.clock.runFor(4_500)),
++          );
++
++          const chunk = yield* holdQuery(/\/assets\/accounts-client-[^/]+\.js$/, "continue", {
++            allRequests: true,
++          });
++          yield* openInApp("Leave the queue for Accounts", `${prefix}/accounts`);
++          yield* browser.use("Commit the destination while the clock is controlled", (page) =>
++            page.clock.runFor(64),
++          );
++          expect(yield* chunk.requested).toMatch(/\/assets\/accounts-client-[^/]+\.js$/);
++          yield* browser.use("The destination loading page has committed", (page) =>
++            page.getByRole("status", { name: "Loading accounts", exact: true }).waitFor(),
++          );
++          yield* settle("Finish the loading commit before checking hidden reads");
++          const beforeHiddenPoll = reads.length;
++          yield* browser.use("Deliver six queue polls while Accounts code stays held", (page) =>
++            page.clock.runFor(31_000),
++          );
++          yield* settle("Flush fetch dispatch after the due poll timers");
++          const hiddenPollReads = reads.slice(beforeHiddenPoll);
++          const beforeHiddenFocus = reads.length;
++          yield* refreshVisiblePage;
++          yield* browser.use("Focus the destination without reviving the departed queue", (page) =>
++            page.evaluate(() => {
++              window.dispatchEvent(new Event("focus"));
++            }),
++          );
++          yield* settle("Flush fetch dispatch after visibility returns");
++          const hiddenFocusReads = reads.slice(beforeHiddenFocus);
++          yield* evidence.json("hidden-queue-reads.json", {
++            width,
++            visiblePollReads,
++            hiddenPollReads,
++            hiddenFocusReads,
++          });
++          yield* browser.checkpoint(`Queue left for held Accounts at ${width}`);
++          expect(hiddenPollReads, "The hidden queue does no periodic reads").toEqual([]);
++          expect(hiddenFocusReads, "The hidden queue does no focus reads").toEqual([]);
++
++          yield* browser.use("Resume real-time frames", (page) => page.clock.resume());
++          yield* chunk.release;
++          yield* browser.use("Accounts finishes loading", (page) =>
++            page
++              .getByRole("status", { name: "Loading accounts", exact: true })
++              .waitFor({ state: "hidden" }),
++          );
++          const returnRead = yield* Effect.forkScoped(
++            browser.use("The visible queue catches up after its hidden focus", (page) =>
++              page
++                .waitForResponse((response) => queueReads(response.request()).some(workflowRead))
++                .then((response) => response.finished()),
++            ),
++          );
++          yield* openInApp("Return to the queue", `${prefix}/approvals`);
++          yield* loadedQueue("The retained queue is usable on return");
++          yield* Fiber.join(returnRead);
++          yield* settle("The return refresh settles before measuring the next poll");
++          const beforeReturnPoll = reads.length;
++          yield* pollVisibleQueue("Polling resumes on the visible queue");
++          expect(reads.slice(beforeReturnPoll).some(workflowRead)).toBe(true);
++          yield* browser.checkpoint(`Queue polling resumed at ${width}`);
++        }),
++      ),
++    );
++  }
++});
+diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
+--- a/packages/ui/src/contracts/refresh.ts
++++ b/packages/ui/src/contracts/refresh.ts
+@@ -1,6 +1,6 @@
+ /** Retention and revalidation for dashboard reads that also render on the server. */
+-import type { Duration } from "effect";
+-import { type AsyncResult, Atom } from "effect/reactivity";
++import { Duration, Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
+ 
+ /**
+  * Counts returns to a visible page. A server render has no window, so its value never changes
+@@ -21,22 +21,60 @@
+ const retention: Duration.Input = "30 minutes";
+ /** Older retained values are shown while they are read again in the background. */
+ const freshness: Duration.Input = "30 seconds";
++const freshnessMillis = Duration.toMillis(Duration.fromInputUnsafe(freshness));
++
++/** `Atom.swr`'s rule: a value last read before `freshness`, or a failure that never had one. */
++const stale = <A, E>(result: AsyncResult.AsyncResult<A, E>) => {
++  if (result.waiting) return false;
++  const success = AsyncResult.isSuccess(result)
++    ? Option.some(result)
++    : AsyncResult.isFailure(result)
++      ? result.previousSuccess
++      : Option.none();
++  return Option.match(success, {
++    onNone: () => !AsyncResult.isInitial(result),
++    onSome: ({ timestamp }) => Date.now() - timestamp >= freshnessMillis,
++  });
++};
+ 
+ /**
+  * Keep a read for a while after its last view closes, so returning to a page shows its data
+  * instead of a skeleton. A page that opens with a value older than `freshness` reads it again in
+- * the background, and every return to a visible tab reads it again. Hydrated values carry the
+- * server's timestamp, so the first render after hydration does not repeat the server's read.
++ * the background, and a viewed read is read again on every return to a visible tab. Hydrated
++ * values carry the server's timestamp, so the first render after hydration does not repeat the
++ * server's read.
++ *
++ * The focus count and the source are dependencies, not listeners. `Atom.swr` listened to both, so
++ * any retained dependent (an outer idle TTL, or the registry's default one) kept a closed page
++ * refreshing on focus. Here a read nobody views only goes stale, and reads when a view opens it.
+  */
+-export const revalidated = <A extends Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>>(
+-  self: A,
+-) =>
+-  Atom.swr(Atom.setIdleTTL(self, retention), {
+-    staleTime: freshness,
+-    revalidateOnMount: true,
+-    revalidateOnFocus: "always",
+-    focusSignal: pageFocus,
+-  });
++export const revalidated = <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
++  const source = Atom.setIdleTTL(self, retention);
++  return Atom.transform(
++    source,
++    (get) => {
++      get(pageFocus);
++      const current = get(source);
++      const previous = get.self<AsyncResult.AsyncResult<A, E>>();
++      // Only the focus count rebuilds this read without changing its source.
++      const focused = Option.isSome(previous) && previous.value === current;
++      const due = (result: AsyncResult.AsyncResult<A, E>) =>
++        focused ? !result.waiting : Option.isNone(previous) && stale(result);
++      if (due(current)) {
++        let active = true;
++        get.addFinalizer(() => {
++          active = false;
++        });
++        // Refresh after the read, as `Atom.swr` does, so the source does not change mid-build.
++        get.registry.schedulerAsync.makeDispatcher().scheduleTask(() => {
++          if (active && due(get.once(source))) get.refresh(source);
++        }, 0);
++      }
++      return current;
++    },
++    { initialValueTarget: source },
++  );
++};
+ 
+ /**
+  * Read a live subscription again on every return to a visible page, the same refresh `revalidated`
