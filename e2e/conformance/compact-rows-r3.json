@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "id": "compact-rows-r3",
+  "artifact": {
+    "name": "compact-rows-r3.html",
+    "sha256": "1d1d3eea568c2115a77a08d7fcddc7a92b6a15a59034a1c0f7964cc9a342a753"
+  },
+  "requirements": [
+    {
+      "id": "row-identity-type",
+      "text": "Compact rows retain authored names, distinguish host-verified from merely reported identities, and name only declared account types.",
+      "proofs": [
+        {
+          "scenario": "accountCompactRows",
+          "target": "self-host",
+          "job": "account-acquisition"
+        }
+      ]
+    },
+    {
+      "id": "desktop-phone-surfaces",
+      "text": "Accounts and app-account rows keep their identity and Add app action usable at desktop and 390 px in light and dark mode.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "The bound accountCompactRows scenario asserts identity and Add app geometry only on Accounts. App-account rows have a reading wait and screenshots, without these usability assertions at either width or theme."
+      }
+    },
+    {
+      "id": "row-menu-recovery",
+      "text": "Refresh is in the row menu; current rejected sign-ins expose Needs re-auth, while unchecked and outdated credentials do not read as healthy.",
+      "proofs": [
+        {
+          "scenario": "accountCompactRows",
+          "target": "self-host",
+          "job": "account-acquisition"
+        }
+      ]
+    },
+    {
+      "id": "all-r3-columns",
+      "text": "The dedicated wrapping Type column, Plan, Requests 7d, Health and Used by columns show their approved values and preserve authored-name-first ordering.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "The bound scenario proves types, plan and identity distinctions but not every r3 column, width and ordering requirement."
+      }
+    },
+    {
+      "id": "limited-usage-cells",
+      "text": "Usage cells show separate applicable windows, 70/30 thresholds, remaining percentage, tokens and cost, refill timing and a distinct stale-reading state.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "The compact-row scenario does not assert the complete approved usage-cell contract."
+      }
+    },
+    {
+      "id": "reset-confirmation",
+      "text": "The Weekly reset count opens confirmation with Cancel focused and spends the soonest-expiring credit only after confirmation, with pending, unknown and refused states.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "No bound scenario asserts r3 redemption, default focus, credit selection or all refusal states."
+      }
+    },
+    {
+      "id": "expiry-details",
+      "text": "Banked-reset expiry is readable in Details on desktop and phone.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "No bound scenario proves touch-accessible expiry in Details."
+      }
+    },
+    {
+      "id": "health-history",
+      "text": "Eight health ticks and seven-day success percentage display, with amber below 95 percent.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "The bound scenario checks current credential-health labels, not the r3 request-history display."
+      }
+    },
+    {
+      "id": "no-inline-google-band",
+      "text": "Google grouping recovery does not add the old inline reconnect-to-group band.",
+      "gap": {
+        "state": "open",
+        "owner": "Google account-family owner",
+        "reason": "The synthetic identity scenario still permits an unverified identity notice and does not establish the retained hosted recovery result."
+      }
+    },
+    {
+      "id": "no-automatic-reset",
+      "text": "No automatic banked-reset spending is offered; Details explains explicit confirmation or an authored workflow.",
+      "gap": {
+        "state": "open",
+        "owner": "Compact rows owner",
+        "reason": "No bound scenario verifies the absence of automatic spending or the explanatory Details text."
+      }
+    }
+  ]
+}
