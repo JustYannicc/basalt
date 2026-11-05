@@ -1,4 +1,5 @@
-import { Effect } from "effect";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { Crypto, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { createRequire } from "node:module";
 
@@ -70,5 +71,10 @@ const fixture = Effect.gen(function* () {
   return { sql, add, checked, queue: makeAccountRecheckQueue(sql) };
 });
 export const runRecheckFixture = <E>(
-  body: (f: Effect.Success<typeof fixture>) => Effect.Effect<void, E, SqlClient.SqlClient>,
-) => Effect.runPromise(fixture.pipe(Effect.flatMap(body), Effect.provide(pgliteLayer())));
+  body: (
+    f: Effect.Success<typeof fixture>,
+  ) => Effect.Effect<void, E, SqlClient.SqlClient | Crypto.Crypto>,
+) =>
+  Effect.runPromise(
+    fixture.pipe(Effect.flatMap(body), Effect.provide([pgliteLayer(), NodeCrypto.layer])),
+  );
