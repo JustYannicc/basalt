@@ -10,21 +10,21 @@
       "id": "service-instances",
       "text": "One service row represents its app and MCP entries. Add reuses an existing instance; Add another explicitly creates a named instance.",
       "proofs": [
-        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts" }
+        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts-pool" }
       ]
     },
     {
       "id": "open-and-choose",
       "text": "Open reaches the sole instance directly. Multiple named instances use a desktop chooser and a phone sheet at 390 px.",
       "proofs": [
-        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts" }
+        { "scenario": "catalogInstances", "target": "self-host", "job": "host-managed-accounts-pool" }
       ]
     },
     {
       "id": "retained-pools",
       "text": "Creating an additional pool preserves the earlier pool and its retained accounts.",
       "proofs": [
-        { "scenario": "poolCreation", "target": "self-host", "job": "host-managed-accounts" }
+        { "scenario": "poolCreation", "target": "self-host", "job": "host-managed-accounts-pool" }
       ]
     }
   ]
