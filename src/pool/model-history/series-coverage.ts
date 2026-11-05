@@ -25,12 +25,11 @@ export async function seriesCoverage(
   query: Awaited<ReturnType<typeof seriesQuery>>,
   input: PoolUsageSeriesInput,
   authority: SeriesAuthority,
-  personal = false,
 ) {
   const result = await db.query(query.coverageText, query.coverageValues);
   if (result.rows.length > 500) throw new Error("Usage source coverage exceeds its bound");
   const cursor =
-    personal || input.sources?.includes(query.homeSource) === false
+    input.sources?.includes(query.homeSource) === false
       ? undefined
       : (
           await db.query(

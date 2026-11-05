@@ -130,10 +130,10 @@ index 9c24453..52ba9b6 100644
              .waitFor(),
          );
 diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
-index 67035af..cb0dce0 100644
+index ee70b40..1e4c17f 100644
 --- a/packages/ui/src/contracts/account-identities.ts
 +++ b/packages/ui/src/contracts/account-identities.ts
-@@ -33,8 +33,7 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
+@@ -34,8 +34,7 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
   * A verified identity always names its row, so the proven sign-in is never hidden behind a saved
   * label. Callers may show a differing saved label as metadata.
   */
@@ -208,7 +208,7 @@ index 5038abb..f1c15bd 100644
            {provider.definition.name} ·{" "}
            {provider.definition.auth[account.method]?.type === "oauth2" ? "OAuth" : account.method}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 7d81ecc..5ba7429 100644
+index 47cef52..accf7b1 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -21,7 +21,7 @@ import {

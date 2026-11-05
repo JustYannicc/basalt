@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 7105f19..1ef12f5 100644
+index 1c827c5..231a2f2 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -5,12 +5,12 @@ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
@@ -363,10 +363,10 @@ index 0000000..f3d9cb4
 +    return { app, appPath, accounts: saved };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6e2b90e..a51a4f9 100644
+index e7e6278..51633f1 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9163,6 +9163,18 @@ export const scenarios = plan({
+@@ -9189,6 +9189,18 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows and native pool usage."),
      },
    },
@@ -984,10 +984,10 @@ index d508f76..6412cc4 100644
    const content = (
      <>
 diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
-index 767c9df..14aa2d9 100644
+index 5d34eb4..015b8ab 100644
 --- a/packages/ui/src/implementation/dashboard/account-row.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-row.tsx
-@@ -242,7 +242,9 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
+@@ -243,7 +243,9 @@ export const accountRowGrid = (lead: boolean, requests = false) =>
    cn(
      "grid items-center gap-x-3",
      lead
@@ -1086,7 +1086,7 @@ index 0956ae2..83e12aa 100644
   * The left of a usage cell's footer: tokens the gateway counted in that window, never a provider
   * figure. A total with uncounted requests is a floor, marked "≥"; with no counted request at all
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index b140659..e362173 100644
+index 113b689..ca9f48b 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -21,7 +21,11 @@ import {
@@ -1102,7 +1102,7 @@ index b140659..e362173 100644
  import { useDisplayFormat } from "../hooks/display-format.ts";
  import { observationClock } from "./account-observation-format.ts";
  import { useAtomValue } from "@effect/atom-react";
-@@ -358,19 +362,7 @@ function AccountsList({
+@@ -359,19 +363,7 @@ function AccountsList({
                      </AccountRowDetails>
                    )}
                    {traffic !== undefined && (
@@ -1124,7 +1124,7 @@ index b140659..e362173 100644
                    {access.length > 0 && (
                      <AccountRowDetails>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 5a22555..7d81ecc 100644
+index a90a18d..47cef52 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -40,6 +40,13 @@ import {
@@ -1191,8 +1191,8 @@ index 5a22555..7d81ecc 100644
              {plain ? (
                <RadioGroup.Item
                  value={account.id}
-@@ -936,8 +956,13 @@ function ReadOnlyChoices<E>({
-                 accountMethodKindLabel(requirement.definition, account.method),
+@@ -940,8 +960,13 @@ function ReadOnlyChoices<E>({
+                 ),
                ])}
                plan={provisioned ? undefined : data.accountPlan?.(account)}
 +              {...requestsCell(data, traffic)}
@@ -1206,7 +1206,7 @@ index 5a22555..7d81ecc 100644
                }
                users={<AddedBy credit={addedBy(data, slot, requirement, account.id)} />}
              />
-@@ -951,6 +976,7 @@ function ReadOnlyChoices<E>({
+@@ -955,6 +980,7 @@ function ReadOnlyChoices<E>({
                    <AccountRowDescription account={account} />
                  </AccountRowDetails>
                )}
@@ -1214,7 +1214,7 @@ index 5a22555..7d81ecc 100644
              </div>
            </div>
            {!provisioned && <div className={usageClass}>{data.accountDetails?.(account)}</div>}
-@@ -1235,6 +1261,7 @@ function ChoiceRow<E>({
+@@ -1239,6 +1265,7 @@ function ChoiceRow<E>({
    const id = useId();
    const name = accountName(account);
    const row = appAccountRow(app, account, data.accountRow);
@@ -1222,7 +1222,7 @@ index 5a22555..7d81ecc 100644
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
    // Another person's contribution stays linked unless the host says the caller may remove it.
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
-@@ -1266,7 +1293,7 @@ function ChoiceRow<E>({
+@@ -1270,7 +1297,7 @@ function ChoiceRow<E>({
              onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
            />
          )}
@@ -1231,9 +1231,9 @@ index 5a22555..7d81ecc 100644
            {plain ? (
              <RadioGroup.Item
                id={id}
-@@ -1302,10 +1329,12 @@ function ChoiceRow<E>({
-             lead
-             type={accountRowType([accountMethodKindLabel(requirement.definition, account.method)])}
+@@ -1308,10 +1335,12 @@ function ChoiceRow<E>({
+               accountMethodKindLabel(requirement.definition, account.method, requirement.provider),
+             ])}
              plan={hostProvisioned || unusable ? undefined : data.accountPlan?.(account)}
 +            {...requestsCell(data, traffic)}
              health={
@@ -1244,7 +1244,7 @@ index 5a22555..7d81ecc 100644
                  reconnect={
                    hostProvisioned || automatic
                      ? undefined
-@@ -1335,6 +1364,7 @@ function ChoiceRow<E>({
+@@ -1341,6 +1370,7 @@ function ChoiceRow<E>({
                  <AccountRowDescription account={account} />
                </AccountRowDetails>
              )}
@@ -1252,7 +1252,7 @@ index 5a22555..7d81ecc 100644
            </div>
          </div>
          {!hostProvisioned && !unusable && (
-@@ -1462,10 +1492,12 @@ function AccountStatus({
+@@ -1468,10 +1498,12 @@ function AccountStatus({
    app,
    row,
    reconnect,
@@ -1265,7 +1265,7 @@ index 5a22555..7d81ecc 100644
  }) {
    const brand = useProductBrand();
    return (
-@@ -1474,10 +1506,41 @@ function AccountStatus({
+@@ -1480,10 +1512,41 @@ function AccountStatus({
        appName={() => appDisplayName(app, brand)}
        recover={reconnect}
        unavailableLabel="Unavailable"

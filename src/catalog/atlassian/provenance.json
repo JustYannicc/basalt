@@ -5,7 +5,7 @@
   "license": "MIT",
   "files": {
     "index.ts": "774e5ce1c1c202a682e24cb35bdca893d748624b4c9efcd6640a7a3d7eea53e5",
-    "package.json": "9ed5a4764c303c09d76f2b047cb7ede002d233f0f9a1b88e641b089b5e6079ac",
+    "package.json": "257f1af7e8b57be8faf398cf33bbc0a306e09d7fc87066df3daa4c66d5d68b29",
     "provider.ts": "0cbd03e63aeebbfbd41e23fb0cff11f4c950078544a37b8ab2e4f281a96a0d4b",
     "queries.ts": "61ab5688adc8a19ebfd2779cb65bfeac768684b2723fe116cf91a938e1dd3778",
     "configuration.ts": "190d47f9f198c4b524588f437e294f2dabae2cc6ab8953023733ec7ee3516c39",
@@ -15,7 +15,7 @@
     "api-coverage.json": "8fc598469ca18fdc35feb053edc7c1bbf237af22922c44cb9ea868658024154f",
     "README.md": "4b8c82e23da6464bb255381dafafb97863fb7fa049f68c52d5ef32a0a0d5138f"
   },
-  "snapshotSha256": "6a1299c8a65a91be6e7274120d88c0e756071307b87c7cb54142ca0ecae09709",
+  "snapshotSha256": "23d759d88ccfefaf9d7552b19ae7f602ad4c542f3f1cfee0b17f8a33ca7ac717",
   "publicSource": {
     "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
     "files": {
@@ -25,7 +25,7 @@
   },
   "localPatch": {
     "path": "source.patch",
-    "sha256": "5a31ac54407990f88e4ed90e1091669620e6249eb6fa6985b33eb9d79b925bd2"
+    "sha256": "a2c5fe48ffb7cd17bae0f60e59d140681990c758e53bfafff708347baf0fed79"
   },
   "capabilities": {
     "checkedAt": "2026-10-31",
@@ -221,5 +221,22 @@
         ]
       }
     }
+  },
+  "catalogSource": {
+    "repository": "https://github.com/JustYannicc/signalbox-app-atlassian",
+    "commit": "9e9ecd87a2bcb78dc7a2a1d9d1896476e5802dea",
+    "fileSha256": {
+      "README.md": "4b8c82e23da6464bb255381dafafb97863fb7fa049f68c52d5ef32a0a0d5138f",
+      "api-coverage.json": "8fc598469ca18fdc35feb053edc7c1bbf237af22922c44cb9ea868658024154f",
+      "configuration.ts": "190d47f9f198c4b524588f437e294f2dabae2cc6ab8953023733ec7ee3516c39",
+      "index.ts": "774e5ce1c1c202a682e24cb35bdca893d748624b4c9efcd6640a7a3d7eea53e5",
+      "openapi.ts": "98dcc378f4fbf5e14acf3aa03f09979cde9fc76aede3f27d052c75a080ff5059",
+      "package.json": "257f1af7e8b57be8faf398cf33bbc0a306e09d7fc87066df3daa4c66d5d68b29",
+      "provider.ts": "0cbd03e63aeebbfbd41e23fb0cff11f4c950078544a37b8ab2e4f281a96a0d4b",
+      "queries.ts": "61ab5688adc8a19ebfd2779cb65bfeac768684b2723fe116cf91a938e1dd3778",
+      "specifications.ts": "ad591591e9f6d06df6e0e513cfd4b9b90d9490aa1e1581e317558f7dbc3112df",
+      "transport.ts": "8ea342f9cc0085a4bb789d49b410d6c990c78db6fca81bb16709dd092252cf39"
+    },
+    "snapshotSha256": "23d759d88ccfefaf9d7552b19ae7f602ad4c542f3f1cfee0b17f8a33ca7ac717"
   }
 }
