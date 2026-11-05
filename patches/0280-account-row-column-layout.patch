@@ -422,7 +422,15 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
        <DropdownMenuSeparator />
      </>
    );
-@@ -237,18 +283,20 @@
+@@ -231,24 +277,26 @@
+ 
+ const narrow = {
+   plain:
+-    "@max-[640px]/account-rows:grid-cols-[24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
+-  lead: "@max-[640px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[640px]/account-rows:gap-y-1",
++    "@max-[880px]/account-rows:grid-cols-[24px_minmax(0,_1fr)_auto] @max-[880px]/account-rows:gap-y-1",
++  lead: "@max-[880px]/account-rows:grid-cols-[16px_24px_minmax(0,_1fr)_auto] @max-[880px]/account-rows:gap-y-1",
+ };
  
  /**
   * Columns: [choice] · logo · account · type · plan · [requests 7d] · health · used by · menu. A
@@ -448,6 +456,46 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
      lead ? narrow.lead : narrow.plain,
    );
  
+@@ -276,12 +324,12 @@
+   /** Names the users cell where the column header is hidden, such as "Used by". */
+   readonly usersLabel?: string | undefined;
+ }) {
+-  const empty = "@max-[640px]/account-rows:empty:hidden";
++  const empty = "@max-[880px]/account-rows:empty:hidden";
+   return (
+     <div
+       className={cn(
+-        "contents @max-[640px]/account-rows:row-start-2 @max-[640px]/account-rows:col-end-[-1] @max-[640px]/account-rows:flex @max-[640px]/account-rows:min-w-0 @max-[640px]/account-rows:flex-wrap @max-[640px]/account-rows:items-center @max-[640px]/account-rows:gap-x-2.5 @max-[640px]/account-rows:gap-y-1",
+-        lead ? "@max-[640px]/account-rows:col-start-3" : "@max-[640px]/account-rows:col-start-2",
++        "contents @max-[880px]/account-rows:row-start-2 @max-[880px]/account-rows:col-end-[-1] @max-[880px]/account-rows:flex @max-[880px]/account-rows:min-w-0 @max-[880px]/account-rows:flex-wrap @max-[880px]/account-rows:items-center @max-[880px]/account-rows:gap-x-2.5 @max-[880px]/account-rows:gap-y-1",
++        lead ? "@max-[880px]/account-rows:col-start-3" : "@max-[880px]/account-rows:col-start-2",
+       )}
+     >
+       <span
+@@ -296,7 +344,7 @@
+       {requests !== undefined && (
+         <span
+           data-account-requests-cell
+-          className={cn("flex min-w-0 justify-end @max-[640px]/account-rows:justify-start", empty)}
++          className={cn("flex min-w-0 justify-end @max-[880px]/account-rows:justify-start", empty)}
+         >
+           {requests}
+         </span>
+@@ -306,12 +354,12 @@
+         className={cn(
+           // On a phone the users cell fills the rest of its line, or a line of its own when less
+           // than 10rem is left, so a long app chip truncates instead of stacking.
+-          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground @max-[640px]/account-rows:min-w-40 @max-[640px]/account-rows:flex-1",
++          "flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted-foreground @max-[880px]/account-rows:min-w-40 @max-[880px]/account-rows:flex-1",
+           empty,
+         )}
+       >
+         {users !== undefined && users !== null && users !== false && usersLabel !== undefined && (
+-          <span className="hidden @max-[640px]/account-rows:inline">{usersLabel}</span>
++          <span className="hidden @max-[880px]/account-rows:inline">{usersLabel}</span>
+         )}
+         {users}
+       </span>
 @@ -320,15 +368,28 @@
  }
  
@@ -463,7 +511,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
      <span
        data-account-row-menu
 -      className="flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
-+      className="relative flex min-w-7 items-center justify-end gap-2 @max-[640px]/account-rows:col-start-[-2] @max-[640px]/account-rows:row-start-1 @max-[640px]/account-rows:h-[16.9px] @max-[640px]/account-rows:self-start"
++      className="relative flex min-w-7 items-center justify-end gap-2 @max-[880px]/account-rows:col-start-[-2] @max-[880px]/account-rows:row-start-1 @max-[880px]/account-rows:h-[16.9px] @max-[880px]/account-rows:self-start"
      >
 +      {children}
 +    </span>
@@ -476,7 +524,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
 + */
 +export function AccountRowMenuMark({ children }: { readonly children: ReactNode }) {
 +  return (
-+    <span className="pointer-events-none absolute top-1/2 right-full flex -translate-y-1/2 @max-[640px]/account-rows:static @max-[640px]/account-rows:mr-0 @max-[640px]/account-rows:translate-y-0">
++    <span className="pointer-events-none absolute top-1/2 right-full flex -translate-y-1/2 @max-[880px]/account-rows:static @max-[880px]/account-rows:mr-0 @max-[880px]/account-rows:translate-y-0">
        {children}
      </span>
    );
@@ -485,7 +533,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
        className={cn(
          accountRowGrid(false, requests !== undefined),
 -        "inventory-header bg-muted px-2.5 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
-+        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[640px]/account-rows:hidden",
++        "inventory-header bg-muted pl-2.5 pr-2 py-2 text-[11px] text-muted-foreground @max-[880px]/account-rows:hidden",
        )}
      >
        <span className="col-span-2">Account</span>
@@ -494,6 +542,15 @@ diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages
        <span>Plan</span>
        {requests !== undefined && (
          <span
+@@ -402,7 +463,7 @@
+           ? undefined
+           : { text: reported, verified: false };
+   return (
+-    <div className="grid min-w-0 leading-[1.3] @max-[640px]/account-rows:self-start">
++    <div className="grid min-w-0 leading-[1.3] @max-[880px]/account-rows:self-start">
+       <span className="flex min-w-0 items-center gap-1.5">
+         <strong
+           className="min-w-0 truncate text-[13px] font-medium"
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
