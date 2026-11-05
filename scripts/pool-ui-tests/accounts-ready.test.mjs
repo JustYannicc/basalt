@@ -633,6 +633,9 @@ test(
               "The completed usage response must be visible while every capacity response is held",
             );
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            await frame
+              .getByRole("radio", { name: "Models", exact: true, checked: true })
+              .waitFor();
             await who.getByText("Synthetic model", { exact: true }).waitFor();
             assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
             if (width === 390) {
@@ -652,7 +655,7 @@ test(
             assert.equal(
               await frame.getByText("codex", { exact: true }).count(),
               0,
-              "Provider IDs must not flash before capacity supplies their names",
+              "Provider IDs must not flash before the pool view supplies their names",
             );
             assert.equal(
               await frame.getByText("Codex", { exact: true }).count(),
@@ -711,6 +714,9 @@ test(
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            await frame
+              .getByRole("radio", { name: "Models", exact: true, checked: true })
+              .waitFor();
             await frame.getByText("Synthetic model", { exact: true }).waitFor();
             await frame.getByText("Codex", { exact: true }).first().waitFor();
             await frame
