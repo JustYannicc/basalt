@@ -1,0 +1,1566 @@
+diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
+index 73ea1e2..5e4de70 100644
+--- a/apps/hosted/cloud/src/compiler.ts
++++ b/apps/hosted/cloud/src/compiler.ts
+@@ -1,157 +1,40 @@
+ /** Private compiler entry point. The esbuild WASM module belongs only to this Worker. */
+ import { WorkerEnvironment } from "alchemy/Cloudflare";
+-import { CodeFiles, RuntimeBuildFailed } from "@executor-js/sdk/core";
+-import {
+-  compilerCompileBudget,
+-  compilerQueueBudget,
+-  compileWithinDeadline,
+-} from "./implementation/compiler-request.ts";
+-import { CloudCompileResult } from "./contracts/builds.ts";
+-import { captureTelemetry, withRemoteSpan } from "@executor-js/telemetry";
+-import { Config, Effect, Option, Predicate, Schema } from "effect";
+-import { compileCloudApp } from "./implementation/app-build.ts";
+-import { makeBuildAdmission } from "./implementation/build-admission.ts";
+-import { compilerPhases } from "./implementation/compiler-phases.ts";
++import { Config, Effect, Option } from "effect";
++import { compilerCacheConfiguration } from "./implementation/compiler-cache-config.ts";
++import { compilerRuntime } from "./implementation/compiler-runtime.ts";
+ import {
+   cloudObservability,
+   cloudTelemetry,
+   telemetryBindings,
+ } from "./infrastructure/telemetry.ts";
+ import { AppCompiler } from "./infrastructure/compiler.ts";
++import { stageName } from "./infrastructure/stage.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ 
+-const FrameworkAssets = Schema.declare(
+-  (value): value is { readonly fetch: (request: Request) => Promise<Response> } =>
+-    Predicate.isObject(value) && "fetch" in value && typeof value.fetch === "function",
+-);
+-const FrameworkFiles = Schema.Record(Schema.String, Schema.String);
+-
+ export default AppCompiler.make(
+   Effect.gen(function* () {
+     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
+-    // Only a test stage deploy supplies its checkout's `apps` package, as this Worker's own assets.
++    // Production and test deployments serve their selected framework as Worker assets.
+     const framework = yield* Config.String("EXECUTOR_APPS_FRAMEWORK").pipe(Config.option);
++    const eligibleRelease = yield* compilerCacheConfiguration(
++      Option.getOrUndefined(yield* stageName),
++    );
+     return {
+       main: import.meta.url,
+       ...(yield* cloudObservability),
+       workersDev: false,
+       build: workerBuild("compiler"),
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+-      env: yield* telemetryBindings,
++      env: {
++        ...(yield* telemetryBindings),
++        EXECUTOR_COMPILER_CACHE_ENABLED: String(eligibleRelease !== undefined),
++        ...(eligibleRelease === undefined
++          ? {}
++          : { EXECUTOR_COMPILER_CACHE_RELEASE: eligibleRelease }),
++      },
+       ...(Option.isSome(framework) ? { assets: { directory: framework.value } } : {}),
+     };
+   }),
+-  Effect.gen(function* () {
+-    // Resolved during initialization so Alchemy binds them into the Worker environment. Only local
+-    // Cloud development and tests set a registry; deployed stages use the public registry. Only a
+-    // test stage deploy sets an `apps` version, whose package files this Worker serves itself.
+-    const registry = Option.getOrUndefined(
+-      yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option),
+-    );
+-    const version = yield* Config.String("EXECUTOR_APPS_VERSION").pipe(Config.option);
+-    const env = yield* WorkerEnvironment;
+-    const read = Effect.gen(function* () {
+-      const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
+-      const response = yield* Effect.tryPromise(() =>
+-        assets.fetch(new Request("https://framework.invalid/framework.json")),
+-      );
+-      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkFiles))(
+-        yield* Effect.tryPromise(() => response.text()),
+-      );
+-    }).pipe(
+-      Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" })),
+-    );
+-    // Only read files are kept for later compiles. A compile that finds none reads them itself:
+-    // waiting on another request's read would resume in that request's I/O context, whose timers
+-    // are dropped when it ends, and the compile would never finish.
+-    let kept: typeof FrameworkFiles.Type | undefined;
+-    const files = Effect.suspend(() =>
+-      kept !== undefined
+-        ? Effect.succeed(kept)
+-        : read.pipe(
+-            Effect.tap((value) =>
+-              Effect.sync(() => {
+-                kept = value;
+-              }),
+-            ),
+-          ),
+-    );
+-    // Two builds still overlap one's npm downloads with the other's bundling, and a build
+-    // stalled on the registry leaves the other slot free. The lease starts at admission and
+-    // expires when that compile's deadline ends, even if request cleanup never runs.
+-    const admitted = makeBuildAdmission(2, compilerCompileBudget, compilerQueueBudget);
+-    const isolate = crypto.randomUUID();
+-    const host = {
+-      ...(registry === undefined ? {} : { registry }),
+-      ...(Option.isSome(version) ? { apps: { version: version.value, files } } : {}),
+-    };
+-    const compile = (
+-      files: typeof CodeFiles.Type,
+-      publicPaths: ReadonlyArray<string>,
+-      headers: Readonly<Record<string, string>>,
+-      signal?: AbortSignal,
+-    ) =>
+-      Effect.suspend(() => {
+-        let replied = () => {};
+-        let failed = () => {};
+-        return Schema.decodeUnknownEffect(
+-          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
+-        )({ files, publicPaths }).pipe(
+-          Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
+-          Effect.flatMap((input) =>
+-            Effect.gen(function* () {
+-              const { phase, fingerprint } = yield* compilerPhases(
+-                input.files,
+-                input.publicPaths,
+-                isolate,
+-              );
+-              replied = () => phase("replied");
+-              failed = () => phase("error");
+-              return yield* admitted(
+-                compileWithinDeadline(
+-                  fingerprint.pipe(
+-                    Effect.andThen(
+-                      compileCloudApp(input.files, { ...host, onPhase: phase }, input.publicPaths),
+-                    ),
+-                  ),
+-                ),
+-                phase,
+-                signal,
+-              );
+-            }),
+-          ),
+-          Effect.tapCause(() => Effect.sync(() => failed())),
+-          Effect.map((value) => ({ ok: true as const, value })),
+-          Effect.catchTags({
+-            BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
+-            RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
+-            RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
+-            RuntimeAppsDependencyMissing: (error) => Effect.succeed({ ok: false as const, error }),
+-          }),
+-          Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
+-          Effect.tap(() => Effect.sync(() => replied())),
+-          Effect.orDie,
+-        );
+-      }).pipe(
+-        withRemoteSpan(new Request("https://compiler.internal", { headers }), "compiler.compile"),
+-      );
+-    return AppCompiler.of({
+-      compile,
+-      request: () =>
+-        Effect.gen(function* () {
+-          const { CompilerRequest } = yield* Effect.promise(
+-            () => import("./implementation/compiler-request-target.ts"),
+-          );
+-          const { context } = yield* captureTelemetry;
+-          return new CompilerRequest(
+-            (
+-              signal,
+-              files: typeof CodeFiles.Type,
+-              publicPaths: ReadonlyArray<string>,
+-              headers: Readonly<Record<string, string>>,
+-            ) => compile(files, publicPaths, headers, signal).pipe(Effect.provideContext(context)),
+-          );
+-        }),
+-    });
+-  }).pipe(Effect.provide(cloudTelemetry)),
++  WorkerEnvironment.pipe(Effect.flatMap(compilerRuntime), Effect.provide(cloudTelemetry)),
+ );
+diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/cloud/src/implementation/app-build.ts
+index adef4c0..3880528 100644
+--- a/apps/hosted/cloud/src/implementation/app-build.ts
++++ b/apps/hosted/cloud/src/implementation/app-build.ts
+@@ -1,9 +1,42 @@
+-/** Compile with the npm `apps` framework the app declares; Cloud supplies no framework of its own. */
+-import { compileWorkerApp, type WorkerHost } from "@executor-js/sdk/workerd/build";
++/** Compile with the request's resolved npm graph; declarations still run for every installation. */
++import {
++  compileWorkerApp,
++  prepareWorkerApp,
++  type WorkerHost,
++} from "@executor-js/sdk/workerd/build";
+ import type { CodeFiles } from "@executor-js/sdk/core";
++import { Effect, Option } from "effect";
++import { cachedCompilerResult, cacheableSource } from "./compiler-result-cache.ts";
+ 
+ export const compileCloudApp = (
+   files: CodeFiles,
+   host: WorkerHost,
+   publicPaths: ReadonlyArray<string>,
+-) => compileWorkerApp(files, host, publicPaths);
++  release?: string,
++) =>
++  Effect.gen(function* () {
++    if (release === undefined || host.registry !== undefined || !cacheableSource(files))
++      return yield* compileWorkerApp(files, host, publicPaths);
++    // An unused authored dependency must not turn a formerly valid app into a build failure.
++    const prepared = yield* prepareWorkerApp(files, host).pipe(Effect.option);
++    if (Option.isNone(prepared)) return yield* compileWorkerApp(files, host, publicPaths);
++    const dependencyFiles = prepared.value.filesystem
++      .list()
++      .sort()
++      .map((path) => ({
++        path,
++        content: prepared.value.filesystem.read(path),
++        bytes: Array.from(prepared.value.filesystem.readBinary(path) ?? []),
++      }));
++    return yield* cachedCompilerResult(
++      {
++        files,
++        publicPaths,
++        release,
++        enabled: true,
++        dependencyFiles,
++        onHit: () => host.onPhase?.("cache-hit"),
++      },
++      compileWorkerApp(files, host, publicPaths, prepared.value),
++    );
++  });
+diff --git a/apps/hosted/cloud/src/implementation/compiler-cache-config.ts b/apps/hosted/cloud/src/implementation/compiler-cache-config.ts
+new file mode 100644
+index 0000000..c2eeccf
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-cache-config.ts
+@@ -0,0 +1,37 @@
++import { Config, Effect, Option } from "effect";
++
++/** A test stage may inherit release settings, but never production's reuse permission. */
++export const compilerCacheRelease = (input: {
++  readonly stage: string | undefined;
++  readonly release: string | undefined;
++  readonly registry: string | undefined;
++  readonly framework: string | undefined;
++  readonly expectedFramework: string | undefined;
++  readonly version: string | undefined;
++  readonly expectedVersion: string | undefined;
++}) =>
++  input.stage === "production" &&
++  /^[a-f0-9]{40}$/.test(input.release ?? "") &&
++  input.registry === undefined &&
++  input.framework !== undefined &&
++  input.framework === input.expectedFramework &&
++  input.version !== undefined &&
++  input.version === input.expectedVersion
++    ? input.release
++    : undefined;
++
++/** Provisioning alone grants reuse. A runtime receives only the qualified release binding. */
++export const compilerCacheConfiguration = (stage: string | undefined) =>
++  Effect.gen(function* () {
++    const setting = (name: string) =>
++      Config.String(name).pipe(Config.option, Effect.map(Option.getOrUndefined));
++    return compilerCacheRelease({
++      stage,
++      release: yield* setting("EXECUTOR_COMPILER_CACHE_RELEASE"),
++      registry: yield* setting("EXECUTOR_NPM_REGISTRY"),
++      framework: yield* setting("EXECUTOR_APPS_FRAMEWORK"),
++      expectedFramework: yield* setting("EXECUTOR_COMPILER_CACHE_FRAMEWORK"),
++      version: yield* setting("EXECUTOR_APPS_VERSION"),
++      expectedVersion: yield* setting("EXECUTOR_COMPILER_CACHE_APPS_VERSION"),
++    });
++  });
+diff --git a/apps/hosted/cloud/src/implementation/compiler-phases.ts b/apps/hosted/cloud/src/implementation/compiler-phases.ts
+index cccf09b..b04790a 100644
+--- a/apps/hosted/cloud/src/implementation/compiler-phases.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-phases.ts
+@@ -2,7 +2,15 @@
+ import type { CodeFiles } from "@executor-js/sdk/core";
+ import { Effect, Option } from "effect";
+ 
+-type Phase = "received" | "admitted" | "dependencies" | "bundle" | "replied" | "released" | "error";
++type Phase =
++  | "received"
++  | "admitted"
++  | "dependencies"
++  | "bundle"
++  | "cache-hit"
++  | "replied"
++  | "released"
++  | "error";
+ 
+ export const compilerPhases = (
+   files: CodeFiles,
+diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+new file mode 100644
+index 0000000..8db1c5b
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+@@ -0,0 +1,176 @@
++/** Private, release-bound reuse of successful compilation. App declarations still run per create. */
++import type { CodeFiles } from "@executor-js/sdk/core";
++import { Effect, Option, Schema } from "effect";
++import { CloudBundle, CompiledCloudApp } from "../contracts/builds.ts";
++
++const Package = Schema.Struct({
++  dependencies: Schema.Record(Schema.String, Schema.String),
++  devDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++  optionalDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++  peerDependencies: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
++});
++const exactVersion =
++  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
++export const cacheableSource = (files: CodeFiles) => {
++  const manifests = files.filter(
++    ({ path }) => path === "package.json" || path.endsWith("/package.json"),
++  );
++  if (!manifests.some(({ path }) => path === "package.json")) return false;
++  return manifests.every(({ content }) => {
++    const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(Package))(content);
++    return (
++      Option.isSome(decoded) &&
++      Object.values(decoded.value).every(
++        (group) =>
++          group === undefined ||
++          Object.values(group).every((version) => exactVersion.test(version)),
++      )
++    );
++  });
++};
++
++const CachedOutput = Schema.fromJsonString(
++  Schema.Struct({
++    ...CompiledCloudApp.fields,
++    bundle: CloudBundle,
++    ui: Schema.optional(
++      Schema.Array(
++        Schema.Struct({
++          path: Schema.String,
++          contentType: Schema.String,
++          body: Schema.Uint8ArrayFromBase64,
++        }),
++      ),
++    ),
++  }),
++);
++class CacheUnavailable extends Schema.TaggedError<CacheUnavailable>()(
++  "CompilerCacheUnavailable",
++  {},
++) {}
++const attempt = <A>(work: () => Promise<A>) =>
++  Effect.tryPromise({ try: work, catch: () => new CacheUnavailable() });
++const Envelope = Schema.fromJsonString(
++  Schema.Struct({
++    format: Schema.Literal(2),
++    digest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++    payload: Schema.String,
++  }),
++);
++const digest = (text: string) =>
++  Effect.promise(async () => {
++    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
++    return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
++  });
++const validBundle = (value: typeof CompiledCloudApp.Type) => {
++  const entry = value.bundle.modules[value.bundle.mainModule];
++  const safeName = (name: string) =>
++    name.length > 0 &&
++    !name.startsWith("/") &&
++    !name.split("/").some((part) => part === ".." || part === "." || part === "");
++  return (
++    Object.hasOwn(value.bundle.modules, value.bundle.mainModule) &&
++    (typeof entry === "string" || (entry !== undefined && "js" in entry)) &&
++    [...Object.keys(value.bundle.modules), ...Object.keys(value.framework.modules)].every(safeName)
++  );
++};
++const maximumBytes = 8 * 1024 * 1024;
++const optional = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  work.pipe(
++    Effect.option,
++    Effect.timeoutOrElse({
++      duration: "250 millis",
++      orElse: () => Effect.succeed(Option.none<A>()),
++    }),
++  );
++
++/** Each caller owns its I/O. No pending promise or request context is shared. */
++export const cachedCompilerResult = <E, R>(
++  input: {
++    readonly files: CodeFiles;
++    readonly publicPaths: ReadonlyArray<string>;
++    readonly release: string | undefined;
++    readonly enabled: boolean;
++    readonly dependencyFiles: ReadonlyArray<{
++      readonly path: string;
++      readonly content: string | null;
++      readonly bytes?: ReadonlyArray<number>;
++    }>;
++    readonly onHit?: () => void;
++  },
++  compile: Effect.Effect<typeof CompiledCloudApp.Type, E, R>,
++) =>
++  Effect.gen(function* () {
++    if (!input.enabled || input.release === undefined || !cacheableSource(input.files))
++      return yield* compile;
++    const cache = yield* optional(
++      attempt(() => caches.open("executor-private-compiler-results-v2")),
++    );
++    if (Option.isNone(cache)) return yield* compile;
++    const key = yield* digest(
++      JSON.stringify([
++        input.release,
++        input.files
++          .map(({ path, content }) => ({ path, content }))
++          .sort((a, b) => a.path.localeCompare(b.path)),
++        [...input.publicPaths].sort(),
++        [...input.dependencyFiles].sort((a, b) => a.path.localeCompare(b.path)),
++      ]),
++    );
++    const url = `https://compiler-cache.invalid/v2/${key}`;
++    const hit = yield* optional(
++      attempt(() => cache.value.match(url)).pipe(
++        Effect.flatMap((response) =>
++          response === undefined
++            ? Effect.fail(new CacheUnavailable())
++            : Effect.gen(function* () {
++                const body = yield* attempt(() => response.text());
++                if (body.length * 2 > maximumBytes) return yield* new CacheUnavailable();
++                const envelope = yield* Schema.decodeUnknownEffect(Envelope)(body);
++                if ((yield* digest(envelope.payload)) !== envelope.digest)
++                  return yield* new CacheUnavailable();
++                const decoded = yield* Schema.decodeUnknownEffect(CachedOutput)(envelope.payload);
++                const value = { ...decoded, ui: decoded.ui };
++                if (!validBundle(value)) return yield* new CacheUnavailable();
++                return value;
++              }),
++        ),
++      ),
++    );
++    yield* Effect.annotateCurrentSpan(
++      "executor.compiler.cache",
++      Option.isSome(hit) ? "hit" : "miss",
++    );
++    if (Option.isSome(hit)) {
++      input.onHit?.();
++      return hit.value;
++    }
++    const value = yield* compile;
++    yield* optional(
++      Schema.encodeEffect(CachedOutput)(value).pipe(
++        Effect.flatMap((payload) =>
++          digest(payload).pipe(
++            Effect.flatMap((hash) =>
++              Schema.encodeEffect(Envelope)({ format: 2, digest: hash, payload }),
++            ),
++          ),
++        ),
++        Effect.flatMap((body) =>
++          body.length * 2 > maximumBytes
++            ? Effect.void
++            : attempt(() =>
++                cache.value.put(
++                  url,
++                  new Response(body, {
++                    headers: {
++                      "content-type": "application/json",
++                      "cache-control": "public, max-age=604800",
++                    },
++                  }),
++                ),
++              ),
++        ),
++      ),
++    );
++    return value;
++  });
+diff --git a/apps/hosted/cloud/src/implementation/compiler-runtime.ts b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+new file mode 100644
+index 0000000..135d348
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/compiler-runtime.ts
+@@ -0,0 +1,139 @@
++/** The compiler's real Worker service. HTTP fixtures and the private RPC use the same runtime. */
++import { CodeFiles, RuntimeBuildFailed } from "@executor-js/sdk/core";
++import {
++  compilerCompileBudget,
++  compilerQueueBudget,
++  compileWithinDeadline,
++} from "./compiler-request.ts";
++import { CloudCompileResult } from "../contracts/builds.ts";
++import { captureTelemetry, withRemoteSpan } from "@executor-js/telemetry";
++import { Config, Effect, Option, Predicate, Schema } from "effect";
++import { compileCloudApp } from "./app-build.ts";
++import { makeBuildAdmission } from "./build-admission.ts";
++import { compilerPhases } from "./compiler-phases.ts";
++import type { CloudCompiler } from "../contracts/builds.ts";
++const FrameworkAssets = Schema.declare(
++  (value): value is { readonly fetch: (request: Request) => Promise<Response> } =>
++    Predicate.isObject(value) && "fetch" in value && typeof value.fetch === "function",
++);
++const FrameworkFiles = Schema.Record(Schema.String, Schema.String);
++export const compilerRuntime = (env: Readonly<Record<string, unknown>>) =>
++  Effect.gen(function* () {
++    // Framework files are deployment assets. A custom registry is never eligible for reuse.
++    const registry = Option.getOrUndefined(
++      yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option),
++    );
++    const version = yield* Config.String("EXECUTOR_APPS_VERSION").pipe(Config.option);
++    const release = yield* Config.String("EXECUTOR_COMPILER_CACHE_RELEASE").pipe(Config.option);
++    const cacheEnabled = env.EXECUTOR_COMPILER_CACHE_ENABLED === "true";
++    const read = Effect.gen(function* () {
++      const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
++      const response = yield* Effect.tryPromise(() =>
++        assets.fetch(new Request("https://framework.invalid/framework.json")),
++      );
++      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkFiles))(
++        yield* Effect.tryPromise(() => response.text()),
++      );
++    }).pipe(
++      Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" })),
++    );
++    // Only read files are kept for later compiles. A compile that finds none reads them itself:
++    // waiting on another request's read would resume in that request's I/O context, whose timers
++    // are dropped when it ends, and the compile would never finish.
++    let kept: typeof FrameworkFiles.Type | undefined;
++    const files = Effect.suspend(() =>
++      kept !== undefined
++        ? Effect.succeed(kept)
++        : read.pipe(
++            Effect.tap((value) =>
++              Effect.sync(() => {
++                kept = value;
++              }),
++            ),
++          ),
++    );
++    // Two builds still overlap one's npm downloads with the other's bundling, and a build
++    // stalled on the registry leaves the other slot free. The lease starts at admission and
++    // expires when that compile's deadline ends, even if request cleanup never runs.
++    const admitted = makeBuildAdmission(2, compilerCompileBudget, compilerQueueBudget);
++    const isolate = crypto.randomUUID();
++    const host = {
++      ...(registry === undefined ? {} : { registry }),
++      ...(Option.isSome(version) ? { apps: { version: version.value, files } } : {}),
++    };
++    const compile = (
++      files: typeof CodeFiles.Type,
++      publicPaths: ReadonlyArray<string>,
++      headers: Readonly<Record<string, string>>,
++      signal?: AbortSignal,
++    ) =>
++      Effect.suspend(() => {
++        let replied = () => {};
++        let failed = () => {};
++        return Schema.decodeUnknownEffect(
++          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
++        )({ files, publicPaths }).pipe(
++          Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
++          Effect.flatMap((input) =>
++            Effect.gen(function* () {
++              const { phase, fingerprint } = yield* compilerPhases(
++                input.files,
++                input.publicPaths,
++                isolate,
++              );
++              replied = () => phase("replied");
++              failed = () => phase("error");
++              return yield* admitted(
++                compileWithinDeadline(
++                  fingerprint.pipe(
++                    Effect.andThen(
++                      compileCloudApp(
++                        input.files,
++                        { ...host, onPhase: phase },
++                        input.publicPaths,
++                        cacheEnabled && registry === undefined
++                          ? Option.getOrUndefined(release)
++                          : undefined,
++                      ),
++                    ),
++                  ),
++                ),
++                phase,
++                signal,
++              );
++            }),
++          ),
++          Effect.tapCause(() => Effect.sync(() => failed())),
++          Effect.map((value) => ({ ok: true as const, value })),
++          Effect.catchTags({
++            BuildBusy: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeProtocolUnsupported: (error) => Effect.succeed({ ok: false as const, error }),
++            RuntimeAppsDependencyMissing: (error) => Effect.succeed({ ok: false as const, error }),
++          }),
++          Effect.flatMap(Schema.encodeEffect(CloudCompileResult)),
++          Effect.tap(() => Effect.sync(() => replied())),
++          Effect.orDie,
++        );
++      }).pipe(
++        withRemoteSpan(new Request("https://compiler.internal", { headers }), "compiler.compile"),
++      );
++    return {
++      compile,
++      request: () =>
++        Effect.gen(function* () {
++          const { CompilerRequest } = yield* Effect.promise(
++            () => import("./compiler-request-target.ts"),
++          );
++          const { context } = yield* captureTelemetry;
++          return new CompilerRequest(
++            (
++              signal,
++              files: typeof CodeFiles.Type,
++              publicPaths: ReadonlyArray<string>,
++              headers: Readonly<Record<string, string>>,
++            ) => compile(files, publicPaths, headers, signal).pipe(Effect.provideContext(context)),
++          );
++        }),
++    } satisfies CloudCompiler;
++  });
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 3d91bd0..0b960a3 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -355,6 +355,16 @@ const notRunInCi: Partial<
+     reason:
+       "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
+   },
++  cloudCompilerCache: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt compiler-diagnostics job runs the production-configured real Worker fixture.",
++  },
++  cloudCompilerCacheBypass: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt compiler-diagnostics job runs inherited production settings on the managed test stage.",
++  },
+   cloudPoolSetupAtomic: {
+     targets: ["cloud"],
+     reason:
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index b548a9a..c958104 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -312,7 +314,33 @@ export const startCloudEnvironment = (input: {
+       mode: 0o600,
+     });
+     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
++    const cacheFramework =
++      process.env.BASALT_E2E_COMPILER_CACHE_INHERITED === "1"
++        ? path.resolve(".local/basalt-framework")
++        : undefined;
++    const cachePackageFiles =
++      cacheFramework === undefined
++        ? undefined
++        : yield* Schema.decodeUnknownEffect(
++            Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
++          )(yield* fs.readFileString(path.join(cacheFramework, "framework.json")));
++    const cachePackage =
++      cachePackageFiles === undefined
++        ? undefined
++        : yield* Schema.decodeUnknownEffect(
++            Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
++          )(cachePackageFiles["package.json"]);
+     const env = {
++      ...(cacheFramework !== undefined && cachePackage !== undefined
++        ? {
++            ALCHEMY_STAGE: "production",
++            EXECUTOR_COMPILER_CACHE_RELEASE: "a".repeat(40),
++            EXECUTOR_APPS_FRAMEWORK: cacheFramework,
++            EXECUTOR_COMPILER_CACHE_FRAMEWORK: cacheFramework,
++            EXECUTOR_APPS_VERSION: cachePackage.version,
++            EXECUTOR_COMPILER_CACHE_APPS_VERSION: cachePackage.version,
++          }
++        : {}),
+       BASALT_E2E_DATABASE_ORIGIN: "original",
+       BASALT_E2E_DATABASE_TARGET_PORT: String(databasePort),
+       BASALT_E2E_OPS_RELEASE: "reviewed-release",
+diff --git a/e2e/support/compiler-cache-server.ts b/e2e/support/compiler-cache-server.ts
+new file mode 100644
+index 0000000..5b0ad83
+--- /dev/null
++++ b/e2e/support/compiler-cache-server.ts
+@@ -0,0 +1,66 @@
++/** Scoped HTTP adapter to the separately launched production compiler proof host. */
++import { Deferred, Effect, FileSystem, Option, Path, Schema, Stream, Config } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { outputLines } from "./alchemy-dev-output.ts";
++
++const Ready = Schema.Struct({
++  type: Schema.Literal("compiler-cache-proof.ready"),
++  port: Schema.Number,
++  version: Schema.String,
++  configuration: Schema.Record(Schema.String, Schema.String),
++});
++export const compilerCacheServer = Effect.gen(function* () {
++  const path = yield* Path.Path;
++  const fs = yield* FileSystem.FileSystem;
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const http = yield* HttpClient.HttpClient;
++  const directory = yield* Config.String("EXECUTOR_E2E_RUN").pipe(Config.option);
++  const ready = yield* Deferred.make<typeof Ready.Type>();
++  const child = yield* processes.spawn(
++    ChildProcess.make("node", [path.resolve("scripts/compiler-cache-proof/main.ts")], {
++      stdout: "pipe",
++      stderr: "pipe",
++      killSignal: "SIGTERM",
++      forceKillAfter: "15 seconds",
++    }),
++  );
++  yield* outputLines(child).pipe(
++    Stream.runForEach((line) =>
++      Effect.gen(function* () {
++        if (Option.isSome(directory))
++          yield* fs.writeFileString(
++            path.join(directory.value, "compiler-cache-host.log"),
++            `${line}\n`,
++            { flag: "a" },
++          );
++        if (!line.startsWith('{"type":"compiler-cache-proof.ready"')) return;
++        const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line);
++        yield* Deferred.succeed(ready, value);
++      }),
++    ),
++    Effect.forkScoped,
++  );
++  const started = yield* Deferred.await(ready).pipe(
++    Effect.raceFirst(
++      child.exitCode.pipe(
++        Effect.flatMap((code) =>
++          Effect.die(`Compiler proof host exited before readiness (${code})`),
++        ),
++      ),
++    ),
++  );
++  const request = (route: string, input?: unknown) =>
++    Effect.gen(function* () {
++      const configured = yield* HttpClientRequest.bodyJson(
++        HttpClientRequest.post(`http://127.0.0.1:${started.port}${route}`),
++        input ?? {},
++      );
++      const response = yield* http.execute(configured);
++      const text = yield* response.text;
++      if (response.status !== 200)
++        return yield* Effect.die(`Compiler proof host returned ${response.status}: ${text}`);
++      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text);
++    });
++  return { request, version: started.version, configuration: started.configuration };
++});
+diff --git a/e2e/support/compiler-phase-evidence.ts b/e2e/support/compiler-phase-evidence.ts
+index 035c73f..1382421 100644
+--- a/e2e/support/compiler-phase-evidence.ts
++++ b/e2e/support/compiler-phase-evidence.ts
+@@ -17,6 +17,7 @@ const Phase = Schema.Struct({
+     "admitted",
+     "dependencies",
+     "bundle",
++    "cache-hit",
+     "replied",
+     "released",
+     "error",
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index fa6e7ff..6eb6fa8 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3601,6 +3601,26 @@ export const scenarios = plan({
+       local: na("This scenario measures the Cloud catalog installation path."),
+     },
+   },
++  cloudCompilerCache: {
++    fixtures: "cli",
++    file: "cloud-compiler-cache.spec.ts",
++    title: "Production compiler cache reuses only intact output from the same release",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("This scenario runs the Cloud compiler Worker with production settings."),
++      local: na("This scenario runs the Cloud compiler Worker with production settings."),
++    },
++  },
++  cloudCompilerCacheBypass: {
++    fixtures: "actors",
++    file: "cloud-compiler.spec.ts",
++    title: "Cloud test stages bypass inherited production compiler cache settings",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("This scenario exercises Cloud test-stage deployment settings."),
++      local: na("This scenario exercises Cloud test-stage deployment settings."),
++    },
++  },
+   cloudCompilerDependencies: {
+     fixtures: "actors",
+     file: "cloud-compiler.spec.ts",
+diff --git a/e2e/tests/cloud-compiler-cache.spec.ts b/e2e/tests/cloud-compiler-cache.spec.ts
+new file mode 100644
+index 0000000..ce3d2c7
+--- /dev/null
++++ b/e2e/tests/cloud-compiler-cache.spec.ts
+@@ -0,0 +1,96 @@
++/** Production reuse and inherited-stage bypass through a real HTTP compiler Worker. */
++import { expect, layer } from "@effect/vitest";
++import { FetchHttpClient } from "effect/http";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect, FileSystem, Config, Option, Schema, Layer } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { compilerCacheServer } from "../support/compiler-cache-server.ts";
++
++const Reply = Schema.Struct({
++  result: Schema.Struct({ ok: Schema.Boolean, value: Schema.Unknown }),
++  phases: Schema.Array(Schema.String),
++  eligible: Schema.Boolean,
++  release: Schema.NullOr(Schema.String),
++  stage: Schema.String,
++});
++layer(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer), { excludeTestServices: true })(
++  "Compiler cache",
++  (it) => {
++    it.effect(
++      scenarios.cloudCompilerCache.title,
++      () =>
++        Effect.gen(function* () {
++          const fs = yield* FileSystem.FileSystem;
++          const server = yield* compilerCacheServer;
++          const input = {
++            files: [
++              {
++                path: "index.ts",
++                content: `import { defineApp, router, query, object } from "apps";
++export default defineApp({}, { tools: router({ read: query({input:object({})}, async () => "cache-proof") }) });`,
++              },
++              {
++                path: "package.json",
++                content: JSON.stringify({ dependencies: { apps: server.version } }),
++              },
++            ],
++            publicPaths: [],
++          };
++          const create = (route: string) =>
++            server.request(route, input).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Reply)));
++          const cold = yield* create("/create");
++          expect(cold.stage).toBe("production");
++          expect(cold.eligible).toBe(true);
++          expect(cold.release).toBe("a".repeat(40));
++          expect(cold.result.ok).toBe(true);
++          expect(cold.phases).toContain("bundle");
++          expect(cold.phases).not.toContain("cache-hit");
++          const warm = yield* create("/create");
++          expect(warm.result.ok).toBe(true);
++          expect(warm.phases).toContain("cache-hit");
++          expect(warm.phases).not.toContain("bundle");
++          expect(JSON.stringify(warm.result.value)).toBe(JSON.stringify(cold.result.value));
++          const release = yield* create("/release-two");
++          expect(release.release).toBe("b".repeat(40));
++          expect(release.phases).toContain("bundle");
++          expect(release.phases).not.toContain("cache-hit");
++          expect(JSON.stringify(release.result.value)).toBe(JSON.stringify(cold.result.value));
++          const corrupted = yield* server.request("/corrupt");
++          expect(corrupted).toEqual({ corrupted: true, validJson: true });
++          const repaired = yield* create("/release-two");
++          expect(repaired.result.ok).toBe(true);
++          expect(repaired.phases).toContain("bundle");
++          expect(repaired.phases).not.toContain("cache-hit");
++          expect(JSON.stringify(repaired.result.value)).toBe(JSON.stringify(cold.result.value));
++          // The same native Cache API already contains both release entries.
++          const testStageCalls = [];
++          for (let attempt = 0; attempt < 2; attempt++) {
++            const test = yield* create("/test-stage");
++            testStageCalls.push(test);
++            expect(test.stage).toBe("test-e2e-cache");
++            expect(server.configuration.ALCHEMY_STAGE).toBe("production");
++            expect(test.eligible).toBe(false);
++            expect(test.result.ok).toBe(true);
++            expect(test.phases).toContain("bundle");
++            expect(test.phases).not.toContain("cache-hit");
++            expect(JSON.stringify(test.result.value)).toBe(JSON.stringify(cold.result.value));
++          }
++          const directory = yield* Config.String("EXECUTOR_E2E_RUN").pipe(Config.option);
++          if (Option.isSome(directory))
++            yield* fs.writeFileString(
++              `${directory.value}/compiler-cache-production.json`,
++              JSON.stringify({
++                configuration: server.configuration,
++                cold,
++                warm,
++                release,
++                corrupted,
++                repaired,
++                testStageCalls,
++              }),
++            );
++        }),
++      { timeout: 180_000 },
++    );
++  },
++);
+diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
+index dd61523..8e3a987 100644
+--- a/e2e/tests/cloud-compiler.spec.ts
++++ b/e2e/tests/cloud-compiler.spec.ts
+@@ -15,6 +15,58 @@ import { stalledPackage } from "../support/npm-registry.ts";
+ import { compilerPhaseEvidence } from "../support/compiler-phase-evidence.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
++  it.effect(
++    scenarios.cloudCompilerCacheBypass.title,
++    (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            evidence = yield* Evidence;
++          const prefix = `/api/organizations/${actors.organization.id}/apps`;
++          const marker = randomUUID();
++          const outcomes = [];
++          for (const value of [marker, marker, `${marker}-changed`]) {
++            const trace = randomUUID().replaceAll("-", "");
++            const files = [
++              {
++                path: "index.ts",
++                content: `import { defineApp, router, query, object } from "apps";
++export default defineApp({}, {tools:router({read:query({input:object({})},async()=>${JSON.stringify(value)})})});`,
++              },
++              appsManifest,
++            ];
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/deploy`,
++              { name: `Cache bypass ${trace}`, files },
++              { traceparent: `00-${trace}-0123456789abcdef-01` },
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(App, response);
++            yield* Effect.addFinalizer(() =>
++              api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
++            );
++            const invoked = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/${app.id}/tools/call`,
++              { tool: "read", kind: "query", input: {} },
++            );
++            expect(invoked.status).toBe(200);
++            expect(invoked.body).toBe(value);
++            const phases = yield* compilerPhaseEvidence(trace, files);
++            expect(phases.map(({ record }) => record.phase)).toContain("bundle");
++            expect(phases.map(({ record }) => record.phase)).not.toContain("cache-hit");
++            outcomes.push({ app: app.id, phases, value: invoked.body });
++          }
++          yield* evidence.json("compiler-cache-test-stage-bypass.json", outcomes);
++        }),
++      ),
++    { timeout: 180_000 },
++  );
+   it.effect(scenarios.cloudCompilerMemory.title, (context) =>
+     withHostedCase(
+       context,
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+index 7e79805..743a269 100644
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -29,7 +29,7 @@ import apps from "apps/package.json" with { type: "json" };
+  */
+ export interface WorkerHost {
+   /** Host-owned phase records outlive a request whose completed span is lost. */
+-  readonly onPhase?: (phase: "dependencies" | "bundle") => void;
++  readonly onPhase?: (phase: "dependencies" | "bundle" | "cache-hit") => void;
+   readonly registry?: string;
+   readonly apps?: {
+     readonly version: string;
+@@ -141,17 +141,8 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
+     ),
+   );
+ 
+-/**
+- * Compilation returns browser bytes separately; neither imports nor credentials cross from server
+- * execution. The selected framework's protocol must be supported before anything compiles. The
+- * bundle holds only the app's modules; `framework` holds the release's server modules, which a
+- * host stores once and links on load (see `assembleWorkerBundle`).
+- */
+-export const compileWorkerApp = (
+-  files: CodeFiles,
+-  host: WorkerHost,
+-  publicPaths: ReadonlyArray<string> = [],
+-) =>
++/** Resolve one request's dependency bytes before looking up a reusable compiler result. */
++export const prepareWorkerApp = (files: CodeFiles, host: WorkerHost, resolveAll = true) =>
+   Effect.gen(function* () {
+     const vendored = files.find((file) => file.path.split("/").includes("node_modules"));
+     if (vendored !== undefined)
+@@ -165,9 +156,32 @@ export const compileWorkerApp = (
+     const filesystem = new InMemoryFileSystem(
+       Object.fromEntries(files.map((file) => [file.path, file.content])),
+     );
+-    const dependencies = yield* workerDependencies(filesystem, host);
++    const dependencies = yield* workerDependencies(
++      filesystem,
++      resolveAll
++        ? {
++            ...host,
++            onPhase: (phase) => {
++              if (phase !== "bundle") host.onPhase?.(phase);
++            },
++          }
++        : host,
++    );
+     if (!(yield* dependencies.framework))
+       return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
++    if (resolveAll) yield* dependencies.prepare;
++    return { filesystem, dependencies };
++  });
++
++/** Compile with this request's prepared dependencies, or the ordinary lazy resolver. */
++export const compileWorkerApp = (
++  files: CodeFiles,
++  host: WorkerHost,
++  publicPaths: ReadonlyArray<string> = [],
++  prepared?: Effect.Success<ReturnType<typeof prepareWorkerApp>>,
++) =>
++  Effect.gen(function* () {
++    const { filesystem, dependencies } = prepared ?? (yield* prepareWorkerApp(files, host, false));
+     const selected = yield* selectedFramework(filesystem);
+     const protocol = yield* appProtocol(selected.protocol);
+     const entry = "__executor_worker.ts";
+diff --git a/packages/sdk/src/implementation/worker-dependencies.ts b/packages/sdk/src/implementation/worker-dependencies.ts
+index da687c9..9ae79a6 100644
+--- a/packages/sdk/src/implementation/worker-dependencies.ts
++++ b/packages/sdk/src/implementation/worker-dependencies.ts
+@@ -100,6 +100,13 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
+     };
+     return {
+       plugin,
++      // Cache identity uses the exact resolved bytes that this request's compiler will read.
++      prepare: Effect.gen(function* () {
++        for (const [name, version] of Object.entries(dependencies))
++          if (name !== "apps") yield* install(name, version);
++        // CSS imports may reach this compiler-owned dependency without an authored declaration.
++        yield* install("tailwindcss", tailwind.version, false);
++      }),
+       framework:
+         dependencies.apps === undefined
+           ? Effect.succeed(false)
+diff --git a/packages/sdk/src/workerd-build.ts b/packages/sdk/src/workerd-build.ts
+index 1074255..5271440 100644
+--- a/packages/sdk/src/workerd-build.ts
++++ b/packages/sdk/src/workerd-build.ts
+@@ -1,3 +1,7 @@
+ /** Worker-only compiler; its WASM dependency stays outside the runtime adapter module graph. */
+-export { compileWorkerApp, type WorkerHost } from "./implementation/worker-build.ts";
++export {
++  compileWorkerApp,
++  prepareWorkerApp,
++  type WorkerHost,
++} from "./implementation/worker-build.ts";
+ export { browserBuild as workerBrowserBuild } from "./implementation/worker-browser-build.ts";
+diff --git a/scripts/compiler-cache-proof/deployment.ts b/scripts/compiler-cache-proof/deployment.ts
+new file mode 100644
+index 0000000..56c0018
+--- /dev/null
++++ b/scripts/compiler-cache-proof/deployment.ts
+@@ -0,0 +1,183 @@
++/** Evaluate the real compiler stack and bundle its normal Alchemy RPC entry points. */
++import * as Alchemy from "alchemy";
++import * as Cloudflare from "alchemy/Cloudflare";
++import * as Output from "alchemy/Output";
++import { AlchemyContextLive } from "alchemy/AlchemyContext";
++import { provideFreshArtifactStore } from "alchemy/Artifacts";
++import { layerNonInteractive } from "alchemy/Interaction";
++import { unpackEnvValue } from "alchemy/RuntimeContext";
++import { evalStack } from "alchemy/Stack";
++import { ConfigProvider, Effect, FileSystem, Layer, Path, Redacted, Schema } from "effect";
++import type { WorkerOptions } from "miniflare";
++import CompilerLive from "../../apps/hosted/cloud/src/compiler.ts";
++import Client from "./worker.ts";
++
++interface WorkerProps {
++  readonly main: string;
++  readonly exports?: Record<string, unknown>;
++  readonly build?: object;
++  readonly env?: Record<string, unknown>;
++  readonly assets?: { readonly directory: string };
++}
++const alchemyEntry = import.meta.resolve("alchemy");
++const alchemyModule = (name: string) =>
++  import(
++    new URL(`${name}${alchemyEntry.endsWith(".ts") ? ".ts" : ".js"}`, new URL("./", alchemyEntry))
++      .href
++  );
++const {
++  WorkerBundle,
++}: {
++  readonly WorkerBundle: Effect.Effect<
++    {
++      readonly build: (options: object) => Effect.Effect<
++        {
++          readonly files: ReadonlyArray<{
++            readonly path: string;
++            readonly content: string | Uint8Array;
++          }>;
++        },
++        Error
++      >;
++    },
++    never,
++    FileSystem.FileSystem | Path.Path
++  >;
++} = await alchemyModule("Cloudflare/Workers/Sources/Rolldown");
++const {
++  getCompatibility,
++}: {
++  readonly getCompatibility: (props: WorkerProps) => { date: string; flags: string[] };
++} = await alchemyModule("Cloudflare/Workers/Compatibility");
++
++const stack = Alchemy.Stack(
++  "compiler-cache-proof",
++  {
++    providers: Cloudflare.providers(),
++    state: Alchemy.localState(),
++  },
++  Client.pipe(Effect.provide(CompilerLive)),
++);
++const Binding = Schema.Union([
++  Schema.Struct({
++    type: Schema.Literals(["plain_text", "secret_text"]),
++    name: Schema.String,
++    text: Schema.String,
++  }),
++  Schema.Struct({ type: Schema.Literal("json"), name: Schema.String, json: Schema.Unknown }),
++  Schema.Struct({ type: Schema.Literal("service"), name: Schema.String, service: Schema.String }),
++]);
++const BindingData = Schema.Struct({ bindings: Schema.optional(Schema.Array(Binding)) });
++
++export const compilerCacheDeployment = (
++  stage: string,
++  configuration: Readonly<Record<string, string>>,
++) =>
++  evalStack(
++    stack,
++    (compiled) =>
++      Effect.gen(function* () {
++        const path = yield* Path.Path;
++        const bundler = yield* WorkerBundle;
++        const resources = Object.values(compiled.resources);
++        // Local physical identities replace only Cloudflare-assigned script names.
++        const upstream = Object.fromEntries(
++          resources.map((resource) => [
++            resource.FQN,
++            {
++              workerName: resource.LogicalId,
++            },
++          ]),
++        );
++        const workers: WorkerOptions[] = [];
++        let compilerBindings: Record<string, unknown> | undefined;
++        for (const resource of resources) {
++          if (resource.Type !== "Cloudflare.Worker")
++            return yield* Effect.die(`Unexpected resource in compiler fixture: ${resource.Type}`);
++          const props = resource.Props as WorkerProps;
++          const bundle = yield* bundler.build({
++            id: resource.LogicalId,
++            main: props.main,
++            compatibility: getCompatibility(props),
++            entry: { kind: "effect", exports: props.exports ?? {} },
++            stack: { name: compiled.name, stage: compiled.stage },
++            extraOptions: props.build,
++          });
++          // The same reserved runtime metadata the Worker provider adds on upload.
++          const bindings: Record<string, unknown> = {
++            ALCHEMY_PHASE: "runtime",
++            ALCHEMY_WORKER_NAME: resource.LogicalId,
++            ALCHEMY_STACK_NAME: compiled.name,
++            ALCHEMY_STAGE: compiled.stage,
++            ALCHEMY_CLOUDFLARE_ACCOUNT_ID: "0".repeat(32),
++          };
++          const serviceBindings: Record<string, string> = {};
++          const env = yield* Output.evaluate(props.env ?? {}, upstream);
++          for (const [name, value] of Object.entries(env)) {
++            if (!(name in bindings))
++              bindings[name] = Redacted.isRedacted(value) ? Redacted.value(value) : value;
++          }
++          for (const binding of compiled.bindings[resource.FQN] ?? []) {
++            const data = yield* Schema.decodeUnknownEffect(BindingData)(
++              yield* Output.evaluate(binding.data, upstream),
++            );
++            for (const item of data.bindings ?? []) {
++              if (item.type === "service") serviceBindings[item.name] = item.service;
++              else if (item.type === "json") bindings[item.name] = item.json;
++              else bindings[item.name] = item.text;
++            }
++          }
++          if (resource.LogicalId === "AppCompiler") {
++            if (props.assets?.directory !== configuration.EXECUTOR_APPS_FRAMEWORK)
++              return yield* Effect.die("Compiler did not provision the released framework assets");
++            compilerBindings = bindings;
++          }
++          const modulesRoot = path.resolve(".local/compiler-cache-fixture", resource.LogicalId);
++          workers.push({
++            name: resource.LogicalId,
++            modulesRoot,
++            compatibilityDate: getCompatibility(props).date,
++            compatibilityFlags: getCompatibility(props).flags,
++            bindings,
++            serviceBindings,
++            ...(props.assets === undefined
++              ? {}
++              : { assets: { directory: props.assets.directory, binding: "ASSETS" } }),
++            // Alchemy also excludes source maps from its local executable module list.
++            modules: bundle.files
++              .filter((file) => !file.path.endsWith(".map"))
++              .map((file) => ({
++                type: file.path.endsWith(".wasm")
++                  ? ("CompiledWasm" as const)
++                  : ("ESModule" as const),
++                path: path.resolve(modulesRoot, file.path),
++                contents: file.content,
++              })),
++          });
++        }
++        const client = workers.find((worker) => worker.name === "CompilerCacheClient");
++        if (
++          client?.serviceBindings?.AppCompiler !== "AppCompiler" ||
++          compilerBindings === undefined
++        )
++          return yield* Effect.die("Alchemy did not generate the compiler RPC service binding");
++        const releaseBinding = compilerBindings.EXECUTOR_COMPILER_CACHE_RELEASE;
++        const release =
++          releaseBinding === undefined
++            ? null
++            : unpackEnvValue(Schema.decodeUnknownSync(Schema.String)(releaseBinding));
++        return {
++          workers: [client, ...workers.filter((worker) => worker !== client)],
++          compilerBindings,
++          stage: compiled.stage,
++          release: Redacted.isRedacted(release) ? Redacted.value(release) : release,
++        };
++      }),
++    { stage },
++  ).pipe(
++    Effect.provide(
++      ConfigProvider.layerAdd(ConfigProvider.fromUnknown(configuration), { asPrimary: true }),
++    ),
++    provideFreshArtifactStore,
++    Effect.provide(Layer.mergeAll(AlchemyContextLive, layerNonInteractive(), Alchemy.localState())),
++  );
+diff --git a/scripts/compiler-cache-proof/driver.ts b/scripts/compiler-cache-proof/driver.ts
+new file mode 100644
+index 0000000..91fcfc9
+--- /dev/null
++++ b/scripts/compiler-cache-proof/driver.ts
+@@ -0,0 +1,11 @@
++/** Keep native runtime failures attached to the operation the isolated host attempted. */
++import { Effect, Schema } from "effect";
++class CompilerProofFailed extends Schema.TaggedError<CompilerProofFailed>()("CompilerProofFailed", {
++  operation: Schema.String,
++  cause: Schema.Unknown,
++}) {}
++export const driver = <A>(operation: string, run: () => Promise<A>) =>
++  Effect.tryPromise({
++    try: run,
++    catch: (cause) => new CompilerProofFailed({ operation, cause }),
++  });
+diff --git a/scripts/compiler-cache-proof/main.ts b/scripts/compiler-cache-proof/main.ts
+new file mode 100644
+index 0000000..c97fd4d
+--- /dev/null
++++ b/scripts/compiler-cache-proof/main.ts
+@@ -0,0 +1,48 @@
++/** Isolated development host for the real compiler deployment and native cache controls. */
++import { createServer } from "node:http";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Cause, Console, Effect, Layer } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { compilerCacheServer } from "./runtime.ts";
++
++NodeRuntime.runMain(
++  Effect.scoped(
++    Effect.gen(function* () {
++      const compiler = yield* compilerCacheServer;
++      const handle = Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const result = yield* compiler.request(request.url, yield* request.json);
++        return HttpServerResponse.jsonUnsafe(result);
++      }).pipe(
++        Effect.tapCause((cause) => Console.error(Cause.pretty(cause))),
++        Effect.orDie,
++      );
++      const services = yield* Layer.build(
++        HttpRouter.serve(
++          Layer.mergeAll(
++            HttpRouter.add("POST", "/create", handle),
++            HttpRouter.add("POST", "/release-two", handle),
++            HttpRouter.add("POST", "/test-stage", handle),
++            HttpRouter.add("POST", "/corrupt", handle),
++          ),
++          { disableLogger: true, disableListenLog: true },
++        ).pipe(
++          Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++        ),
++      );
++      const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++      if (!("port" in server.address)) return yield* Effect.die("Compiler proof host requires TCP");
++      yield* Console.log(
++        JSON.stringify({
++          type: "compiler-cache-proof.ready",
++          port: server.address.port,
++          version: compiler.version,
++          configuration: compiler.configuration,
++        }),
++      );
++      return yield* Effect.never;
++    }),
++  ).pipe(Effect.provide(NodeServices.layer)),
++);
+diff --git a/scripts/compiler-cache-proof/runtime.ts b/scripts/compiler-cache-proof/runtime.ts
+new file mode 100644
+index 0000000..ab27fce
+--- /dev/null
++++ b/scripts/compiler-cache-proof/runtime.ts
+@@ -0,0 +1,131 @@
++/** Run normal compiler deployments in isolated workerd and call their generated RPC client. */
++import { createRequire } from "node:module";
++import { Miniflare } from "miniflare";
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { driver } from "./driver.ts";
++import { compilerCacheDeployment } from "./deployment.ts";
++import { compilerCacheKeys, corruptCompilerCache } from "./storage.ts";
++
++const Phase = Schema.Struct({
++  type: Schema.Literal("executor.compiler.phase"),
++  phase: Schema.String,
++});
++export const compilerCacheServer = Effect.gen(function* () {
++  const path = yield* Path.Path;
++  const fs = yield* FileSystem.FileSystem;
++  const framework = path.resolve(".local/basalt-framework");
++  const packageFiles = Schema.decodeUnknownSync(
++    Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
++  )(yield* fs.readFileString(path.join(framework, "framework.json")));
++  const { version } = Schema.decodeUnknownSync(
++    Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
++  )(packageFiles["package.json"]);
++  const configuration = {
++    ALCHEMY_STAGE: "production",
++    EXECUTOR_COMPILER_CACHE_RELEASE: "a".repeat(40),
++    EXECUTOR_APPS_FRAMEWORK: framework,
++    EXECUTOR_COMPILER_CACHE_FRAMEWORK: framework,
++    EXECUTOR_APPS_VERSION: version,
++    EXECUTOR_COMPILER_CACHE_APPS_VERSION: version,
++    DO_NOT_TRACK: "1",
++    SENTRY_ENABLED: "false",
++    POSTHOG_ENABLED: "false",
++  };
++  const deployments = {
++    "/create": yield* compilerCacheDeployment("production", configuration),
++    "/release-two": yield* compilerCacheDeployment("production", {
++      ...configuration,
++      EXECUTOR_COMPILER_CACHE_RELEASE: "b".repeat(40),
++    }),
++    // Every other eligibility input is identical to production, including released assets.
++    "/test-stage": yield* compilerCacheDeployment("test-e2e-cache", configuration),
++  };
++  const loaded = Schema.decodeUnknownSync(
++    Schema.Union([Schema.String, Schema.Struct({ default: Schema.String })]),
++  )(createRequire(import.meta.url)("workerd"));
++  const workerd = typeof loaded === "string" ? loaded : loaded.default;
++  const previousWorkerd = process.env.MINIFLARE_WORKERD_PATH;
++  yield* Effect.acquireRelease(
++    Effect.sync(() => {
++      process.env.MINIFLARE_WORKERD_PATH = workerd;
++    }),
++    () =>
++      Effect.sync(() => {
++        if (previousWorkerd === undefined) delete process.env.MINIFLARE_WORKERD_PATH;
++        else process.env.MINIFLARE_WORKERD_PATH = previousWorkerd;
++      }),
++  );
++  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "compiler-cache-proof-" });
++  const cachePersist = path.join(directory, "cache");
++  yield* fs.makeDirectory(cachePersist);
++  const phases: string[] = [];
++  let complete: (() => void) | undefined;
++  const options = (workers: (typeof deployments)["/create"]["workers"]) => ({
++    workers,
++    cachePersist,
++    handleStructuredLogs: (log: { readonly message: string }) => {
++      const start = log.message.indexOf('{"type":"executor.compiler.phase"');
++      if (start === -1) {
++        console.error(log.message);
++        return;
++      }
++      const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(Phase))(
++        log.message.slice(start),
++      );
++      if (decoded._tag === "None") return;
++      phases.push(decoded.value.phase);
++      if (decoded.value.phase === "released" || decoded.value.phase === "error") complete?.();
++    },
++  });
++  let selected = "/create";
++  let deployment = deployments["/create"];
++  const runtime = yield* Effect.acquireRelease(
++    Effect.sync(() => new Miniflare(options(deployment.workers))),
++    (runtime) => driver("dispose compiler fixture", () => runtime.dispose()).pipe(Effect.orDie),
++  );
++  let lastKey: string | undefined;
++  const request = (route: string, input?: unknown) => {
++    if (route === "/corrupt")
++      return driver("corrupt native compiler cache", async () => {
++        if (lastKey === undefined) throw new Error("No retained release entry");
++        return corruptCompilerCache(runtime, lastKey);
++      });
++    const target =
++      route === "/create" || route === "/release-two" || route === "/test-stage"
++        ? deployments[route]
++        : undefined;
++    if (target === undefined) return Effect.die(`Unknown compiler fixture route ${route}`);
++    return driver("call generated compiler RPC client", async () => {
++      if (selected !== route) {
++        await runtime.setOptions(options(target.workers));
++        selected = route;
++        deployment = target;
++      }
++      const before = new Set(await compilerCacheKeys(cachePersist));
++      phases.length = 0;
++      const done = new Promise<void>((resolve) => {
++        complete = resolve;
++      });
++      const response = await runtime.dispatchFetch("http://compiler-fixture.local/compile", {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify(input ?? {}),
++      });
++      if (response.status !== 200)
++        throw new Error(`Compiler fixture returned ${response.status}: ${await response.text()}`);
++      const result: unknown = await response.json();
++      await done;
++      complete = undefined;
++      const keys = await compilerCacheKeys(cachePersist);
++      lastKey = keys.find((key) => !before.has(key)) ?? lastKey;
++      return {
++        result,
++        phases: [...phases],
++        eligible: deployment.compilerBindings.EXECUTOR_COMPILER_CACHE_ENABLED === "true",
++        release: deployment.release,
++        stage: deployment.stage,
++      };
++    });
++  };
++  return { request, version, configuration };
++});
+diff --git a/scripts/compiler-cache-proof/storage.ts b/scripts/compiler-cache-proof/storage.ts
+new file mode 100644
+index 0000000..a7c8273
+--- /dev/null
++++ b/scripts/compiler-cache-proof/storage.ts
+@@ -0,0 +1,77 @@
++/** Corrupt native test-cache bytes from the host, without modifying the compiler Worker. */
++import { readdir } from "node:fs/promises";
++import { join } from "node:path";
++import { DatabaseSync } from "node:sqlite";
++import { Headers, Response, type Miniflare } from "miniflare";
++import { Schema } from "effect";
++
++const Keys = Schema.Array(Schema.Struct({ key: Schema.String }));
++export const compilerCacheKeys = async (directory: string): Promise<string[]> => {
++  const entries = await readdir(directory, { withFileTypes: true });
++  const keys: string[] = [];
++  for (const entry of entries) {
++    const file = join(directory, entry.name);
++    if (entry.isDirectory()) keys.push(...(await compilerCacheKeys(file)));
++    else if (entry.name.endsWith(".sqlite")) {
++      // Read only this fixture's cache metadata; content still goes through native Cache API.
++      const db = new DatabaseSync(file, { readOnly: true });
++      try {
++        // workerd also creates metadata databases before a cache namespace has any entries.
++        if (
++          db
++            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_mf_entries'")
++            .get() === undefined
++        )
++          continue;
++        const rows = Schema.decodeUnknownSync(Keys)(
++          db
++            .prepare(
++              "SELECT key FROM _mf_entries WHERE key LIKE 'https://compiler-cache.invalid/v2/%'",
++            )
++            .all(),
++        );
++        keys.push(...rows.map((row) => row.key));
++      } finally {
++        db.close();
++      }
++    }
++  }
++  return keys;
++};
++const Envelope = Schema.Struct({
++  format: Schema.Literal(2),
++  payload: Schema.String,
++  digest: Schema.String,
++});
++const ObjectValue = Schema.Record(Schema.String, Schema.Unknown);
++export const corruptCompilerCache = async (runtime: Miniflare, key: string) => {
++  const cache = await (await runtime.getCaches()).open("executor-private-compiler-results-v2");
++  const response = await cache.match(key);
++  if (response === undefined) throw new Error("Compiler entry was not in native Cache API");
++  const envelope = Schema.decodeUnknownSync(Envelope)(await response.json());
++  const payload = Schema.decodeUnknownSync(Schema.fromJsonString(ObjectValue))(envelope.payload);
++  const bundle = Schema.decodeUnknownSync(ObjectValue)(payload.bundle);
++  const main = Schema.decodeUnknownSync(Schema.String)(bundle.mainModule);
++  const modules = Schema.decodeUnknownSync(ObjectValue)(bundle.modules);
++  const corrupted = {
++    ...envelope,
++    payload: JSON.stringify({
++      ...payload,
++      bundle: {
++        ...bundle,
++        modules: { ...modules, [main]: "export default {{{ damaged" },
++      },
++    }),
++  };
++  // Preserve valid envelope JSON and its old digest, changing only JavaScript payload bytes.
++  const headers = new Headers(response.headers);
++  headers.delete("content-length");
++  await cache.put(
++    key,
++    new Response(JSON.stringify(corrupted), {
++      status: response.status,
++      headers,
++    }),
++  );
++  return { corrupted: true, validJson: true };
++};
+diff --git a/scripts/compiler-cache-proof/worker.ts b/scripts/compiler-cache-proof/worker.ts
+new file mode 100644
+index 0000000..51d1126
+--- /dev/null
++++ b/scripts/compiler-cache-proof/worker.ts
+@@ -0,0 +1,24 @@
++/** HTTP test client using the same generated private binding as the app runtime. */
++import * as Cloudflare from "alchemy/Cloudflare";
++import { CodeFiles } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { AppCompiler } from "../../apps/hosted/cloud/src/infrastructure/compiler.ts";
++
++export default class CompilerCacheClient extends Cloudflare.Worker<CompilerCacheClient>()(
++  "CompilerCacheClient",
++  { main: import.meta.url, compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] } },
++  Effect.gen(function* () {
++    const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
++    return {
++      fetch: Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const input = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
++        )(yield* request.json);
++        const result = yield* compiler.compile(input.files, input.publicPaths, {});
++        return HttpServerResponse.jsonUnsafe(result);
++      }).pipe(Effect.orDie),
++    };
++  }),
++) {}

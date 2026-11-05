@@ -8,6 +8,7 @@ import pathlib
 import signal
 import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from types import SimpleNamespace
@@ -32,6 +33,8 @@ class SupervisorTests(unittest.TestCase):
         buffered_fuse=False,
         stuck_reader=False,
         actual_cleanup=False,
+        replacement_startup_exit=False,
+        replacement_drain_failure=None,
     ):
         clock = Clock()
         stop = Stop(clock)
@@ -42,6 +45,7 @@ class SupervisorTests(unittest.TestCase):
         terminations = []
         boot_ids = []
         terminate_owned = supervisor.terminate_children
+        wait_for_home = supervisor.wait_for_home
 
         def make_child(name, command, env, cwd, *callbacks):
             number = sum(child.name == "home" for child in launched)
@@ -54,6 +58,8 @@ class SupervisorTests(unittest.TestCase):
                 calls += 1
                 if killed:
                     return -9
+                if replacement_startup_exit and name == "home" and number > 0:
+                    return code
                 if actual_cleanup and number > 0:
                     return None
                 if name == failed_name and (fail_initial or calls > 1):
@@ -65,6 +71,13 @@ class SupervisorTests(unittest.TestCase):
                 killed = True
 
             def wait(timeout):
+                if (
+                    replacement_startup_exit
+                    and name == "home"
+                    and number > 0
+                    and replacement_drain_failure == "deadline"
+                ):
+                    clock.now += timeout
                 if actual_cleanup and not killed and (name == "node" or number > 0):
                     clock.now += timeout
                     raise subprocess.TimeoutExpired(name, timeout)
@@ -79,6 +92,7 @@ class SupervisorTests(unittest.TestCase):
                     terminate=lambda: None,
                     kill=kill,
                 ),
+                config_empty=threading.Event(),
             )
             if name == "home":
 
@@ -87,7 +101,15 @@ class SupervisorTests(unittest.TestCase):
                         callbacks[0]()
 
                 child._reader = SimpleNamespace(
-                    join=drain, is_alive=lambda: stuck_reader
+                    join=drain,
+                    is_alive=lambda: (
+                        stuck_reader
+                        or (
+                            replacement_startup_exit
+                            and number > 0
+                            and replacement_drain_failure == "unfinished"
+                        )
+                    ),
                 )
             launched.append(child)
             if name == "home" and empty_recovery and number > 0:
@@ -113,6 +135,12 @@ class SupervisorTests(unittest.TestCase):
 
         def wait_home(child, *args):
             advance_phase("home")
+            if replacement_startup_exit and sum(c.name == "home" for c in launched) > 1:
+                if replacement_drain_failure == "deadline":
+                    from .recovery_deadline import operation_timeout
+
+                    clock.now += operation_timeout(180) - 0.5
+                return wait_for_home(child, *args)
             return "empty" if getattr(child, "empty", False) else "ready"
 
         def enroll(*args):
@@ -312,3 +340,67 @@ class SupervisorTests(unittest.TestCase):
         self.assertLessEqual(ready.cleanup_finished_at, 182)
         self.assertEqual(len(children), 3)
         self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
+
+    def test_replacement_startup_drain_failure_preserves_its_exit_receipt(self):
+        for failure in ("unfinished", "deadline"):
+            with self.subTest(failure=failure):
+                result, children, ready, records, *_ = self.run_supervisor(
+                    replacement_startup_exit=True,
+                    replacement_drain_failure=failure,
+                )
+                self.assertEqual(result, 1)
+                self.assertEqual(
+                    [child.name for child in children], ["home", "node", "home"]
+                )
+                self.assertFalse(ready.snapshot()[0])
+                exits = [row for marker, row in records if marker == "POOL_CHILD_EXIT"]
+                self.assertEqual(
+                    exits,
+                    [
+                        {"child": "home", "exit_code": 1, "category": 5},
+                        {"child": "home", "exit_code": 1, "category": 2},
+                    ],
+                )
+                self.assertIn(
+                    ("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records
+                )
+                attempts = [
+                    row
+                    for marker, row in records
+                    if marker == "POOL_HOME_RECOVERY" and row["state"] == "attempt"
+                ]
+                self.assertEqual(len(attempts), 1)
+
+    def test_successful_replacement_drains_do_not_duplicate_exit_receipts(self):
+        result, children, ready, records, *_ = self.run_supervisor(
+            replacement_startup_exit=True
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual(
+            [child.name for child in children], ["home", "node", "home", "home"]
+        )
+        exits = [row for marker, row in records if marker == "POOL_CHILD_EXIT"]
+        self.assertEqual([row["exit_code"] for row in exits], [1, 1, 1])
+        self.assertEqual([row["category"] for row in exits], [5, 2, 2])
+        self.assertFalse(ready.snapshot()[0])
+
+    def test_deadline_expiring_in_first_startup_drain_retains_receipt(self):
+        result, children, ready, records, *_ = self.run_supervisor(
+            replacement_startup_exit=True,
+            replacement_drain_failure="deadline",
+        )
+        self.assertEqual(result, 1)
+        self.assertEqual([child.name for child in children], ["home", "node", "home"])
+        self.assertFalse(ready.snapshot()[0])
+        self.assertEqual(
+            [row for marker, row in records if marker == "POOL_CHILD_EXIT"],
+            [
+                {"child": "home", "exit_code": 1, "category": 5},
+                {"child": "home", "exit_code": 1, "category": 2},
+            ],
+        )
+        self.assertIn(("POOL_RUNTIME_FAILURE", {"category": 5, "count": 1}), records)
+        self.assertEqual(
+            [row["state"] for marker, row in records if marker == "POOL_HOME_RECOVERY"],
+            ["attempt", "exhausted"],
+        )

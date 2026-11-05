@@ -1,0 +1,128 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -779,7 +779,7 @@
+             origin: { host: "127.0.0.1", port: databasePort, database: "executor" },
+           };
+         }
+-        if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
++        if (next === "inspect-target") return yield* databaseFixture.inspect;
+         if (next === "target") {
+           if (binding !== "original")
+             return yield* new CloudStartFailed({
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -6,7 +6,6 @@
+   Queue,
+   Schedule,
+   Schema,
+-  Scope,
+   Stream,
+   type Cause,
+ } from "effect";
+@@ -49,13 +48,17 @@
+         )
+         .pipe(Effect.orDie),
+     );
+-    const scope = yield* Effect.scope;
+-    const services = yield* Effect.context<
+-      ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+-    >();
+     const targetContainer = `${input.container}-target`;
+     const targetPort = yield* freePort;
+-    let targetStarted = false;
++    // Container readiness belongs to environment setup, not the timed identity switch.
++    yield* startCloudPostgres({
++      container: targetContainer,
++      databasePort: targetPort,
++      databasePassword: input.databasePassword,
++      dockerEnv: input.dockerEnv,
++      log: `${input.directory}/target-postgres.log`,
++    });
++    let targetCloned = false;
+     let roleCreated = false;
+     const command = (args: ReadonlyArray<string>) =>
+       ChildProcess.make("docker", args, {
+@@ -206,14 +209,7 @@
+           locked,
+           holder.exitCode.pipe(Effect.andThen(Effect.fail(new ProductionDatabaseFixtureFailed()))),
+         );
+-        if (!targetStarted) {
+-          yield* startCloudPostgres({
+-            container: targetContainer,
+-            databasePort: targetPort,
+-            databasePassword: input.databasePassword,
+-            dockerEnv: input.dockerEnv,
+-            log: `${input.directory}/target-postgres.log`,
+-          }).pipe(Scope.provide(scope), Effect.provideContext(services));
++        if (!targetCloned) {
+           // Copy the reviewed rows, but let the other physical database own its UUID.
+           yield* checked(
+             processes.exitCode(
+@@ -252,7 +248,7 @@
+               ]),
+             ),
+           );
+-          targetStarted = true;
++          targetCloned = true;
+         }
+         return {
+           port: targetPort,
+@@ -309,7 +305,7 @@
+         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ProductionDatabaseState))),
+       );
+     const disconnected = Effect.suspend(() =>
+-      targetStarted
++      targetCloned
+         ? query(
+             true,
+             "select count(*) from pg_stat_activity where datname = current_database() and backend_type = 'client backend' and pid <> pg_backend_pid()",
+@@ -325,5 +321,10 @@
+           )
+         : Effect.succeed(0),
+     );
+-    return { role, target, state, disconnected, provisioned: provisioning(true) };
++    const inspect = Effect.gen(function* () {
++      const ready = (yield* query(true, "select 1")).trim() === "1";
++      if (!ready) return yield* new ProductionDatabaseFixtureFailed();
++      return targetCloned ? { ready, target: yield* state(true) } : { ready };
++    });
++    return { role, target, state, inspect, disconnected, provisioned: provisioning(true) };
+   });
+diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-ops-database.spec.ts
+--- a/e2e/tests/production-ops-database.spec.ts
++++ b/e2e/tests/production-ops-database.spec.ts
+@@ -60,6 +60,7 @@
+       context,
+       Effect.gen(function* () {
+         const p = yield* setup;
++        expect(yield* p.change("inspect-target")).toEqual({ ready: true });
+         const valid = p.operation("increment");
+         const before = yield* p.account();
+         const dry = yield* p.dryRun(valid);
+diff --git a/apps/hosted/testing/production-ops-provisioning-fixture.ts b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+--- a/apps/hosted/testing/production-ops-provisioning-fixture.ts
++++ b/apps/hosted/testing/production-ops-provisioning-fixture.ts
+@@ -38,7 +38,7 @@
+           Effect.promise(async () => {
+             try {
+               await client.query(
+-                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop function if exists e2e_provisioning_completed()",
++                "drop trigger if exists e2e_provisioning_completed on hosted_provisioning; drop trigger if exists e2e_defaults_completed on organization; drop trigger if exists e2e_pool_apps_completed on executor_apps; drop trigger if exists e2e_pool_accounts_completed on executor_accounts; drop trigger if exists e2e_pool_links_completed on hosted_app_account_links; drop function if exists e2e_provisioning_completed()",
+               );
+             } finally {
+               await client.end();
+@@ -71,6 +71,12 @@
+             create trigger e2e_provisioning_completed after insert or update or delete on hosted_provisioning
+             for each statement execute function e2e_provisioning_completed();
+             create trigger e2e_defaults_completed after insert or update or delete on organization
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_apps_completed after insert or update or delete on executor_apps
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_accounts_completed after insert or update or delete on executor_accounts
++            for each statement execute function e2e_provisioning_completed();
++            create trigger e2e_pool_links_completed after insert or update or delete on hosted_app_account_links
+             for each statement execute function e2e_provisioning_completed()`);
+             for (;;) {
+               if (signal.aborted || disconnected) throw new ProvisioningFixtureFailed();

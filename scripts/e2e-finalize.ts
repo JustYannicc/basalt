@@ -13,6 +13,11 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
+const diagnosticFiles = new Set([
+  "compiler-cache-host.log", "compiler-cache-production.json", "physical-state-digests.ndjson",
+  "physical-provisioning-completed.json", "sso-idp.log",
+]);
+
 const within = (parent: string, child: string) => child.startsWith(`${parent}${sep}`);
 
 /** Copy selected regular evidence only; runtime package links and database state are never evidence. */
@@ -35,6 +40,7 @@ function copyEvidence(source: string, destination: string, full: boolean) {
       } else if (
         entry.isFile() &&
         (inReport ||
+          diagnosticFiles.has(entry.name) ||
           /^(?:evidence|results|result|run|trace-ids)\.json$/.test(entry.name) ||
           /^(?:server|cloud[^/]*|[a-z-]*postgres)\.log$/.test(entry.name) ||
           (full && /\.(?:png|webm|mp4|zip)$/.test(entry.name)))

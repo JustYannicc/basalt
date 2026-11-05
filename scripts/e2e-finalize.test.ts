@@ -20,6 +20,8 @@ function fixture(t: { after: (use: () => void) => void }) {
   mkdirSync(join(run, "cloud/report/diagnostics"), { recursive: true });
   writeFileSync(join(run, ".basalt-run-owner.json"), JSON.stringify({ pid: process.pid }));
   writeFileSync(join(run, "evidence.json"), "{}");
+  for (const file of ["compiler-cache-host.log", "compiler-cache-production.json", "physical-state-digests.ndjson", "physical-provisioning-completed.json", "sso-idp.log"])
+    writeFileSync(join(run, "cloud", file), "selected-diagnostic");
   writeFileSync(join(run, "cloud/report/diagnostics/result.json"), "synthetic-evidence");
   mkdirSync(join(run, "cloud/database"));
   writeFileSync(join(run, "cloud/database/private.json"), "private-runtime-data");
@@ -49,6 +51,8 @@ test("failed runs export selected CI evidence before pruning and never follow ru
   const retained = join(root, ".generated/e2e-evidence/run-one");
   assert.equal(existsSync(join(retained, "cloud/report/diagnostics/result.json")), true);
   assert.equal(existsSync(join(retained, "cloud/database")), false);
+  for (const file of ["compiler-cache-host.log", "compiler-cache-production.json", "physical-state-digests.ndjson", "physical-provisioning-completed.json", "sso-idp.log"])
+    assert.equal(readFileSync(join(retained, "cloud", file), "utf8"), "selected-diagnostic");
   assert.equal(existsSync(join(retained, "cloud/report/runtime-link")), false);
   assert.equal(
     readFileSync(join(retained, "self-host/scenarios/failed/server.log"), "utf8"),

@@ -1,7 +1,10 @@
 import { servedFrameworkVersion } from "../framework-release.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brand } from "../brand.ts";
 import {
@@ -43,6 +46,12 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);
+  assert.equal(
+    env.EXECUTOR_COMPILER_CACHE_RELEASE,
+    execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+  );
+  assert.equal(env.EXECUTOR_COMPILER_CACHE_FRAMEWORK, env.EXECUTOR_APPS_FRAMEWORK);
+  assert.equal(env.EXECUTOR_COMPILER_CACHE_APPS_VERSION, env.EXECUTOR_APPS_VERSION);
 });
 
 test("production rejects emulator and foreign hosting overrides", () => {
@@ -108,16 +117,28 @@ test("a previous pool signing key is optional, hex, and never the current key", 
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
   assert.doesNotThrow(() => deployEnvironment(credentials));
-  assert.doesNotThrow(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32) }));
-  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "old-value" }), {
-    message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
-  });
-  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: `${"cd".repeat(32)}\n` }), {
-    message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
-  });
-  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "ab".repeat(32) }), {
-    message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
-  });
+  assert.doesNotThrow(() =>
+    deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32) }),
+  );
+  assert.throws(
+    () => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "old-value" }),
+    {
+      message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
+    },
+  );
+  assert.throws(
+    () =>
+      deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: `${"cd".repeat(32)}\n` }),
+    {
+      message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
+    },
+  );
+  assert.throws(
+    () => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "ab".repeat(32) }),
+    {
+      message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
+    },
+  );
 });
 
 test("preview environment is per-PR, isolated, and keeps smoke credentials deploy-only", () => {
@@ -164,12 +185,19 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(first.deploy.POOL_MODEL_HISTORY_ENABLED, undefined);
+  assert.equal(first.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, undefined);
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
   assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);
   assert.equal(first.deploy.PREVIEW_STATE_KEY, undefined);
-  for (const key of ["PREVIEW_CLAUDE_AUTH_JSON", "PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON",
-    "PREVIEW_CODEX_CLI_AUTH_JSON", "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", "RELEASE_UPDATE_TOKEN", "UNKNOWN_FUTURE_SECRET"])
+  for (const key of [
+    "PREVIEW_CLAUDE_AUTH_JSON",
+    "PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON",
+    "PREVIEW_CODEX_CLI_AUTH_JSON",
+    "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
+    "RELEASE_UPDATE_TOKEN",
+    "UNKNOWN_FUTURE_SECRET",
+  ])
     assert.equal(first.deploy[key], undefined, key);
   for (const client of optionalConnectorClients) {
     assert.equal(first.deploy[client.id], undefined, client.id);
@@ -191,7 +219,8 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     "AUTH_GITHUB_CLIENT_SECRET",
     "BETTER_AUTH_SECRET",
     "OAUTH_PROXY_SECRET",
-  ]) assert.doesNotMatch(first.deploy[name] ?? "", /production-.*secret-must-not-pass-through/);
+  ])
+    assert.doesNotMatch(first.deploy[name] ?? "", /production-.*secret-must-not-pass-through/);
   assert.equal(first.deploy.POOL_MANAGEMENT_KEY, retry.deploy.POOL_MANAGEMENT_KEY);
   assert.notEqual(first.deploy.POOL_MANAGEMENT_KEY, sibling.deploy.POOL_MANAGEMENT_KEY);
   assert.notEqual(first.deploy.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
@@ -211,7 +240,11 @@ test("preview config rejects unsafe PRs, hostnames, keys and real-person smoke a
   };
   for (const number of [0, -1, 1.1, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(() => previewEnvironment(number, source), /positive integer/);
-  for (const TEST_STAGE_DOMAIN of ["https://preview.example.invalid", "preview.example.invalid/path", "bad zone"])
+  for (const TEST_STAGE_DOMAIN of [
+    "https://preview.example.invalid",
+    "preview.example.invalid/path",
+    "bad zone",
+  ])
     assert.throws(() => previewEnvironment(1, { ...source, TEST_STAGE_DOMAIN }), /DNS zone name/);
   assert.throws(
     () => previewEnvironment(1, { ...source, PREVIEW_STATE_KEY: "secret" }),
@@ -243,7 +276,11 @@ test("cleanup environment needs provider credentials and state key, never smoke 
 });
 
 test("optional telemetry destinations never block the first deployment", () => {
-  assert.ok(!requiredSecrets.some((name: string) => ["SENTRY_DSN", "POSTHOG_PROJECT_KEY", "SENTRY_OTLP_ENDPOINT"].includes(name)));
+  assert.ok(
+    !requiredSecrets.some((name: string) =>
+      ["SENTRY_DSN", "POSTHOG_PROJECT_KEY", "SENTRY_OTLP_ENDPOINT"].includes(name),
+    ),
+  );
   const credentials = {
     ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
@@ -256,20 +293,28 @@ test("optional telemetry destinations never block the first deployment", () => {
   assert.match(disabled.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
   assert.notEqual(disabled.TELEMETRY_RELAY_KEY, credentials.POOL_APP_SIGNING_KEY);
   assert.equal(disabled.EXECUTOR_TELEMETRY_RELAY_TOKEN, disabled.TELEMETRY_RELAY_KEY);
-  const configured = deployEnvironment({ ...credentials, SENTRY_DSN: "synthetic", POSTHOG_PROJECT_KEY: "synthetic", POSTHOG_HOST: "https://us.i.posthog.com" });
+  const configured = deployEnvironment({
+    ...credentials,
+    SENTRY_DSN: "synthetic",
+    POSTHOG_PROJECT_KEY: "synthetic",
+    POSTHOG_HOST: "https://us.i.posthog.com",
+  });
   assert.equal(configured.SENTRY_DSN, "synthetic");
   assert.equal(configured.POSTHOG_PROJECT_KEY, "synthetic");
   assert.equal(configured.POSTHOG_HOST, "https://us.i.posthog.com");
   assert.equal(configured.DO_NOT_TRACK, "0");
   // The sidebar's feedback form appears only where its submissions have a destination.
   assert.equal(configured.EXECUTOR_PRODUCT_FEEDBACK_URL, undefined);
-  const sentry = deployEnvironment({ ...credentials, SENTRY_DSN: "https://synthetic@o0.ingest.de.sentry.io/1" });
+  const sentry = deployEnvironment({
+    ...credentials,
+    SENTRY_DSN: "https://synthetic@o0.ingest.de.sentry.io/1",
+  });
   assert.equal(sentry.EXECUTOR_PRODUCT_FEEDBACK_URL, "/feedback/v1/submit");
 });
 
 test("connector credentials are separate from sign-in and the feed belongs to this deployment", () => {
   const source: NodeJS.ProcessEnv = {
-    ...Object.fromEntries(requiredSecrets.map(name => [name, `fixture-${name}`])),
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, `fixture-${name}`])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
   for (const client of optionalConnectorClients) {
@@ -284,10 +329,7 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   assert.equal(env.GITHUB_CONNECTOR_READY, "true");
   assert.deepEqual(connectorWarnings(env), []);
   for (const client of optionalConnectorClients) {
-    const names = [
-      client.id,
-      client.secret,
-    ];
+    const names = [client.id, client.secret];
     for (const name of names) {
       assert.equal(env[name], source[name]);
       const missing = deployEnvironment({ ...source, [name]: "" });
@@ -305,7 +347,7 @@ test("connector credentials are separate from sign-in and the feed belongs to th
 
 test("Zendesk optional hosted credentials do not select an account tenant", () => {
   const base: NodeJS.ProcessEnv = {
-    ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])),
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "synthetic-client",
     EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "synthetic-secret",
@@ -314,7 +356,7 @@ test("Zendesk optional hosted credentials do not select an account tenant", () =
   assert.equal(configured.ZENDESK_CONNECTOR_READY, "true");
   assert.equal(configured.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, "synthetic-client");
   assert.equal(configured.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, "synthetic-secret");
-  assert.ok(!requiredSecrets.some(name => name.includes("ZENDESK")));
+  assert.ok(!requiredSecrets.some((name) => name.includes("ZENDESK")));
   for (const legacyTenant of ["old-tenant", "tenant.zendesk.com", "two.labels"]) {
     const environment = deployEnvironment({ ...base, EXECUTOR_ZENDESK_SUBDOMAIN: legacyTenant });
     assert.equal(environment.EXECUTOR_ZENDESK_SUBDOMAIN, undefined);
@@ -324,11 +366,17 @@ test("Zendesk optional hosted credentials do not select an account tenant", () =
   assert.equal(absent.ZENDESK_CONNECTOR_READY, "false");
   assert.equal(absent.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, undefined);
   assert.equal(absent.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, undefined);
-  assert.match(connectorWarnings(absent).find(warning => warning.includes("Zendesk"))!, /BYO remain available/);
+  assert.match(
+    connectorWarnings(absent).find((warning) => warning.includes("Zendesk"))!,
+    /BYO remain available/,
+  );
 });
 
 test("absent optional connector clients do not block sign-in, pools or setup", () => {
-  const source: NodeJS.ProcessEnv = { ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])), POOL_APP_SIGNING_KEY: "ab".repeat(32) };
+  const source: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  };
   const env = deployEnvironment(source);
   assert.equal(env.GOOGLE_CLIENT_ID, source.GOOGLE_CLIENT_ID);
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
@@ -340,6 +388,40 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
   for (const warning of connectorWarnings(env)) {
     assert.ok(!warning.includes("fixture"));
-    assert.match(warning, warning.startsWith("Zendesk") ? /optional hosted OAuth client is unavailable/ : /not set up yet/);
+    assert.match(
+      warning,
+      warning.startsWith("Zendesk")
+        ? /optional hosted OAuth client is unavailable/
+        : /not set up yet/,
+    );
   }
+});
+
+test("two Basalt releases on the same upstream pin have distinct compiler cache identities", (context) => {
+  const checkout = mkdtempSync(join(tmpdir(), "basalt-release-cache-"));
+  context.after(() => rmSync(checkout, { recursive: true, force: true }));
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", checkout, ...args], { encoding: "utf8" }).trim();
+  git("init", "--quiet");
+  git("config", "user.name", "Release fixture");
+  git("config", "user.email", "release@example.invalid");
+  writeFileSync(join(checkout, "upstream.json"), JSON.stringify({ commit: "f".repeat(40) }));
+  git("add", "upstream.json");
+  git("commit", "--quiet", "-m", "first release");
+  const credentials = {
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  };
+  const first = deployEnvironment(credentials, checkout);
+  git(
+    "commit",
+    "--allow-empty",
+    "--quiet",
+    "-m",
+    "second compiler release on the same upstream pin",
+  );
+  const second = deployEnvironment(credentials, checkout);
+  assert.equal(first.EXECUTOR_BUILD_VERSION, second.EXECUTOR_BUILD_VERSION);
+  assert.notEqual(first.EXECUTOR_COMPILER_CACHE_RELEASE, second.EXECUTOR_COMPILER_CACHE_RELEASE);
+  assert.equal(second.EXECUTOR_COMPILER_CACHE_RELEASE, git("rev-parse", "HEAD"));
 });
