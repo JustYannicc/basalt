@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -9,7 +10,8 @@ import {
   lstatSync,
   unlinkSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -75,6 +77,24 @@ test("two carried checkouts share installed package bytes and retain their own w
   const b = await installUpstreamDependencies(second, pin.commit);
   assert.equal(a.store, b.store);
   const originalPackage = realpathSync(join(second, "node_modules/is-number"));
+  const reader = spawn(
+    process.execPath,
+    [
+      "-e",
+      `
+    const fs = require("node:fs");
+    process.on("message", () => {
+      process.send(fs.readFileSync(${JSON.stringify(join(second, "node_modules/is-number/index.js"))}, "utf8"));
+    });
+    process.send("ready");
+  `,
+    ],
+    { stdio: ["ignore", "ignore", "inherit", "ipc"] },
+  );
+  t.after(() => {
+    if (reader.exitCode === null && reader.signalCode === null) reader.kill("SIGKILL");
+  });
+  await once(reader, "message");
   writeFileSync(join(a.store, "ready.json"), "{");
   const recovered = await installUpstreamDependencies(first, pin.commit);
   assert.equal(JSON.parse(readFileSync(join(recovered.store, "ready.json"), "utf8")).key, a.key);
@@ -83,7 +103,24 @@ test("two carried checkouts share installed package bytes and retain their own w
   assert.equal(realpathSync(join(second, "node_modules/is-number")), originalPackage);
   unlinkSync(join(recovered.store, "ready.json"));
   await installUpstreamDependencies(first, pin.commit);
+  assert.equal(existsSync(a.store), true, "the second consumer still uses the original generation");
+  assert.equal(
+    existsSync(recovered.store),
+    false,
+    "no consumer uses the replaced recovered generation",
+  );
+  const read = once(reader, "message");
+  reader.send("read");
+  assert.equal((await read)[0], readFileSync(join(originalPackage, "index.js"), "utf8"));
+  const readerExit = once(reader, "exit");
+  reader.kill("SIGTERM");
+  await readerExit;
   await installUpstreamDependencies(second, pin.commit);
+  assert.equal(
+    existsSync(a.store),
+    false,
+    "all consumers have moved away from the original generation",
+  );
   assert.equal(
     realpathSync(join(first, "node_modules/is-number")),
     realpathSync(join(second, "node_modules/is-number")),

@@ -17,7 +17,15 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
-import { run } from "./process.ts";
+import {
+  abandonInstallAttempt,
+  atomicStoreJson,
+  collectDependencyStore,
+  createInstallAttempt,
+  installPrivateAttempt,
+  rememberDependencyConsumer,
+  withDependencyStoreLock,
+} from "./upstream-store.ts";
 
 function inputs(root: string) {
   const files = new Set(["bun.lock", "bunfig.toml", "package.json"]);
@@ -99,13 +107,14 @@ function readonlyTree(path: string) {
   chmodSync(path, 0o555);
 }
 
-export async function installUpstreamDependencies(root: string, pin: string) {
+async function prepareDependencyGeneration(root: string, pin: string) {
   const files = inputs(root);
   const bun = spawnSync("bun", ["--version"], { encoding: "utf8" });
   if (bun.status !== 0) throw new Error("Bun is required to prepare dependencies");
   const key = digest(
     JSON.stringify({
-      format: 2,
+      format: 3,
+      backend: "copyfile",
       pin,
       bun: bun.stdout.trim(),
       platform: process.platform,
@@ -114,74 +123,100 @@ export async function installUpstreamDependencies(root: string, pin: string) {
     }),
   );
   const entry = join(upstreamCache(), "prepared", pin, key);
-  const prepared = await withCacheLock(`${entry}.lock`, () => {
-    let generation = publishedGeneration(entry, key);
-    if (generation === undefined) {
-      const id = randomUUID();
-      // A surviving installer can only write its own unpublished attempt, never the next owner's.
-      const attempt = `${entry}.attempt-${id}`;
-      mkdirSync(attempt, { recursive: true });
-      for (const file of files) {
-        mkdirSync(dirname(join(attempt, file)), { recursive: true });
-        cpSync(join(root, file), join(attempt, file));
-      }
-      run("bun", ["install", "--frozen-lockfile"], attempt);
-      const trees = moduleTrees(attempt);
-      const packages = realpathSync(join(attempt, "node_modules/.bun"));
-      // Package links inside Bun's store must not resolve into the canonical workspace's source.
-      const check = (path: string) => {
-        for (const entry of readdirSync(path, { withFileTypes: true })) {
-          const child = join(path, entry.name);
-          if (entry.isDirectory()) check(child);
-          if (entry.isSymbolicLink() && !realpathSync(child).startsWith(`${packages}/`))
-            throw new Error(
-              "Bun package store contains a workspace dependency; cannot share it safely",
-            );
+  const prepared = await withCacheLock(`${entry}.lock`, async () => {
+    let generation = await withDependencyStoreLock(() => {
+      const found = publishedGeneration(entry, key);
+      if (found) rememberDependencyConsumer(root, found.store, true);
+      return found;
+    });
+    let attempt: string | undefined;
+    try {
+      if (generation === undefined) {
+        const id = randomUUID();
+        attempt = await createInstallAttempt(entry);
+        for (const file of files) {
+          mkdirSync(dirname(join(attempt, file)), { recursive: true });
+          cpSync(join(root, file), join(attempt, file));
         }
-      };
-      for (const entry of readdirSync(packages, { withFileTypes: true }))
-        if (entry.isDirectory() && entry.name !== "node_modules") check(join(packages, entry.name));
-      readonlyTree(packages);
-      const marker = join(attempt, `.ready-${id}.json`);
-      writeFileSync(marker, JSON.stringify({ key, trees }), { flag: "wx", mode: 0o600 });
-      renameSync(marker, join(attempt, "ready.json"));
-      const store = join(entry, "generations", id);
-      mkdirSync(dirname(store), { recursive: true });
-      renameSync(attempt, store);
-      const pointer = join(entry, `.current-${id}`);
-      symlinkSync(join("generations", id), pointer);
-      renameSync(pointer, join(entry, "current"));
-      generation = { store: realpathSync(store), trees };
-    }
-    const { store, trees } = generation;
-    for (const tree of trees) {
-      const source = join(store, tree),
-        destination = join(root, tree);
-      const temporary = `${destination}.basalt-new`;
-      rmSync(temporary, { recursive: true, force: true });
-      mkdirSync(dirname(destination), { recursive: true });
-      cpSync(source, temporary, {
-        recursive: true,
-        verbatimSymlinks: true,
-        filter: (file) => relative(source, file) !== ".bun",
+        await installPrivateAttempt(attempt);
+        const trees = moduleTrees(attempt);
+        const packages = realpathSync(join(attempt, "node_modules/.bun"));
+        // Package links inside Bun's store must not resolve into the canonical workspace's source.
+        const check = (path: string) => {
+          for (const entry of readdirSync(path, { withFileTypes: true })) {
+            const child = join(path, entry.name);
+            if (entry.isDirectory()) check(child);
+            if (entry.isSymbolicLink() && !realpathSync(child).startsWith(`${packages}/`))
+              throw new Error(
+                "Bun package store contains a workspace dependency; cannot share it safely",
+              );
+          }
+        };
+        for (const entry of readdirSync(packages, { withFileTypes: true }))
+          if (entry.isDirectory() && entry.name !== "node_modules")
+            check(join(packages, entry.name));
+        readonlyTree(packages);
+        const marker = join(attempt, `.ready-${id}.json`);
+        writeFileSync(marker, JSON.stringify({ key, trees }), { flag: "wx", mode: 0o600 });
+        renameSync(marker, join(attempt, "ready.json"));
+        const completed = attempt;
+        generation = await withDependencyStoreLock(() => {
+          const store = join(entry, "generations", id);
+          mkdirSync(dirname(store), { recursive: true });
+          renameSync(completed, store);
+          const pointer = join(entry, `.current-${id}`);
+          symlinkSync(join("generations", id), pointer);
+          renameSync(pointer, join(entry, "current"));
+          const published = { store: realpathSync(store), trees };
+          rememberDependencyConsumer(root, published.store, true);
+          return published;
+        });
+      }
+      const selected = generation;
+      return await withDependencyStoreLock(() => {
+        const { store, trees } = selected;
+        for (const tree of trees) {
+          const source = join(store, tree),
+            destination = join(root, tree);
+          const temporary = `${destination}.basalt-new`;
+          rmSync(temporary, { recursive: true, force: true });
+          mkdirSync(dirname(destination), { recursive: true });
+          cpSync(source, temporary, {
+            recursive: true,
+            verbatimSymlinks: true,
+            filter: (file) => relative(source, file) !== ".bun",
+          });
+          if (tree === "node_modules") {
+            const bun = join(store, "node_modules/.bun");
+            mkdirSync(join(temporary, ".bun"));
+            for (const entry of readdirSync(bun)) {
+              const target = join(temporary, ".bun", entry);
+              if (entry === "node_modules")
+                cpSync(join(bun, entry), target, { recursive: true, verbatimSymlinks: true });
+              else symlinkSync(join(bun, entry), target, "dir");
+            }
+          }
+          // Dependencies contain relative workspace links; the copied link layout keeps source worktree-local.
+          rmSync(destination, { recursive: true, force: true });
+          renameSync(temporary, destination);
+        }
+        atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
+        rememberDependencyConsumer(root, store, false);
+        collectDependencyStore();
+        return selected;
       });
-      if (tree === "node_modules") {
-        const bun = join(store, "node_modules/.bun");
-        mkdirSync(join(temporary, ".bun"));
-        for (const entry of readdirSync(bun)) {
-          const target = join(temporary, ".bun", entry);
-          if (entry === "node_modules")
-            cpSync(join(bun, entry), target, { recursive: true, verbatimSymlinks: true });
-          else symlinkSync(join(bun, entry), target, "dir");
-        }
-      }
-      // Dependencies contain relative workspace links; the copied link layout keeps source worktree-local.
-      rmSync(destination, { recursive: true, force: true });
-      renameSync(temporary, destination);
+    } catch (error) {
+      if (attempt) await abandonInstallAttempt(attempt);
+      throw error;
     }
-    return generation;
   });
-  const { store } = prepared;
-  writeFileSync(join(root, ".basalt-dependencies.json"), JSON.stringify({ key, store }));
-  return { key, store };
+  return { key, store: prepared.store };
+}
+
+export function installUpstreamDependencies(root: string, pin: string) {
+  root = realpathSync(root);
+  // Two different dependency keys must not replace one checkout's references concurrently.
+  return withCacheLock(join(upstreamCache(), "consumers", `${digest(root)}.lock`), () =>
+    prepareDependencyGeneration(root, pin),
+  );
 }

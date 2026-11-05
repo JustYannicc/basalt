@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -123,6 +124,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
       return { child, next: output(child) };
     };
     const first = prepare("orphan");
+    const orphanClosed = once(first.child.stdout!, "end");
     const orphan = await first.next("install-started");
     processes.push(Number(orphan.pid));
     const stopped = once(first.child, "exit");
@@ -131,11 +133,34 @@ console.log(JSON.stringify({type:"install-finished",name}));
     const second = prepare("replacement");
     const replacement = await second.next("install-started");
     const published = await second.next("prepared");
+    assert.equal(
+      existsSync(String(orphan.directory)),
+      true,
+      "a surviving installer keeps its attempt",
+    );
     const secondExit =
       second.child.exitCode === null ? once(second.child, "exit") : Promise.resolve();
     await secondExit;
     writeFileSync(join(directory, "release-orphan"), "release");
     await first.next("install-finished");
+    await orphanClosed;
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      import { collectUpstreamDependencies } from ${JSON.stringify(new URL("./upstream-store.ts", import.meta.url).href)};
+      await collectUpstreamDependencies();
+    `,
+      ],
+      { env: { ...process.env, BASALT_UPSTREAM_CACHE: join(directory, "cache") } },
+    );
+    assert.equal(
+      existsSync(String(orphan.directory)),
+      false,
+      "the abandoned attempt is collected after its installer exits",
+    );
     const packageFile = join(
       String(published.store),
       "node_modules/.bun/fixture-package@1/node_modules/fixture-package/index.js",
