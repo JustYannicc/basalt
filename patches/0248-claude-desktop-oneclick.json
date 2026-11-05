@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-claude-desktop-oneclick",
+  "file": "0248-claude-desktop-oneclick.patch",
+  "content_sha256": "003ac5a995d0948f92978baea9dbca3d222b0abb5e30da578f699cce0f819c72",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
