@@ -172,7 +172,6 @@ export async function loadZendeskCatalogSource({
 
   const index = source.files.find((file) => file.path === "index.ts");
   assert.ok(index, "Catalog Worker omitted Zendesk app source");
-  const originalIndexHash = sha256(index.content);
   const before = index.content;
   const templateOrigin = sites[0].origin;
   const templateHost = sites[0].host;
