@@ -52,7 +52,9 @@ export function ManagerOverview({
 }) {
   const name = namer(providers);
   const labs =
-    data.coherent === true && data.capacity?.ok ? labSummaries(data.capacity.value, days) : [];
+    providers && data.coherent === true && data.capacity?.ok
+      ? labSummaries(data.capacity.value, days)
+      : [];
   return (
     <>
       {data.coherent === false && data.capacity !== undefined && (
@@ -193,28 +195,29 @@ function Answers({
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
   const learning = labs.find((entry) => entry.verdict.tone === "learn");
-  const enough: { tone: Tone; text: string } = !data.capacity
-    ? { tone: "learn", text: "Reading…" }
-    : !data.capacity.ok
-      ? { tone: "learn", text: "Capacity unavailable" }
-      : data.coherent === false
-        ? { tone: "learn", text: "Read incomplete" }
-        : labs.length === 0
-          ? { tone: "learn", text: "No readings yet" }
-          : worst
-            ? {
-                tone: worst.verdict.tone,
-                text: `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
-              }
-            : learning
+  const enough: { tone: Tone; text: string } =
+    !data.capacity || (!view && data.capacity.ok)
+      ? { tone: "learn", text: "Reading…" }
+      : !data.capacity.ok
+        ? { tone: "learn", text: "Capacity unavailable" }
+        : data.coherent === false
+          ? { tone: "learn", text: "Read incomplete" }
+          : labs.length === 0
+            ? { tone: "learn", text: "No readings yet" }
+            : worst
               ? {
-                  tone: "learn",
-                  text:
-                    learning.verdict.short === "Unavailable"
-                      ? "Forecast unavailable"
-                      : "Learning the weekly pattern",
+                  tone: worst.verdict.tone,
+                  text: `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
                 }
-              : { tone: "ok", text: "Enough for the next 72 hours" };
+              : learning
+                ? {
+                    tone: "learn",
+                    text:
+                      learning.verdict.short === "Unavailable"
+                        ? "Forecast unavailable"
+                        : "Learning the weekly pattern",
+                  }
+                : { tone: "ok", text: "Enough for the next 72 hours" };
   const usage = data.usage?.ok ? data.usage.value : null;
   const read = data.people?.ok ? data.people.value : null;
   const people = read

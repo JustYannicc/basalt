@@ -657,6 +657,44 @@ test(
               () =>
                 Reflect.get(window, "queries").filter((name) => name === "overviewUsage").length,
             );
+            holdCapacity = false;
+            for (const entry of heldCapacity.splice(0)) {
+              const capacity = capacityFixture(entry.input);
+              const at = entry.input.to;
+              const reading = {
+                remaining: 8,
+                full: 10,
+                at,
+                observedAt: { from: at, to: at },
+                accountCount: 1,
+                knownWeightCount: 1,
+                unknownWeightCount: 0,
+                weights: [],
+              };
+              capacity.value.points.push({
+                provider: "codex",
+                windowSeconds: 604_800,
+                mode: null,
+                unit: { id: "quota", label: "quota" },
+                hour: Math.floor(at / hour) * hour,
+                minimum: reading,
+                last: reading,
+                plans: [],
+              });
+              entry.response.end(JSON.stringify(capacity));
+            }
+            await frame.waitForFunction(
+              () =>
+                Reflect.get(window, "completedQueries").filter((name) => name === "capacity")
+                  .length >= 2,
+            );
+            await settled();
+            assert.match(
+              await frame.getByRole("link", { name: /Enough accounts\?/ }).innerText(),
+              /Reading/,
+              "Capacity advice waits for provider names even after capacity answers",
+            );
+            assert.deepEqual(await accepted(), [], "Capacity alone does not report accounts ready");
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
             await frame.getByRole("radio", { name: "Models", exact: true }).click();
