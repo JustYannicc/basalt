@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "provisionedMixed": [
-      "declared:self-host"
-    ]
+    "provisionedMixed": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

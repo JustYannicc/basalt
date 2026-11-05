@@ -1,11 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "groupFormErrors",
-    "groups",
-    "groupsIsolation"
-  ],
+  "inherited": ["groupFormErrors", "groups", "groupsIsolation"],
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
     ".upstream/apps/hosted/cloud/src/implementation/organization-access-request.ts",

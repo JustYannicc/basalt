@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "hostedAccountToolPolicies": [
-      "declared:self-host"
-    ],
-    "hostedToolPolicies": [
-      "declared:self-host"
-    ]
+    "hostedAccountToolPolicies": ["declared:self-host"],
+    "hostedToolPolicies": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",

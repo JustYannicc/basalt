@@ -50,15 +50,9 @@
     }
   },
   "runs": {
-    "appCallWorkflow": [
-      "declared:self-host"
-    ],
-    "appCallConfiguration": [
-      "declared:self-host"
-    ],
-    "appCallReceipts": [
-      "declared:self-host"
-    ]
+    "appCallWorkflow": ["declared:self-host"],
+    "appCallConfiguration": ["declared:self-host"],
+    "appCallReceipts": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/api.ts",

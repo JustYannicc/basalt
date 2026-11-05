@@ -73,12 +73,8 @@
     "accountIdentityGrouping": [
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
     ],
-    "accountGrantReuse": [
-      "host-managed-accounts-local:shared-identities-and-incremental-consent"
-    ],
-    "accountGrantRefusal": [
-      "host-managed-accounts-local:shared-identities-and-incremental-consent"
-    ]
+    "accountGrantReuse": ["host-managed-accounts-local:shared-identities-and-incremental-consent"],
+    "accountGrantRefusal": ["host-managed-accounts-local:shared-identities-and-incremental-consent"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

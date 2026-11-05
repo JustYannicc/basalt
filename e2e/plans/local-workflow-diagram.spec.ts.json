@@ -18,9 +18,7 @@
     }
   },
   "runs": {
-    "localWorkflowDiagram": [
-      "declared:local"
-    ]
+    "localWorkflowDiagram": ["declared:local"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/contracts/apps.ts",

@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "cloudCompilerCache": [
-      "compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"
-    ]
+    "cloudCompilerCache": ["compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/compiler.ts",

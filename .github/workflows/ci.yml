@@ -371,7 +371,7 @@ jobs:
           --workers 1
       - name: Keep listed account actions usable during the detail read
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name 'while the account is read' --workers 1
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts:listed-account-actions)" --workers 1
       - name: Verify bounded per-account usage through the public host API
         working-directory: .upstream
         run: >-
@@ -456,7 +456,7 @@ jobs:
           --workers 1
       - name: Keep listed account actions usable through Cloud
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name 'while the account is read' --workers 1
+        run: bun run e2e:cloud --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-cloud:listed-account-actions)" --workers 1
       - name: Verify shared account families and consumer capability refusals
         working-directory: .upstream
         run: >-

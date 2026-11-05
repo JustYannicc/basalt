@@ -3,9 +3,7 @@
     "hostManagedAccounts": {
       "fixtures": "actors",
       "legacyStorage": true,
-      "managementApps": [
-        "owner"
-      ],
+      "managementApps": ["owner"],
       "title": "host-managed accounts are hidden from sign-ins and healthy app sections, with repair details for editors",
       "targets": {
         "self-host": {

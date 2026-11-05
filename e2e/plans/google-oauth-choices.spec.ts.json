@@ -19,11 +19,7 @@
     }
   },
   "runs": {
-    "googleOAuthChoices": [
-      "dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"
-    ]
+    "googleOAuthChoices": ["dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"]
   },
-  "inputs": [
-    ".upstream/packages/ui/src/implementation/dashboard/oauth-fields.tsx"
-  ]
+  "inputs": [".upstream/packages/ui/src/implementation/dashboard/oauth-fields.tsx"]
 }

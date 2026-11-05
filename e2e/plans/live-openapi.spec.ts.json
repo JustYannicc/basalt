@@ -19,14 +19,9 @@
     }
   },
   "runs": {
-    "liveOpenapiStalePatches": [
-      "declared:self-host"
-    ]
+    "liveOpenapiStalePatches": ["declared:self-host"]
   },
-  "inherited": [
-    "liveOpenapi",
-    "liveOpenapiRetired"
-  ],
+  "inherited": ["liveOpenapi", "liveOpenapiRetired"],
   "inputs": [
     ".upstream/packages/app-templates/src/implementation/executor-skill-digests.gen.ts",
     ".upstream/packages/apps/src/implementation/openapi-source.ts"

@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "oauthClientRecovery": [
-      "dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"
-    ]
+    "oauthClientRecovery": ["dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"]
   },
   "inputs": [
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",

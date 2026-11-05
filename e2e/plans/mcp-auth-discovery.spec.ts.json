@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "mcpAuthDiscovery": [
-      "host-managed-accounts:catalog-service-identity-and-import-compatibility"
-    ]
+    "mcpAuthDiscovery": ["host-managed-accounts:catalog-service-identity-and-import-compatibility"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/apps.ts",

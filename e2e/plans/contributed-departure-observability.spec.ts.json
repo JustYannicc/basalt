@@ -37,9 +37,7 @@
     }
   },
   "runs": {
-    "contributedDepartureDiagnostics": [
-      "contributed-accounts:contributed-accounts-through-cloud"
-    ],
+    "contributedDepartureDiagnostics": ["contributed-accounts:contributed-accounts-through-cloud"],
     "contributedDepartureRetainedDiagnostics": [
       "contributed-accounts:contributed-account-authority-and-recovery"
     ]

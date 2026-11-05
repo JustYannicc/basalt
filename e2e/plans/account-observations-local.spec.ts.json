@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountObservationsLocal": [
-      "declared:local"
-    ]
+    "accountObservationsLocal": ["declared:local"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",

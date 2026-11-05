@@ -1,0 +1,133 @@
+{
+  "scenarios": {
+    "listedAccountEdit": {
+      "fixtures": "actors",
+      "title": "Edit details opens on its row and keeps typed text while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs, which open on the account read."
+        }
+      }
+    },
+    "listedAccountEditMobile": {
+      "fixtures": "actors",
+      "title": "Mobile Edit details opens on its row and keeps typed text while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs, which open on the account read."
+        }
+      }
+    },
+    "listedAppAccountEdit": {
+      "fixtures": "actors",
+      "title": "App Accounts Edit details keeps typed text while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    },
+    "listedAppAccountEditMobile": {
+      "fixtures": "actors",
+      "title": "Mobile App Accounts Edit details keeps typed text while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs."
+        }
+      }
+    },
+    "listedAccountDelete": {
+      "fixtures": "actors",
+      "title": "Delete account opens on its row and holds deletion while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs, which open on the account read."
+        }
+      }
+    },
+    "listedAccountDeleteMobile": {
+      "fixtures": "actors",
+      "title": "Mobile Delete account opens on its row and holds deletion while the account is read",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The local dashboard keeps its own account dialogs, which open on the account read."
+        }
+      }
+    }
+  },
+  "runs": {
+    "listedAccountEdit": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedAccountEditMobile": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedAppAccountEdit": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedAppAccountEditMobile": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedAccountDelete": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ],
+    "listedAccountDeleteMobile": [
+      "host-managed-accounts:listed-account-actions",
+      "host-managed-accounts-cloud:listed-account-actions"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-setup.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx"
+  ]
+}

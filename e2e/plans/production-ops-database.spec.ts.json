@@ -78,18 +78,10 @@
     }
   },
   "runs": {
-    "cloudProductionOpsRoleIdentity": [
-      "production-ops:identity-role"
-    ],
-    "cloudProductionOpsPhysicalDatabase": [
-      "production-ops:identity-physical"
-    ],
-    "cloudProductionOpsOptionalServer": [
-      "production-ops:identity-without-server"
-    ],
-    "cloudProductionOpsStalePlan": [
-      "production-ops:identity-release"
-    ]
+    "cloudProductionOpsRoleIdentity": ["production-ops:identity-role"],
+    "cloudProductionOpsPhysicalDatabase": ["production-ops:identity-physical"],
+    "cloudProductionOpsOptionalServer": ["production-ops:identity-without-server"],
+    "cloudProductionOpsStalePlan": ["production-ops:identity-release"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",

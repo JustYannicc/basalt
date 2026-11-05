@@ -1,10 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "oauthConnectStoryboard",
-    "oauthNameAfterConnect"
-  ],
+  "inherited": ["oauthConnectStoryboard", "oauthNameAfterConnect"],
   "inputs": [
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts",

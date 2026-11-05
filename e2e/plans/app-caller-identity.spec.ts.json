@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "appCallerIdentity": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "appCallerIdentity": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/docs/content/author-an-app.mdx",

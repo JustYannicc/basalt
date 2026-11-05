@@ -77,9 +77,7 @@
     "accountIdentityConsentScreen": [
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
     ],
-    "accountIdentityFamilyMarks": [
-      "declared:local"
-    ]
+    "accountIdentityFamilyMarks": ["declared:local"]
   },
   "inputs": [
     ".upstream/.changeset/account-identities-and-grants.md",

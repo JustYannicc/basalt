@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "accountDirectoryHealth": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "accountDirectoryHealth": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",

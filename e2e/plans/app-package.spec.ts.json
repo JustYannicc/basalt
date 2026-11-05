@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "appPackage": [
-      "mcp-apps:captured-views-source-bindings-and-the-packaged-renderer"
-    ]
+    "appPackage": ["mcp-apps:captured-views-source-bindings-and-the-packaged-renderer"]
   },
   "inputs": [
     ".upstream/apps/docs/content/author-an-app.mdx",

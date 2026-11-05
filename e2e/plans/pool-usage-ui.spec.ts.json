@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "poolUsageUi": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "poolUsageUi": ["host-managed-accounts:host-managed-visibility-and-existing-account-behavior"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/contracts/pool-usage.ts",

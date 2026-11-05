@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountStatusFactory": [
-      "declared:self-host"
-    ]
+    "accountStatusFactory": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

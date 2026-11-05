@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "appReload"
-  ],
+  "inherited": ["appReload"],
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-ui.ts",
     ".upstream/apps/hosted/self-host/src/implementation/routes.ts",

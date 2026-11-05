@@ -2,9 +2,7 @@
   "scenarios": {
     "importDiagnostics": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner"
-      ],
+      "managementApps": ["owner"],
       "title": "Agents learn safely when an MCP server needs them to write the app",
       "targets": {
         "self-host": {

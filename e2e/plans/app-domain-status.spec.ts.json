@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "appDomainStatus"
-  ],
+  "inherited": ["appDomainStatus"],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/src/app-domains.ts",

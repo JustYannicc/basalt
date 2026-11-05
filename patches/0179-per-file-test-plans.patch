@@ -47,25 +47,32 @@ index 4730a9e..0c6dbd1 100644
  /** Scenario names and applicability used by both test declarations and test selection. */
  export const scenarios = plan({
 diff --git a/e2e/tests/account-display-privacy.spec.ts b/e2e/tests/account-display-privacy.spec.ts
+index 8052ddf5a..cb0b0951e 100644
 --- a/e2e/tests/account-display-privacy.spec.ts
 +++ b/e2e/tests/account-display-privacy.spec.ts
-@@ -68,7 +68,11 @@
+@@ -68,7 +68,16 @@ layer(HostedLive, { excludeTestServices: true })("Display confidentiality", (it)
              params: [fixture.account],
            },
          ]);
 -        expect(stored).toEqual([[{ account_info: null }]]);
-+        expect(stored).toEqual([[{
-+          account_info: { checkFailure: { phase: "decode", tag: "HostOutputInvalid" } },
-+        }]]);
++        expect(stored).toEqual([
++          [
++            {
++              account_info: { checkFailure: { phase: "decode", tag: "HostOutputInvalid" } },
++            },
++          ],
++        ]);
 +        for (const secret of ["opaque-1", interactiveBackendKey, unicodeSecret])
-+          for (const encoded of forms(secret)) expect(JSON.stringify(stored)).not.toContain(encoded);
++          for (const encoded of forms(secret))
++            expect(JSON.stringify(stored)).not.toContain(encoded);
          yield* serverControl("start");
          yield* fixture.statusBackend.answer({
            status: 200,
 diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-observation-access.spec.ts
+index d060bea39..90977d411 100644
 --- a/e2e/tests/account-observation-access.spec.ts
 +++ b/e2e/tests/account-observation-access.spec.ts
-@@ -135,7 +135,7 @@
+@@ -135,7 +135,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation access", (it) => {
          });
          expect((yield* member("POST", `${f.accountPath}/observations/refresh`)).status).toBe(403);
          expect((yield* member("GET", f.accountPath)).body).toMatchObject({
@@ -75,16 +82,20 @@ diff --git a/e2e/tests/account-observation-access.spec.ts b/e2e/tests/account-ob
          const revision = (yield* body(Revision, readable)).revision;
          const canRefresh = yield* f.api.request(f.actors.owner, "PUT", path, {
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
+index 3c689bb77..d3abae280 100644
 --- a/e2e/tests/embedded-app-navigation.spec.ts
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
-@@ -121,7 +121,10 @@
+@@ -121,7 +121,13 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
          // A document load renders the app's access on the server, so the page is opened in the
          // browser from a page that never read the Apps list.
          const access = yield* browser.use("Hold the app's access", (page) =>
 -          hold(page, readOf(screen.app.id, "/access")),
-+          hold(page, (url) =>
-+            readOf(screen.app.id, "/access")(url) ||
-+            (url.pathname.startsWith("/api/organizations/") && url.pathname.endsWith("/resources")),
++          hold(
++            page,
++            (url) =>
++              readOf(screen.app.id, "/access")(url) ||
++              (url.pathname.startsWith("/api/organizations/") &&
++                url.pathname.endsWith("/resources")),
 +          ),
          );
          yield* Effect.addFinalizer(() =>

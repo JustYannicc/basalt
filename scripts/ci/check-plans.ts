@@ -62,9 +62,10 @@ for (const [file, entry] of Object.entries(declarations.files)) {
     if (legacyScenarios[key]) {
       const legacy = legacyScenarios[key]!;
       // Adopted Cloud failures stay visible as not-run while their self-host proof remains selected.
-      const expected = decoded.targets.cloud.status === "not-run"
-        ? { ...legacy, targets: { ...legacy.targets, cloud: decoded.targets.cloud } }
-        : legacy;
+      const expected =
+        decoded.targets.cloud.status === "not-run"
+          ? { ...legacy, targets: { ...legacy.targets, cloud: decoded.targets.cloud } }
+          : legacy;
       assert.deepEqual(
         expected,
         decoded,

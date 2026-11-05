@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "deviceCodeProof": [
-      "declared:self-host"
-    ],
-    "deviceCodeProofRestart": [
-      "declared:self-host"
-    ]
+    "deviceCodeProof": ["declared:self-host"],
+    "deviceCodeProofRestart": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",

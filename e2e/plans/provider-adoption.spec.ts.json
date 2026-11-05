@@ -2,10 +2,7 @@
   "scenarios": {
     "providerAdoption": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner",
-        "admin"
-      ],
+      "managementApps": ["owner", "admin"],
       "deferOnboarding": true,
       "title": "Cloud provider adoption preserves existing accounts through signed dry run apply and replay",
       "targets": {
@@ -25,10 +22,7 @@
     },
     "providerAdoptionPurge": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner",
-        "admin"
-      ],
+      "managementApps": ["owner", "admin"],
       "deferOnboarding": true,
       "title": "Cloud provider adoption refuses a busy organization purge",
       "targets": {
@@ -86,18 +80,10 @@
     }
   },
   "runs": {
-    "providerAdoption": [
-      "production-ops:adoption"
-    ],
-    "providerAdoptionPurge": [
-      "production-ops:adoption"
-    ],
-    "releasedRetirementPreservation": [
-      "production-ops:adoption"
-    ],
-    "releasedRetirementRace": [
-      "production-ops:adoption"
-    ]
+    "providerAdoption": ["production-ops:adoption"],
+    "providerAdoptionPurge": ["production-ops:adoption"],
+    "releasedRetirementPreservation": ["production-ops:adoption"],
+    "releasedRetirementRace": ["production-ops:adoption"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/compiler.ts",

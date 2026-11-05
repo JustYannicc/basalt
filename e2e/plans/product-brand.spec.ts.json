@@ -2,9 +2,7 @@
   "scenarios": {
     "productBrand": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner"
-      ],
+      "managementApps": ["owner"],
       "title": "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
       "serverEnvironment": {
         "EXECUTOR_PRODUCT_NAME": "Acme Tools",
@@ -30,9 +28,7 @@
     }
   },
   "runs": {
-    "productBrand": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "productBrand": ["host-managed-accounts:host-managed-visibility-and-existing-account-behavior"]
   },
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",

@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "groupedAccounts"
-  ],
+  "inherited": ["groupedAccounts"],
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",
     ".upstream/apps/hosted/cloud/src/infrastructure/product-brand.ts",

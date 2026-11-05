@@ -12,11 +12,20 @@ test("automatic Cloud assignments refuse direct and helper lifecycle calls, whil
   mkdirSync(join(e2e, "support"));
   const write = (file: string, source: string) => writeFileSync(join(e2e, file), source);
   try {
-    write("tests/direct.spec.ts", 'import { serverControl as control } from "../support/server-control.ts"; control("restart");');
-    write("support/fixture.ts", 'import { serverControl } from "./server-control.ts"; export const fixture = () => serverControl("start");');
+    write(
+      "tests/direct.spec.ts",
+      'import { serverControl as control } from "../support/server-control.ts"; control("restart");',
+    );
+    write(
+      "support/fixture.ts",
+      'import { serverControl } from "./server-control.ts"; export const fixture = () => serverControl("start");',
+    );
     write("tests/helper.spec.ts", 'import { fixture } from "../support/fixture.ts"; fixture();');
     for (const file of ["direct.spec.ts", "helper.spec.ts"])
-      assert.throws(() => assertAutomaticCloudControl(root, file, true), /automatic declared:cloud.*serverControl.*Existing explicit Cloud jobs/);
+      assert.throws(
+        () => assertAutomaticCloudControl(root, file, true),
+        /automatic declared:cloud.*serverControl.*Existing explicit Cloud jobs/,
+      );
     assert.doesNotThrow(() => assertAutomaticCloudControl(root, "direct.spec.ts", false));
     write("support/case.ts", 'import { serverControl } from "./server-control.ts";');
     write("tests/ordinary.spec.ts", 'import { withHostedCase } from "../support/case.ts";');

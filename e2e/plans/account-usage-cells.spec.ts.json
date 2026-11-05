@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountUsageCells": [
-      "account-acquisition:account-usage-rows-and-cells"
-    ]
+    "accountUsageCells": ["account-acquisition:account-usage-rows-and-cells"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/account-observations.ts",

@@ -18,9 +18,7 @@
     }
   },
   "runs": {
-    "selfEmailApprovalScopes": [
-      "declared:self-host"
-    ]
+    "selfEmailApprovalScopes": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",

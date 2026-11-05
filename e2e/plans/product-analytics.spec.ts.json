@@ -37,14 +37,8 @@
     }
   },
   "runs": {
-    "productAnalytics": [
-      "human-in-the-loop:browser-analytics-after-server-rendering"
-    ],
-    "productAnalyticsOnboarding": [
-      "human-in-the-loop:browser-analytics-after-server-rendering"
-    ]
+    "productAnalytics": ["human-in-the-loop:browser-analytics-after-server-rendering"],
+    "productAnalyticsOnboarding": ["human-in-the-loop:browser-analytics-after-server-rendering"]
   },
-  "inputs": [
-    ".upstream/apps/hosted/cloud/web/src/implementation/analytics.tsx"
-  ]
+  "inputs": [".upstream/apps/hosted/cloud/web/src/implementation/analytics.tsx"]
 }

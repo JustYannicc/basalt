@@ -37,9 +37,7 @@
     "localWorkflowDisplayBrowser": [
       "human-in-the-loop:local-navigation-custom-displays-and-scheduled-approvals"
     ],
-    "localWorkflowInput": [
-      "declared:local"
-    ]
+    "localWorkflowInput": ["declared:local"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/package.json",

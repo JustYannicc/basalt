@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "mcpAppsSource": [
-      "mcp-apps:captured-views-source-bindings-and-the-packaged-renderer"
-    ]
+    "mcpAppsSource": ["mcp-apps:captured-views-source-bindings-and-the-packaged-renderer"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",

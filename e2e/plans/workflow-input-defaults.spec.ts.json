@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "workflowInputDefaults": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "workflowInputDefaults": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",

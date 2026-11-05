@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "oauthMixedTokenResponse": [
-      "declared:self-host"
-    ]
+    "oauthMixedTokenResponse": ["declared:self-host"]
   },
   "inherited": [
     "oauthDeclaredTokenResponses",

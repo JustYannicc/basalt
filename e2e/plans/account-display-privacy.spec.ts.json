@@ -54,15 +54,9 @@
     }
   },
   "runs": {
-    "accountDisplayProviderPrivacy": [
-      "declared:self-host"
-    ],
-    "accountDisplayEncodedPrivacy": [
-      "declared:self-host"
-    ],
-    "accountDisplayIdentityPrivacy": [
-      "declared:self-host"
-    ]
+    "accountDisplayProviderPrivacy": ["declared:self-host"],
+    "accountDisplayEncodedPrivacy": ["declared:self-host"],
+    "accountDisplayIdentityPrivacy": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

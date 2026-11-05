@@ -20,12 +20,7 @@
     }
   },
   "runs": {
-    "appAccountTraffic": [
-      "declared:self-host",
-      "account-acquisition:account-usage-rows-and-cells"
-    ]
+    "appAccountTraffic": ["declared:self-host", "account-acquisition:account-usage-rows-and-cells"]
   },
-  "inputs": [
-    ".upstream/e2e/tests/app-account-traffic.spec.ts"
-  ]
+  "inputs": [".upstream/e2e/tests/app-account-traffic.spec.ts"]
 }

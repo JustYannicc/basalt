@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "accountHealthFailures": [
-      "declared:self-host"
-    ],
-    "driverHealthFailures": [
-      "declared:self-host"
-    ]
+    "accountHealthFailures": ["declared:self-host"],
+    "driverHealthFailures": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/packages/mcp/src/implementation/app-asset-paths.ts",

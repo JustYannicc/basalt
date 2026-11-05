@@ -116,24 +116,12 @@
     }
   },
   "runs": {
-    "cloudProductionOpsDiagnostics": [
-      "production-ops:identity-diagnostics"
-    ],
-    "cloudProductionOpsCredentials": [
-      "production-ops:identity-credentials"
-    ],
-    "cloudProductionOpsStableKeys": [
-      "production-ops:migrations"
-    ],
-    "cloudProductionOpsHostIdentity": [
-      "production-ops:identity-host"
-    ],
-    "cloudProductionOpsDatabaseIdentity": [
-      "production-ops:identity-database"
-    ],
-    "cloudProductionOpsReferences": [
-      "production-ops:migrations"
-    ]
+    "cloudProductionOpsDiagnostics": ["production-ops:identity-diagnostics"],
+    "cloudProductionOpsCredentials": ["production-ops:identity-credentials"],
+    "cloudProductionOpsStableKeys": ["production-ops:migrations"],
+    "cloudProductionOpsHostIdentity": ["production-ops:identity-host"],
+    "cloudProductionOpsDatabaseIdentity": ["production-ops:identity-database"],
+    "cloudProductionOpsReferences": ["production-ops:migrations"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",

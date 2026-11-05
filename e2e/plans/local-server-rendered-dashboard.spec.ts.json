@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "localServerRenderedDashboard"
-  ],
+  "inherited": ["localServerRenderedDashboard"],
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/resource-access.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-access.ts",

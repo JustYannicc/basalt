@@ -18,9 +18,7 @@
     }
   },
   "runs": {
-    "localAppCallerIdentity": [
-      "declared:local"
-    ]
+    "localAppCallerIdentity": ["declared:local"]
   },
   "inputs": [
     ".upstream/apps/docs/content/author-an-app.mdx",

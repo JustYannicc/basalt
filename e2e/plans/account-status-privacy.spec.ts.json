@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "accountStatusPrivacy": [
-      "declared:self-host"
-    ]
+    "accountStatusPrivacy": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

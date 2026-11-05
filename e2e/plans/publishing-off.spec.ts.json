@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "publishingOff": [
-      "access-editor-reads:publishing-layout"
-    ]
+    "publishingOff": ["access-editor-reads:publishing-layout"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",

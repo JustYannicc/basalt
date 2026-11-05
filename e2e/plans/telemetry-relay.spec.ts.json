@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "telemetryRelay": [
-      "declared:cloud"
-    ]
+    "telemetryRelay": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/product-analytics.ts",

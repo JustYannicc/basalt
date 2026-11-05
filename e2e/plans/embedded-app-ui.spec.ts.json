@@ -27,9 +27,7 @@
     }
   },
   "runs": {
-    "embeddedAppUi": [
-      "declared:self-host"
-    ]
+    "embeddedAppUi": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

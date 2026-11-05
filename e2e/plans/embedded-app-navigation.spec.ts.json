@@ -77,15 +77,9 @@
     }
   },
   "runs": {
-    "embeddedAppTabDirectEntry": [
-      "declared:self-host"
-    ],
-    "embeddedAppHiddenPolling": [
-      "declared:self-host"
-    ],
-    "embeddedAppTabFromList": [
-      "declared:self-host"
-    ]
+    "embeddedAppTabDirectEntry": ["declared:self-host"],
+    "embeddedAppHiddenPolling": ["declared:self-host"],
+    "embeddedAppTabFromList": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

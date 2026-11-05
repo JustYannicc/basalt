@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "localAppAccountsBrowser"
-  ],
+  "inherited": ["localAppAccountsBrowser"],
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",

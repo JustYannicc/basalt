@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "oauthClientIssuerMigration"
-  ],
+  "inherited": ["oauthClientIssuerMigration"],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",

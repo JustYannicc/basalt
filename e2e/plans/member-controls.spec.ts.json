@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "memberControls": [
-      "access-editor-reads:publishing-layout"
-    ],
-    "memberControlsMobile": [
-      "access-editor-reads:publishing-layout"
-    ]
+    "memberControls": ["access-editor-reads:publishing-layout"],
+    "memberControlsMobile": ["access-editor-reads:publishing-layout"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",

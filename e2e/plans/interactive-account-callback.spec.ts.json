@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "interactiveAccountRemovalCallback": [
-      "declared:self-host"
-    ]
+    "interactiveAccountRemovalCallback": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

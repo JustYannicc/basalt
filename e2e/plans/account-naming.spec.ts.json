@@ -23,8 +23,5 @@
       "declared:cloud"
     ]
   },
-  "inputs": [
-    ".upstream/apps/hosted/server/**",
-    ".upstream/packages/ui/**"
-  ]
+  "inputs": [".upstream/apps/hosted/server/**", ".upstream/packages/ui/**"]
 }

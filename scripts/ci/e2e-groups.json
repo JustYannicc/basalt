@@ -289,5 +289,15 @@
     "job": "access-editor-reads",
     "target": "self-host",
     "mode": "managed"
+  },
+  "host-managed-accounts:listed-account-actions": {
+    "job": "host-managed-accounts",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "host-managed-accounts-cloud:listed-account-actions": {
+    "job": "host-managed-accounts-cloud",
+    "target": "cloud",
+    "mode": "managed"
   }
 }

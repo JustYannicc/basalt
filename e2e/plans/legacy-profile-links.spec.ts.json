@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "legacyProfileLinks"
-  ],
+  "inherited": ["legacyProfileLinks"],
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-data.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/background-jobs.ts",

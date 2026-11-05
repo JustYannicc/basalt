@@ -73,15 +73,9 @@
     "accountObservations": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ],
-    "accountObservationInvalidHealth": [
-      "declared:self-host"
-    ],
-    "accountObservationRecovery": [
-      "declared:self-host"
-    ],
-    "accountObservationsOptional": [
-      "declared:self-host"
-    ]
+    "accountObservationInvalidHealth": ["declared:self-host"],
+    "accountObservationRecovery": ["declared:self-host"],
+    "accountObservationsOptional": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",

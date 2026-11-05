@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "selfHostOnboarding"
-  ],
+  "inherited": ["selfHostOnboarding"],
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/app-catalog.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/app-outbound.ts",

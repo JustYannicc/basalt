@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "interactiveAccountResume": [
-      "declared:self-host"
-    ]
+    "interactiveAccountResume": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

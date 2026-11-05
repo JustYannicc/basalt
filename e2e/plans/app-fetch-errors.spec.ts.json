@@ -1,10 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "appFetchPrivateRefused",
-    "appFetchUnsupportedOption"
-  ],
+  "inherited": ["appFetchPrivateRefused", "appFetchUnsupportedOption"],
   "inputs": [
     ".upstream/apps/docs/content/run/self-host.mdx",
     ".upstream/apps/hosted/cloud/src/infrastructure/product-brand.ts",

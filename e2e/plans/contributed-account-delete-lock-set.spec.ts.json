@@ -38,12 +38,8 @@
     }
   },
   "runs": {
-    "contributedAccountDeleteExpandedLinks": [
-      "declared:cloud"
-    ],
-    "contributedAccountDeleteReconnect": [
-      "declared:cloud"
-    ]
+    "contributedAccountDeleteExpandedLinks": ["declared:cloud"],
+    "contributedAccountDeleteReconnect": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/account-removal-lock.ts",

@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "workflowDiagram": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "workflowDiagram": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/contracts/apps.ts",

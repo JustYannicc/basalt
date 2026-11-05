@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "oauthIdentificationRemoval": [
-      "oauth:removal"
-    ]
+    "oauthIdentificationRemoval": ["oauth:removal"]
   },
   "inputs": [
     ".upstream/packages/sdk/src/implementation/account-identification.ts",

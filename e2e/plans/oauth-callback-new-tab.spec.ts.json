@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "oauthCallbackNewTab": [
-      "declared:self-host"
-    ],
-    "oauthCallbackOtherUser": [
-      "declared:self-host"
-    ]
+    "oauthCallbackNewTab": ["declared:self-host"],
+    "oauthCallbackOtherUser": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",

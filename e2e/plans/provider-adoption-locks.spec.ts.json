@@ -2,10 +2,7 @@
   "scenarios": {
     "providerAdoptionLocks": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner",
-        "admin"
-      ],
+      "managementApps": ["owner", "admin"],
       "deferOnboarding": true,
       "title": "Cloud provider adoption orders authority before concurrent unlink",
       "targets": {
@@ -25,10 +22,7 @@
     },
     "providerAdoptionForeign": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner",
-        "admin"
-      ],
+      "managementApps": ["owner", "admin"],
       "deferOnboarding": true,
       "title": "Cloud provider adoption refuses foreign locks in a blocked plan",
       "targets": {
@@ -48,10 +42,7 @@
     },
     "providerAdoptionAccountDelete": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner",
-        "admin"
-      ],
+      "managementApps": ["owner", "admin"],
       "deferOnboarding": true,
       "title": "Cloud provider adoption refuses a busy concurrent account delete",
       "targets": {
@@ -71,15 +62,9 @@
     }
   },
   "runs": {
-    "providerAdoptionLocks": [
-      "production-ops:adoption"
-    ],
-    "providerAdoptionForeign": [
-      "production-ops:adoption"
-    ],
-    "providerAdoptionAccountDelete": [
-      "production-ops:adoption"
-    ]
+    "providerAdoptionLocks": ["production-ops:adoption"],
+    "providerAdoptionForeign": ["production-ops:adoption"],
+    "providerAdoptionAccountDelete": ["production-ops:adoption"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/compiler.ts",

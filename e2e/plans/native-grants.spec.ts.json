@@ -53,15 +53,9 @@
     }
   },
   "runs": {
-    "nativeGrantLifecycle": [
-      "declared:self-host"
-    ],
-    "nativeGrantRefreshRefusal": [
-      "declared:self-host"
-    ],
-    "nativeGrantModelsOnly": [
-      "declared:self-host"
-    ]
+    "nativeGrantLifecycle": ["declared:self-host"],
+    "nativeGrantRefreshRefusal": ["declared:self-host"],
+    "nativeGrantModelsOnly": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/auth-options.ts",

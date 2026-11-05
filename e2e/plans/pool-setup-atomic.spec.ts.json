@@ -21,9 +21,7 @@
     }
   },
   "runs": {
-    "cloudPoolSetupAtomic": [
-      "pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers"
-    ]
+    "cloudPoolSetupAtomic": ["pool-account-recovery:atomic-pool-setup-with-ordinary-cron-triggers"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/package.json",

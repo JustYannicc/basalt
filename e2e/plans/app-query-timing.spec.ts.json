@@ -19,10 +19,7 @@
     }
   },
   "runs": {
-    "appQueryTiming": [
-      "host-managed-accounts:app-query-phase-diagnostics",
-      "declared:cloud"
-    ]
+    "appQueryTiming": ["host-managed-accounts:app-query-phase-diagnostics", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/app-ui-query-timing.ts",

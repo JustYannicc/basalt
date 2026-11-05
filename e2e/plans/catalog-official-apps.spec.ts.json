@@ -1,9 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "catalogOfficialApps"
-  ],
+  "inherited": ["catalogOfficialApps"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/app-catalog.ts",

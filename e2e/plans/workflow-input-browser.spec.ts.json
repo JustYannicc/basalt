@@ -59,9 +59,7 @@
     "workflowDisplayBrowser": [
       "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
-    "workflowDisplayAuthority": [
-      "declared:self-host"
-    ]
+    "workflowDisplayAuthority": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/package.json",

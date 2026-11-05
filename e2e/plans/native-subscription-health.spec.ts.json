@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "nativeSubscriptionHealth": [
-      "declared:self-host"
-    ]
+    "nativeSubscriptionHealth": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",

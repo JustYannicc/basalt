@@ -50,9 +50,7 @@
     },
     "executorKeyUnlinkSticks": {
       "fixtures": "actors",
-      "managementApps": [
-        "admin"
-      ],
+      "managementApps": ["admin"],
       "title": "A member's unlinked managed Executor key stays unlinked through reads and redeploys",
       "targets": {
         "self-host": {

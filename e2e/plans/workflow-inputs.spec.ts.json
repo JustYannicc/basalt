@@ -70,18 +70,10 @@
     }
   },
   "runs": {
-    "workflowInputLifecycle": [
-      "declared:self-host"
-    ],
-    "workflowInputPagination": [
-      "declared:self-host"
-    ],
-    "workflowInputRevocation": [
-      "declared:self-host"
-    ],
-    "workflowInputAuthority": [
-      "declared:self-host"
-    ]
+    "workflowInputLifecycle": ["declared:self-host"],
+    "workflowInputPagination": ["declared:self-host"],
+    "workflowInputRevocation": ["declared:self-host"],
+    "workflowInputAuthority": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",

@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountHealth": [
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "accountHealth": ["host-managed-accounts:host-managed-visibility-and-existing-account-behavior"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/resource-access.ts",

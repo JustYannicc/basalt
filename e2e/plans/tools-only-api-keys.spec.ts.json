@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "toolsOnlyApiKeyRestart": [
-      "declared:self-host"
-    ],
-    "toolsOnlyApiKeys": [
-      "declared:self-host"
-    ]
+    "toolsOnlyApiKeyRestart": ["declared:self-host"],
+    "toolsOnlyApiKeys": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts",

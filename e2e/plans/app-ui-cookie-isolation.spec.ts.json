@@ -26,9 +26,7 @@
     }
   },
   "runs": {
-    "appUiCookieIsolation": [
-      "declared:self-host"
-    ]
+    "appUiCookieIsolation": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

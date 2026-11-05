@@ -18,11 +18,7 @@
     }
   },
   "runs": {
-    "accountTargets": [
-      "declared:self-host"
-    ]
+    "accountTargets": ["declared:self-host"]
   },
-  "inputs": [
-    ".upstream/e2e/tests/account-targets.spec.ts"
-  ]
+  "inputs": [".upstream/e2e/tests/account-targets.spec.ts"]
 }

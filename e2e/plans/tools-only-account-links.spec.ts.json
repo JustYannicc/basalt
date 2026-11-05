@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "toolsOnlyAccountLinks": [
-      "declared:self-host",
-      "declared:cloud"
-    ]
+    "toolsOnlyAccountLinks": ["declared:self-host", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts",

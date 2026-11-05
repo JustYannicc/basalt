@@ -102,9 +102,11 @@ export function readDeclarations(root = repository) {
           Object.entries(record(source.runs)).map(([key, value]) => {
             const ids = strings(value);
             const scenario = scenarios[key];
-            const scheduled = scenario && Object.values(scenario.targets).some(
-              (target) => record(target).status === "scheduled",
-            );
+            const scheduled =
+              scenario &&
+              Object.values(scenario.targets).some(
+                (target) => record(target).status === "scheduled",
+              );
             if (!scenario || (!ids.length && scheduled) || new Set(ids).size !== ids.length)
               throw new Error(file + ": invalid scenario assignment " + key);
             for (const id of ids) {

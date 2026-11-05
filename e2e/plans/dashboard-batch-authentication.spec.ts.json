@@ -18,10 +18,7 @@
     }
   },
   "runs": {
-    "dashboardBatchAuthentication": [
-      "dashboard:profile",
-      "declared:cloud"
-    ]
+    "dashboardBatchAuthentication": ["dashboard:profile", "declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/auth.ts",

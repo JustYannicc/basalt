@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountCompactRows": [
-      "account-acquisition:account-usage-rows-and-cells"
-    ]
+    "accountCompactRows": ["account-acquisition:account-usage-rows-and-cells"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",

@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "accountObservationAccess": [
-      "declared:self-host"
-    ]
+    "accountObservationAccess": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",

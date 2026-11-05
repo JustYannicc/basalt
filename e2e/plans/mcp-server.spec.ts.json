@@ -1,11 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "mcpProtocol",
-    "mcpOAuthWithoutResource",
-    "mcpSkills"
-  ],
+  "inherited": ["mcpProtocol", "mcpOAuthWithoutResource", "mcpSkills"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
     ".upstream/apps/hosted/cloud/src/app-ui.ts",

@@ -21,11 +21,7 @@
     }
   },
   "runs": {
-    "cloudAppQueryAuth": [
-      "declared:cloud"
-    ]
+    "cloudAppQueryAuth": ["declared:cloud"]
   },
-  "inputs": [
-    ".upstream/apps/hosted/cloud/src/infrastructure/app-sessions.ts"
-  ]
+  "inputs": [".upstream/apps/hosted/cloud/src/infrastructure/app-sessions.ts"]
 }

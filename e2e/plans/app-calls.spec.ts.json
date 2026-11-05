@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "appCallConnections": [
-      "declared:self-host"
-    ]
+    "appCallConnections": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/api.ts",

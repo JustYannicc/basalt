@@ -38,12 +38,8 @@
     }
   },
   "runs": {
-    "cloudCompilerDeadline": [
-      "compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"
-    ],
-    "cloudCompilerCacheBypass": [
-      "compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"
-    ]
+    "cloudCompilerDeadline": ["compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"],
+    "cloudCompilerCacheBypass": ["compiler-diagnostics:a-compiler-deadline-retains-its-phase-trail"]
   },
   "inherited": [
     "cloudCatalogInstall",

@@ -1,12 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "onboardingGoogle",
-    "onboardingGithub",
-    "onboardingEmail",
-    "onboardingSkip"
-  ],
+  "inherited": ["onboardingGoogle", "onboardingGithub", "onboardingEmail", "onboardingSkip"],
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",
     ".upstream/apps/hosted/cloud/src/app-domains.ts",

@@ -23,7 +23,5 @@
       "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
     ]
   },
-  "inputs": [
-    ".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx"
-  ]
+  "inputs": [".upstream/apps/hosted/web/src/implementation/pages/accounts.tsx"]
 }

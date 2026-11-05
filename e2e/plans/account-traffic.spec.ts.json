@@ -20,9 +20,7 @@
     }
   },
   "runs": {
-    "accountTraffic": [
-      "account-acquisition:account-usage-rows-and-cells"
-    ]
+    "accountTraffic": ["account-acquisition:account-usage-rows-and-cells"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/contracts/pool-usage-series.ts",

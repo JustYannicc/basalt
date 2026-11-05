@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "oauthNameReady": [
-      "declared:self-host"
-    ]
+    "oauthNameReady": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/web/src/implementation/pages/name-account-dialog.tsx",

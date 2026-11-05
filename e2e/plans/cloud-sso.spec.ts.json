@@ -74,18 +74,12 @@
     }
   },
   "runs": {
-    "cloudSsoBilling": [
-      "production-ops:isolated-billing-policy-and-oidc-sign-in"
-    ],
-    "cloudSsoOidc": [
-      "production-ops:isolated-billing-policy-and-oidc-sign-in"
-    ],
+    "cloudSsoBilling": ["production-ops:isolated-billing-policy-and-oidc-sign-in"],
+    "cloudSsoOidc": ["production-ops:isolated-billing-policy-and-oidc-sign-in"],
     "cloudSsoOidcProtocol": [
       "sso-service-binding:oidc-and-saml-through-the-private-service-binding"
     ],
-    "cloudSsoSaml": [
-      "sso-service-binding:oidc-and-saml-through-the-private-service-binding"
-    ]
+    "cloudSsoSaml": ["sso-service-binding:oidc-and-saml-through-the-private-service-binding"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

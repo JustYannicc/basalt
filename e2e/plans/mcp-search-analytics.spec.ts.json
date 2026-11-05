@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "mcpSearchAnalytics": [
-      "declared:self-host"
-    ]
+    "mcpSearchAnalytics": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/product-analytics.ts",

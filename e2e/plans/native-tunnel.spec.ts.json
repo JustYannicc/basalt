@@ -19,11 +19,7 @@
     }
   },
   "runs": {
-    "nativeTunnel": [
-      "declared:self-host"
-    ]
+    "nativeTunnel": ["declared:self-host"]
   },
-  "inputs": [
-    ".upstream/packages/mcp-auth/src/implementation/native-grants.ts"
-  ]
+  "inputs": [".upstream/packages/mcp-auth/src/implementation/native-grants.ts"]
 }

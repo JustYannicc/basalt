@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "workflowDependencyToolPolicy": [
-      "declared:self-host"
-    ]
+    "workflowDependencyToolPolicy": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",

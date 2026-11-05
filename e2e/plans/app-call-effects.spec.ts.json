@@ -18,9 +18,7 @@
     }
   },
   "runs": {
-    "appCallEffects": [
-      "declared:self-host"
-    ]
+    "appCallEffects": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/packages/apps/package.json",

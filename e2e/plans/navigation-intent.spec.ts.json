@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "navigationIntentReads": [
-      "declared:self-host"
-    ]
+    "navigationIntentReads": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/web/src/implementation/router.tsx",

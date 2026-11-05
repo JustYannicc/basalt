@@ -2,9 +2,7 @@
   "scenarios": {
     "cloudPoolAccountEventualRepair": {
       "fixtures": "actors",
-      "managementApps": [
-        "owner"
-      ],
+      "managementApps": ["owner"],
       "title": "Cloud pool account eventual repair restores the link and preserves edited source",
       "targets": {
         "self-host": {
@@ -23,9 +21,7 @@
     }
   },
   "runs": {
-    "cloudPoolAccountEventualRepair": [
-      "declared:cloud"
-    ]
+    "cloudPoolAccountEventualRepair": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",

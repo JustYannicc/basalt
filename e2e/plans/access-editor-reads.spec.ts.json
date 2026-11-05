@@ -66,24 +66,10 @@
     }
   },
   "runs": {
-    "appSettingsGroupsRead": [
-      "access-editor-reads:self-host",
-      "access-editor-reads:cloud"
-    ],
-    "appSettingsGroupsReadMobile": [
-      "access-editor-reads:self-host",
-      "access-editor-reads:cloud"
-    ],
-    "manageAccessGroupsRead": [
-      "access-editor-reads:self-host",
-      "access-editor-reads:cloud"
-    ],
-    "manageAccessGroupsReadMobile": [
-      "access-editor-reads:self-host",
-      "access-editor-reads:cloud"
-    ]
+    "appSettingsGroupsRead": ["access-editor-reads:self-host", "access-editor-reads:cloud"],
+    "appSettingsGroupsReadMobile": ["access-editor-reads:self-host", "access-editor-reads:cloud"],
+    "manageAccessGroupsRead": ["access-editor-reads:self-host", "access-editor-reads:cloud"],
+    "manageAccessGroupsReadMobile": ["access-editor-reads:self-host", "access-editor-reads:cloud"]
   },
-  "inputs": [
-    ".upstream/e2e/tests/access-editor-reads.spec.ts"
-  ]
+  "inputs": [".upstream/e2e/tests/access-editor-reads.spec.ts"]
 }

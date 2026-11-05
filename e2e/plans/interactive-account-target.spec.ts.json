@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "interactiveAccountTarget": [
-      "declared:self-host"
-    ]
+    "interactiveAccountTarget": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

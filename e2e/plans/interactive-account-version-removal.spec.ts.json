@@ -36,12 +36,8 @@
     }
   },
   "runs": {
-    "interactiveAccountVersionRemoval": [
-      "declared:self-host"
-    ],
-    "interactiveAccountAcquiringVersionRemoval": [
-      "declared:self-host"
-    ]
+    "interactiveAccountVersionRemoval": ["declared:self-host"],
+    "interactiveAccountAcquiringVersionRemoval": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

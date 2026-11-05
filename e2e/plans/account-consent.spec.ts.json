@@ -75,9 +75,7 @@
     "accountConsentRefusal": [
       "host-managed-accounts-local:shared-identities-and-incremental-consent"
     ],
-    "accountConsentStale": [
-      "host-managed-accounts-local:shared-identities-and-incremental-consent"
-    ]
+    "accountConsentStale": ["host-managed-accounts-local:shared-identities-and-incremental-consent"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/alchemy.run.ts",

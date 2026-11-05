@@ -19,9 +19,7 @@
     }
   },
   "runs": {
-    "interactiveAccountDialog": [
-      "declared:self-host"
-    ]
+    "interactiveAccountDialog": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",

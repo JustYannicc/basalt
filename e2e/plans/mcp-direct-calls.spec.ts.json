@@ -1,10 +1,7 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": [
-    "mcpDirectCalls",
-    "mcpNativeCallApproval"
-  ],
+  "inherited": ["mcpDirectCalls", "mcpNativeCallApproval"],
   "inputs": [
     ".upstream/apps/hosted/cloud/scripts/build-site.ts",
     ".upstream/apps/hosted/cloud/src/app-ui.ts",

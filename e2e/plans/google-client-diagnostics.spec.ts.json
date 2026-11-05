@@ -36,14 +36,8 @@
     }
   },
   "runs": {
-    "googleClientDiagnostics": [
-      "google-account-recovery:configured-client-diagnostics"
-    ],
-    "googleClientUnavailable": [
-      "google-account-recovery:unconfigured-client-diagnostics"
-    ]
+    "googleClientDiagnostics": ["google-account-recovery:configured-client-diagnostics"],
+    "googleClientUnavailable": ["google-account-recovery:unconfigured-client-diagnostics"]
   },
-  "inputs": [
-    ".upstream/e2e/tests/google-client-diagnostics.spec.ts"
-  ]
+  "inputs": [".upstream/e2e/tests/google-client-diagnostics.spec.ts"]
 }
