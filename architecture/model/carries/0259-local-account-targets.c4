@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountTargets {
+    metadata {
+      constraint "Device-bound accounts retain revision-checked target metadata and refuse execution before cloud credentials are resolved. Hosted and local HTTP contracts and clients preserve offline and unavailable errors. Embedded MCP Apps assets must match the account target contract. Device execution requires a separate authenticated host and explicit access grants."
+    }
+  }
+}
