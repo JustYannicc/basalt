@@ -5,16 +5,13 @@ import providers from "./providers.json" with { type: "json" };
 import {
   callerHeader,
   controlBasePath as base,
-  type ControlErrorCode,
   type PoolView,
   type SignInFlow,
-  type SignInStarted,
-  type SignInStatus,
   type UsageRecord,
   type UsageResponse,
 } from "../../apps/pool/contract.ts";
-import { callbackOrigin } from "../../apps/pool/sign-in.ts";
-import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
+import { openEnvelope, verifyPoolToken } from "./token.ts";
+import { refusePoolAcquisition } from "./connection-policy.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
 import type { HomeViewData, PoolViewSnapshots } from "./view-snapshot.ts";
@@ -25,7 +22,19 @@ import { publicQuotaObservation } from "./quota-observation-public.ts";
 import { homeResponse } from "./home-response.ts";
 import { accountActionPath, type AccountAction, type AccountActions } from "./account-actions.ts";
 
-import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
+import {
+  BackendFailure,
+  ControlFailure,
+  fail,
+  failureResponse,
+  json,
+  object,
+  post,
+  rows,
+  text,
+  unavailable,
+  type Json,
+} from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 
 export { accountsView } from "./accounts-view.ts";
@@ -44,23 +53,8 @@ export interface HomeDependencies {
 /** Only the operations the routes need. Read-only requests pass null explicitly. */
 export interface ControlAttribution {
   expireLocked(home: HomeClient): Promise<void>;
-  reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void>;
-  discard(provider: string): Promise<void>;
-  rejectedCallback(session: Session): Promise<void>;
-  acceptedCallback(session: Session): Promise<void>;
-  status(home: PoolHome, session: Session): Promise<SignInStatus>;
   cancel(home: PoolHome, session: Session): Promise<void>;
-  started(session: Session, accountId: string): Promise<void>;
-  uploadStarted(): Promise<string>;
-  uploadFinished(upload: string): Promise<void>;
-  retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
-  uploaded(home: PoolHome, id: string, upload: string, key: string, provider?: string): Promise<void>;
   removed(id: string, intent?: { pool: string; actor: string; at: Date }): Promise<void>;
-  cached(session: Session): SignInStatus | undefined;
-  callback(home: HomeClient, session: Session): Promise<boolean>;
-  polled(session: Session): Promise<void>;
-  finished(session: Session, result?: SignInStatus): Promise<void>;
-  connected(home: PoolHome, session: Session, ids: string[]): Promise<SignInStatus>;
 }
 export interface ControlDependencies extends HomeDependencies {
   attribution: ControlAttribution | null;
@@ -78,20 +72,36 @@ export interface Session {
   flow: SignInFlow;
   expiresAt: string;
 }
-export interface Group { id: number; channel_name: string }
-export interface Member { id: number; channel_group_id: number; auth_id: string }
-export interface Membership { groups: Group[]; members: Member[] }
+export interface Group {
+  id: number;
+  channel_name: string;
+}
+export interface Member {
+  id: number;
+  channel_group_id: number;
+  auth_id: string;
+}
+export interface Membership {
+  groups: Group[];
+  members: Member[];
+}
 export { poolGroupPrefix };
-export const signInTtlMs = 20 * 60_000;
 const management = "/v8/management";
 const sessionPrefix = "sbs1";
 // Home v1.1.6 management/quota_snapshots.go:18-19 caps each list at 200.
 const quotaBatchSize = 200;
 // Home v1.1.6 cluster/usage_observability.go:23.
 const usageMaxLimit = 200;
-interface UsageQuery { session?: string; key?: number; limit: number; status?: string }
+interface UsageQuery {
+  session?: string;
+  key?: number;
+  limit: number;
+  status?: string;
+}
 // Match Go strings.TrimSpace, including its treatment of U+FEFF as non-whitespace.
-function sessionTrim(value: string): string { return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""); }
+function sessionTrim(value: string): string {
+  return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+}
 async function usageSession(raw: string): Promise<string> {
   const encoder = new TextEncoder();
   const session = sessionTrim(raw);
@@ -110,8 +120,28 @@ async function usageSession(raw: string): Promise<string> {
     clean = `${new TextDecoder().decode(bytes.slice(0, end))}#${hash}`;
   }
   // Pinned node session/identity.go:57-128; plugin.go:100 writes this canonical UUID.
-  const prefixes = ["lcp:v1:", "lcp:", "ctx:v1:", "ctx:", "codex:", "claude:", "header:", "session:",
-    "affinity:", "slot:", "task:", "conv:", "thread:", "clientreq:", "geminicache:", "pck:", "user:", "execution:", "agy:", "derived:"];
+  const prefixes = [
+    "lcp:v1:",
+    "lcp:",
+    "ctx:v1:",
+    "ctx:",
+    "codex:",
+    "claude:",
+    "header:",
+    "session:",
+    "affinity:",
+    "slot:",
+    "task:",
+    "conv:",
+    "thread:",
+    "clientreq:",
+    "geminicache:",
+    "pck:",
+    "user:",
+    "execution:",
+    "agy:",
+    "derived:",
+  ];
   for (;;) {
     const prefix = prefixes.find((value) => clean.startsWith(value));
     if (!prefix) break;
@@ -123,7 +153,9 @@ async function usageSession(raw: string): Promise<string> {
   const colon = clean.indexOf(":");
   const candidate = sessionTrim(clean.slice(colon + 1));
   if (colon > 0 && uuid.test(candidate)) return candidate.toLowerCase();
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(`cpa:canonical-uuid:v1\0${clean}`)));
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", encoder.encode(`cpa:canonical-uuid:v1\0${clean}`)),
+  );
   const value = digest.slice(0, 16);
   value[6] = (value[6]! & 0x0f) | 0x80;
   value[8] = (value[8]! & 0x3f) | 0x80;
@@ -135,16 +167,28 @@ async function usageQuery(url: URL): Promise<UsageQuery> {
   const rawKey = url.searchParams.get("key");
   const key = rawKey === null ? undefined : Number(rawKey);
   const rawLimit = url.searchParams.get("limit") ?? "20";
-  if ((rawSession === null && key === undefined) || (rawKey !== null && (!/^[0-9]+$/.test(rawKey) || !positiveId(key)))
-    || !/^[1-9][0-9]*$/.test(rawLimit)) {
-    return fail(400, "invalid_query", "Provide a session or a positive key id, and a positive integer limit.");
+  if (
+    (rawSession === null && key === undefined) ||
+    (rawKey !== null && (!/^[0-9]+$/.test(rawKey) || !positiveId(key))) ||
+    !/^[1-9][0-9]*$/.test(rawLimit)
+  ) {
+    return fail(
+      400,
+      "invalid_query",
+      "Provide a session or a positive key id, and a positive integer limit.",
+    );
   }
   const rawStatus = url.searchParams.get("status")?.trim().toLowerCase();
   let status = rawStatus;
   if (rawStatus !== undefined) {
     if (["success", "succeeded", "ok"].includes(rawStatus)) status = "success";
     else if (["failed", "failure", "error"].includes(rawStatus)) status = "failed";
-    else if (!/^[1-5][0-9]{2}$/.test(rawStatus)) return fail(400, "invalid_query", "Provide a supported request outcome or a plain HTTP status code.");
+    else if (!/^[1-5][0-9]{2}$/.test(rawStatus))
+      return fail(
+        400,
+        "invalid_query",
+        "Provide a supported request outcome or a plain HTTP status code.",
+      );
   }
   const session = rawSession === null ? undefined : await usageSession(rawSession);
   return { session, key, limit: Math.min(usageMaxLimit, Number(rawLimit)), status };
@@ -159,50 +203,29 @@ function matchesUsageStatus(row: Json, status: string | undefined): boolean {
 function positiveId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
-async function signSession(secret: string, session: Session): Promise<string> {
-  return signEnvelope(secret, sessionPrefix, session);
-}
-async function readSession(secret: string, opaque: string | null, pool: string, now: Date, previousSecret?: string): Promise<Session> {
-  const value = opaque ? await openEnvelope(secret, sessionPrefix, opaque, previousSecret).catch(() => undefined) : undefined;
-  if (!object(value) || value.pool !== pool || !text(value.provider) || !text(value.state)
-    || (value.flow !== "callback" && value.flow !== "device") || typeof value.expiresAt !== "string"
-    || !Number.isFinite(Date.parse(value.expiresAt)) || Date.parse(value.expiresAt) <= now.getTime()) {
+async function readSession(
+  secret: string,
+  opaque: string | null,
+  pool: string,
+  now: Date,
+  previousSecret?: string,
+): Promise<Session> {
+  const value = opaque
+    ? await openEnvelope(secret, sessionPrefix, opaque, previousSecret).catch(() => undefined)
+    : undefined;
+  if (
+    !object(value) ||
+    value.pool !== pool ||
+    !text(value.provider) ||
+    !text(value.state) ||
+    (value.flow !== "callback" && value.flow !== "device") ||
+    typeof value.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(value.expiresAt)) ||
+    Date.parse(value.expiresAt) <= now.getTime()
+  ) {
     return fail(400, "invalid_session", "This sign-in has expired or is invalid. Start again.");
   }
   return value as unknown as Session;
-}
-function detectFlow(value: Json): SignInFlow {
-  if (value.flow === "device") return "device";
-  if (value.flow === "browser" || value.flow === "callback") return "callback";
-  // A sign-in that ends on a local page needs its address pasted back; any other finishes itself.
-  return callbackOrigin(String(value.url)) ? "callback" : "device";
-}
-async function body(request: Request, code: ControlErrorCode): Promise<{ raw: string; value: Json }> {
-  try {
-    const reader = request.body?.getReader();
-    if (!reader) throw new Error("Missing body");
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > 1024 * 1024) {
-        void reader.cancel().catch(() => {});
-        throw new Error("Body too large");
-      }
-      chunks.push(next.value);
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-    const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
-    const value: unknown = JSON.parse(raw);
-    if (!object(value)) throw new Error("Expected object");
-    return { raw, value };
-  } catch {
-    return fail(400, code, "Provide a valid JSON object no larger than 1 MiB.");
-  }
 }
 /** The shared Home client has no pool identity or attribution state. */
 export class HomeClient {
@@ -211,18 +234,29 @@ export class HomeClient {
   private quotaDetails = new Map<string, { promise: Promise<Json | null>; expiresAt: number }>();
   private clock: () => number;
   private changed?: () => Promise<void>;
-  constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now,
-    changed?: () => Promise<void>) { this.fetchHome = fetchHome; this.clock = clock; this.changed = changed; }
+  constructor(
+    fetchHome: HomeDependencies["home"],
+    clock: () => number = Date.now,
+    changed?: () => Promise<void>,
+  ) {
+    this.fetchHome = fetchHome;
+    this.clock = clock;
+    this.changed = changed;
+  }
   async response(path: string, init?: RequestInit): Promise<Response> {
-    const mutation = init?.method !== undefined && !["GET", "HEAD"].includes(init.method.toUpperCase())
-      && /^(?:\/(?:credentials|config\/api-keys|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(path);
+    const mutation =
+      init?.method !== undefined &&
+      !["GET", "HEAD"].includes(init.method.toUpperCase()) &&
+      /^(?:\/(?:credentials|config\/api-keys|channel-groups|channel-group-details)(?:[/?]|$)|\/oauth\/callback(?:[?]|$))/.test(
+        path,
+      );
     if (mutation) await this.changed?.();
-    try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); }
-    catch {
+    try {
+      return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal);
+    } catch {
       init?.signal?.throwIfAborted();
       return unavailable();
-    }
-    finally {
+    } finally {
       // Unknown mutation outcomes must not retain a view from before the attempt.
       if (mutation) await this.changed?.();
     }
@@ -236,43 +270,72 @@ export class HomeClient {
     try {
       const value: unknown = await response.json();
       return object(value) ? value : unavailable();
-    } catch { return unavailable(); }
+    } catch {
+      return unavailable();
+    }
   }
   async allPoolGroups(signal?: AbortSignal): Promise<Group[]> {
-    const groups = rows((await this.data("/channel-groups", { signal })).channel_groups).flatMap((row) => {
-      if (typeof row.channel_name !== "string" || !row.channel_name.startsWith(poolGroupPrefix)) return [];
-      if (!positiveId(row.id)) return unavailable();
-      return [{ id: row.id, channel_name: row.channel_name }];
-    }).sort((a, b) => a.id - b.id);
+    const groups = rows((await this.data("/channel-groups", { signal })).channel_groups)
+      .flatMap((row) => {
+        if (typeof row.channel_name !== "string" || !row.channel_name.startsWith(poolGroupPrefix))
+          return [];
+        if (!positiveId(row.id)) return unavailable();
+        return [{ id: row.id, channel_name: row.channel_name }];
+      })
+      .sort((a, b) => a.id - b.id);
     this.groupCache.clear();
-    for (const group of groups) this.groupCache.set(group.channel_name, [...(this.groupCache.get(group.channel_name) ?? []), group]);
+    for (const group of groups)
+      this.groupCache.set(group.channel_name, [
+        ...(this.groupCache.get(group.channel_name) ?? []),
+        group,
+      ]);
     return groups;
   }
   async poolGroups(name: string, signal?: AbortSignal): Promise<Group[]> {
-    return this.groupCache.get(name) ?? (await this.allPoolGroups(signal)).filter((group) => group.channel_name === name);
+    return (
+      this.groupCache.get(name) ??
+      (await this.allPoolGroups(signal)).filter((group) => group.channel_name === name)
+    );
   }
-  invalidateGroups(): void { this.groupCache.clear(); }
+  invalidateGroups(): void {
+    this.groupCache.clear();
+  }
   async members(groups: Group[], signal?: AbortSignal): Promise<Member[]> {
     try {
-      return (await mapBounded(groups, async (group) =>
-        rows((await this.data(`/channel-group-details?channel_group_id=${group.id}`, { signal })).channel_group_details).map((row) => {
-          if (!positiveId(row.id) || row.channel_group_id !== group.id || !text(row.auth_id)) return unavailable();
-          return { id: row.id, channel_group_id: group.id, auth_id: row.auth_id as string };
-        }))).flat();
-    } catch (error) { this.invalidateGroups(); throw error; }
+      return (
+        await mapBounded(groups, async (group) =>
+          rows(
+            (await this.data(`/channel-group-details?channel_group_id=${group.id}`, { signal }))
+              .channel_group_details,
+          ).map((row) => {
+            if (!positiveId(row.id) || row.channel_group_id !== group.id || !text(row.auth_id))
+              return unavailable();
+            return { id: row.id, channel_group_id: group.id, auth_id: row.auth_id as string };
+          }),
+        )
+      ).flat();
+    } catch (error) {
+      this.invalidateGroups();
+      throw error;
+    }
   }
   async allMembership(signal?: AbortSignal): Promise<Membership> {
     const groups = await this.allPoolGroups(signal);
     // Home accepts an empty filter and returns the complete membership table.
-    const members = rows((await this.data("/channel-group-details", { signal })).channel_group_details).map((row) => {
-      if (!positiveId(row.id) || !positiveId(row.channel_group_id) || !text(row.auth_id)) return unavailable();
+    const members = rows(
+      (await this.data("/channel-group-details", { signal })).channel_group_details,
+    ).map((row) => {
+      if (!positiveId(row.id) || !positiveId(row.channel_group_id) || !text(row.auth_id))
+        return unavailable();
       return { id: row.id, channel_group_id: row.channel_group_id, auth_id: row.auth_id as string };
     });
     return { groups, members };
   }
   async quota(ids: string[], detail = false): Promise<Json[]> {
-    if (detail) return (await mapBounded([...new Set(ids)], (id) => this.quotaDetail(id)))
-      .filter((value): value is Json => value !== null);
+    if (detail)
+      return (await mapBounded([...new Set(ids)], (id) => this.quotaDetail(id))).filter(
+        (value): value is Json => value !== null,
+      );
     const items: Json[] = [];
     for (let offset = 0; offset < ids.length; offset += quotaBatchSize) {
       const batch = ids.slice(offset, offset + quotaBatchSize);
@@ -291,10 +354,14 @@ export class HomeClient {
         const response = await this.response("/credentials/quota/fetch", post({ auth_index: id }));
         await response.body?.cancel();
         if (response.status === 401 || response.status === 403) return;
-      } catch { /* Home's next collection can read usage. */ }
+      } catch {
+        /* Home's next collection can read usage. */
+      }
     }
   }
-  dropQuotaDetail(id: string): void { this.quotaDetails.delete(id); }
+  dropQuotaDetail(id: string): void {
+    this.quotaDetails.delete(id);
+  }
   private quotaDetail(id: string): Promise<Json | null> {
     const now = this.clock();
     const cached = this.quotaDetails.get(id);
@@ -303,15 +370,29 @@ export class HomeClient {
     const entry = { promise: undefined as unknown as Promise<Json | null>, expiresAt: Infinity };
     entry.promise = (async () => {
       const response = await this.response(`/quota/credentials/${encodeURIComponent(id)}`);
-      if (response.status === 404) { await response.body?.cancel(); return null; }
+      if (response.status === 404) {
+        await response.body?.cancel();
+        return null;
+      }
       if (!response.ok) throw new BackendFailure(response.status);
       let value: unknown;
-      try { value = await response.json(); } catch { return unavailable(); }
-      if (!object(value) || !object(value.credential) || value.credential.credential_id !== id) return unavailable();
+      try {
+        value = await response.json();
+      } catch {
+        return unavailable();
+      }
+      if (!object(value) || !object(value.credential) || value.credential.credential_id !== id)
+        return unavailable();
       const collection = object(value.collection) ? value.collection : undefined;
-      const nextProbeAt = collection ? collection.next_probe_at : object(value.credential) ? value.credential.next_probe_at : undefined;
+      const nextProbeAt = collection
+        ? collection.next_probe_at
+        : object(value.credential)
+          ? value.credential.next_probe_at
+          : undefined;
       const probeAt = typeof nextProbeAt === "string" ? Date.parse(nextProbeAt) : NaN;
-      const refreshAt = Number.isFinite(probeAt) ? Math.min(this.clock() + 60_000, probeAt) : this.clock() + 60_000;
+      const refreshAt = Number.isFinite(probeAt)
+        ? Math.min(this.clock() + 60_000, probeAt)
+        : this.clock() + 60_000;
       if (this.quotaDetails.get(id) === entry) entry.expiresAt = refreshAt;
       return value;
     })().catch((error: unknown) => {
@@ -331,7 +412,13 @@ export class PoolHome {
   private added: (ids: string[]) => void;
   private onProductEvent?: ProductEventCallback;
   private accountId?: string;
-  constructor(client: HomeClient, pool: string, added: (ids: string[]) => void = () => {}, onProductEvent?: ProductEventCallback, accountId?: string) {
+  constructor(
+    client: HomeClient,
+    pool: string,
+    added: (ids: string[]) => void = () => {},
+    onProductEvent?: ProductEventCallback,
+    accountId?: string,
+  ) {
     this.client = client;
     this.pool = pool;
     this.name = `${poolGroupPrefix}${pool}`;
@@ -344,70 +431,143 @@ export class PoolHome {
     const ids = new Set(groups.map((group) => group.id));
     return { groups, members: all.members.filter((member) => ids.has(member.channel_group_id)) };
   }
-  async allMembership(signal?: AbortSignal): Promise<Membership> { return this.client.allMembership(signal); }
-  async credentials(signal?: AbortSignal): Promise<Json[]> { return rows((await this.client.data("/credentials", { signal })).files); }
-  async status(state: string): Promise<Json> { return this.client.signInStatus(state); }
+  async allMembership(signal?: AbortSignal): Promise<Membership> {
+    return this.client.allMembership(signal);
+  }
+  async credentials(signal?: AbortSignal): Promise<Json[]> {
+    return rows((await this.client.data("/credentials", { signal })).files);
+  }
+  async status(state: string): Promise<Json> {
+    return this.client.signInStatus(state);
+  }
   async cancel(state: string): Promise<boolean> {
-    const result = await this.client.data(`/oauth/session?state=${encodeURIComponent(state)}`, { method: "DELETE" });
+    const result = await this.client.data(`/oauth/session?state=${encodeURIComponent(state)}`, {
+      method: "DELETE",
+    });
     if (typeof result.cancelled !== "boolean") return unavailable();
     return result.cancelled;
   }
   async membership(signal?: AbortSignal): Promise<Membership> {
     const groups = await this.client.poolGroups(this.name, signal);
-    try { return { groups, members: await this.client.members(groups, signal) }; }
-    catch (error) {
+    try {
+      return { groups, members: await this.client.members(groups, signal) };
+    } catch (error) {
       if (!(error instanceof ControlFailure) || error.status !== 404) throw error;
-      const fresh = (await this.client.allPoolGroups(signal)).filter((group) => group.channel_name === this.name);
+      const fresh = (await this.client.allPoolGroups(signal)).filter(
+        (group) => group.channel_name === this.name,
+      );
       return { groups: fresh, members: await this.client.members(fresh, signal) };
     }
   }
   async add(ids: string[], known?: Membership): Promise<void> {
     if (!ids.length) return;
-    let membership = known ?? await this.membership();
+    let membership = known ?? (await this.membership());
     if (!membership.groups.length) {
-      const response = await this.client.response("/channel-groups", post({ channel_name: this.name }));
+      const response = await this.client.response(
+        "/channel-groups",
+        post({ channel_name: this.name }),
+      );
       if (response.status === 401 || response.status === 403) return unavailable();
       const created = response.ok;
       await response.body?.cancel();
-      const groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === this.name);
+      const groups = (await this.client.allPoolGroups()).filter(
+        (group) => group.channel_name === this.name,
+      );
       if (!groups.length) return unavailable();
       membership = { groups, members: await this.client.members(groups) };
-      if (created && this.accountId) emitProductEvent(this.onProductEvent, "pool_created", this.accountId);
+      if (created && this.accountId)
+        emitProductEvent(this.onProductEvent, "pool_created", this.accountId);
     }
     const existing = new Set(membership.members.map((member) => member.auth_id));
     for (const id of new Set(ids)) {
       if (existing.has(id)) continue;
-      try { await this.client.data("/channel-group-details", post({ channel_group_id: membership.groups[0]!.id, auth_id: id })); }
-      catch (error) { this.client.invalidateGroups(); throw error; }
+      try {
+        await this.client.data(
+          "/channel-group-details",
+          post({ channel_group_id: membership.groups[0]!.id, auth_id: id }),
+        );
+      } catch (error) {
+        this.client.invalidateGroups();
+        throw error;
+      }
       this.added([id]);
-      if (this.accountId) emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
+      if (this.accountId)
+        emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
     }
   }
   async readView(now: () => Date): Promise<HomeViewData> {
     const readAt = { membership: "", credentials: "", quota: "" };
-    const membership = timePoolRead("membership", () => this.membership(), (value) => value.members.length);
+    const membership = timePoolRead(
+      "membership",
+      () => this.membership(),
+      (value) => value.members.length,
+    );
     const reads = [
-      membership.then((value) => { readAt.membership = now().toISOString(); return value; }),
-      timePoolRead("credentials", () => this.credentials(), (value) => value.length)
-        .then((value) => { readAt.credentials = now().toISOString(); return value; }),
-      membership.then(({ members }) => {
-        const ids = [...new Set(members.map((member) => member.auth_id))].sort();
-        for (const id of ids) this.client.dropQuotaDetail(id);
-        return timePoolRead("quota_detail", () => this.client.quota(ids, true), (value) => value.length);
-      }).then((value) => { readAt.quota = now().toISOString(); return value; }),
+      membership.then((value) => {
+        readAt.membership = now().toISOString();
+        return value;
+      }),
+      timePoolRead(
+        "credentials",
+        () => this.credentials(),
+        (value) => value.length,
+      ).then((value) => {
+        readAt.credentials = now().toISOString();
+        return value;
+      }),
+      membership
+        .then(({ members }) => {
+          const ids = [...new Set(members.map((member) => member.auth_id))].sort();
+          for (const id of ids) this.client.dropQuotaDetail(id);
+          return timePoolRead(
+            "quota_detail",
+            () => this.client.quota(ids, true),
+            (value) => value.length,
+          );
+        })
+        .then((value) => {
+          readAt.quota = now().toISOString();
+          return value;
+        }),
     ] as const;
     await Promise.allSettled(reads);
     const [members, files, usage] = await Promise.all(reads);
-    return { accounts: accountsView(files, usage, new Set(members.members.map((member) => member.auth_id))), readAt };
+    return {
+      accounts: accountsView(
+        files,
+        usage,
+        new Set(members.members.map((member) => member.auth_id)),
+      ),
+      readAt,
+    };
   }
-  async view(isOwner: boolean, views?: PoolViewSnapshots, fresh = false, now = () => new Date()): Promise<PoolView> {
-    const result = views ? await views.view(this.pool, fresh, () => this.readView(now))
+  async view(
+    isOwner: boolean,
+    views?: PoolViewSnapshots,
+    fresh = false,
+    now = () => new Date(),
+  ): Promise<PoolView> {
+    const result = views
+      ? await views.view(this.pool, fresh, () => this.readView(now))
       : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
-    const accounts = result.data.accounts.map((account) => result.source === "snapshot"
-      ? { ...account, freshness: account.freshness === "never" ? "never" as const : "stale" as const }
-      : account);
-    return { isOwner, providers, accounts,
-      reading: { source: result.source, readAt: result.data.readAt, revalidationFailed: result.revalidationFailed } };
+    const accounts = result.data.accounts.map((account) =>
+      result.source === "snapshot"
+        ? {
+            ...account,
+            freshness: account.freshness === "never" ? ("never" as const) : ("stale" as const),
+          }
+        : account,
+    );
+    return {
+      isOwner,
+      providers,
+      accounts,
+      reading: {
+        source: result.source,
+        readAt: result.data.readAt,
+        revalidationFailed: result.revalidationFailed,
+      },
+    };
   }
   async usage(query: UsageQuery): Promise<UsageResponse> {
     const accounts = new Set((await this.membership()).members.map((member) => member.auth_id));
@@ -420,21 +580,34 @@ export class PoolHome {
     let offset = 0;
     let total = Infinity;
     // At most five Home pages, or 1,000 scanned rows, per request.
-    for (let scannedPages = 0; scannedPages < 5 && offset < total && records.size < query.limit; scannedPages++) {
+    for (
+      let scannedPages = 0;
+      scannedPages < 5 && offset < total && records.size < query.limit;
+      scannedPages++
+    ) {
       params.set("offset", String(offset));
       const page = await this.client.data(`/usage/records?${params}`);
       const items = rows(page.items);
       if (items.length > usageMaxLimit) return unavailable();
-      if (typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0) return unavailable();
+      if (typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0)
+        return unavailable();
       total = Math.min(total, page.total);
       if (!items.length) break;
       for (const row of items) {
         const account = object(row.credential) ? text(row.credential.credential_id) : null;
         // Compare the exact canonical key written by the node, never parent or root ids.
-        if (!account || !accounts.has(account) || (query.session && row.session_id !== query.session)
-          || (query.key !== undefined && (!object(row.client) || row.client.api_key_id !== query.key))
-          || !matchesUsageStatus(row, query.status)) continue;
-        const id = text(row.id); const status = text(row.status); const at = text(row.timestamp);
+        if (
+          !account ||
+          !accounts.has(account) ||
+          (query.session && row.session_id !== query.session) ||
+          (query.key !== undefined &&
+            (!object(row.client) || row.client.api_key_id !== query.key)) ||
+          !matchesUsageStatus(row, query.status)
+        )
+          continue;
+        const id = text(row.id);
+        const status = text(row.status);
+        const at = text(row.timestamp);
         if (!id || !status || !at || !Number.isFinite(Date.parse(at))) return unavailable();
         records.set(id, { id, account, status, at });
         if (records.size === query.limit) break;
@@ -447,12 +620,16 @@ export class PoolHome {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
     if (!members.length) return fail(404, "not_found", "This account is not in this pool.");
     // Keep membership as retry authority until the credential deletion is acknowledged.
-    const deleted = await this.client.response(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    const deleted = await this.client.response(`/credentials?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
     if (!deleted.ok && deleted.status !== 404) throw new BackendFailure(deleted.status);
     this.client.dropQuotaDetail(id);
     await detached();
     for (const member of members) {
-      const response = await this.client.response(`/channel-group-details/${member.id}`, { method: "DELETE" });
+      const response = await this.client.response(`/channel-group-details/${member.id}`, {
+        method: "DELETE",
+      });
       if (!response.ok && response.status !== 404) throw new BackendFailure(response.status);
     }
   }
@@ -468,8 +645,13 @@ interface RouteContext {
   isOwner: boolean;
   now: Date;
 }
-function attribution(ctx: RouteContext): ControlAttribution { return ctx.deps.attribution ?? unavailable(); }
-async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("session")): Promise<Session> {
+function attribution(ctx: RouteContext): ControlAttribution {
+  return ctx.deps.attribution ?? unavailable();
+}
+async function sessionFor(
+  ctx: RouteContext,
+  opaque = ctx.url.searchParams.get("session"),
+): Promise<Session> {
   return readSession(ctx.deps.signingKey, opaque, ctx.pool, ctx.now, ctx.deps.previousSigningKey);
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
@@ -481,112 +663,84 @@ const routes: Record<string, Route> = {
     if (!ctx.isOwner && (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)))
       return fail(403, "not_owner", "Only people with access to this pool can check its accounts.");
     let id: string;
-    try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length, -"/collect".length)); }
-    catch { return fail(404, "not_found", "This account does not exist."); }
-    return json(await checkAccount(ctx.home, ctx.client, ctx.deps.collection ?? unavailable(), id, ctx.request.signal));
+    try {
+      id = decodeURIComponent(
+        ctx.url.pathname.slice(`${base}/accounts/`.length, -"/collect".length),
+      );
+    } catch {
+      return fail(404, "not_found", "This account does not exist.");
+    }
+    return json(
+      await checkAccount(
+        ctx.home,
+        ctx.client,
+        ctx.deps.collection ?? unavailable(),
+        id,
+        ctx.request.signal,
+      ),
+    );
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
   "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
-    const view = await home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now);
+    const view = await home.view(
+      isOwner,
+      deps.views,
+      url.searchParams.get("fresh") === "true",
+      deps.now,
+    );
     return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
-  "POST /sign-ins": async (ctx) => {
-    const { request, client, pool, now, deps } = ctx;
-    const state = attribution(ctx);
-    const { value } = await body(request, "unknown_provider");
-    if (!providers.some((provider) => provider.id === value.provider)) return fail(400, "unknown_provider", "Choose a provider from this pool's provider list.");
-    const provider = value.provider as string;
-    await state.reserve(client, provider, pool, now);
-    const response = await client.response(`/oauth/auth-url?provider=${encodeURIComponent(provider)}`);
-    if (response.status === 404) {
-      await state.discard(provider);
-      return fail(400, "unknown_provider", "This provider is not available.");
-    }
-    if (!response.ok) {
-      // Home returns its errors before starting a waiter. Only a lost response is ambiguous.
-      await state.discard(provider);
-      return unavailable();
-    }
-    const started: unknown = await response.json();
-    if (!object(started) || !text(started.url) || !text(started.state)) return unavailable();
-    const session: Session = { pool, provider, state: started.state as string, flow: detectFlow(started), expiresAt: new Date(now.getTime() + signInTtlMs).toISOString() };
-    await state.started(session, ctx.accountId);
-    return json({
-      session: await signSession(deps.signingKey, session), provider, flow: session.flow,
-      url: started.url as string, userCode: text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null), expiresAt: session.expiresAt,
-    } satisfies SignInStarted);
-  },
-  "POST /login-files": async (ctx) => {
-    const state = attribution(ctx);
-    const { value } = await body(ctx.request, "invalid_login_file");
-    // Home v1.1.6 oauth_login.go emits each table id as metadata.type. No alias mapping.
-    if (!providers.some((provider) => provider.id === value.type)) return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
-    // uuid.go:25-50 reuses a root uuid. Strip all caller-supplied credential selectors.
-    const { uuid: _uuid, id: _id, auth_index: _authIndex, ...credential } = value;
-    const raw = JSON.stringify(credential);
-    const identity = JSON.stringify([ctx.pool, credential], (_key, entry: unknown) => object(entry)
-      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)));
-    const key = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const pending = await state.retryUpload(ctx.home, key);
-    if (pending) return json({ accountId: pending });
-    const upload = await state.uploadStarted();
-    const response = await ctx.client.response("/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
-    if (response.status === 400) {
-      await state.uploadFinished(upload);
-      return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
-    }
-    if (!response.ok) return unavailable();
-    const saved: unknown = await response.json();
-    if (!object(saved) || typeof saved.name !== "string" || !saved.name.endsWith(".json") || saved.name.length <= 5) return unavailable();
-    const id = saved.name.slice(0, -5);
-    await state.uploaded(ctx.home, id, upload, key, String(credential.type));
-    return json({ accountId: id });
-  },
+  "POST /sign-ins": async (ctx) => refusePoolAcquisition(ctx.pool),
+  "POST /login-files": async (ctx) => refusePoolAcquisition(ctx.pool),
   "DELETE /accounts/:id": async (ctx) => {
     let id: string;
-    try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length)); }
-    catch { return fail(404, "not_found", "This account does not exist."); }
-    await ctx.home.remove(id, () => attribution(ctx).removed(id, { pool: ctx.pool, actor: ctx.accountId, at: ctx.deps.now?.() ?? new Date() }));
+    try {
+      id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length));
+    } catch {
+      return fail(404, "not_found", "This account does not exist.");
+    }
+    await ctx.home.remove(id, () =>
+      attribution(ctx).removed(id, {
+        pool: ctx.pool,
+        actor: ctx.accountId,
+        at: ctx.deps.now?.() ?? new Date(),
+      }),
+    );
     return json(null);
   },
-  "POST /sign-ins/callback": async (ctx) => {
-    const value = (await body(ctx.request, "invalid_callback")).value;
-    const session = await sessionFor(ctx, text(value.session));
-    if (session.flow !== "callback" || !text(value.redirectUrl)) return fail(400, "invalid_callback", "Paste the callback URL for this sign-in.");
-    try {
-      if (new URL(value.redirectUrl as string).searchParams.get("state") !== session.state) throw new Error("Wrong state");
-    } catch { return fail(400, "invalid_callback", "This callback belongs to a different sign-in."); }
-    const state = attribution(ctx);
-    if (!await state.callback(ctx.client, session)) return json({ status: "waiting" } satisfies SignInStatus);
-    const response = await ctx.client.response("/oauth/callback", post({ provider: session.provider, redirect_url: value.redirectUrl }));
-    if ([400, 404, 409].includes(response.status)) {
-      if (response.status === 400) await state.rejectedCallback(session);
-      else if (response.status === 409) await state.cancel(ctx.home, session);
-      else await state.finished(session);
-      return fail(400, "invalid_callback", "This callback could not be accepted. Check the URL or start again.");
-    }
-    if (!response.ok) return unavailable();
-    await state.acceptedCallback(session);
-    return json({ status: "waiting" } satisfies SignInStatus);
-  },
+  "POST /sign-ins/callback": async (ctx) => refusePoolAcquisition(ctx.pool),
   "DELETE /sign-ins": async (ctx) => {
     await attribution(ctx).cancel(ctx.home, await sessionFor(ctx));
     return json(null);
   },
-  "GET /sign-ins/status": async (ctx) => json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
+  "GET /sign-ins/status": async (ctx) => refusePoolAcquisition(ctx.pool),
 };
 
 async function observeAccount(ctx: RouteContext, refresh: boolean): Promise<Response> {
-  const match = /^\/accounts\/([^/]+)\/observations(?:\/refresh)?$/.exec(ctx.url.pathname.slice(base.length));
+  const match = /^\/accounts\/([^/]+)\/observations(?:\/refresh)?$/.exec(
+    ctx.url.pathname.slice(base.length),
+  );
   let id: string;
-  try { id = decodeURIComponent(match?.[1] ?? ""); }
-  catch { return fail(404, "not_found", "This account does not exist."); }
-  const { account, quota } = await readCheckedAccount(ctx.home, ctx.client, ctx.deps.collection ?? unavailable(), id, ctx.request.signal, refresh);
-  return json({ account, observation: quota === null ? null : publicQuotaObservation(quotaObservation(quota)) });
+  try {
+    id = decodeURIComponent(match?.[1] ?? "");
+  } catch {
+    return fail(404, "not_found", "This account does not exist.");
+  }
+  const { account, quota } = await readCheckedAccount(
+    ctx.home,
+    ctx.client,
+    ctx.deps.collection ?? unavailable(),
+    id,
+    ctx.request.signal,
+    refresh,
+  );
+  return json({
+    account,
+    observation: quota === null ? null : publicQuotaObservation(quotaObservation(quota)),
+  });
 }
 
 async function accountAction(ctx: RouteContext): Promise<Response> {
@@ -595,53 +749,115 @@ async function accountAction(ctx: RouteContext): Promise<Response> {
   if (match[2] === "refresh" && !ctx.isOwner) {
     const caller = text(ctx.request.headers.get(callerHeader));
     if (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)) {
-      return fail(403, "not_owner", "Only people with access to this pool can refresh its accounts.");
+      return fail(
+        403,
+        "not_owner",
+        "Only people with access to this pool can refresh its accounts.",
+      );
     }
   }
   let id: string;
-  try { id = decodeURIComponent(match[1]!); }
-  catch { return fail(400, "invalid_query", "Provide a valid account id."); }
-  return (ctx.deps.actions ?? unavailable()).handle(ctx.home, id, match[2] as AccountAction, ctx.request);
+  try {
+    id = decodeURIComponent(match[1]!);
+  } catch {
+    return fail(400, "invalid_query", "Provide a valid account id.");
+  }
+  return (ctx.deps.actions ?? unavailable()).handle(
+    ctx.home,
+    id,
+    match[2] as AccountAction,
+    ctx.request,
+  );
 }
 
 /** Check the request before it can wait for, load or mutate attribution state. */
-export async function authorizeControl(request: Request, signingKey: string, previousSigningKey?: string) {
+export async function authorizeControl(
+  request: Request,
+  signingKey: string,
+  previousSigningKey?: string,
+) {
   const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "");
-  const claims = bearer ? await verifyPoolToken(signingKey, bearer[1]!, previousSigningKey) : undefined;
+  const claims = bearer
+    ? await verifyPoolToken(signingKey, bearer[1]!, previousSigningKey)
+    : undefined;
   if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
   const action = accountActionPath.exec(path);
-  const routePath = action ? (action[2] === "resets" || action[2] === "resets/attempt") ? "/accounts/:id/resets" : "/accounts/:id/action"
-    : /^\/accounts\/[^/]+\/observations\/refresh$/.test(path) ? "/accounts/:id/observations/refresh"
-    : /^\/accounts\/[^/]+\/observations$/.test(path) ? "/accounts/:id/observations"
-    : /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"
-    : /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
-    : /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
+  const routePath = action
+    ? action[2] === "resets" || action[2] === "resets/attempt"
+      ? "/accounts/:id/resets"
+      : "/accounts/:id/action"
+    : /^\/accounts\/[^/]+\/observations\/refresh$/.test(path)
+      ? "/accounts/:id/observations/refresh"
+      : /^\/accounts\/[^/]+\/observations$/.test(path)
+        ? "/accounts/:id/observations"
+        : /^\/accounts\/[^/]+\/collect$/.test(path)
+          ? "/accounts/:id/collect"
+          : /^\/accounts\/[^/]+\/export$/.test(path)
+            ? "/accounts/:id/export"
+            : /^\/accounts\/[^/]+$/.test(path)
+              ? "/accounts/:id"
+              : path;
   const routeKey = `${request.method} ${routePath}`;
   const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
   const collect = routeKey === "POST /accounts/:id/collect";
   const refresh = action?.[2] === "refresh" && request.method === "POST";
-  if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
-  const observation = routeKey === "GET /accounts/:id/observations" || routeKey === "POST /accounts/:id/observations/refresh";
-  const isRead = collect || observation || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
+  if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner)
+    return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  // Old app deployments and tools can still call these routes. Refuse before loading the
+  // attribution queue, reading a body or letting a status read finalize a credential.
+  if (
+    [
+      "POST /sign-ins",
+      "POST /login-files",
+      "POST /sign-ins/callback",
+      "GET /sign-ins/status",
+    ].includes(routeKey)
+  )
+    refusePoolAcquisition(claims.pool);
+  const observation =
+    routeKey === "GET /accounts/:id/observations" ||
+    routeKey === "POST /accounts/:id/observations/refresh";
+  const isRead =
+    collect ||
+    observation ||
+    routeKey === "GET /pool" ||
+    routeKey === "GET /usage" ||
+    routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead, isAccountAction: !!action };
 }
 
-export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
+export async function handleControl(
+  request: Request,
+  deps: ControlDependencies,
+): Promise<Response> {
   try {
-    const { claims, url, route, routeKey, isOwner, isRead, isAccountAction } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
+    const { claims, url, route, routeKey, isOwner, isRead, isAccountAction } =
+      await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added, deps.onProductEvent, claims.owner);
     if (!isRead && !isAccountAction) await (deps.attribution ?? unavailable()).expireLocked(client);
     const changesAccount = request.method === "POST" && routeKey.startsWith("POST /accounts/");
     if (changesAccount) await deps.views?.invalidate();
     try {
-      return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
+      return await route({
+        request,
+        url,
+        deps,
+        client,
+        home,
+        pool: claims.pool,
+        accountId: claims.owner,
+        isOwner,
+        now: deps.now?.() ?? new Date(),
+      });
     } finally {
       if (changesAccount) await deps.views?.invalidate();
     }
-  } catch (error) { return failureResponse(error); }
+  } catch (error) {
+    return failureResponse(error);
+  }
 }

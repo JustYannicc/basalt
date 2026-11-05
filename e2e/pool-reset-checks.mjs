@@ -29,24 +29,43 @@ const program = Effect.gen(function* () {
     (links) => links.some((link) => link.requirement === "pool" && link.hostManaged),
     "pool access not linked",
   );
+  const methods = yield* h.request("GET", `${h.appPath(pool.id)}/accounts/methods`);
+  checked(
+    "new pool source has no retained Subscription requirement",
+    methods.connections.some((policy) => policy.requirement === "subscriptions"),
+    false,
+  );
+  checked(
+    "new pool requirements never acquire credentials",
+    methods.connections.every((policy) => policy.canConnect === false),
+    true,
+  );
   const connect = (id, provider) =>
     Effect.gen(function* () {
-      h.fixture.prepareAcquisition(pool.id, id, provider);
+      const lab = provider === "codex" ? "openai" : "anthropic";
+      const app = yield* h.request("POST", `${h.prefix}/apps/install`, {
+        entry: `provider-${lab}`,
+        name: `Synthetic ${lab}`,
+      });
+      h.fixture.prepareAcquisition(null, id, provider);
       const pending = yield* h.request(
         "POST",
-        `${h.appPath(pool.id)}/accounts/app/subscriptions/connections`,
+        `${h.appPath(app.id)}/accounts/app/${lab}/connections`,
         {},
       );
       const path = `${h.prefix}/connections/${pending.id}/interactive`;
-      yield* h.request("POST", `${path}/start`, { method: "loginFile" });
-      const saved = yield* h.request("POST", `${path}/submit`, {
-        value: JSON.stringify({ type: provider, refresh_token: "synthetic-never-outbound" }),
-      });
-      checked("login-file connection saves through the real host", saved.state, "connected");
-      return {
-        account: saved.account.id,
-        path: `${h.prefix}/pools/${pool.id}/accounts/${saved.account.id}`,
-      };
+      yield* h.request("POST", `${path}/start`, { method: provider });
+      const saved = yield* h.request("GET", `${path}/status`);
+      checked("provider-app connection saves through the real host", saved.state, "connected");
+      yield* h.request("PUT", `${h.appPath(pool.id)}/accounts/app/${lab}/${saved.account.id}`);
+      yield* Effect.promise(() => h.fixture.reconcile(pool.id));
+      const target = `${h.prefix}/pools/${pool.id}/accounts/${saved.account.id}`;
+      yield* until(
+        h.raw("owner", "GET", `${target}/reset-credits`),
+        (response) => response.status === 200,
+        "saved account membership did not reach the backend",
+      );
+      return { account: saved.account.id, path: target };
     });
   const codex = yield* connect("synthetic-codex-reset", "codex");
   const catalog = yield* h.request("GET", `${codex.path}/reset-credits`);
