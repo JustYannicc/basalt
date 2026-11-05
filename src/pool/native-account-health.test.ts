@@ -14,6 +14,7 @@ const key = "ab".repeat(32),
   now = Date.parse("2030-01-01T00:00:00Z");
 function fixture(
   options: {
+    unnamed?: boolean;
     error?: string;
     stale?: boolean;
     disabled?: boolean;
@@ -39,7 +40,7 @@ function fixture(
             {
               id: "bound-id",
               provider: options.provider ?? "codex",
-              email: "subscriber@example.test",
+              ...(options.unnamed ? {} : { email: "subscriber@example.test" }),
               disabled: options.disabled,
               deleted: options.deleted,
             },
@@ -173,6 +174,17 @@ test("native subscription checks work before pool linking and keep paused or exh
       false,
     );
   }
+});
+
+test("an unnamed native subscription keeps health and usage without exposing its reference", async () => {
+  const response = await fixture({ unnamed: true }).check();
+  assert.equal(response?.status, 200);
+  const body = (await response!.json()) as {
+    result: { accountInfo: unknown; observation: unknown };
+  };
+  assert.deepEqual(body.result.accountInfo, {});
+  assert.ok(body.result.observation);
+  assert.equal(JSON.stringify(body).includes("bound-id"), false);
 });
 
 test("native checks preserve credential rejection and rate limits without returning backend diagnostics", async () => {
