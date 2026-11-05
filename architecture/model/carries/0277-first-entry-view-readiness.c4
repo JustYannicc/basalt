@@ -1,7 +1,0 @@
-model {
-  extend basalt.toolsGateway.accountPresentation {
-    metadata {
-      constraint "Accounts and Human in the loop route loaders await their browser-only views while retaining one router pending view. Each mount keeps a resolved component identity, failed downloads use existing retry behavior, and server rendering never imports the browser-only views."
-    }
-  }
-}
