@@ -68,6 +68,52 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   return errors;
 }
 
+// Parser-directed leaves retain template tails and regex bodies while excluding comments.
+function bindingStructure(expression: ts.Expression, source: ts.SourceFile): string {
+  const visit = (node: ts.Node): unknown => {
+    const children = node.getChildren(source).filter((child) => !ts.isJSDoc(child));
+    return children.length > 0
+      ? [node.kind, children.map(visit)]
+      : [node.kind, node.getText(source)];
+  };
+  return JSON.stringify(visit(expression));
+}
+
+function declaredBindingStructure(expression: string): string | undefined {
+  const parsed = ts.createSourceFile(
+    "binding.ts",
+    `${expression}\n.fetch()`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  // The pinned parser records recovery diagnostics here; never compare a recovered tree.
+  if (
+    !("parseDiagnostics" in parsed) ||
+    !Array.isArray(parsed.parseDiagnostics) ||
+    parsed.parseDiagnostics.length !== 0
+  )
+    return undefined;
+  const statement = parsed.statements[0];
+  if (
+    parsed.statements.length !== 1 ||
+    statement === undefined ||
+    !ts.isExpressionStatement(statement)
+  )
+    return undefined;
+  const call = statement.expression;
+  if (
+    !ts.isCallExpression(call) ||
+    !ts.isPropertyAccessExpression(call.expression) ||
+    call.expression.name.text !== "fetch" ||
+    call.expression.name.getStart(parsed) !== expression.length + 2 ||
+    call.arguments.length !== 0 ||
+    call.end !== parsed.end
+  )
+    return undefined;
+  return bindingStructure(call.expression.expression, parsed);
+}
+
 function fetchBinding(
   call: ts.CallExpression,
   module: Module,
@@ -76,13 +122,13 @@ function fetchBinding(
   if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "fetch")
     return undefined;
   const receiver = call.expression.expression;
-  const names = [receiver.getText(source)];
-  if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
+  const receivers = [receiver];
+  if (ts.isCallExpression(receiver)) receivers.push(receiver.expression);
+  const candidates = receivers.map((expression) => bindingStructure(expression, source));
   return module.bindings.find((binding) => {
-    const name = binding.split("=")[0];
-    return names.some(
-      (candidate) =>
-        candidate === name || candidate === `env.${name}` || candidate === `this.env.${name}`,
+    const name = binding.split("=")[0]!;
+    return [name, `env.${name}`, `this.env.${name}`].some((candidate) =>
+      candidates.includes(declaredBindingStructure(candidate) ?? ""),
     );
   });
 }
