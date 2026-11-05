@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "id": "google-one-account",
+  "artifact": {
+    "name": "google-one-account.html",
+    "sha256": "6826c6a1972c702c0074f003c9fb1f2912b73ffb210d423517eb9ce6ea56927b"
+  },
+  "requirements": [
+    {
+      "id": "grouped-verified-identity",
+      "text": "Five app bindings share one host-verified identity row, and adding a covered app preserves the saved account IDs without further provider consent.",
+      "proofs": [
+        {
+          "scenario": "accountIdentityRows",
+          "target": "local",
+          "job": "host-managed-accounts-local"
+        }
+      ]
+    },
+    {
+      "id": "incremental-consent",
+      "text": "An existing identity requests additional permissions for several apps together, reports denied scopes, and preserves the own-client sign-in route.",
+      "proofs": [
+        {
+          "scenario": "accountIdentityConsentScreen",
+          "target": "local",
+          "job": "host-managed-accounts-local"
+        }
+      ]
+    },
+    {
+      "id": "retained-hosted-grants",
+      "text": "Retained hosted Google grants with absent verification metadata recover into one identity row without a five-reconnect chore.",
+      "gap": {
+        "state": "open",
+        "owner": "Google account-family owner",
+        "reason": "The registered scenarios use synthetic verified local identities; they do not exercise retained hosted Google migration or recovery."
+      }
+    }
+  ]
+}
