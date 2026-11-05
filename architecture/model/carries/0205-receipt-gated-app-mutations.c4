@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "App mutations require durable receipts that bind approval to the exact operation and caller before provider execution."
+    }
+  }
+}
