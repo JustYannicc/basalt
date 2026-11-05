@@ -1,3 +1,5 @@
+import { StringDecoder } from "node:string_decoder";
+
 const phases = new Set([
   "unknown",
   "module-load",
@@ -19,6 +21,8 @@ const phases = new Set([
   "paste-ui",
   "refresh",
   "report",
+  "cleanup",
+  "complete",
 ]);
 
 const kinds = new Set([
@@ -97,4 +101,98 @@ export function awsFailureSummary({
         ? { location: source }
         : {}),
   };
+}
+
+type OutputStream = "stdout" | "stderr";
+
+function outputRecord(text: string) {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {}
+  if (typeof value === "object" && value !== null) {
+    if ("awsProofPhase" in value) {
+      const summary = awsFailureSummary({
+        phase: value.awsProofPhase,
+        checks: "checks" in value ? value.checks : undefined,
+      });
+      if (summary.phase !== "unknown")
+        return {
+          kind: "phase",
+          phase: summary.phase,
+          ...(summary.checks === undefined ? {} : { checks: summary.checks }),
+        };
+    }
+    if ("upstream" in value && value.upstream === "synthetic AWS MCP and OAuth service only") {
+      const summary = awsFailureSummary({ checks: "checks" in value ? value.checks : undefined });
+      return {
+        kind: "completed",
+        ...(summary.checks === undefined ? {} : { checks: summary.checks }),
+      };
+    }
+  }
+  const summary = awsFailureSummary({ stderr: text });
+  return { kind: summary.kind, ...(summary.location ? { location: summary.location } : {}) };
+}
+
+/** Unknown output is represented by its category, never copied into an uploaded diagnostic. */
+export class AwsOutputTail {
+  private records: Array<
+    ReturnType<typeof outputRecord> & { stream: OutputStream; elapsedMs: number }
+  > = [];
+  private truncated = false;
+  private started = performance.now();
+  private streams = {
+    stdout: { decoder: new StringDecoder("utf8"), pending: "", discarded: false },
+    stderr: { decoder: new StringDecoder("utf8"), pending: "", discarded: false },
+  };
+
+  push(stream: OutputStream, chunk: Buffer): void {
+    this.consume(stream, this.streams[stream].decoder.write(chunk));
+  }
+
+  finish(): void {
+    for (const stream of ["stdout", "stderr"] as const) {
+      this.consume(stream, this.streams[stream].decoder.end());
+      if (this.streams[stream].pending || this.streams[stream].discarded) this.line(stream);
+    }
+  }
+
+  text(): string {
+    return JSON.stringify({ truncated: this.truncated, records: this.records });
+  }
+
+  private consume(stream: OutputStream, text: string): void {
+    const state = this.streams[stream];
+    let start = 0;
+    do {
+      const end = text.indexOf("\n", start);
+      const part = text.slice(start, end === -1 ? undefined : end);
+      if (!state.discarded) {
+        state.pending += part;
+        if (Buffer.byteLength(state.pending) > 4096) {
+          state.pending = "";
+          state.discarded = this.truncated = true;
+        }
+      }
+      if (end === -1) break;
+      this.line(stream);
+      start = end + 1;
+    } while (start < text.length);
+  }
+
+  private line(stream: OutputStream): void {
+    const state = this.streams[stream];
+    this.records.push({
+      stream,
+      elapsedMs: Math.max(0, Math.round(performance.now() - this.started)),
+      ...(state.discarded ? { kind: "omitted-line" } : outputRecord(state.pending)),
+    });
+    state.pending = "";
+    state.discarded = false;
+    while (Buffer.byteLength(this.text()) > 16 * 1024) {
+      this.records.shift();
+      this.truncated = true;
+    }
+  }
 }

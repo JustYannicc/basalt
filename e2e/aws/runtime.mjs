@@ -17,6 +17,7 @@ import { proveAwsPasteUi } from "./browser.mjs";
 import { startAwsFixture } from "./fixture.mjs";
 import { proveAwsOAuth } from "./oauth.mjs";
 import { awsFailureSummary } from "./diagnostics.ts";
+import { AwsProgress } from "./evidence.ts";
 
 const [root, upstream, evidenceDirectory, browserExecutable] = process.argv.slice(2);
 const require = createRequire(join(upstream, "package.json"));
@@ -32,13 +33,20 @@ await chmod(EVIDENCE, 0o700);
 
 let checks = 0;
 let phase = "fixture";
+const progress = new AwsProgress(EVIDENCE);
+const enterPhase = (next) => {
+  phase = next;
+  progress.enter(phase, checks);
+};
 const check = (condition, message) => {
   checks++;
   assert.ok(condition, message);
+  progress.enter(phase, checks);
 };
 const equal = (actual, expected, message) => {
   checks++;
   assert.deepEqual(actual, expected, message);
+  progress.enter(phase, checks);
 };
 const inspectText = (result) =>
   JSON.stringify(result?.structuredContent ?? result?.content ?? result);
@@ -53,6 +61,7 @@ let checked;
 
 const run = Effect.gen(function* () {
   check(root && upstream, "Basalt checkout and exact pinned upstream are required");
+  enterPhase("fixture");
   const clientName = "Basalt AWS proof";
   const fixture = yield* Effect.acquireRelease(
     Effect.promise(() => startAwsFixture({ clientName })),
@@ -60,11 +69,11 @@ const run = Effect.gen(function* () {
   );
 
   // OAuth state and token exchange run through the isolated self-host server APIs.
-  phase = "environment";
+  enterPhase("environment");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
-  phase = "registry";
+  enterPhase("registry");
   const registry = yield* localNpmRegistry;
-  phase = "framework";
+  enterPhase("framework");
   const frameworkDirectory = join(upstream, ".local/basalt-framework");
   const framework = JSON.parse(
     yield* Effect.promise(() => readFile(join(frameworkDirectory, "framework.json"), "utf8")),
@@ -75,7 +84,7 @@ const run = Effect.gen(function* () {
     appsVersion,
     "The built framework must match the pinned host release",
   );
-  phase = "server";
+  enterPhase("server");
   const target = yield* startScenario(base.target, "AWS self-host MCP acceptance", undefined, {
     EXECUTOR_PRODUCT_NAME: clientName,
     EXECUTOR_NPM_REGISTRY: registry.url,
@@ -83,7 +92,7 @@ const run = Effect.gen(function* () {
     EXECUTOR_APPS_VERSION: appsVersion,
   });
 
-  phase = "actors";
+  enterPhase("actors");
   const services = yield* Layer.build(
     Actors.layer.pipe(
       Layer.provideMerge(SessionClients.layer),
@@ -150,7 +159,7 @@ const run = Effect.gen(function* () {
     ),
   );
 
-  phase = "deploy";
+  enterPhase("deploy");
   const deployed = checked(
     yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "AWS self-host MCP acceptance",
@@ -169,7 +178,7 @@ const run = Effect.gen(function* () {
       ),
     ),
   );
-  phase = "inventory";
+  enterPhase("inventory");
   const inventory = checked(
     yield* request(actors.owner, "GET", `${prefix}/inventory`),
     200,
@@ -201,7 +210,7 @@ const run = Effect.gen(function* () {
   equal(details.requirements.accounts.aws.definition.auth.oauth.scopes, []);
   equal(details.requirements.accounts.aws.definition.hosts, [fixture.host]);
 
-  phase = "access";
+  enterPhase("access");
   const access = checked(
     yield* request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
     200,
@@ -216,7 +225,7 @@ const run = Effect.gen(function* () {
     "Share the AWS app with the test organization",
   );
 
-  phase = "oauth";
+  enterPhase("oauth");
   const oauth = yield* proveAwsOAuth({
     request,
     checked,
@@ -228,7 +237,7 @@ const run = Effect.gen(function* () {
     app,
   });
 
-  phase = "health";
+  enterPhase("health");
   for (const [actor, account] of [
     [actors.owner, oauth.ownerAccount],
     [actors.member, oauth.memberAccount],
@@ -245,7 +254,7 @@ const run = Effect.gen(function* () {
     );
   }
 
-  phase = "mcp-keys";
+  enterPhase("mcp-keys");
   const issued = [];
   for (const actor of [actors.owner, actors.member]) {
     const token = checked(
@@ -273,7 +282,7 @@ const run = Effect.gen(function* () {
     ),
   );
 
-  phase = "mcp-connect";
+  enterPhase("mcp-connect");
   const clients = [];
   const approvals = [];
   for (const { key } of issued) {
@@ -312,7 +321,7 @@ const run = Effect.gen(function* () {
     };
   }
 
-  phase = "tools";
+  enterPhase("tools");
   const outcomes = [];
   for (const [index, client] of clients.entries()) {
     const ownAccount = index === 0 ? oauth.ownerAccount : oauth.memberAccount;
@@ -490,13 +499,13 @@ const run = Effect.gen(function* () {
     typeof browserExecutable === "string" && browserExecutable.length > 0,
     "The AWS hosted paste proof requires the pinned Chromium executable",
   );
-  phase = "browser";
+  enterPhase("browser");
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })),
     (instance) => Effect.promise(() => instance.close()),
   );
   const ownerCookies = Redacted.value(yield* actors.owner.cookies);
-  phase = "paste-ui";
+  enterPhase("paste-ui");
   const hostedPasteUi = yield* Effect.promise(() =>
     proveAwsPasteUi({
       browser,
@@ -511,7 +520,7 @@ const run = Effect.gen(function* () {
     }),
   );
 
-  phase = "refresh";
+  enterPhase("refresh");
   const fixtureResult = fixture.observations();
   equal(
     fixtureResult.exchanges.length,
@@ -556,7 +565,7 @@ const run = Effect.gen(function* () {
     fixtureResult.registrations.every((entry) => entry.scopeCount === 0),
     "No AWS OAuth scope strings may be invented",
   );
-  phase = "report";
+  enterPhase("report");
   const result = {
     checks,
     oauth,
@@ -575,6 +584,7 @@ const run = Effect.gen(function* () {
     writeFile(join(EVIDENCE, "result.json"), JSON.stringify(result, null, 2), { mode: 0o600 }),
   );
   console.log(JSON.stringify(result));
+  enterPhase("cleanup");
 });
 
 try {
@@ -584,6 +594,7 @@ try {
       Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
     ),
   );
+  enterPhase("complete");
 } catch (error) {
   await writeFile(join(EVIDENCE, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
   await writeFile(

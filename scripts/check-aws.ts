@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyConnectorsSource } from "./connectors-source.ts";
-import { awsFailureSummary } from "../e2e/aws/diagnostics.ts";
+import { AwsProgress, awsChildFailure, captureAwsChild } from "../e2e/aws/evidence.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -106,6 +106,7 @@ if (process.argv.includes("--preflight")) {
     LANG: "en_US.UTF-8",
     NO_COLOR: "1",
   };
+  new AwsProgress(directory).enter("module-load", 0);
   const child = spawn(
     "bun",
     [join(root, "e2e/aws/runtime.mjs"), root, upstream, directory, browserExecutable],
@@ -116,14 +117,7 @@ if (process.argv.includes("--preflight")) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString();
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
+  const captured = captureAwsChild(child, directory);
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -140,10 +134,7 @@ if (process.argv.includes("--preflight")) {
     15 * 60_000 + 5000,
   );
   try {
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", resolve);
-    });
+    const { code, stdout, stderr } = await captured;
     await writeFile(
       join(directory, "runtime.json"),
       JSON.stringify({ code, timedOut, stdout, stderr }),
@@ -152,10 +143,7 @@ if (process.argv.includes("--preflight")) {
       },
     );
     if (timedOut || code !== 0) {
-      const context = await readFile(join(directory, "failure-context.json"), "utf8")
-        .then((text) => JSON.parse(text) as { phase?: unknown; checks?: unknown })
-        .catch(() => ({}));
-      const summary = awsFailureSummary({ ...context, code, timedOut, stderr });
+      const summary = awsChildFailure(directory, { code, timedOut, stderr });
       await writeFile(join(directory, "failure-summary.json"), JSON.stringify(summary, null, 2), {
         mode: 0o600,
       });
