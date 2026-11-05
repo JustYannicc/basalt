@@ -24,7 +24,7 @@ export const poolWorker = Effect.gen(function* () {
     className: "PoolContainer",
     // The snapshot policy rejects placement constraints. EU enforcement takes priority.
     schedulingPolicy: "default",
-    instanceType: "lite",
+    instanceType: "basic",
     maxInstances: 1,
     constraints: euPlacement,
     observability: { logs: { enabled: true } },
