@@ -11,6 +11,37 @@ index 32d04174e..889bc19a6 100644
                }),
              ),
            ),
+diff --git a/apps/hosted/server/src/contracts/tools.ts b/apps/hosted/server/src/contracts/tools.ts
+index 7fae524d2..e6d19f92a 100644
+--- a/apps/hosted/server/src/contracts/tools.ts
++++ b/apps/hosted/server/src/contracts/tools.ts
+@@ -2,6 +2,8 @@ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { RequiredAction } from "./authorization.ts";
+ /** Account-dependent discovery and execution within a configured app. */
+ import {
++  AccountDeviceOffline,
++  AccountExecutionUnavailable,
+   AccountChoiceUnsupported,
+   AccountNotFound,
+   AccountRequired,
+@@ -64,6 +66,8 @@ const discoveryErrors = [
+   AppProviderFailed,
+   AccountNotFound,
+   AccountRequired,
++  AccountDeviceOffline,
++  AccountExecutionUnavailable,
+   AccountChoiceUnsupported,
+   AccountSelectionInvalid,
+   OAuthReconnectRequired,
+@@ -83,6 +87,8 @@ const callPayload = Schema.Struct({
+   version: Schema.optional(VersionId),
+ }).pipe(withLegacyKeys({ version: "deployment" }));
+ const callErrors = [
++  AccountDeviceOffline,
++  AccountExecutionUnavailable,
+   ...discoveryErrors,
+   ToolNotFound,
+   ToolKindMismatch,
 diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
 index 3386971de..9d381721a 100644
 --- a/apps/hosted/server/src/implementation/mcp.ts
@@ -36,6 +67,52 @@ index 3386971de..9d381721a 100644
        Effect.provideContext(context),
      ),
    );
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index b4612a32d..5d30b90f5 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -14,6 +14,8 @@ export type HostedError =
+   | Schema.SchemaError;
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
++    AccountDeviceOffline: ({ message }) => message,
++    AccountExecutionUnavailable: ({ message }) => message,
+     ToolPolicyConflict: ({ message }) => message,
+     ToolPolicyInvalid: ({ message }) => message,
+     AppConnectionConflict: ({ message }) => message,
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 61f5ea07f..9f5d6654b 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -1,3 +1,4 @@
++import { AccountDeviceOffline, AccountExecutionUnavailable } from "@executor-js/sdk/core";
+ import { InteractiveConnectionFailed } from "@executor-js/sdk/core";
+ import { AccountAcquisitionUnavailable } from "@executor-js/sdk/core";
+ import { AccountObservationView } from "@executor-js/sdk/core";
+@@ -783,6 +784,8 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+           ToolNotFound,
+           ToolKindMismatch,
+           InputInvalid,
++          AccountDeviceOffline,
++          AccountExecutionUnavailable,
+           ToolCallFailed,
+           ToolElicitationFailed,
+           ToolBlocked,
+diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
+index afa502717..7019eb5d0 100644
+--- a/apps/local/web/src/contracts/errors.ts
++++ b/apps/local/web/src/contracts/errors.ts
+@@ -40,6 +40,10 @@ const unavailable = () =>
+     : message("Could not reach Executor", "Check that the local server is running, then retry.");
+ const errorMessage = Match.type<DashboardError>().pipe(
+   Match.tagsExhaustive({
++    AccountDeviceOffline: (error) =>
++      message(error.title, `${error.description} ${error.recovery.action}`),
++    AccountExecutionUnavailable: (error) =>
++      message(error.title, `${error.description} ${error.recovery.action}`),
+     InteractiveConnectionFailed: () =>
+       message(
+         "Sign-in did not complete",
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
 new file mode 100644
 index 000000000..cfc2f5c1e
@@ -112,10 +189,10 @@ index 000000000..cfc2f5c1e
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
 +`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index a4dfec258..7127e9cd3 100644
+index cd4ae6d23..2ec9de71a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8832,6 +8832,16 @@ export const scenarios = plan({
+@@ -8852,6 +8852,16 @@ export const scenarios = plan({
        cloud: na("Uses a runner-owned public SDK host."),
      },
    },

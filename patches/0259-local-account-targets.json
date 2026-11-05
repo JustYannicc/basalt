@@ -1,7 +1,7 @@
 {
   "identity": "basalt-local-account-targets",
   "file": "0259-local-account-targets.patch",
-  "content_sha256": "faf2eb65bfb1f4121fd323cd1ae7c2369e25a7bc71e48d879474af900ffe68e8",
+  "content_sha256": "0fd08fe9e18b482e677f9c0c7d1e72dc394394ec4e280cf10bd4771222889df2",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
