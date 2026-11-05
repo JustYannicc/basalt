@@ -1,3 +1,4 @@
+import { servedFrameworkVersion } from "../../framework-release.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -21,7 +22,9 @@ async function freePort() {
   });
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
   return address.port;
 }
 
@@ -70,10 +73,21 @@ export async function startZendeskCatalogWorker({ root, upstream, directory, mar
 }
 
 /** Read the bytes the catalog Worker serves, verify the source snapshot, then make explicit test-only endpoint overrides. */
-export async function loadZendeskCatalogSource({ root, catalogOrigin, directory, sites, marketplace,
-  candidateSha, upstreamPin, carriedPatches = [] }) {
+export async function loadZendeskCatalogSource({
+  root,
+  catalogOrigin,
+  directory,
+  sites,
+  marketplace,
+  candidateSha,
+  upstreamPin,
+  carriedPatches = [],
+}) {
   const route = new URL("/catalog/apps/zendesk.json", catalogOrigin);
-  const response = await fetch(route, { redirect: "manual", headers: { accept: "application/json" } });
+  const response = await fetch(route, {
+    redirect: "manual",
+    headers: { accept: "application/json" },
+  });
   assert.equal(response.status, 200, "Catalog Worker did not serve Zendesk source over HTTP");
   assert.match(response.headers.get("content-type") ?? "", /^application\/json\b/i);
   const servedBytes = Buffer.from(await response.arrayBuffer());
@@ -89,29 +103,60 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   ]);
   const snapshot = JSON.parse(snapshotBytes.toString("utf8"));
   const snapshotProvenance = JSON.parse(provenanceBytes.toString("utf8"));
-  assert.equal(sha256(snapshotBytes), snapshotProvenance.snapshotSha256, "Zendesk snapshot provenance hash changed");
+  assert.equal(
+    sha256(snapshotBytes),
+    snapshotProvenance.snapshotSha256,
+    "Zendesk snapshot provenance hash changed",
+  );
   assert.equal(source.package, snapshotProvenance.package);
-  assert.deepEqual(source.files.map(({ path }) => path).sort(), snapshot.files.map(({ path }) => path).sort());
+  assert.deepEqual(
+    source.files.map(({ path }) => path).sort(),
+    snapshot.files.map(({ path }) => path).sort(),
+  );
   for (const path of ["README.md", "icon.ts", "index.ts", "openapi.ts", "package.json"]) {
     const servedFile = source.files.find((file) => file.path === path);
     assert.ok(servedFile, `Catalog Worker omitted ${path}`);
+    const snapshotFile = snapshot.files.find((file) => file.path === path);
+    assert.ok(snapshotFile, `Zendesk snapshot omitted ${path}`);
+    assert.equal(sha256(snapshotFile.content), snapshotProvenance.catalogFileSha256[path]);
+    let expectedContent = snapshotFile.content;
+    if (path === "package.json") {
+      const manifest = JSON.parse(expectedContent);
+      if (manifest.dependencies.apps !== servedFrameworkVersion) {
+        expectedContent = `${JSON.stringify(
+          {
+            ...manifest,
+            dependencies: { ...manifest.dependencies, apps: servedFrameworkVersion },
+          },
+          null,
+          2,
+        )}\n`;
+      }
+    }
     assert.equal(
       sha256(servedFile.content),
-      snapshotProvenance.catalogFileSha256[path],
-      `Catalog Worker changed the reviewed Zendesk ${path}`,
+      sha256(expectedContent),
+      `Catalog Worker changed the reviewed Zendesk ${path} beyond the served framework mapping`,
     );
   }
 
   const configuration = source.files.find((file) => file.path === "configuration.ts");
   assert.ok(configuration, "Catalog Worker omitted Zendesk operator configuration");
-  const configMatch = /^export const integrationHeaders: Readonly<Record<string, string>> = ([\s\S]*);\n$/.exec(configuration.content);
+  const configMatch =
+    /^export const integrationHeaders: Readonly<Record<string, string>> = ([\s\S]*);\n$/.exec(
+      configuration.content,
+    );
   assert.ok(configMatch, "Catalog Worker did not emit the Zendesk integration headers module");
   const injectedHeaders = JSON.parse(configMatch[1]);
-  assert.deepEqual(injectedHeaders, {
-    "X-Zendesk-Marketplace-Name": marketplace.name,
-    "X-Zendesk-Marketplace-Organization-Id": marketplace.organizationId,
-    "X-Zendesk-Marketplace-App-Id": marketplace.appId,
-  }, "Catalog Worker did not inject the assigned Marketplace metadata");
+  assert.deepEqual(
+    injectedHeaders,
+    {
+      "X-Zendesk-Marketplace-Name": marketplace.name,
+      "X-Zendesk-Marketplace-Organization-Id": marketplace.organizationId,
+      "X-Zendesk-Marketplace-App-Id": marketplace.appId,
+    },
+    "Catalog Worker did not inject the assigned Marketplace metadata",
+  );
 
   const queryResponse = await fetch(`${route.href}?site=${encodeURIComponent(sites[1].origin)}`, {
     redirect: "manual",
@@ -119,7 +164,11 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   });
   assert.equal(queryResponse.status, 200);
   const queryBytes = Buffer.from(await queryResponse.arrayBuffer());
-  assert.deepEqual(queryBytes, servedBytes, "Catalog query parameters must not select or retarget a Zendesk site");
+  assert.deepEqual(
+    queryBytes,
+    servedBytes,
+    "Catalog query parameters must not select or retarget a Zendesk site",
+  );
 
   const index = source.files.find((file) => file.path === "index.ts");
   assert.ok(index, "Catalog Worker omitted Zendesk app source");
@@ -149,7 +198,9 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   assert.ok(index.content.includes(`const declarationOrigin = ${JSON.stringify(templateOrigin)};`));
   assert.ok(index.content.includes('subdomainOf: "localhost"'));
 
-  const fileHashes = Object.fromEntries(source.files.map((file) => [file.path, sha256(file.content)]));
+  const fileHashes = Object.fromEntries(
+    source.files.map((file) => [file.path, sha256(file.content)]),
+  );
   const provenance = {
     package: source.package,
     workerEntry: "src/catalog/worker.ts",
@@ -184,8 +235,14 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   };
   await Promise.all([
     writeFile(join(directory, "zendesk-catalog-response.json"), servedBytes, { mode: 0o600 }),
-    writeFile(join(directory, "zendesk-deployed-source.json"), `${JSON.stringify(source)}\n`, { mode: 0o600 }),
-    writeFile(join(directory, "zendesk-provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 }),
+    writeFile(join(directory, "zendesk-deployed-source.json"), `${JSON.stringify(source)}\n`, {
+      mode: 0o600,
+    }),
+    writeFile(
+      join(directory, "zendesk-provenance.json"),
+      `${JSON.stringify(provenance, null, 2)}\n`,
+      { mode: 0o600 },
+    ),
   ]);
   return { source, injectedHeaders, provenance };
 }
