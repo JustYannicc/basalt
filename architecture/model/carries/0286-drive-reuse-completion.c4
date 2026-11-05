@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "A committed saved sign-in completes independently of account projection reads; read failures offer only read-only retries. Fresh reuse requests retain an existing binding only for the same owner, verified identity, authorization grant, provider, method, site and destination placement, preserving its earlier consumers. Concurrent first sharing restarts from a fresh inspection only when promotion preserved the complete authorization and revision; independent grants and real identity or credential changes still refuse reuse."
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-drive-reuse-completion",
+  "file": "0286-drive-reuse-completion.patch",
+  "content_sha256": "81ddb30922993fee54dfdd37061dfbb55e6f19b45e792e1298d20c0102172f48",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
