@@ -8,7 +8,8 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "scheduled"
+          "status": "scheduled",
+          "runtime": "managed"
         },
         "local": {
           "status": "not-applicable",
