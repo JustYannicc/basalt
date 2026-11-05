@@ -28,7 +28,10 @@ export function App({ api }: { api: PoolApi }) {
     const source = view.reading?.source ?? "live";
     performance.mark(name, { detail: { source } });
     if (window.parent !== window)
-      window.parent.postMessage({ name, version: 2, snapshot: source === "snapshot" }, new URL(poolOrigin).origin);
+      window.parent.postMessage(
+        { name, version: 2, snapshot: source === "snapshot" },
+        new URL(poolOrigin).origin,
+      );
   }, [view, measurable]);
   const now = useNow();
   const [accountsHref, setAccountsHref] = useState<string>();
@@ -46,7 +49,10 @@ export function App({ api }: { api: PoolApi }) {
       });
     read();
     const timer = setInterval(read, 4 * 60_000);
-    return () => { live = false; clearInterval(timer); };
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
   }, [api]);
 
   return (
@@ -57,12 +63,22 @@ export function App({ api }: { api: PoolApi }) {
         </span>
         <div className="flex items-center gap-2">
           {accountsHref && (
-            <a href={accountsHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+            <a
+              href={accountsHref}
+              target="_blank"
+              rel="noopener"
+              className={buttonClass("outline", "sm")}
+            >
               Accounts <ExternalIcon />
             </a>
           )}
           {shareHref && (
-            <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+            <a
+              href={shareHref}
+              target="_blank"
+              rel="noopener"
+              className={buttonClass("outline", "sm")}
+            >
               Share <ExternalIcon />
             </a>
           )}
@@ -76,11 +92,16 @@ export function App({ api }: { api: PoolApi }) {
             <p className="text-sm text-muted-foreground">
               {view === undefined
                 ? "Loading this pool…"
-                : "Conversations stay on one account; new ones spread across them. Manage saved accounts in this app's Accounts tab."}
+                : "Conversations stay on one account; new ones spread across them. Pick this pool's accounts in its Accounts tab; connect and repair them in each provider's app."}
             </p>
           </div>
           {view !== undefined && (
-            <Freshness view={view} updating={updating} now={now} onRetry={error ? undefined : () => void reload()} />
+            <Freshness
+              view={view}
+              updating={updating}
+              now={now}
+              onRetry={error ? undefined : () => void reload()}
+            />
           )}
         </section>
 
@@ -95,33 +116,52 @@ export function App({ api }: { api: PoolApi }) {
         {view === undefined ? (
           !error && <Skeleton />
         ) : view.accounts.length === 0 ? (
-          <Empty view={view} />
+          <Empty view={view} accountsHref={accountsHref} />
         ) : (
           <PoolCapacity accounts={view.accounts} providers={view.providers} now={now} />
         )}
-        {view !== undefined && <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />}
+        {view !== undefined && (
+          <Usage
+            load={api.usage}
+            poll={api.poll}
+            providers={view.providers}
+            now={now}
+            shareHref={shareHref}
+          />
+        )}
       </main>
-
     </div>
   );
 }
 
-function Empty({ view }: { view: PoolView }) {
+function Empty({ view, accountsHref }: { view: PoolView; accountsHref: string | undefined }) {
   const names = view.providers.map((provider) => provider.name);
   const offered =
-    names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ");
+    names.length > 3
+      ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`
+      : names.join(", ");
   return (
     <div className="grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
       <div className="grid max-w-[34rem] gap-1.5">
         <h2 className="text-base font-semibold tracking-[-0.015em]">
-          {view.isOwner ? "Connect your first account" : "This pool has no capacity yet"}
+          {view.isOwner ? "Pick your first account" : "This pool has no capacity yet"}
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {view.isOwner
-            ? `Connect accounts from this app's Accounts tab. Their combined capacity and usage show here.${offered ? ` Supported subscriptions include ${offered}.` : ""}`
+            ? `Tick accounts in this pool's Accounts tab. They come from your provider apps${offered ? `, such as ${offered}` : ""}; connect one there first if you have none. Their combined capacity and usage show here.`
             : "Capacity appears here once accounts are available to this pool."}
         </p>
       </div>
+      {view.isOwner && accountsHref && (
+        <a
+          href={accountsHref}
+          target="_blank"
+          rel="noopener"
+          className={buttonClass("outline", "sm")}
+        >
+          Pick accounts <ExternalIcon />
+        </a>
+      )}
     </div>
   );
 }
@@ -130,7 +170,10 @@ function Skeleton() {
   return (
     <div aria-hidden="true" className="grid">
       {[0, 1, 2].map((row) => (
-        <div key={row} className="grid gap-3 border-b border-border px-1 py-4 sm:grid-cols-[15rem_1fr] sm:gap-8">
+        <div
+          key={row}
+          className="grid gap-3 border-b border-border px-1 py-4 sm:grid-cols-[15rem_1fr] sm:gap-8"
+        >
           <div className="grid gap-1.5">
             <div className="h-4 w-40 animate-pulse rounded-sm bg-accent" />
             <div className="h-3 w-24 animate-pulse rounded-sm bg-accent" />

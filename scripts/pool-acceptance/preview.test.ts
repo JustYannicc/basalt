@@ -10,47 +10,94 @@ import { previewPassed, runPreviewAcceptance, runPreviewFromEnvironment } from "
 import type { PreviewConfig } from "./preview-config.ts";
 
 const config: PreviewConfig = {
-  origin: "https://stage.example.invalid", email: "test@example.invalid", password: "PRIVATE-PASSWORD",
-  organizationId: "private-org", poolAppId: "private-app", claudeLogin: { type: "claude" },
-  codexLogin: { type: "codex" }, codexAuthFile: "/private/auth.json", models: { claude: "test-claude", codex: "test-codex" },
+  origin: "https://stage.example.invalid",
+  email: "test@example.invalid",
+  password: "PRIVATE-PASSWORD",
+  organizationId: "private-org",
+  poolAppId: "private-app",
+  accounts: [
+    { id: "acc_claude", requirement: "anthropic" },
+    { id: "acc_codex", requirement: "openai" },
+  ],
+  codexAuthFile: "/private/auth.json",
+  models: { claude: "test-claude", codex: "test-codex" },
 };
 
 function fixture(fail = "") {
   const calls: string[] = [];
   const accounts: { id: string }[] = [];
   let computers = 0;
-  const payload = { version: 1 as const, brand, instructions: "fixture", credentials: { modelUrl: config.origin, modelKey: "PRIVATE-MODEL-KEY",
-    toolsUrl: `${config.origin}/mcp`, toolsToken: "PRIVATE-TOOLS-TOKEN" } };
+  const payload = {
+    version: 1 as const,
+    brand,
+    instructions: "fixture",
+    credentials: {
+      modelUrl: config.origin,
+      modelKey: "PRIVATE-MODEL-KEY",
+      toolsUrl: `${config.origin}/mcp`,
+      toolsToken: "PRIVATE-TOOLS-TOKEN",
+    },
+  };
   async function action(name: string) {
     calls.push(name);
     if (name === fail) throw new Error("PRIVATE-FAILURE-DATA");
   }
   const client = {
-    async signIn() { await action("sign-in"); },
-    async poolView() { return { isOwner: true as const, accounts: [...accounts] }; },
-    async importAccount(file: unknown) {
-      const id = `account-${accounts.length}`;
-      accounts.push({ id });
-      await action("import");
-      return id;
+    async signIn() {
+      await action("sign-in");
     },
-    async removeAccount(id: string) { await action(`remove:${id}`); accounts.splice(accounts.findIndex(account => account.id === id), 1); },
-    async claimComputer() { const id = `computer-${++computers}`; await action(`claim:${id}`); return { id, payload }; },
+    async poolView() {
+      return { isOwner: true as const, accounts: [...accounts] };
+    },
+    async waitForPoolAccounts(count: number) {
+      assert.equal(accounts.length, count);
+      return { isOwner: true as const, accounts: [...accounts] };
+    },
+    async selectAccount(account: { id: string }) {
+      const id = account.id;
+      accounts.push({ id });
+      await action("select");
+    },
+    async unselectAccount({ id }: { id: string }) {
+      await action(`remove:${id}`);
+      accounts.splice(
+        accounts.findIndex((account) => account.id === id),
+        1,
+      );
+    },
+    async claimComputer() {
+      const id = `computer-${++computers}`;
+      await action(`claim:${id}`);
+      return { id, payload };
+    },
     async waitForComputer(id: string) {
       await action(`observe:${id}`);
       const at = fail === "stale" ? "2000-01-01T00:00:00.000Z" : new Date().toISOString();
       return { firstModelRequestAt: at, firstToolCallAt: at, secret: "PRIVATE-EXTRA-FIELD" };
     },
-    async revokeComputer(id: string) { await action(`revoke:${id}`); },
-    async verifyRevoked() { await action("reject-old-credentials"); },
-    async signOut() { await action("sign-out"); },
+    async revokeComputer(id: string) {
+      await action(`revoke:${id}`);
+    },
+    async verifyRevoked() {
+      await action("reject-old-credentials");
+    },
+    async signOut() {
+      await action("sign-out");
+    },
   };
   const native = async ({ client: name }: { client: "claude" | "codex" }) => {
     await action(`install:${name}`);
     return {
-      async run() { await action(`run:${name}`); return { modelReplyMatched: true as const, toolCallObserved: true as const }; },
-      async undo() { await action(`undo:${name}`); },
-      async dispose() { await action(`dispose:${name}`); },
+      async run() {
+        await action(`run:${name}`);
+        return { modelReplyMatched: true as const, toolCallObserved: true as const };
+      },
+      async undo() {
+        await action(`undo:${name}`);
+      },
+      async dispose() {
+        await action(`dispose:${name}`);
+      },
     };
   };
   return { client, native, calls };
@@ -60,14 +107,29 @@ test("preview success requires both native clients, fresh server observations an
   const f = fixture();
   const result = await runPreviewAcceptance(config, f);
   assert.equal(previewPassed(result), true);
-  assert.deepEqual(Object.keys(result).sort(), ["cleanup", "clients", "mode", "pool", "signIn", "version"]);
+  assert.deepEqual(Object.keys(result).sort(), [
+    "cleanup",
+    "clients",
+    "mode",
+    "pool",
+    "signIn",
+    "version",
+  ]);
   for (const client of result.clients) {
-    assert.deepEqual(Object.keys(client).sort(), ["client", "exit", "modelRequest", "revoke", "timeout", "toolSearch", "undo"]);
+    assert.deepEqual(Object.keys(client).sort(), [
+      "client",
+      "exit",
+      "modelRequest",
+      "revoke",
+      "timeout",
+      "toolSearch",
+      "undo",
+    ]);
   }
   assert.equal(JSON.stringify(result).includes("PRIVATE"), false);
   assert.equal(JSON.stringify(result).includes(config.origin), false);
   assert.ok(f.calls.includes("run:claude") && f.calls.includes("run:codex"));
-  assert.deepEqual(f.calls.slice(-3), ["remove:account-1", "remove:account-0", "sign-out"]);
+  assert.deepEqual(f.calls.slice(-3), ["remove:acc_codex", "remove:acc_claude", "sign-out"]);
   const missing = structuredClone(result);
   missing.clients[1]!.toolSearch = false;
   assert.equal(previewPassed(missing), false);
@@ -75,19 +137,37 @@ test("preview success requires both native clients, fresh server observations an
   assert.equal(previewPassed(missing), false);
 });
 
-test("failed native run still undoes and revokes every claimed computer and removes imported accounts", async () => {
+test("failed native run still undoes and revokes every claimed computer and removes selected account links", async () => {
   const f = fixture("run:codex");
   const result = await runPreviewAcceptance(config, f);
   assert.equal(previewPassed(result), false);
   assert.equal(result.cleanup, true);
   assert.equal(result.clients[1]!.exit, null);
   assert.equal(result.clients[1]!.modelRequest, false);
-  for (const operation of ["undo:claude", "undo:codex", "dispose:claude", "dispose:codex", "revoke:computer-1", "revoke:computer-2",
-    "remove:account-0", "remove:account-1", "sign-out"]) assert.ok(f.calls.includes(operation), operation);
+  for (const operation of [
+    "undo:claude",
+    "undo:codex",
+    "dispose:claude",
+    "dispose:codex",
+    "revoke:computer-1",
+    "revoke:computer-2",
+    "remove:acc_claude",
+    "remove:acc_codex",
+    "sign-out",
+  ])
+    assert.ok(f.calls.includes(operation), operation);
 });
 
 test("cleanup failures and stale server timestamps cannot produce a passing receipt", async () => {
-  for (const failure of ["undo:codex", "dispose:claude", "revoke:computer-1", "reject-old-credentials", "remove:account-0", "sign-out", "stale"]) {
+  for (const failure of [
+    "undo:codex",
+    "dispose:claude",
+    "revoke:computer-1",
+    "reject-old-credentials",
+    "remove:acc_claude",
+    "sign-out",
+    "stale",
+  ]) {
     const f = fixture(failure);
     const result = await runPreviewAcceptance(config, f);
     assert.equal(previewPassed(result), false, failure);
@@ -98,7 +178,7 @@ test("cleanup failures and stale server timestamps cannot produce a passing rece
 });
 
 test("ambiguous resource creation reports cleanup unverified and still revokes known resources", async () => {
-  for (const failure of ["import", "install:claude"]) {
+  for (const failure of ["select", "install:claude"]) {
     const f = fixture(failure);
     const result = await runPreviewAcceptance(config, f);
     assert.equal(previewPassed(result), false);
@@ -108,28 +188,34 @@ test("ambiguous resource creation reports cleanup unverified and still revokes k
   }
 });
 
-test("an existing pool account stops preview before any import or native launch", async () => {
+test("an existing pool account stops preview before any selection or native launch", async () => {
   const f = fixture();
-  f.client.poolView = async () => ({ isOwner: true as const, accounts: [{ id: "existing-private-account" }] });
+  f.client.poolView = async () => ({
+    isOwner: true as const,
+    accounts: [{ id: "existing-private-account" }],
+  });
   const result = await runPreviewAcceptance(config, f);
   assert.equal(previewPassed(result), false);
   assert.equal(result.pool, false);
   assert.deepEqual(f.calls, ["sign-in", "sign-out"]);
 });
 
-test("duplicate account rows cannot stand in for the second imported subscription", async () => {
+test("duplicate account rows cannot stand in for the second selected subscription", async () => {
   const f = fixture();
-  let views = 0;
-  f.client.poolView = async () => ({ isOwner: true as const, accounts: ++views === 1 ? [] : [
-    { id: "account-0" }, { id: "account-0" },
-  ] });
+  f.client.waitForPoolAccounts = async () => ({
+    isOwner: true as const,
+    accounts: [{ id: "account-0" }, { id: "account-0" }],
+  });
   const result = await runPreviewAcceptance(config, f);
   assert.equal(result.pool, false);
   assert.equal(previewPassed(result), false);
-  assert.equal(f.calls.some(call => call.startsWith("install:")), false);
+  assert.equal(
+    f.calls.some((call) => call.startsWith("install:")),
+    false,
+  );
 });
 
-test("configuration failure writes only the frozen failure schema in a fresh private report", async t => {
+test("configuration failure writes only the frozen failure schema in a fresh private report", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "preview-result-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "result.json");
@@ -142,13 +228,19 @@ test("configuration failure writes only the frozen failure schema in a fresh pri
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), result);
 });
 
-test("the actual preview entry point writes a failed receipt instead of requiring the full-mode key", async t => {
+test("the actual preview entry point writes a failed receipt instead of requiring the full-mode key", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "preview-entrypoint-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "result.json");
-  const run = spawnSync(process.execPath, [fileURLToPath(new URL("../pool-acceptance.ts", import.meta.url))], {
-    env: { POOL_ACCEPTANCE_MODE: "preview", POOL_ACCEPTANCE_RESULT_PATH: path }, encoding: "utf8", timeout: 10_000,
-  });
+  const run = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../pool-acceptance.ts", import.meta.url))],
+    {
+      env: { POOL_ACCEPTANCE_MODE: "preview", POOL_ACCEPTANCE_RESULT_PATH: path },
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
   assert.equal(run.status, 1);
   assert.equal(run.stdout.trim(), "acceptance status=failed mode=preview");
   assert.equal(run.stderr, "");
