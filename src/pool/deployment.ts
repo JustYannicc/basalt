@@ -24,7 +24,7 @@ export const poolWorker = Effect.gen(function* () {
     className: "PoolContainer",
     // The snapshot policy rejects placement constraints. EU enforcement takes priority.
     schedulingPolicy: "default",
-    instanceType: "lite",
+    instanceType: "basic",
     maxInstances: 1,
     constraints: euPlacement,
     observability: { logs: { enabled: true } },
@@ -45,16 +45,24 @@ export const poolWorker = Effect.gen(function* () {
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       TOOLS_SERVICE: yield* Api,
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
-      POOL_MODEL_HISTORY_ENABLED: String(yield* Config.Boolean("POOL_MODEL_HISTORY_ENABLED").pipe(Config.withDefault(false))),
+      POOL_MODEL_HISTORY_ENABLED: String(
+        yield* Config.Boolean("POOL_MODEL_HISTORY_ENABLED").pipe(Config.withDefault(false)),
+      ),
       ...(yield* telemetryBindings),
-      ...(Option.isSome(previousSigningKey) ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value } : {}),
-      POOL_IMAGE_HASH: application.hash.pipe(Output.map((hash) => {
-        if (!hash?.image) throw new Error("The pool image has no build revision");
-        return hash.image;
-      })),
+      ...(Option.isSome(previousSigningKey)
+        ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value }
+        : {}),
+      POOL_IMAGE_HASH: application.hash.pipe(
+        Output.map((hash) => {
+          if (!hash?.image) throw new Error("The pool image has no build revision");
+          return hash.image;
+        }),
+      ),
     },
   });
-  const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(Config.withDefault(""));
+  const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
+    Config.withDefault(""),
+  );
   if (receiptPath) {
     yield* Command.Exec("PoolImagePublicationReceipt", {
       command: "node capture-pool-image.ts",
@@ -67,7 +75,9 @@ export const poolWorker = Effect.gen(function* () {
         POOL_APPLICATION_ID: application.applicationId,
         POOL_IMAGE_INPUT_HASH: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
         POOL_IMAGE_DIGEST: application.hash.pipe(Output.map((hash) => hash?.digest ?? "")),
-        POOL_IMAGE_REF: application.configuration.pipe(Output.map((configuration) => configuration.image)),
+        POOL_IMAGE_REF: application.configuration.pipe(
+          Output.map((configuration) => configuration.image),
+        ),
         POOL_WORKER_READY: worker.workerName,
       },
       memo: false,
