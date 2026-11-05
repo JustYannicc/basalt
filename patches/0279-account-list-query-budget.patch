@@ -870,15 +870,15 @@ index 901ad73..7b2d389 100644
 +export { stringSet } from "./string-set.ts";
 diff --git a/packages/fumadb-effect/src/implementation/sql/string-set.ts b/packages/fumadb-effect/src/implementation/sql/string-set.ts
 new file mode 100644
-index 0000000..b8601ff
+index 0000000..25f6dea
 --- /dev/null
 +++ b/packages/fumadb-effect/src/implementation/sql/string-set.ts
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,26 @@
 +import type { SqlClient } from "effect/sql/SqlClient";
 +import type { Statement } from "effect/sql";
 +import type { Provider } from "../../contracts/provider.ts";
 +
-+/** A set occupies one parameter, including on drivers with a small bind-message limit. */
++/** PostgreSQL text sets must not exhaust the bind-message parameter limit. */
 +export const stringSet = (
 +  sql: SqlClient,
 +  left: Statement.Fragment | Statement.Identifier,
@@ -893,10 +893,11 @@ index 0000000..b8601ff
 +    const array = `{${values.map((value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(",")}}`;
 +    return sql`${left} = ANY(CAST(${array} AS text[]))`;
 +  }
++  // Native parameters preserve MySQL's column collation and do not truncate long values.
++  if (provider === "mysql")
++    return sql`${left} IN (${sql.csv(values.map((value) => sql`${value}`))})`;
 +  const json = JSON.stringify(values);
 +  if (provider === "sqlite") return sql`${left} IN (SELECT value FROM json_each(${json}))`;
-+  if (provider === "mysql")
-+    return sql`${left} IN (SELECT value FROM JSON_TABLE(${json}, '$[*]' COLUMNS (value TEXT PATH '$')) AS selected)`;
 +  return sql`${left} IN (SELECT value FROM OPENJSON(${json}))`;
 +};
 diff --git a/packages/fumadb-effect/src/implementation/sql/where.ts b/packages/fumadb-effect/src/implementation/sql/where.ts
