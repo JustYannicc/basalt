@@ -64,6 +64,15 @@ diff --git a/e2e/tests/pool-retained-defaults.spec.ts b/e2e/tests/pool-retained-
          yield* unchanged;
          // Recovery has no metadata proving a fresh creation. It must keep legacy policy too.
          yield* rows(`update executor_apps set copied_from = $1::json where id = $2`, [
+@@ -241,7 +250,7 @@
+         yield* evidence.json("retained-default-reconciliation.json", {
+           app: app.id,
+           version: app.activeVersion,
+-          explicitOwnerDispatch: true,
++          dispatchKinds: { held: "team", recovered: "member", unknown: "member" },
+           held,
+           recovered,
+           unknown,
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts

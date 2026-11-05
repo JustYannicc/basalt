@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-tab-traffic",
   "file": "0249-app-tab-traffic.patch",
-  "content_sha256": "ee1cf608834570d5f1b4c814634feb7c0e03993b6a7254ff924fc7e6742649ff",
+  "content_sha256": "84070c2672c08e0b911acf115ed87a09c000c5d7e9831e13da7a63c9bdde44ea",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

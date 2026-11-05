@@ -697,7 +697,7 @@ diff --git a/e2e/tests/app-account-traffic.spec.ts b/e2e/tests/app-account-traff
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-account-traffic.spec.ts
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,297 @@
 +/** An app's Accounts tab shows what the account's pool counted, beside the app's own check. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -864,8 +864,13 @@ new file mode 100644
 +            ),
 +        );
 +        // Directory counts include both linked accounts; token windows only read the named one.
-+        const reads = (yield* pool.calls)
-+          .slice(before)
++        const calls = (yield* pool.calls).slice(before);
++        expect(
++          calls.filter(
++            (call) => call.action !== "poolUsageSeries" && call.action !== "lastSuccessAt",
++          ),
++        ).toEqual([]);
++        const reads = calls
 +          .filter((call) => call.action === "poolUsageSeries")
 +          .map((call) =>
 +            Schema.decodeUnknownSync(
