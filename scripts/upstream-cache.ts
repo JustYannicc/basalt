@@ -13,6 +13,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { run } from "./process.ts";
+import { currentProcessOwner, processOwnerAlive } from "./process-owner.ts";
 
 export const upstreamCache = () =>
   resolve(process.env.BASALT_UPSTREAM_CACHE ?? join(homedir(), ".cache/basalt/upstream"));
@@ -21,7 +22,7 @@ export const digest = (text: string) => createHash("sha256").update(text).digest
 /** Locks belong to the preparing process; a dead owner is recoverable after an interrupted install. */
 export async function withCacheLock<A>(path: string, use: () => A | Promise<A>): Promise<A> {
   mkdirSync(dirname(path), { recursive: true });
-  const token = JSON.stringify({ pid: process.pid, id: randomUUID() });
+  const token = JSON.stringify({ ...currentProcessOwner(), id: randomUUID() });
   while (true) {
     try {
       symlinkSync(token, path);
@@ -35,22 +36,16 @@ export async function withCacheLock<A>(path: string, use: () => A | Promise<A>):
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw new Error("Cache lock has an invalid owner record");
       }
-      const { pid } = JSON.parse(prior) as { pid: number };
-      try {
-        process.kill(pid, 0);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-          // Serialize recovery so two stale readers cannot remove a newly acquired lock.
-          await withCacheLock(`${path}.recovery`, () => {
-            try {
-              if (readlinkSync(path) === prior) unlinkSync(path);
-            } catch (recoveryError) {
-              if ((recoveryError as NodeJS.ErrnoException).code !== "ENOENT") throw recoveryError;
-            }
-          });
-          continue;
-        }
-        throw error;
+      if (!processOwnerAlive(JSON.parse(prior))) {
+        // Serialize recovery so two stale readers cannot remove a newly acquired lock.
+        await withCacheLock(`${path}.recovery`, () => {
+          try {
+            if (readlinkSync(path) === prior) unlinkSync(path);
+          } catch (recoveryError) {
+            if ((recoveryError as NodeJS.ErrnoException).code !== "ENOENT") throw recoveryError;
+          }
+        });
+        continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }

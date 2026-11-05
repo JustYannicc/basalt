@@ -60,11 +60,17 @@ test(
     const bin = join(directory, "bin");
     mkdirSync(bin);
     const installer = join(bin, "bun");
+    const realBun = execFileSync("which", ["bun"], { encoding: "utf8" }).trim();
     writeFileSync(
       installer,
       `#!/usr/bin/env node
 import { mkdirSync, writeFileSync, symlinkSync, existsSync, watch, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+if (process.argv[2]?.endsWith("process-owner-darwin.mjs")) {
+  const result = spawnSync(process.env.FIXTURE_REAL_BUN, process.argv.slice(2), {stdio:"inherit"});
+  process.exit(result.status ?? 1);
+}
 if (process.argv[2] === "--version") { console.log("1.4.2"); process.exit(0); }
 const directory = process.cwd();
 const name = process.env.FIXTURE_INSTALLER;
@@ -116,6 +122,7 @@ console.log(JSON.stringify({type:"install-finished",name}));
             BASALT_UPSTREAM_CACHE: join(directory, "cache"),
             FIXTURE_INSTALLER: name,
             FIXTURE_GATE: join(directory, "release-orphan"),
+            FIXTURE_REAL_BUN: realBun,
           },
           stdio: ["ignore", "pipe", "inherit"],
         },
@@ -130,6 +137,12 @@ console.log(JSON.stringify({type:"install-finished",name}));
     const stopped = once(first.child, "exit");
     first.child.kill("SIGKILL");
     await stopped;
+    const lease = JSON.parse(
+      readFileSync(join(String(orphan.directory), "installer.json"), "utf8"),
+    );
+    const installerPid = Number(lease.pid ?? lease.group);
+    processes.push(installerPid);
+    process.kill(installerPid, "SIGKILL");
     const second = prepare("replacement");
     const replacement = await second.next("install-started");
     const published = await second.next("prepared");

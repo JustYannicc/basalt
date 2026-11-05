@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -15,6 +15,12 @@ import {
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
+import {
+  currentProcessOwner,
+  installerGroupAlive,
+  ownerInSnapshot,
+  processSnapshot,
+} from "./process-owner.ts";
 
 export const withDependencyStoreLock = <A>(use: () => A | Promise<A>) =>
   withCacheLock(join(upstreamCache(), "collection.lock"), use);
@@ -61,20 +67,6 @@ function removeDirectory(path: string) {
   rmSync(path, { recursive: true });
 }
 
-function liveProcesses() {
-  const observed = spawnSync("ps", ["-axo", "pid=,pgid=,stat="], { encoding: "utf8" });
-  if (observed.status !== 0) throw new Error("Cannot verify dependency installer leases");
-  const pids = new Set<number>(),
-    groups = new Set<number>();
-  for (const line of observed.stdout.trim().split("\n")) {
-    const [pid, group, state] = line.trim().split(/\s+/);
-    if (!state || state.startsWith("Z")) continue;
-    pids.add(Number(pid));
-    groups.add(Number(group));
-  }
-  return { pids, groups };
-}
-
 export function rememberDependencyConsumer(root: string, store: string, pending: boolean) {
   root = realpathSync(root);
   const file = join(upstreamCache(), "consumers", `${digest(root)}.json`);
@@ -112,15 +104,15 @@ export function collectDependencyStore() {
           : consumer.stores;
       for (const store of stores) if (typeof store === "string") protectedStores.add(store);
     }
-  const live = liveProcesses();
+  const live = processSnapshot();
   for (const pin of directories(join(cache, "prepared")))
     for (const entry of directories(pin)) {
       if (record(join(entry, "store-format.json"))?.version !== 3) continue;
       for (const attempt of directories(join(entry, "attempts"))) {
         const parent = record(join(attempt, "parent.json"));
         const installer = record(join(attempt, "installer.json"));
-        if (typeof parent?.pid === "number" && live.pids.has(parent.pid)) continue;
-        if (typeof installer?.group === "number" && live.groups.has(installer.group)) continue;
+        if (ownerInSnapshot(parent, live)) continue;
+        if (installerGroupAlive(installer, live)) continue;
         removeDirectory(attempt);
       }
       for (const generation of directories(join(entry, "generations")))
@@ -135,7 +127,7 @@ export const createInstallAttempt = (entry: string) =>
     atomicStoreJson(join(entry, "store-format.json"), { version: 3 });
     const attempt = join(entry, "attempts", randomUUID());
     mkdirSync(attempt, { recursive: true });
-    atomicStoreJson(join(attempt, "parent.json"), { pid: process.pid });
+    atomicStoreJson(join(attempt, "parent.json"), currentProcessOwner());
     return attempt;
   });
 
@@ -147,6 +139,7 @@ export async function installPrivateAttempt(attempt: string) {
       cwd: attempt,
       stdio: "inherit",
       detached: true,
+      env: { ...process.env, BASALT_DEPENDENCY_INSTALLER: randomUUID() },
     },
   );
   const result = await new Promise<number | null>((resolve, reject) => {
@@ -154,7 +147,7 @@ export async function installPrivateAttempt(attempt: string) {
     child.once("exit", resolve);
   });
   if (result !== 0) throw new Error(`Bun dependency install failed with exit ${result}`);
-  if (liveProcesses().groups.has(child.pid!))
+  if (installerGroupAlive(record(join(attempt, "installer.json")), processSnapshot()))
     throw new Error("Installer descendants still hold their private attempt");
 }
 
