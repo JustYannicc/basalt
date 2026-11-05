@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "Retained sign-in methods, catalog metadata and app details remain usable during background reads and retained failures. Refreshes preserve credential drafts; missing initial values keep the existing loading, failure and retry behavior."
+    }
+  }
+}

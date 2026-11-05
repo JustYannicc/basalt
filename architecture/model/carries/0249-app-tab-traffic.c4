@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "The app tab keeps traffic Requests separate from account management and retains existing request links and access checks when account navigation changes."
+    }
+  }
+}
