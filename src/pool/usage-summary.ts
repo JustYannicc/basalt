@@ -329,7 +329,7 @@ export class UsageLedger {
         const own = slices(buckets.filter((bucket) => bucket.person === person), [], false);
         return { member, ...own.total, models: own.models, days: own.days, cap: cap(member) };
       }));
-      return { ...result, members };
+      return { ...result, members, accountsNeeded: await this.options.history?.advice(pool, now) ?? [] };
     });
   }
 }

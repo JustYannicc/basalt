@@ -34,11 +34,6 @@
   --border: #eaeaea;
   --input: #d4d4d4;
   --ring: #888;
-  /* Lab identity only, never state: ChatGPT, Claude and Kimi panels and bars. */
-  --lab-codex: #10a37f;
-  --lab-claude: #d97757;
-  --lab-kimi: #0560cf;
-  --tooltip-shadow: 0 16px 48px -12px rgb(0 0 0 / 0.18);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -55,10 +50,6 @@
     --border: #242424;
     --input: #333;
     --ring: #777;
-    --lab-codex: #14ae86;
-    --lab-claude: #d2704e;
-    --lab-kimi: #3e8ae0;
-    --tooltip-shadow: 0 16px 48px -12px rgb(0 0 0 / 0.6);
   }
 }
 @layer base {

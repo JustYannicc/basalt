@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
+import { PoolCapacity } from "./accounts.tsx";
 import { poolOrigin, productName } from "../deployment.ts";
-import { Button, buttonClass, ExternalIcon, Problem, Segmented } from "./controls.tsx";
+import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 import { Freshness } from "./freshness.tsx";
-import { ManagerOverview, PersonalOverview } from "./overview.tsx";
-import { useOverview, type RangeDays } from "./overview-data.ts";
 import { usePool } from "./pool-view.ts";
+import { Usage } from "./usage-view.tsx";
 
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
@@ -23,7 +23,7 @@ export function App({ api }: { api: PoolApi }) {
   useLayoutEffect(() => {
     if (!measurable || view === undefined || accountsReady.current) return;
     accountsReady.current = true;
-    // Document load does not prove the account list or empty result has committed.
+    // Document load does not prove the pool readings or empty result have committed.
     const name = "basalt:pool-accounts-ready";
     const source = view.reading?.source ?? "live";
     performance.mark(name, { detail: { source } });
@@ -31,8 +31,6 @@ export function App({ api }: { api: PoolApi }) {
       window.parent.postMessage({ name, version: 2, snapshot: source === "snapshot" }, new URL(poolOrigin).origin);
   }, [view, measurable]);
   const now = useNow();
-  const [days, setDays] = useState<RangeDays>(7);
-  const overview = useOverview(api, days);
   const [accountsHref, setAccountsHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
   // Only the owner's context carries the share page; computers live on Connect. Its signed
@@ -51,17 +49,13 @@ export function App({ api }: { api: PoolApi }) {
     return () => { live = false; clearInterval(timer); };
   }, [api]);
 
-  const count = view?.accounts.length ?? 0;
-  const labs = new Set(view?.accounts.map((account) => account.provider)).size;
-
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
-      <header className="flex min-h-14 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border py-2 max-[540px]:items-start">
-        <span className="min-w-0 text-sm font-semibold tracking-[-0.01em]">
+      <header className="flex h-14 items-center justify-between border-b border-border">
+        <span className="text-sm font-semibold tracking-[-0.01em]">
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[540px]:w-full">
-          <Segmented label="Range" value={days} onChange={setDays} options={[{ id: 7, label: "7 days" }, { id: 30, label: "30 days" }]} />
+        <div className="flex items-center gap-2">
           {accountsHref && (
             <a href={accountsHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
               Accounts <ExternalIcon />
@@ -78,13 +72,11 @@ export function App({ api }: { api: PoolApi }) {
       <main className="flex-1 pb-16">
         <section className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 pt-10 pb-6">
           <div className="grid gap-1">
-            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Overview</h1>
-            <p className="text-sm text-muted-foreground text-pretty">
+            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Capacity</h1>
+            <p className="text-sm text-muted-foreground">
               {view === undefined
                 ? "Loading this pool…"
-                : count === 0
-                  ? "No accounts yet."
-                  : `${count} subscription ${count === 1 ? "account" : "accounts"} across ${labs} ${labs === 1 ? "lab" : "labs"}. Conversations stay on one account; new ones spread across them.`}
+                : "Conversations stay on one account; new ones spread across them. Manage saved accounts in this app's Accounts tab."}
             </p>
           </div>
           {view !== undefined && (
@@ -102,21 +94,12 @@ export function App({ api }: { api: PoolApi }) {
         )}
         {view === undefined ? (
           !error && <Skeleton />
+        ) : view.accounts.length === 0 ? (
+          <Empty view={view} />
         ) : (
-          <>
-            {view.accounts.length === 0 && <Empty view={view} />}
-            {overview.member ? (
-              <>
-                <p className="text-sm text-muted-foreground text-pretty">
-                  Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them.
-                </p>
-                <PersonalOverview data={overview.personal} days={days} providers={view.providers} onRetry={() => void overview.reload()} />
-              </>
-            ) : (
-              <ManagerOverview data={overview} days={days} providers={view.providers} view={view} accountsHref={accountsHref} onRetry={() => void overview.reload()} />
-            )}
-          </>
+          <PoolCapacity accounts={view.accounts} providers={view.providers} now={now} />
         )}
+        {view !== undefined && <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />}
       </main>
 
     </div>
@@ -131,12 +114,12 @@ function Empty({ view }: { view: PoolView }) {
     <div className="grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
       <div className="grid max-w-[34rem] gap-1.5">
         <h2 className="text-base font-semibold tracking-[-0.015em]">
-          {view.isOwner ? "Connect your first subscription" : "This pool has no accounts yet"}
+          {view.isOwner ? "Connect your first account" : "This pool has no capacity yet"}
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {view.isOwner
-            ? `Requests through this pool use the subscriptions you connect, and their capacity and usage show on this page.${offered ? ` You can connect ${offered}.` : ""} Manage saved accounts in this app's Accounts tab.`
-            : "Its owner hasn't connected a subscription. Accounts show up here once they do."}
+            ? `Connect accounts from this app's Accounts tab. Their combined capacity and usage show here.${offered ? ` Supported subscriptions include ${offered}.` : ""}`
+            : "Capacity appears here once accounts are available to this pool."}
         </p>
       </div>
     </div>

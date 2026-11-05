@@ -1,19 +1,14 @@
 import { controlBasePath } from "../../../apps/pool/contract.ts";
 import { fail, failureResponse, json, object, readBody } from "../json.ts";
 import { openEnvelope } from "../token.ts";
-import { digest } from "../backend-users.ts";
 import { withHistoryDatabase } from "./database.ts";
 import { HistoryInputError, historyObject } from "./record.ts";
 import { seriesAuthority } from "./series-input.ts";
 import { poolUsageSeries } from "./series.ts";
-import { overviewTargets, personalOverviewTargets, poolPersonalOverview, poolUsageOverview } from "./overview.ts";
-import type { OverviewApiPrice, PoolOverviewSignedInput, PoolPersonalOverviewSignedInput } from "../../../apps/pool/overview-contract.ts";
 import { lastSuccessAt } from "./last-success.ts";
 
 export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
 export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
-export const poolOverviewPath = `${controlBasePath}/usage/overview`;
-export const poolPersonalOverviewPath = `${controlBasePath}/usage/personal-overview`;
 
 /** Native host policy authorizes this exact signed read while holding its organization lock. */
 export async function handleUsageSeries(
@@ -22,7 +17,6 @@ export async function handleUsageSeries(
     signingKey: string;
     previousSigningKey?: string;
     connectionString: string | undefined;
-    currentPrices?: (targets: readonly { provider: string; model: string }[]) => Promise<readonly OverviewApiPrice[]>;
   },
 ): Promise<Response> {
   try {
@@ -36,10 +30,8 @@ export async function handleUsageSeries(
       object(body) && typeof body.envelope === "string"
         ? await openEnvelope(access.signingKey, "sbs1", body.envelope, access.previousSigningKey)
         : undefined;
-    const path = new URL(request.url).pathname;
-    const action = path === poolUsageSeriesPath ? "poolUsageSeries"
-      : path === poolOverviewPath ? "poolOverview"
-        : path === poolPersonalOverviewPath ? "poolPersonalOverview" : "lastSuccessAt";
+    const action =
+      new URL(request.url).pathname === poolUsageSeriesPath ? "poolUsageSeries" : "lastSuccessAt";
     if (
       !object(payload) ||
       payload.action !== action ||
@@ -48,7 +40,8 @@ export async function handleUsageSeries(
       payload.expiresAt > Date.now() + 30_000
     )
       return fail(401, "unauthorized", "A valid host usage assertion is required.");
-    const input = historyObject(payload.input);
+    const input = historyObject(payload.input),
+      authority = seriesAuthority(payload.authority);
     if (
       input.pool !== payload.pool ||
       typeof payload.user !== "string" ||
@@ -57,65 +50,14 @@ export async function handleUsageSeries(
       !payload.organization
     )
       throw new HistoryInputError();
-    if (action === "poolPersonalOverview") {
-      const allowed = new Set(["action", "pool", "user", "organization", "expiresAt", "input"]);
-      const personalInputFields = new Set(["pool", "person", "from", "to", "days", "offerings"]);
-      if (Object.keys(payload).some((key) => !allowed.has(key)))
-        return fail(401, "unauthorized", "A caller-bound personal usage assertion is required.");
-      if (Object.keys(input).some((key) => !personalInputFields.has(key)))
-        throw new HistoryInputError();
-      if (typeof input.person !== "string" || !/^[a-f0-9]{64}$/.test(input.person)
-        || input.person !== await digest(payload.user))
-        return fail(401, "unauthorized", "A caller-bound personal usage assertion is required.");
-    }
-    const result = action === "poolUsageSeries"
-      ? await withHistoryDatabase(access.connectionString, (db) =>
-          poolUsageSeries(db, input, seriesAuthority(payload.authority)))
-      : action === "poolOverview"
-        ? await withHistoryDatabase(access.connectionString, async (db) => {
-            const overview = input as unknown as PoolOverviewSignedInput;
-            await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-            try {
-              await db.query("SET LOCAL statement_timeout = '5s'");
-              const priceTargets = await overviewTargets(db, overview);
-              let prices: readonly OverviewApiPrice[] = [];
-              let pricesUnavailableReason = priceTargets.unavailableReason;
-              if (!pricesUnavailableReason && access.currentPrices) {
-                try { prices = await access.currentPrices(priceTargets.targets); }
-                catch { pricesUnavailableReason = "Current API price data could not be read."; }
-              } else if (!pricesUnavailableReason) pricesUnavailableReason = "Current API price data is unavailable.";
-              const result = await poolUsageOverview(db, { ...overview, prices, ...(pricesUnavailableReason ? { pricesUnavailableReason } : {}) }, "caller");
-              await db.query("COMMIT");
-              return result;
-            } catch (error) {
-              await db.query("ROLLBACK").catch(() => {});
-              throw error;
-            }
-          })
-        : action === "poolPersonalOverview"
-          ? await withHistoryDatabase(access.connectionString, async (db) => {
-              const overview = input as unknown as PoolPersonalOverviewSignedInput;
-              await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-              try {
-                await db.query("SET LOCAL statement_timeout = '5s'");
-                const priceTargets = await personalOverviewTargets(db, overview);
-                let prices: readonly OverviewApiPrice[] = [];
-                let pricesUnavailableReason = priceTargets.unavailableReason;
-                if (!pricesUnavailableReason && access.currentPrices) {
-                  try { prices = await access.currentPrices(priceTargets.targets); }
-                  catch { pricesUnavailableReason = "Current API price data could not be read."; }
-                } else if (!pricesUnavailableReason) pricesUnavailableReason = "Current API price data is unavailable.";
-                const result = await poolPersonalOverview(db, overview, prices,
-                  pricesUnavailableReason, "caller");
-                await db.query("COMMIT");
-                return result;
-              } catch (error) {
-                await db.query("ROLLBACK").catch(() => {});
-                throw error;
-              }
-            })
-          : await withHistoryDatabase(access.connectionString, (db) =>
-              lastSuccessAt(db, input, seriesAuthority(payload.authority)));
+    const result =
+      action === "poolUsageSeries"
+        ? await withHistoryDatabase(access.connectionString, (db) =>
+            poolUsageSeries(db, input, authority),
+          )
+        : await withHistoryDatabase(access.connectionString, (db) =>
+            lastSuccessAt(db, input, authority),
+          );
     return json(result);
   } catch (error) {
     if (error instanceof HistoryInputError || error instanceof SyntaxError)

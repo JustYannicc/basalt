@@ -44,16 +44,10 @@ export const view = query(
 
 export const usage = query(
   {
-    description: "Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model, per UTC day and per serving account. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, with no account-sizing verdict. Seasonal account advice is available through capacity after four completed weeks and its evidence checks. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.",
+    description: "Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model, per UTC day and per serving account. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, and whether each provider needs an account added or removed. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.",
     input: object({ days: number().optional() }),
   },
   async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),
-);
-
-export const capacity = query(
-  { description: "Measured capacity and seasonal projections for pool managers. Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.", input: object({ days: number().optional(), to: number().optional() }) },
-  async (ctx: Context, { days, to }) => control<import("./capacity-contract.ts").PoolCapacityHistory>(ctx,
-    `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`),
 );
 
 export const addLoginFile = mutation(
@@ -110,7 +104,7 @@ const identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
 export default defineApp(requirements, {
-  tools: router({ view, usage, capacity, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),
+  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),
   // The pool Worker refuses every step unless the caller owns the pool.
   connect: {
     subscriptions: {

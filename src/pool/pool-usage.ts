@@ -5,10 +5,8 @@ import type { PoolPermissions } from "./authorization.ts";
 import { fail, failureResponse, json, rows, text } from "./json.ts";
 import { LimitHistory } from "./limit-history.ts";
 import { CapacityHistory } from "./capacity/history.ts";
-import { capacityOverview } from "./capacity/overview.ts";
 import { capacityReadings, capacityWindows } from "./capacity/normalize.ts";
 import { quotaObservation } from "./quota-observation.ts";
-import { ResetRedemption } from "./reset-redemption.ts";
 import { verifyPoolToken } from "./token.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import { UsageLedger } from "./usage-summary.ts";
@@ -43,7 +41,6 @@ export class PoolUsage {
   private history: LimitHistory;
   private capacity: CapacityHistory;
   private ledger: UsageLedger;
-  private resets: ResetRedemption;
   private syncing?: Promise<void>;
   constructor(deps: Dependencies) {
     this.deps = deps;
@@ -51,10 +48,6 @@ export class PoolUsage {
     this.history = new LimitHistory(deps.storage, now);
     this.capacity = new CapacityHistory(deps.storage);
     this.ledger = new UsageLedger(deps.storage, deps.client, { now, history: this.history });
-    this.resets = new ResetRedemption({
-      get: <T>(key: string) => deps.storage.get<T>(key),
-      put: async (key, value) => { await deps.storage.put(key, value); },
-    }, deps.client, () => now().getTime());
   }
 
   /** Alarm work: read new usage records, then sample every pool's limits from one read of Home. */
@@ -107,21 +100,8 @@ export class PoolUsage {
           expected.set(key, cohort);
         }
       }
-      const resetReceipts = new Map(await mapBounded(readings.filter((account) => account.provider === "codex" || account.provider === "claude"), async (account) => {
-        const attempt = await this.resets.read(account.id);
-        const confirmed = attempt && ["reset", "already_redeemed", "already_used"].includes(attempt.outcome);
-        return [account.id, confirmed ? [{ id: attempt.requestId, at: Date.parse(attempt.startedAt) }] : []] as const;
-      }));
       try { await this.capacity.observe(pool, {
         at: now.getTime(), expected: [...expected.values()],
-        unclassifiedAccounts: readings.filter((account) => account.state === "active" && account.windows.length === 0)
-          .map((account) => ({ account: account.id, provider: account.provider })),
-        accountStates: capacityAccounts.flatMap(({ account, quota }) => capacityWindows(account.provider, quota.windows).map((window) => ({
-            account: account.id, provider: account.provider, windowSeconds: window.period.seconds!,
-            usable: account.state === "active" && account.credentialFailure === undefined && !account.readingFailed && account.freshness === "fresh",
-            bankedAvailable: account.bankedResets?.available ?? null,
-            bankedUsed: resetReceipts.get(account.id) ?? [],
-          }))),
         readings: capacityAccounts.flatMap(({ account, quota }) => capacityReadings(account.id, account.provider, quota, now.getTime())),
       }); }
       catch (error) { console.error("Pool capacity sampling failed", error); }
@@ -186,18 +166,8 @@ export class PoolUsage {
       const raw = new URL(request.url).searchParams.get("days") ?? String(usageDays);
       if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > usageDays) return fail(400, "invalid_query", `Ask for 1 to ${usageDays} days.`);
       const permissions = await this.deps.permissions?.(claims.pool, caller);
-      const canManage = permissions?.canManage ?? caller === claims.owner;
-      if (new URL(request.url).pathname === `${controlBasePath}/usage/capacity`) {
-        if (!canManage) return fail(403, "unauthorized", "Only a pool manager can read capacity history.");
-        const now = (this.deps.now?.() ?? new Date()).getTime();
-        const end = new URL(request.url).searchParams.get("to");
-        const to = end === null ? now : Number(end);
-        if (!Number.isSafeInteger(to) || to > now || to < now - 5 * 60_000)
-          return fail(400, "invalid_query", "Use the current overview read time.");
-        const from = Math.floor((to - Number(raw) * 86_400_000) / 3_600_000) * 3_600_000;
-        return json(await capacityOverview(this.capacity, claims.pool, from, to));
-      }
       if (permissions !== undefined && !permissions.canUse) return fail(403, "unauthorized", "This pool is not available to you.");
+      const canManage = permissions?.canManage ?? caller === claims.owner;
       const members = canManage ? (await this.deps.audience(claims.pool)).slice(0, maxMembers) : [];
       return json(await this.summary(claims.pool, claims.owner, caller, Number(raw), members, canManage));
     } catch (error) { return failureResponse(error); }

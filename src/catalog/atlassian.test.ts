@@ -66,7 +66,7 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
   assert.equal(publicSource.package, "atlassian");
   assert.equal(served.package, publicSource.package);
   assert.deepEqual(
-    served.files.map((file: { path: string }) => file.path),
+    served.files.map((file: { path: string }) => file.path).sort(),
     [
       "index.ts",
       "package.json",
@@ -78,7 +78,7 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
       "specifications.ts",
       "api-coverage.json",
       "README.md",
-    ],
+    ].sort(),
   );
   const directory = mkdtempSync(join(tmpdir(), "basalt-atlassian-carry-"));
   try {
@@ -102,13 +102,13 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
   const originalManifest = manifest(publicSource);
   const servedManifest = manifest(served);
   assert.equal(originalManifest.dependencies.apps, "0.0.1-beta.103");
-  assert.equal(servedManifest.dependencies.apps, "0.0.1-beta.104-basalt.9");
+  assert.equal(servedManifest.dependencies.apps, "0.0.1-beta.104-basalt.8");
   assert.equal(servedManifest.name, "atlassian");
   assert.equal(servedManifest.private, true);
   assert.equal(servedManifest.type, "module");
   assert.deepEqual(servedManifest, {
     ...originalManifest,
-    dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.9" },
+    dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.8" },
   });
   const sourceFile = (path: string) =>
     served.files.find((file: { path: string }) => file.path === path).content;
