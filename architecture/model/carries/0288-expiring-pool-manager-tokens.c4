@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Temporary pool manager tokens are issued only to the authenticated manager for themselves, under current pool authority, with at most fifteen minutes of validity. Optional expiry is enforced without changing retained tokens that lack expiry."
+    }
+  }
+}
