@@ -1,0 +1,151 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -59,9 +59,11 @@
+     const services: ProvisioningServices = {
+       requireVerifiedEmail: true,
+       member: (id) =>
+-        onboarding
+-          .ensurePersonalOrganization(id)
+-          .pipe(Effect.mapError(() => new ProvisioningFailed())),
++        onboarding.ensurePersonalOrganization(id).pipe(
++          // Personal-team triggers enqueue more jobs outside any HTTP request finalizer.
++          Effect.andThen(jobs.request("provisioning")),
++          Effect.mapError(() => new ProvisioningFailed()),
++        ),
+       user: (id) =>
+         emails.deliverUser(id).pipe(
+           Effect.provide(RuntimeContext.phantom),
+@@ -224,68 +226,71 @@
+     const encrypted = yield* workflowEncryptionEnabled;
+     const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
+     const sql = yield* Effect.flatten(GroupDatabase);
+-    const jobs =
+-      // Claim a short dispatch lease in one statement. Concurrent request finalizers
+-      // must not each submit the same queued jobs to the provider. A lost dispatch
+-      // becomes eligible again; the workflow ID remains the durable identity.
+-      yield* sql`with candidates as (
+-      select id from hosted_provisioning where available_at <= now() and
+-        (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))
+-      order by case when kind = 'team' then 0 else 1 end, available_at
+-      for update skip locked limit 50
+-    ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
+-      from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
+-        Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
++    while (true) {
++      const jobs =
++        // Claim a short dispatch lease in one statement. Concurrent request finalizers
++        // must not each submit the same queued jobs to the provider. A lost dispatch
++        // becomes eligible again; the workflow ID remains the durable identity.
++        yield* sql`with candidates as (
++        select id from hosted_provisioning where available_at <= now() and
++          (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))
++        order by case when kind = 'team' then 0 else 1 end, available_at
++        for update skip locked limit 50
++      ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
++        from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
++        );
++      if (jobs.length === 0) return;
++      yield* Effect.forEach(
++        jobs,
++        (job) =>
++          Effect.gen(function* () {
++            const status = yield* Effect.tryPromise({
++              try: async () => {
++                // Jobs keep their own IDs; the instance ID is one Cloudflare accepts for any of them.
++                const instance = await workflowInstanceId(job.id);
++                try {
++                  await binding.create({
++                    id: instance,
++                    params: encryptedWorkflowParams({ id: job.id }, encrypted),
++                  });
++                  return "running" as const;
++                } catch (created) {
++                  // An existing instance explains a failed create; anything else reports the create.
++                  const existing = await binding
++                    .get(instance)
++                    .then((found) => found.status())
++                    .catch(() => {
++                      throw created;
++                    });
++                  if (existing.status === "unknown") throw created;
++                  return existing.status;
++                }
++              },
++              catch: (cause) => cause,
++            });
++            const persisted =
++              status === "complete"
++                ? "succeeded"
++                : status === "errored" || status === "terminated"
++                  ? "failed"
++                  : "running";
++            yield* sql`update hosted_provisioning set status = ${persisted}, updated_at = now()
++            where id = ${job.id} and status in ('queued', 'running')`;
++            if (persisted === "failed")
++              yield* Effect.logError("Provisioning workflow needs attention", { job: job.id });
++            if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
++          }).pipe(
++            Effect.catch((cause) =>
++              Effect.logWarning("Provisioning dispatch failed", {
++                kind: job.kind,
++                reason: dispatchFailureReason(cause),
++              }),
++            ),
++          ),
++        { concurrency: 4, discard: true },
+       );
+-    yield* Effect.forEach(
+-      jobs,
+-      (job) =>
+-        Effect.gen(function* () {
+-          const status = yield* Effect.tryPromise({
+-            try: async () => {
+-              // Jobs keep their own IDs; the instance ID is one Cloudflare accepts for any of them.
+-              const instance = await workflowInstanceId(job.id);
+-              try {
+-                await binding.create({
+-                  id: instance,
+-                  params: encryptedWorkflowParams({ id: job.id }, encrypted),
+-                });
+-                return "running" as const;
+-              } catch (created) {
+-                // An existing instance explains a failed create; anything else reports the create.
+-                const existing = await binding
+-                  .get(instance)
+-                  .then((found) => found.status())
+-                  .catch(() => {
+-                    throw created;
+-                  });
+-                if (existing.status === "unknown") throw created;
+-                return existing.status;
+-              }
+-            },
+-            catch: (cause) => cause,
+-          });
+-          const persisted =
+-            status === "complete"
+-              ? "succeeded"
+-              : status === "errored" || status === "terminated"
+-                ? "failed"
+-                : "running";
+-          yield* sql`update hosted_provisioning set status = ${persisted}, updated_at = now()
+-          where id = ${job.id} and status in ('queued', 'running')`;
+-          if (persisted === "failed")
+-            yield* Effect.logError("Provisioning workflow needs attention", { job: job.id });
+-          if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
+-        }).pipe(
+-          Effect.catch((cause) =>
+-            Effect.logWarning("Provisioning dispatch failed", {
+-              kind: job.kind,
+-              reason: dispatchFailureReason(cause),
+-            }),
+-          ),
+-        ),
+-      { concurrency: 4, discard: true },
+-    );
++    }
+   }).pipe(Effect.mapError(() => new ProvisioningFailed()));
+ 
+ /**

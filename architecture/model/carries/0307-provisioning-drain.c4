@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A provisioning kick dispatches successive batches until no jobs are runnable, retaining dispatch leases and deferred retries. Member workflows wake the placed provisioning handler after personal-team creation commits, so trigger-created defaults do not depend on Cron. Workflow IDs, claims, readiness assertions and deadlines remain unchanged."
+    }
+  }
+}

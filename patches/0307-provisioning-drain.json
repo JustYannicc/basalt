@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provisioning-drain",
+  "file": "0307-provisioning-drain.patch",
+  "content_sha256": "3bd92f6aed710396734d35a5fe6cd0feba19e0c5d4909646d9463ead68f7c0f7",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}
