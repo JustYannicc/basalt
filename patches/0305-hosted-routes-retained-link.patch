@@ -140,23 +140,7 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
  import { cloudLocks } from "../support/cloud-locks.ts";
  import { Emulators } from "../support/emulators.ts";
  import { RuntimeLive } from "../support/platform.ts";
-@@ -83,6 +87,7 @@
-               const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
-                 entry: "google-maps",
-                 name: `Hosted Routes ${audience}`,
-+                newInstance: true,
-               });
-               expect(response.status, JSON.stringify(response.body)).toBe(200);
-               const app = yield* body(Installed, response);
-@@ -110,6 +115,7 @@
-             }),
-           { concurrency: 1 },
-         );
-+        expect(installed[0]!.id).not.toBe(installed[1]!.id);
- 
-         yield* Effect.addFinalizer(() =>
-           database
-@@ -132,7 +138,8 @@
+@@ -132,7 +136,8 @@
              const accounts = yield* linkedAccountIds(actor, app.path);
              expect(accounts).toHaveLength(1);
              return { actor, app, account: accounts[0]! };
@@ -166,7 +150,7 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
          const results = yield* Effect.forEach(
            selected,
            ({ actor, app, account }) =>
-@@ -145,9 +152,7 @@
+@@ -145,9 +150,7 @@
          );
          const completed = results.filter(
            (result) =>
@@ -177,15 +161,27 @@ diff --git a/e2e/tests/hosted-routes.spec.ts b/e2e/tests/hosted-routes.spec.ts
          );
          const rejected = results.filter(
            (result) =>
-@@ -232,14 +237,35 @@
+@@ -232,14 +235,47 @@
          ).toEqual([{ calls: 1 }]);
  
          // Explicitly relinking the retained account restores access without provisioning another.
++        const other = yield* body(
++          Installed,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: "google-maps",
++            name: "Hosted Routes other",
++            newInstance: true,
++          }),
++        );
++        expect(other.id).not.toBe(installed[0]!.id);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${other.id}`).pipe(Effect.orDie),
++        );
 +        const wrongApp = yield* linkAccountResponse(
-+          actors.member,
-+          installed[0]!.path,
++          actors.owner,
++          `${prefix}/apps/${other.id}`,
 +          "hostedRoutes",
-+          memberAccount,
++          selected[0]!.account,
 +        );
 +        expect(wrongApp.status).toBe(422);
 +        expect(wrongApp.body).toMatchObject({ _tag: "AuthMethodInvalid" });
