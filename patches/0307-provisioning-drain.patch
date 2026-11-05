@@ -149,3 +149,23 @@ diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/
    }).pipe(Effect.mapError(() => new ProvisioningFailed()));
  
  /**
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -191,7 +191,6 @@
+           const initialize = yield* OrganizationDefaults;
+           const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
+           const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
+-          if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
+           const [member] = yield* managers(
+             job.organization_id,
+             services.requireVerifiedEmail,
+@@ -203,6 +202,8 @@
+               Effect.provideService(PoolTokenRotation, rotationOnly),
+               Effect.provideService(CatalogAppSweep, catalogOnly),
+             );
++          // Personal-team setup can enqueue more installations; finish these defaults first.
++          if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
+           return;
+         }
+       }

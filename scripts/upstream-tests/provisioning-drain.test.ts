@@ -69,3 +69,59 @@ for (const scenario of ["backlog", "enqueue-during-dispatch", "dispatch-failure"
       }).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<unknown, unknown>,
     );
   });
+
+const { provision, selfHostProvisioningServices } = await load(
+  "apps/hosted/server/src/implementation/provisioning.ts",
+);
+const { migrateProvisioning } = await load(
+  "apps/hosted/server/src/implementation/provisioning-schema.ts",
+);
+const { OrganizationDefaults, OrganizationDefaultsPending } = await load(
+  "apps/hosted/server/src/contracts/organization-defaults.ts",
+);
+
+for (const pending of [false, true])
+  test(`member follow-up waits for current defaults: pending=${pending}`, async () => {
+    const steps: string[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`create table organization (id text primary key, slug text, metadata text)`;
+        yield* sql`create table "user" (id text primary key, name text, "emailVerified" boolean)`;
+        yield* sql`create table member ("organizationId" text, "userId" text, role text)`;
+        yield* migrateProvisioning;
+        yield* sql`insert into organization (id, slug) values ('current', 'current')`;
+        yield* sql`insert into "user" (id, name, "emailVerified") values ('person', 'Person', true)`;
+        yield* sql`insert into member ("organizationId", "userId", role)
+          values ('current', 'person', 'owner')`;
+        const [job] = yield* sql`select id from hosted_provisioning where kind = 'member'`;
+        const work = (blocked: boolean) =>
+          provision(job.id, {
+            ...selfHostProvisioningServices,
+            member: () =>
+              Effect.sync(() => {
+                steps.push("follow-up");
+              }),
+          }).pipe(
+            Effect.provideService(OrganizationDefaults, () =>
+              Effect.gen(function* () {
+                steps.push("defaults");
+                if (blocked) return yield* new OrganizationDefaultsPending();
+                steps.push("ready");
+              }),
+            ),
+          );
+        if (pending) {
+          assert.equal((yield* Effect.exit(work(true)))._tag, "Failure");
+          assert.deepEqual(steps, ["defaults"], "pending setup must not start more team work");
+          const [retry] = yield* sql`select status from hosted_provisioning where id = ${job.id}`;
+          assert.equal(retry.status, "queued");
+          steps.length = 0;
+        }
+        yield* work(false);
+        assert.deepEqual(steps, ["defaults", "ready", "follow-up"]);
+        yield* work(false);
+        assert.deepEqual(steps, ["defaults", "ready", "follow-up"], "success stays idempotent");
+      }).pipe(Effect.provide(pgliteLayer())) as Effect.Effect<unknown, unknown>,
+    );
+  });
