@@ -1,0 +1,20 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -394,9 +394,16 @@
+             .getByRole("region", { name: "Your accounts", exact: true })
+             .getByRole("listitem")
+             .filter({ hasText: "Rejected mail" });
++          // Health arrives before the sign-in methods that decide whether recovery is offered.
+           return page
+             .goto(`/org/${plain.actors.organization.slug}/apps/${rejected.app.id}?view=accounts`)
+             .then(() => row.locator('[data-health-state="credentials_rejected"]').waitFor())
++            .then(() =>
++              row
++                .locator("[data-account-health-cell]")
++                .getByRole("button", { name: "Reconnect", exact: true })
++                .waitFor(),
++            )
+             .then(() =>
+               Promise.all([
+                 row.locator("[data-account-health-cell]").innerText(),
