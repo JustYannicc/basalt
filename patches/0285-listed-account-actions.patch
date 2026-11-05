@@ -9,7 +9,31 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
  import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
  import {
    DropdownMenu,
-@@ -83,26 +84,72 @@
+@@ -74,7 +75,22 @@
+         if (!open && !busy) onClose();
+       }}
+     >
+-      <DialogContent className="max-h-[85dvh] gap-5 overflow-x-hidden overflow-y-auto sm:max-w-[560px]">
++      <DialogContent
++        className="max-h-[85dvh] gap-5 overflow-x-hidden overflow-y-auto sm:max-w-[560px]"
++        onOpenAutoFocus={(event) => {
++          const dialog = event.target;
++          if (!(dialog instanceof HTMLElement)) return;
++          const field = dialog.querySelector(
++            "input:not(:disabled), textarea:not(:disabled), select:not(:disabled), button[role='combobox']:not(:disabled)",
++          );
++          if (field || !dialog.querySelector("[data-disabled-reason]")) return;
++          const close = dialog.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
++          if (close === null) return;
++          // Focusing a disabled-field hint can cover Close before the person asks for the hint.
++          event.preventDefault();
++          close.focus();
++        }}
++      >
+         <DialogTitle className="pr-7 text-base">{title}</DialogTitle>
+         <DialogDescription className="sr-only">{description}</DialogDescription>
+         {children}
+@@ -83,26 +99,72 @@
    );
  }
  
@@ -89,7 +113,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    update,
    Failure,
    disabledReason,
-@@ -110,7 +157,10 @@
+@@ -110,7 +172,10 @@
    onDone,
    cancel,
  }: {
@@ -101,7 +125,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabledReason?: string | undefined;
-@@ -118,10 +168,19 @@
+@@ -118,10 +183,16 @@
    readonly onDone: () => void;
    readonly cancel: ReactNode;
  }) {
@@ -113,17 +137,14 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
 +  const [descriptionDraft, setDescription] = useState<string>();
    const [pending, setPending] = useState(false);
    const [error, setError] = useState<Cause.Cause<E>>();
-+  // A read-only form shows what is saved, not a draft it cannot save.
-+  const drafts = disabledReason === undefined;
-+  const label = (drafts ? labelDraft : undefined) ?? account?.label ?? listed?.label ?? "";
++  const label = labelDraft ?? account?.label ?? listed?.label ?? "";
 +  const saved = account === undefined ? listed?.description : account.description;
 +  // Undefined while neither the account nor its row knows the description.
-+  const description =
-+    (drafts ? descriptionDraft : undefined) ?? (saved === undefined ? undefined : (saved ?? ""));
++  const description = descriptionDraft ?? (saved === undefined ? undefined : (saved ?? ""));
    const updatePending = (value: boolean) => {
      setPending(value);
      onPendingChange?.(value);
-@@ -132,8 +191,8 @@
+@@ -132,8 +203,8 @@
        onSubmit={async (event) => {
          event.preventDefault();
          const nextLabel = label.trim();
@@ -134,7 +155,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
          const changes = {
            ...(nextLabel === account.label ? {} : { label: nextLabel }),
            ...(nextDescription === account.description ? {} : { description: nextDescription }),
-@@ -161,14 +220,21 @@
+@@ -161,14 +232,21 @@
          />
        </label>
        <AccountDescriptionField
@@ -159,7 +180,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
            Save
          </Button>
          {cancel}
-@@ -177,9 +243,13 @@
+@@ -177,9 +255,13 @@
    );
  }
  
@@ -174,7 +195,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    disconnect,
    onDisconnected,
    onPendingChange,
-@@ -191,7 +261,10 @@
+@@ -191,7 +273,10 @@
  }: {
    readonly submitLabel?: string;
    readonly impact?: ReactNode;
@@ -186,7 +207,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    readonly disconnect: () => Promise<Exit.Exit<unknown, E>>;
    readonly onDisconnected: () => void;
    readonly onPendingChange?: (pending: boolean) => void;
-@@ -199,13 +272,61 @@
+@@ -199,13 +284,61 @@
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabledReason?: string | undefined;
  }) {
@@ -253,7 +274,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
        <p className="text-sm text-muted-foreground">
          {data.revocation === "automatic"
            ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
-@@ -227,32 +348,7 @@
+@@ -227,32 +360,7 @@
            )}
          </section>
        )}
@@ -1283,10 +1304,511 @@ new file mode 100644
 +      ),
 +    );
 +});
+diff --git a/e2e/tests/listed-account-authority.spec.ts b/e2e/tests/listed-account-authority.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/listed-account-authority.spec.ts
+@@ -0,0 +1,270 @@
++/** Listed values never authorize writes or outlive a denied account read. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { appLinksFixture, keyProvider } from "../support/app-links.ts";
++import { body } from "../support/api.ts";
++import { linkAccount } from "../support/app-accounts.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
++const service=${keyProvider("Listed authority fixture")};
++export default defineApp({user:{accounts:{service:service.many()}}},{tools:router({hello:query({input:object({})},async()=>"Hello")})});`;
++const Access = Schema.Struct({ revision: Schema.String });
++const Members = Schema.Struct({
++  members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
++});
++const editor = (page: Page) => page.getByRole("dialog", { name: "Edit account", exact: true });
++const field = (page: Page) =>
++  editor(page).getByRole("textbox", { name: "Account name", exact: true });
++const action = (page: Page, label: string, name: string) =>
++  page
++    .getByRole("button", { name: `Manage ${label}`, exact: true })
++    .click()
++    .then(() => page.getByRole("menuitem", { name, exact: true }).click());
++const protectedState = (page: Page) =>
++  Promise.all([
++    field(page).inputValue(),
++    field(page).isDisabled(),
++    editor(page).getByRole("button", { name: "Save", exact: true }).isDisabled(),
++  ]);
++const settledReadonly = (page: Page) =>
++  page.waitForFunction(() => {
++    const field = document.querySelector('[role="dialog"] input');
++    return field instanceof HTMLInputElement && field.disabled;
++  });
++const fixture = Effect.gen(function* () {
++  const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++  const label = `Shared ${f.app.id.slice(-8)}`;
++  const id = yield* f.connect(f.actors.owner, "user", "service", label, {
++    kind: "shared",
++    audience: { kind: "everyone" },
++  });
++  yield* linkAccount(f.actors.admin, f.path, "service", id);
++  yield* linkAccount(f.actors.member, f.path, "service", id);
++  const paths = [f.actors.organization.id, f.actors.organization.slug].map(
++    (org) => `/api/organizations/${org}/accounts/${id}`,
++  );
++  return { ...f, id, label, paths, accountPath: `${f.prefix}/accounts/${id}` };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Listed account authority", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.listedAccountDemotion, 1440],
++    [scenarios.listedAccountDemotionMobile, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* fixture,
++            browser = yield* Browser;
++          const directory = yield* body(
++            Members,
++            yield* f.api.request(
++              f.actors.owner,
++              "GET",
++              `/api/auth/organization/list-members?organizationId=${f.actors.organization.id}`,
++            ),
++          );
++          const member = directory.members.find((member) => member.userId === f.ids.admin);
++          if (member === undefined) throw new Error("Synthetic administrator missing");
++          const role = (role: "member" | "admin") =>
++            f.api.request(f.actors.owner, "POST", "/api/auth/organization/update-member-role", {
++              organizationId: f.actors.organization.id,
++              memberId: member.id,
++              role,
++            });
++          yield* Effect.addFinalizer(() => role("admin").pipe(Effect.orDie));
++          yield* browser.login(f.actors.admin);
++          yield* browser.use("Open app Accounts", (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() =>
++                page.goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`),
++              ),
++          );
++          yield* browser.use("The shared account is listed", (page) =>
++            page.getByRole("button", { name: `Manage ${f.label}`, exact: true }).waitFor(),
++          );
++          const typed = `${f.label} draft`;
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(f.paths, "continue");
++              yield* browser.use("Open Edit details from app Accounts", (page) =>
++                action(page, f.label, "Edit details").then(() => editor(page).waitFor()),
++              );
++              expect(f.paths).toContain(yield* held.requested);
++              yield* browser.use("Type before authority arrives", (page) =>
++                field(page).fill(typed),
++              );
++              expect(
++                yield* browser.use("Save is blocked before the read", (page) =>
++                  editor(page).getByRole("button", { name: "Save", exact: true }).isDisabled(),
++                ),
++              ).toBe(true);
++              expect((yield* role("member")).status).toBe(200);
++              yield* held.release;
++              yield* browser.use("The read applies the current member role", settledReadonly);
++              expect(
++                yield* browser.use(
++                  "The draft remains visible without write permission",
++                  protectedState,
++                ),
++              ).toEqual([typed, true, true]);
++              yield* browser.checkpoint(`${width} typed draft after demotion`);
++            }),
++          );
++          expect(
++            (yield* f.api.request(f.actors.admin, "PATCH", f.accountPath, { label: typed })).status,
++          ).toBe(403);
++          expect((yield* f.api.request(f.actors.admin, "DELETE", f.accountPath)).status).toBe(403);
++          expect((yield* f.api.request(f.actors.owner, "GET", f.accountPath)).status).toBe(200);
++        }),
++      ),
++    );
++
++  for (const [scenario, width] of [
++    [scenarios.listedAccountReadonly, 1440],
++    [scenarios.listedAccountReadonlyMobile, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* fixture,
++            browser = yield* Browser;
++          yield* browser.login(f.actors.member);
++          const openList = () =>
++            browser.use("Open a fresh Accounts document", (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.goto(`/org/${f.actors.organization.slug}/accounts`))
++                .then(() =>
++                  page.getByRole("button", { name: `Manage ${f.label}`, exact: true }).waitFor(),
++                ),
++            );
++          yield* openList();
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(f.paths, "continue");
++              yield* browser.use("Open the read-only editor", (page) =>
++                action(page, f.label, "Edit details").then(() => editor(page).waitFor()),
++              );
++              expect(f.paths).toContain(yield* held.requested);
++              expect(yield* browser.use("The row keeps a read-only form", protectedState)).toEqual([
++                f.label,
++                true,
++                true,
++              ]);
++              expect(
++                yield* browser.use(
++                  "Close receives focus without opening a disabled-control tooltip",
++                  (page) =>
++                    Promise.all([
++                      editor(page)
++                        .getByRole("button", { name: "Close", exact: true })
++                        .evaluate((button) => button === document.activeElement),
++                      page.getByRole("tooltip").count(),
++                    ]),
++                ),
++              ).toEqual([true, 0]);
++              yield* browser.use("Close works by pointer while the read is held", (page) =>
++                editor(page)
++                  .getByRole("button", { name: "Close", exact: true })
++                  .click()
++                  .then(() => editor(page).waitFor({ state: "hidden" })),
++              );
++              yield* held.release;
++            }),
++          );
++          yield* openList();
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(f.paths, "continue");
++              yield* browser.use("Open deletion as a member", (page) =>
++                action(page, f.label, "Delete account").then(() =>
++                  page.getByRole("dialog", { name: "Delete account?", exact: true }).waitFor(),
++                ),
++              );
++              expect(f.paths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use("Deletion is blocked while the read is held", (page) =>
++                  page
++                    .getByRole("dialog")
++                    .getByRole("button", { name: "Delete account", exact: true })
++                    .isDisabled(),
++                ),
++              ).toBe(true);
++              yield* held.release;
++              yield* browser.use("The account read completes", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByText(/^This deletes the saved credentials from /)
++                  .waitFor(),
++              );
++              expect(
++                yield* browser.use("Deletion remains blocked after the read", (page) =>
++                  page
++                    .getByRole("dialog")
++                    .getByRole("button", { name: "Delete account", exact: true })
++                    .isDisabled(),
++                ),
++              ).toBe(true);
++              yield* browser.use("Close deletion", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByRole("button", { name: "Close", exact: true })
++                  .click()
++                  .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++              );
++            }),
++          );
++          yield* browser.use("Open a fresh app Accounts document", (page) =>
++            page
++              .goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`)
++              .then(() =>
++                page.getByRole("button", { name: `Manage ${f.label}`, exact: true }).waitFor(),
++              ),
++          );
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(f.paths, "continue");
++              yield* browser.use("Open a row before it loses access", (page) =>
++                action(page, f.label, "Edit details").then(() => editor(page).waitFor()),
++              );
++              expect(f.paths).toContain(yield* held.requested);
++              const access = yield* body(
++                Access,
++                yield* f.api.request(f.actors.owner, "GET", `${f.accountPath}/access`),
++              );
++              expect(
++                (yield* f.api.request(f.actors.owner, "PATCH", `${f.accountPath}/access`, {
++                  revision: access.revision,
++                  audience: { kind: "groups", groups: [] },
++                })).status,
++              ).toBe(200);
++              yield* held.release;
++              yield* browser.use("A denied read removes the seeded protected form", (page) =>
++                field(page).waitFor({ state: "hidden" }),
++              );
++              expect(
++                yield* browser.use("No Save survives the denial", (page) =>
++                  editor(page).getByRole("button", { name: "Save", exact: true }).count(),
++                ),
++              ).toBe(0);
++            }),
++          );
++          expect((yield* f.api.request(f.actors.member, "GET", f.accountPath)).status).toBe(403);
++          expect(
++            (yield* f.api.request(f.actors.member, "PATCH", f.accountPath, { label: "Forbidden" }))
++              .status,
++          ).toBe(403);
++          expect((yield* f.api.request(f.actors.member, "DELETE", f.accountPath)).status).toBe(403);
++        }),
++      ),
++    );
++});
+diff --git a/e2e/tests/listed-account-setup.spec.ts b/e2e/tests/listed-account-setup.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/listed-account-setup.spec.ts
+@@ -0,0 +1,221 @@
++/** Setup uses the same row-seeded account actions as Accounts and app Accounts. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { officialApps } from "../support/public-catalogs.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
++layer(HostedLive, { excludeTestServices: true })("Listed setup account actions", (it) => {
++  for (const [scenario, width] of [
++    [scenarios.listedSetupAccount, 1440],
++    [scenarios.listedSetupAccountMobile, 390],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            browser = yield* Browser;
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          const install = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: officialApps.mail.id,
++            name: officialApps.mail.name,
++          });
++          expect(install.status, JSON.stringify(install.body)).toBe(200);
++          const installed = yield* body(Resource, install);
++          const ids: string[] = [];
++          yield* Effect.addFinalizer(() =>
++            Effect.gen(function* () {
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${installed.id}`))
++                  .status,
++              ).toBe(200);
++              for (const id of ids)
++                expect(
++                  (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`)).status,
++                ).toBe(200);
++            }).pipe(Effect.orDie),
++          );
++          const labels = ["Setup work mail", "Setup personal mail"];
++          for (const label of labels) {
++            const started = yield* body(
++              Resource,
++              yield* api.request(
++                actors.owner,
++                "POST",
++                connectionsPath(`${prefix}/apps/${installed.id}`, "user", "mail"),
++                { destination: { kind: "personal" } },
++              ),
++            );
++            const account = yield* body(
++              Resource,
++              yield* api.request(
++                actors.owner,
++                "POST",
++                `${prefix}/connections/${started.id}/submit`,
++                { method: "apiKey", label, fields: { token: "synthetic" } },
++              ),
++            );
++            ids.push(account.id);
++          }
++          const id = ids[0];
++          if (id === undefined) throw new Error("Setup account missing");
++          const paths = [actors.organization.id, actors.organization.slug].map(
++            (org) => `/api/organizations/${org}/accounts/${id}`,
++          );
++          yield* browser.login(actors.owner);
++          yield* browser.use("Open the setup account step", (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/setup/accounts`)),
++          );
++          const openAccounts = () =>
++            browser.use("Open every saved mail account", (page) =>
++              page
++                .getByRole("button", {
++                  name: `Show all 2 ${officialApps.mail.name} accounts`,
++                  exact: true,
++                })
++                .click(),
++            );
++          const openAction = (name: string) =>
++            browser.use("Choose the setup account action", (page) =>
++              page
++                .getByRole("button", { name: `Manage ${labels[0]}`, exact: true })
++                .click()
++                .then(() => page.getByRole("menuitem", { name, exact: true }).click())
++                .then(() => page.getByRole("dialog").waitFor()),
++            );
++          yield* openAccounts();
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(paths, "continue");
++              yield* openAction("Edit details");
++              expect(paths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use("Setup has an editable name while the detail is held", (page) =>
++                  Promise.all([
++                    page
++                      .getByRole("dialog")
++                      .getByRole("textbox", { name: "Account name", exact: true })
++                      .inputValue(),
++                    page
++                      .getByRole("dialog")
++                      .getByRole("textbox", { name: "Account name", exact: true })
++                      .isEditable(),
++                    page
++                      .getByRole("dialog")
++                      .getByRole("button", { name: "Save", exact: true })
++                      .isDisabled(),
++                  ]),
++                ),
++              ).toEqual([labels[0], true, true]);
++              yield* browser.use("Type a setup draft", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByRole("textbox", { name: "Account name", exact: true })
++                  .fill("Typed setup mail"),
++              );
++              yield* held.release;
++              yield* browser.use("Fresh detail enables Save", (page) =>
++                page.waitForFunction(() =>
++                  Array.from(
++                    document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
++                  ).some((button) => button.textContent?.trim() === "Save" && !button.disabled),
++                ),
++              );
++              expect(
++                yield* browser.use("The setup draft survives", (page) =>
++                  page
++                    .getByRole("dialog")
++                    .getByRole("textbox", { name: "Account name", exact: true })
++                    .inputValue(),
++                ),
++              ).toBe("Typed setup mail");
++              yield* browser.use("Save from setup", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByRole("button", { name: "Save", exact: true })
++                  .click()
++                  .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++              );
++            }),
++          );
++          expect(
++            (yield* body(
++              Detail,
++              yield* api.request(actors.owner, "GET", `${prefix}/accounts/${id}`),
++            )).account.label,
++          ).toBe("Typed setup mail");
++          yield* browser.use("Reopen setup in a fresh document", (page) =>
++            page.goto(`/org/${actors.organization.slug}/setup/accounts`),
++          );
++          yield* openAccounts();
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const held = yield* holdQuery(paths, "continue");
++              yield* browser.use("Choose Delete account from setup", (page) =>
++                page
++                  .getByRole("button", { name: "Manage Typed setup mail", exact: true })
++                  .click()
++                  .then(() =>
++                    page.getByRole("menuitem", { name: "Delete account", exact: true }).click(),
++                  )
++                  .then(() => page.getByRole("dialog").waitFor()),
++              );
++              expect(paths).toContain(yield* held.requested);
++              expect(
++                yield* browser.use(
++                  "Setup deletion names the account and waits for its read",
++                  (page) =>
++                    Promise.all([
++                      page
++                        .getByRole("dialog")
++                        .getByText("Typed setup mail", { exact: true })
++                        .count(),
++                      page
++                        .getByRole("dialog")
++                        .getByRole("button", { name: "Delete account", exact: true })
++                        .isDisabled(),
++                    ]),
++                ),
++              ).toEqual([1, true]);
++              yield* held.release;
++              yield* browser.use("The saved account supplies deletion's impact", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByText(/^This deletes the saved credentials from /)
++                  .waitFor(),
++              );
++              expect(
++                yield* browser.use("The owner can delete after the read", (page) =>
++                  page
++                    .getByRole("dialog")
++                    .getByRole("button", { name: "Delete account", exact: true })
++                    .isDisabled(),
++                ),
++              ).toBe(false);
++              yield* browser.use("Cancel setup deletion", (page) =>
++                page
++                  .getByRole("dialog")
++                  .getByRole("button", { name: "Cancel", exact: true })
++                  .click()
++                  .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
++              );
++            }),
++          );
++          expect((yield* api.request(actors.owner, "GET", `${prefix}/accounts/${id}`)).status).toBe(
++            200,
++          );
++        }),
++      ),
++    );
++});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4965,6 +4965,94 @@
+@@ -4965,6 +4965,155 @@
        local: na(
          "The local dashboard shares the naming and edit forms; its API and MCP have their own scenario.",
        ),
@@ -1374,6 +1896,67 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +    fixtures: "actors",
 +    file: "listed-account-bindings.spec.ts",
 +    title: "Mobile Remove saved sign-in opens on its binding and waits while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAccountDemotion: {
++    fixtures: "actors",
++    file: "listed-account-authority.spec.ts",
++    title: "An app account draft survives demotion while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAccountDemotionMobile: {
++    fixtures: "actors",
++    file: "listed-account-authority.spec.ts",
++    title: "Mobile app account draft survives demotion while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAccountReadonly: {
++    fixtures: "actors",
++    file: "listed-account-authority.spec.ts",
++    title: "Read-only row actions close safely and clear denied forms while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedAccountReadonlyMobile: {
++    fixtures: "actors",
++    file: "listed-account-authority.spec.ts",
++    title:
++      "Mobile read-only row actions close safely and clear denied forms while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedSetupAccount: {
++    fixtures: "actors",
++    file: "listed-account-setup.spec.ts",
++    title: "Setup Edit and Delete use the listed account while the account is read",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard keeps its own account dialogs."),
++    },
++  },
++  listedSetupAccountMobile: {
++    fixtures: "actors",
++    file: "listed-account-setup.spec.ts",
++    title: "Mobile setup Edit and Delete use the listed account while the account is read",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: scheduled,
