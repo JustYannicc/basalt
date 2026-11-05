@@ -1808,7 +1808,7 @@ new file mode 100644
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4965,6 +4965,155 @@
+@@ -4965,6 +4965,159 @@
        local: na(
          "The local dashboard shares the naming and edit forms; its API and MCP have their own scenario.",
        ),
@@ -1949,7 +1949,9 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +    title: "Setup Edit and Delete use the listed account while the account is read",
 +    targets: {
 +      "self-host": scheduled,
-+      cloud: scheduled,
++      cloud: na(
++        "Setup uses the same shared form; the synthetic official catalog runs on self-host.",
++      ),
 +      local: na("The local dashboard keeps its own account dialogs."),
 +    },
 +  },
@@ -1959,7 +1961,9 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +    title: "Mobile setup Edit and Delete use the listed account while the account is read",
 +    targets: {
 +      "self-host": scheduled,
-+      cloud: scheduled,
++      cloud: na(
++        "Setup uses the same shared form; the synthetic official catalog runs on self-host.",
++      ),
 +      local: na("The local dashboard keeps its own account dialogs."),
      },
    },

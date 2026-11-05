@@ -1,7 +1,7 @@
 {
   "identity": "basalt-listed-account-actions",
   "file": "0285-listed-account-actions.patch",
-  "content_sha256": "5e471970f473e9f983a7412bf3076ec736f1bbff0188699e62597b519b7ca547",
+  "content_sha256": "0fef4999a20cce343ab58afa3bafd05dc1380ecd0566644225799c4ad8b0cc72",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
