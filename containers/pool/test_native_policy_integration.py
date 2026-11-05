@@ -144,6 +144,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
             print_patcher.start()
             child = object.__new__(supervisor.Child)
             child.name = "home"
+            child.diagnostics = supervisor.HomeCrashTail()
             child._on_policy_fused = ready.note_policy_fused
             child._on_policy_probe = ready.note_policy_probe
             child._fuse_parser = child_signals.NativePolicyFuseParser()
