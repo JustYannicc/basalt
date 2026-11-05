@@ -9,7 +9,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
  import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
  import {
    DropdownMenu,
-@@ -74,7 +75,22 @@
+@@ -82,7 +83,22 @@
          if (!open && !busy) onClose();
        }}
      >
@@ -33,7 +33,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
          <DialogTitle className="pr-7 text-base">{title}</DialogTitle>
          <DialogDescription className="sr-only">{description}</DialogDescription>
          {children}
-@@ -83,26 +99,72 @@
+@@ -91,28 +107,74 @@
    );
  }
  
@@ -52,6 +52,8 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
  /** The account a dialog acts on, shown the same way in every action. */
 -export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }) {
 -  const { account, provider } = data;
+-  // The detail carries the account's checks beside it; the title reads what they reported.
+-  const title = accountTitle({ ...account, health: account.health ?? data.health });
 +export function AccountDialogIdentity({
 +  data,
 +  listed,
@@ -61,7 +63,9 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
 +}) {
 +  const definition = data?.provider.definition;
 +  const name = definition?.name ?? listed?.providerName;
-+  const label = data?.account.label ?? listed?.label;
++  const label = data
++    ? accountTitle({ ...data.account, health: data.account.health ?? data.health })
++    : listed?.label;
 +  // The sign-in method's kind is the provider's to say, so it waits for the account read.
    return (
      <div className="flex items-center gap-3 min-w-0">
@@ -75,7 +79,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
 +        />
 +      )}
        <div className="min-w-0 wrap-anywhere">
--        <div className="text-sm font-medium">{account.label || "Unnamed account"}</div>
+-        <div className="text-sm font-medium">{title}</div>
 +        <div className="text-sm font-medium">
 +          {label === undefined ? (
 +            <Skeleton className="my-0.5 h-4 w-40" />
@@ -113,7 +117,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    update,
    Failure,
    disabledReason,
-@@ -110,7 +172,10 @@
+@@ -120,7 +182,10 @@
    onDone,
    cancel,
  }: {
@@ -125,7 +129,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabledReason?: string | undefined;
-@@ -118,10 +183,16 @@
+@@ -128,10 +193,16 @@
    readonly onDone: () => void;
    readonly cancel: ReactNode;
  }) {
@@ -144,7 +148,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    const updatePending = (value: boolean) => {
      setPending(value);
      onPendingChange?.(value);
-@@ -132,8 +203,8 @@
+@@ -142,8 +213,8 @@
        onSubmit={async (event) => {
          event.preventDefault();
          const nextLabel = label.trim();
@@ -155,7 +159,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
          const changes = {
            ...(nextLabel === account.label ? {} : { label: nextLabel }),
            ...(nextDescription === account.description ? {} : { description: nextDescription }),
-@@ -161,14 +232,21 @@
+@@ -171,14 +242,21 @@
          />
        </label>
        <AccountDescriptionField
@@ -180,7 +184,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
            Save
          </Button>
          {cancel}
-@@ -177,9 +255,13 @@
+@@ -187,9 +265,13 @@
    );
  }
  
@@ -195,7 +199,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    disconnect,
    onDisconnected,
    onPendingChange,
-@@ -191,7 +273,10 @@
+@@ -201,7 +283,10 @@
  }: {
    readonly submitLabel?: string;
    readonly impact?: ReactNode;
@@ -207,7 +211,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
    readonly disconnect: () => Promise<Exit.Exit<unknown, E>>;
    readonly onDisconnected: () => void;
    readonly onPendingChange?: (pending: boolean) => void;
-@@ -199,13 +284,61 @@
+@@ -209,13 +294,61 @@
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly disabledReason?: string | undefined;
  }) {
@@ -274,7 +278,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/pack
        <p className="text-sm text-muted-foreground">
          {data.revocation === "automatic"
            ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
-@@ -227,32 +360,7 @@
+@@ -237,32 +370,7 @@
            )}
          </section>
        )}
@@ -365,10 +369,10 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps
  }) {
    const title = binding && dialog === "delete" ? "Remove saved sign-in?" : titles[dialog];
    const { organization } = useOrganizationRoute();
-@@ -90,35 +104,90 @@
-       busy={busy}
-       onClose={onClose}
+@@ -92,35 +106,90 @@
      >
+       {/* Manage access reads the account, then its access, before its form reads the groups. */}
+       {dialog === "access" && <ReadAccountSharingEarly account={id} />}
 -      <QueryView
 -        pending={<DetailSkeleton label="Loading account" />}
 -        query={accountAtom({ organization, account: id })}
@@ -482,7 +486,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps
  
  const cancelButton = (onClose: () => void): ReactNode => (
    <Button variant="ghost" onClick={onClose}>
-@@ -152,27 +221,32 @@
+@@ -154,27 +223,32 @@
  }
  
  function EditDialogBody({
@@ -521,7 +525,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps
        }
        onPendingChange={onPendingChange}
        onDone={onClose}
-@@ -182,18 +256,22 @@
+@@ -184,18 +258,22 @@
  }
  
  function DeleteDialogBody({
@@ -546,7 +550,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps
      mode: "promiseExit",
    });
    return (
-@@ -205,11 +283,12 @@
+@@ -207,11 +285,12 @@
          </p>
        }
        data={data}
@@ -668,7 +672,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -171,7 +171,7 @@
+@@ -194,7 +194,7 @@
      /** Set when replacing this account's credentials rather than adding an account. */
      readonly account?: AccountSummary | undefined;
    }>();
@@ -677,7 +681,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
    // Set when the host refused the open connection for good; its form gives way to the destination.
    const [refused, setRefused] = useState<ProviderAccountDestination>();
    const closeConnection = () => {
-@@ -303,7 +303,7 @@
+@@ -333,7 +333,7 @@
                  onUnlinked={() => void unused.check(account.id)}
                >
                  {usable(account) && (
@@ -686,7 +690,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
                      Edit details
                    </DropdownMenuItem>
                  )}
-@@ -503,7 +503,13 @@
+@@ -533,7 +533,13 @@
          ) : null}
        </ConnectionModal>
        {renaming && (
@@ -1808,12 +1812,10 @@ new file mode 100644
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4965,6 +4965,159 @@
-       local: na(
-         "The local dashboard shares the naming and edit forms; its API and MCP have their own scenario.",
+@@ -5041,6 +5041,159 @@
        ),
-+    },
-+  },
+     },
+   },
 +  listedAccountEdit: {
 +    fixtures: "actors",
 +    file: "listed-account-actions.spec.ts",
@@ -1965,6 +1967,8 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +        "Setup uses the same shared form; the synthetic official catalog runs on self-host.",
 +      ),
 +      local: na("The local dashboard keeps its own account dialogs."),
-     },
-   },
++    },
++  },
    localAccountOwners: {
+     file: "local-account-owners.spec.ts",
+     title:
