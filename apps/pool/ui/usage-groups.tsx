@@ -17,6 +17,7 @@ import {
   moneyExact,
   moneyList,
   rows,
+  total,
   tokensExact,
   tokensShort,
   personalDirectory,
@@ -321,6 +322,8 @@ export function WhoUses({
   const list = source?.ok
     ? rows(source.value.groups, grouping, name, directory, requestTokens)
     : [];
+  // The Tokens column hides on narrow screens, so the range total stays readable above the rows.
+  const sum = source?.ok && list.length ? total(source.value.groups) : null;
   const slices = personal?.metrics.usageSlices ?? overview?.metrics.usageSlices ?? [];
   const max = list.reduce((top, row) => (row.totals.tokens > top ? row.totals.tokens : top), 0n);
   const toggle = (id: string) =>
@@ -358,6 +361,15 @@ export function WhoUses({
           />
         )}
       </div>
+      {sum && (
+        <p className="text-sm text-muted-foreground tabular-nums">
+          <span className="font-medium text-foreground">
+            <TokenCell totals={sum} />
+          </span>{" "}
+          tokens · {sum.requests.toLocaleString()} {sum.requests === 1 ? "request" : "requests"} in{" "}
+          {days} days
+        </p>
+      )}
       {source === undefined ? (
         <div aria-hidden="true" className="h-40 animate-pulse rounded-md bg-accent" />
       ) : !source.ok ? (

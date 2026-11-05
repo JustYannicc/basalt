@@ -20,14 +20,22 @@ assert.ok(readiness, "use the fixture's actual SQL readiness check");
 const fixture = async () => {
   const database = new PGlite();
   await database.exec(`
-    create table hosted_provisioning (kind text, status text);
+    create table hosted_provisioning (
+      kind text,
+      status text,
+      attempts integer not null default 0,
+      available_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
     create table organization (id text, metadata jsonb);
     create table member ("organizationId" text, "userId" text, role text);
     create table "user" (id text, "emailVerified" boolean);
     create table executor_accounts (id text, owner text, method text);
     create table executor_apps (id text, owner text, active_deployment text);
     create table hosted_app_account_links (app text, account text, requirement text, subject text);
-    insert into hosted_provisioning values ('user', 'succeeded'), ('member', 'running');
+    insert into hosted_provisioning (kind, status) values ('user', 'succeeded'), ('member', 'running');
+    update hosted_provisioning set attempts = 2, updated_at = now() - interval '5 seconds',
+      available_at = now() + interval '30 seconds' where kind = 'member';
     insert into organization values ('team', '{"executorDefaults":{"installed":true},"executorKeyAccounts":{"person":"key"}}');
     insert into member values ('team', 'person', 'owner');
     insert into "user" values ('person', true);
@@ -48,6 +56,14 @@ test("ready default keys do not release the physical fixture while pool work is 
   try {
     assert.equal((await observe(false)).pending, 0);
     assert.equal((await observe()).pending, 1);
+    const { jobs } = await observe();
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].kind, "member");
+    assert.equal(jobs[0].status, "running");
+    assert.equal(jobs[0].count, 1);
+    assert.equal(jobs[0].maxAttempts, 2);
+    assert.ok(jobs[0].oldestUpdateMs >= 5_000);
+    assert.ok(jobs[0].availableInMs > 0 && jobs[0].availableInMs <= 30_000);
     await database.exec(`
       insert into executor_apps values ('pool', 'organization:team', 'version');
       update organization set metadata = metadata || '{"basaltPools":{"pool":{"app":"pool","version":"version","owner":"person","account":"token"}}}';

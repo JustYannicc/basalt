@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cached-control-availability",
+  "file": "0276-cached-control-availability.patch",
+  "content_sha256": "dbf862a0bbb160df1536bf44c0815ab53c4b69b2ec2eae5ad4773d97cc1704a8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

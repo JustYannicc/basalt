@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import type { PoolView, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
-import { providerName } from "./accounts.tsx";
 import { capacityLabs, gaps, hourMs, planChips } from "./capacity-model.ts";
 import {
   CapacitySection,
@@ -28,6 +27,11 @@ const usd = (value: string) =>
     maximumFractionDigits: 2,
   }).format(Number(value));
 
+// Names come from the pool view. Until it lands, a neutral mark holds their place: never a raw
+// ID, never a guess.
+const namer = (providers: readonly Provider[] | undefined) => (id: string) =>
+  providers?.find((provider) => provider.id === id)?.name ?? "…";
+
 const accountsHandoff =
   "Each account's health, sign-ins, resets and details are on this app's Accounts tab.";
 
@@ -41,17 +45,19 @@ export function ManagerOverview({
 }: {
   data: Overview;
   days: RangeDays;
-  providers: readonly Provider[];
-  view: PoolView;
+  providers: readonly Provider[] | undefined;
+  view: PoolView | undefined;
   accountsHref?: string;
   onRetry: () => void;
 }) {
-  const name = (id: string) => providerName(providers, id);
+  const name = namer(providers);
   const labs =
-    data.coherent === true && data.capacity?.ok ? labSummaries(data.capacity.value, days) : [];
+    providers && data.coherent === true && data.capacity?.ok
+      ? labSummaries(data.capacity.value, days)
+      : [];
   return (
     <>
-      {data.coherent === false && (
+      {data.coherent === false && data.capacity !== undefined && (
         <p role="status" className="mb-4 text-sm text-muted-foreground">
           This read is incomplete. Totals below keep their coverage notes; no complete capacity
           verdict is claimed.{" "}
@@ -62,8 +68,8 @@ export function ManagerOverview({
       )}
       <Answers data={data} labs={labs} days={days} name={name} view={view} />
       <CapacitySection
-        result={data.capacity}
-        providers={providers}
+        result={data.capacity?.ok && !providers ? undefined : data.capacity}
+        providers={providers ?? []}
         days={days}
         coherent={data.coherent === true}
         onRetry={onRetry}
@@ -95,10 +101,10 @@ export function PersonalOverview({
 }: {
   data: Result<PoolPersonalOverviewResult> | undefined;
   days: RangeDays;
-  providers: readonly Provider[];
+  providers: readonly Provider[] | undefined;
   onRetry: () => void;
 }) {
-  const name = (id: string) => providerName(providers, id);
+  const name = namer(providers);
   if (!data?.ok)
     return (
       <section className="grid gap-4 pt-12">
@@ -185,32 +191,33 @@ function Answers({
   labs: readonly LabSummary[];
   days: number;
   name: (id: string) => string;
-  view: PoolView;
+  view: PoolView | undefined;
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
   const learning = labs.find((entry) => entry.verdict.tone === "learn");
-  const enough: { tone: Tone; text: string } = !data.capacity
-    ? { tone: "learn", text: "Reading…" }
-    : !data.capacity.ok
-      ? { tone: "learn", text: "Capacity unavailable" }
-      : data.coherent === false
-        ? { tone: "learn", text: "Read incomplete" }
-        : labs.length === 0
-          ? { tone: "learn", text: "No readings yet" }
-          : worst
-            ? {
-                tone: worst.verdict.tone,
-                text: `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
-              }
-            : learning
+  const enough: { tone: Tone; text: string } =
+    !data.capacity || (!view && data.capacity.ok)
+      ? { tone: "learn", text: "Reading…" }
+      : !data.capacity.ok
+        ? { tone: "learn", text: "Capacity unavailable" }
+        : data.coherent === false
+          ? { tone: "learn", text: "Read incomplete" }
+          : labs.length === 0
+            ? { tone: "learn", text: "No readings yet" }
+            : worst
               ? {
-                  tone: "learn",
-                  text:
-                    learning.verdict.short === "Unavailable"
-                      ? "Forecast unavailable"
-                      : "Learning the weekly pattern",
+                  tone: worst.verdict.tone,
+                  text: `${name(worst.lab.provider)}: ${worst.verdict.short.toLowerCase()}`,
                 }
-              : { tone: "ok", text: "Enough for the next 72 hours" };
+              : learning
+                ? {
+                    tone: "learn",
+                    text:
+                      learning.verdict.short === "Unavailable"
+                        ? "Forecast unavailable"
+                        : "Learning the weekly pattern",
+                  }
+                : { tone: "ok", text: "Enough for the next 72 hours" };
   const usage = data.usage?.ok ? data.usage.value : null;
   const read = data.people?.ok ? data.people.value : null;
   const people = read
@@ -232,7 +239,7 @@ function Answers({
         )
       : 0;
   const failedShare = sum && sum.requests ? (sum.failed / sum.requests) * 100 : null;
-  const problems = accountProblems(view);
+  const problems = view ? accountProblems(view) : [];
   return (
     <nav
       aria-label="At a glance"
@@ -301,7 +308,9 @@ function Answers({
               ? undefined
               : sum!.failed > 0
                 ? "warn"
-                : "ok"
+                : view
+                  ? "ok"
+                  : undefined
         }
         answer={
           problems.length
@@ -343,17 +352,17 @@ function Attention({
   data: Overview;
   name: (id: string) => string;
   days: number;
-  view: PoolView;
+  view: PoolView | undefined;
   accountsHref?: string;
 }) {
-  const items: Item[] = accountProblems(view).map((problem) => ({
+  const items: Item[] = (view ? accountProblems(view) : []).map((problem) => ({
     tone: "warn",
     text: `${problem.count} ${problem.text}`,
     sub: problem.since
       ? `Earliest source observation or check: ${new Date(problem.since).toUTCString()}. Review in Accounts.`
       : "Review in Accounts.",
   }));
-  const banked = bankedResetCount(view);
+  const banked = view ? bankedResetCount(view) : 0;
   if (data.usage?.ok) {
     const unknown = data.usage.value.metrics.apiBilled.excluded.unknownKind;
     if (unknown > 0)
@@ -372,7 +381,8 @@ function Attention({
         sub: "Excluded from both money figures. No Home charge or imported price is substituted.",
       });
   }
-  if (data.capacity?.ok) {
+  // Lab notes wait for the view that names their labs.
+  if (view && data.capacity?.ok) {
     const history = data.capacity.value;
     for (const lab of capacityLabs(history)) {
       const flagged = new Set(
@@ -445,7 +455,9 @@ function Attention({
           . Nothing is spent automatically; forecasts leave them unspent.
         </p>
       )}
-      {items.length === 0 ? (
+      {items.length === 0 && view === undefined ? (
+        <p className="text-sm text-muted-foreground">Reading…</p>
+      ) : items.length === 0 ? (
         <p className="flex items-start gap-1.5 text-sm">
           <StateIcon tone="ok" />
           Nothing at pool level.

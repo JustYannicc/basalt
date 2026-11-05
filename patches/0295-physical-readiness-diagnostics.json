@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-physical-readiness-diagnostics",
+  "file": "0295-physical-readiness-diagnostics.patch",
+  "content_sha256": "54528c85df9036065c783fbfdf263c69672971ed27f98060778ab408bed4e76f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

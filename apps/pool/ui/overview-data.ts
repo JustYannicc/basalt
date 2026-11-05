@@ -33,7 +33,15 @@ export interface Overview {
   readonly personal?: Result<PoolPersonalOverviewResult>;
   readonly people?: Result<SeriesRead>;
   readonly models?: Result<SeriesRead>;
+  /** True only when this refresh has a matching capacity and usage pair. */
   readonly coherent?: boolean;
+}
+
+/** What one refresh has received so far. Pieces from different refreshes never share one. */
+interface OverviewPieces {
+  readonly capacity?: Result<PoolCapacityHistory>;
+  readonly usage?: Result<PoolOverviewResult>;
+  readonly personal?: Result<PoolPersonalOverviewResult>;
 }
 
 const refresh = 5 * 60_000;
@@ -48,74 +56,86 @@ export function seriesRead(result: PoolUsageSeriesResult, partial: boolean): Ser
   };
 }
 
-/** Commit one refresh together. Never combine a retained good part with a newer failed read. */
+function withRequests(capacity: PoolCapacityHistory, value: PoolOverviewResult) {
+  const completeHours = new Set(value.homeCapture.completeHours.map((at) => Date.parse(at)));
+  const hourly = new Map(
+    value.requestsByHour.map((point) => [
+      JSON.stringify([point.provider, Date.parse(point.at)]),
+      point,
+    ]),
+  );
+  return {
+    ...capacity,
+    points: capacity.points.map((point) => {
+      const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
+      const complete = completeHours.has(point.hour);
+      return {
+        ...point,
+        requests: requests?.requests ?? (complete ? 0 : null),
+        coverage: requests?.coverage ?? (complete ? 1 : null),
+        sourceAt: requests?.sourceAt
+          ? Date.parse(requests.sourceAt)
+          : complete && value.homeCapture.capturedAt
+            ? Date.parse(value.homeCapture.capturedAt)
+            : null,
+      };
+    }),
+  };
+}
+
+/** The usage read decides manager or member; until it answers, nothing is shown as either. */
+function overviewFrom(
+  { capacity, usage, personal }: OverviewPieces,
+  range: { from: string; to: string },
+): Overview {
+  if (usage === undefined) return {};
+  if (managersOnly(usage)) return { usage, personal, coherent: false };
+  if (!usage.ok) return { capacity, usage, people: usage, models: usage, coherent: false };
+  const value = usage.value;
+  return {
+    capacity: capacity?.ok ? { ok: true, value: withRequests(capacity.value, value) } : capacity,
+    usage,
+    people: { ok: true, value: seriesRead(value.people, value.partial) },
+    models: { ok: true, value: seriesRead(value.models, value.partial) },
+    coherent: capacity?.ok === true && coherentOverview(capacity.value, value, range),
+  };
+}
+
+/** Each refresh keeps its own parts; a completed usage read never waits on capacity. */
 export function useOverview(api: PoolApi, days: RangeDays) {
   const query = useMemo(() => ({ api, days }), [api, days]);
-  const [snapshot, setSnapshot] = useState<{ query: typeof query; value: Overview }>();
+  const [snapshot, setSnapshot] = useState<{
+    query: typeof query;
+    value: Overview;
+  }>();
   const state = snapshot?.query === query ? snapshot.value : {};
   const latest = useRef({ id: 0 });
-  const setState = useCallback((value: Overview) => setSnapshot({ query, value }), [query]);
   const load = useCallback(async () => {
     const pending = latest.current;
     const id = ++pending.id;
     const to = Date.now();
     const range = seriesRange(days, to);
-    return Promise.all([
-      api.capacity(days, to),
-      api.overviewUsage({ from: range.from, to: range.to, days }),
-    ]).then(async ([capacity, usage]) => {
-      if (id !== pending.id) return;
-      if (managersOnly(usage)) {
-        setState({ usage, coherent: false });
-        const personal = await api.personalOverview({ from: range.from, to: range.to, days });
-        if (id !== pending.id) return;
-        setState({ usage, personal, coherent: false });
-        return;
-      }
-      if (!usage.ok) {
-        setState({ capacity, usage, people: usage, models: usage, coherent: false });
-        return;
-      }
-      const value = usage.value;
-      const coherent = capacity.ok && coherentOverview(capacity.value, value, range);
-      const completeHours = new Set(value.homeCapture.completeHours.map((at) => Date.parse(at)));
-      const hourly = new Map(
-        value.requestsByHour.map((point) => [
-          JSON.stringify([point.provider, Date.parse(point.at)]),
-          point,
-        ]),
+    const input = { from: range.from, to: range.to, days };
+    let pieces: OverviewPieces = {};
+    const take = (next: OverviewPieces) => {
+      if (id !== pending.id) return false;
+      pieces = { ...pieces, ...next };
+      const value = overviewFrom(pieces, range);
+      const usageArrived = pieces.usage !== undefined;
+      // Retain the old pair until usage answers, then show only this refresh's parts.
+      setSnapshot((previous) =>
+        !usageArrived && previous?.query === query ? previous : { query, value },
       );
-      const withRequests = !capacity.ok
-        ? capacity
-        : {
-            ok: true as const,
-            value: {
-              ...capacity.value,
-              points: capacity.value.points.map((point) => {
-                const requests = hourly.get(JSON.stringify([point.provider, point.hour]));
-                const complete = completeHours.has(point.hour);
-                return {
-                  ...point,
-                  requests: requests?.requests ?? (complete ? 0 : null),
-                  coverage: requests?.coverage ?? (complete ? 1 : null),
-                  sourceAt: requests?.sourceAt
-                    ? Date.parse(requests.sourceAt)
-                    : complete && value.homeCapture.capturedAt
-                      ? Date.parse(value.homeCapture.capturedAt)
-                      : null,
-                };
-              }),
-            },
-          };
-      setState({
-        capacity: withRequests,
-        usage,
-        people: { ok: true, value: seriesRead(value.people, value.partial) },
-        models: { ok: true, value: seriesRead(value.models, value.partial) },
-        coherent,
-      });
-    });
-  }, [api, days, setState]);
+      return true;
+    };
+    await Promise.all([
+      api.capacity(days, to).then((capacity) => void take({ capacity })),
+      api.overviewUsage(input).then(async (usage) => {
+        if (!take({ usage }) || !managersOnly(usage)) return;
+        take({ personal: await api.personalOverview(input) });
+      }),
+    ]);
+  }, [api, days, query]);
   useEffect(() => {
     const pending = latest.current;
     void load();

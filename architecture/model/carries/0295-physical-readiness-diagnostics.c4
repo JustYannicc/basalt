@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Physical database readiness reports fixed component counts, missing pool stages and grouped job state without identifiers or credentials. A bounded heartbeat reports the cached snapshot and its age without issuing queries or waking readiness. Completion, failure, committed-record requirements and deadlines remain unchanged. SQL readiness tests retain the job attempt and timing columns consumed by these diagnostics."
+    }
+  }
+}
