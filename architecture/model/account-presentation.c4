@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     accountPresentation = part "Account identity presentation" {
-      description "A verified identity row that several visible apps use takes its mark from the verified issuer and family name, independently of saved-binding age or consumer-app order. Catalog app icons and check avatars cannot replace that identity mark. Verified identities used by a single visible app, unverified saved accounts and app-specific account views retain their own provider marks. Family marks and retained app marks remain correct without horizontal overflow at 1280 px and 390 px. Display grouping does not change saved IDs, credentials, access or app selections. Account headers and ordinary, grouped and actionless rows reserve the same desktop menu track; wider identity actions occupy a separate wrapping band so they cannot resize the Type column or cover the name on a phone."
+      description "A verified identity row that several visible apps use takes its mark from the verified issuer and family name, independently of saved-binding age or consumer-app order. Catalog app icons and check avatars cannot replace that identity mark. Verified identities used by a single visible app, unverified saved accounts and app-specific account views retain their own provider marks. Family marks and retained app marks remain correct without horizontal overflow at 1280 px and 390 px. Display grouping does not change saved IDs, credentials, access or app selections."
       metadata { code ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx|.upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx" }
     }
   }
