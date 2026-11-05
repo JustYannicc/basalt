@@ -193,6 +193,7 @@ export const areas = [
       ".upstream/**/*batch*",
       ".upstream/**/*prefetch*",
       ".upstream/e2e/tests/first-entry-*.spec.ts",
+      ".upstream/e2e/tests/hidden-section-reads.spec.ts",
       ".upstream/e2e/support/first-entry-reveal-probe.ts",
       ".upstream/apps/hosted/{self-host,cloud}/web/src/implementation/routes/*.{accounts,approvals}.index.tsx",
       ".upstream/apps/hosted/web/src/implementation/pages/{accounts,approvals}.tsx",

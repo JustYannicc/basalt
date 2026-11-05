@@ -450,3 +450,13 @@ test("first-entry view and route changes select their browser guards", () => {
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
 });
+
+test("hidden section reads select their browser guards", () => {
+  for (const path of [
+    ".upstream/e2e/tests/hidden-section-reads.spec.ts",
+    ".upstream/e2e/tests/dashboard-client-loading.spec.ts",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+});
