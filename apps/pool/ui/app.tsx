@@ -48,10 +48,10 @@ export function App({ api }: { api: PoolApi }) {
         }
       });
     read();
-    const timer = setInterval(read, 4 * 60_000);
+    const stop = api.poll(read, 4 * 60_000);
     return () => {
       live = false;
-      clearInterval(timer);
+      stop();
     };
   }, [api]);
 

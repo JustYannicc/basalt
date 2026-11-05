@@ -138,6 +138,7 @@ function instrument() {
   Reflect.set(window, "completedQueries", completed);
   Reflect.set(window, "queries", queries);
   Reflect.set(window, "followUps", followUps);
+  Reflect.set(window, "contextSends", 0);
   const send = window.fetch.bind(window);
   window.fetch = (input, init) => {
     const shown = document.body?.textContent ?? "";
@@ -154,6 +155,8 @@ function instrument() {
       name = operation?.name;
       if (operation?.name) queries.push(operation.name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
+      if (operation?.name === "computerContext")
+        Reflect.set(window, "contextSends", Reflect.get(window, "contextSends") + 1);
     } catch {}
     return send(input, init).then((response) => {
       if (name) completed.push(name);
@@ -171,6 +174,7 @@ test(
     const servers = [];
     let held = [];
     let views = [];
+    let contextReads = 0;
     let browserServer;
     let browser;
     let exited;
@@ -335,6 +339,7 @@ test(
                       ok: true,
                       value: {
                         accountsHref: `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+                        shareHref: `${parentOrigin}/share/context-${++contextReads}`,
                       },
                     }
                   : failed,
@@ -403,19 +408,24 @@ test(
       });
       if (name === "snapshot-updating") evidenceVideo = page.video();
     };
-    const session = async (work, width = 1100, usage = emptyUsage) => {
+    const session = async (
+      work,
+      { clock = false, viewport = { width: 1100, height: 860 }, usage = emptyUsage } = {},
+    ) => {
       usageResult = usage;
       held = [];
       views = [];
+      contextReads = 0;
       freshResult = undefined;
       answerFresh = false;
       const context = await browser.newContext({
-        viewport: { width, height: 860 },
+        viewport,
         ...(artifacts
           ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } }
           : {}),
       });
       try {
+        if (clock) await context.clock.install();
         await context.route("**/*", (route) => {
           const origin = new URL(route.request().url()).origin;
           return origin === parentOrigin || origin === childOrigin
@@ -444,7 +454,15 @@ test(
                 requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
               ),
           );
-        await work({ page, frame, accepted, marks, committedAtReady, settled });
+        await work({
+          page,
+          frame,
+          accepted,
+          marks,
+          committedAtReady,
+          settled,
+          clock: context.clock,
+        });
       } finally {
         release();
         assert.deepEqual(await context.cookies(), []);
@@ -514,10 +532,112 @@ test(
               "Receiving capacity must not fetch usage again",
             );
           },
-          width,
-          populatedUsage,
+          { viewport: { width, height: 860 }, usage: populatedUsage },
         );
       });
+    for (const width of sourceRef ? [] : [1440, 390])
+      await t.test(
+        `hidden pool links stop refreshing and resume once overdue at ${width}px`,
+        async () => {
+          viewResult = { ok: true, value: empty };
+          await session(
+            async ({ page, frame, clock }) => {
+              answerFresh = true;
+              release();
+              const share = frame.getByRole("link", { name: "Share", exact: true });
+              await share.waitFor();
+              const initial = contextReads;
+              assert.equal(initial, 2, "StrictMode's initial context reads have completed");
+              const quiet = async (expected, message) => {
+                await page.evaluate(
+                  () =>
+                    new Promise((resolve) =>
+                      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                    ),
+                );
+                await frame.evaluate(() =>
+                  fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+                );
+                assert.equal(
+                  await frame.evaluate(() => Reflect.get(window, "contextSends")),
+                  expected,
+                  message,
+                );
+                assert.equal(contextReads, expected, message);
+              };
+              const host = async (active) => {
+                await frame.evaluate(() => {
+                  Reflect.set(window, "hostActiveSeen", undefined);
+                  addEventListener(
+                    "message",
+                    (event) => {
+                      if (event.source === parent && event.data?.type === "executor:app-active")
+                        Reflect.set(window, "hostActiveSeen", event.data.active);
+                    },
+                    { once: true },
+                  );
+                });
+                await page.evaluate(
+                  ({ active, origin }) => {
+                    const element = document.querySelector("iframe");
+                    element.style.display = active ? "block" : "none";
+                    element.contentWindow.postMessage(
+                      { type: "executor:app-active", active },
+                      origin,
+                    );
+                  },
+                  { active, origin: childOrigin },
+                );
+                await frame.waitForFunction(
+                  (active) => Reflect.get(window, "hostActiveSeen") === active,
+                  active,
+                );
+              };
+              await host(false);
+              await clock.runFor(9 * minute);
+              await quiet(initial, "A retained hidden pool makes no context reads");
+              await host(true);
+              await share
+                .and(frame.locator(`[href="${parentOrigin}/share/context-${initial + 1}"]`))
+                .waitFor();
+              assert.equal(
+                contextReads,
+                initial + 1,
+                "An overdue return renews its link exactly once",
+              );
+              await frame.evaluate(() => {
+                Object.defineProperty(document, "visibilityState", {
+                  configurable: true,
+                  value: "hidden",
+                });
+                document.dispatchEvent(new Event("visibilitychange"));
+              });
+              await clock.runFor(9 * minute);
+              await quiet(initial + 1, "A hidden browser tab makes no context reads");
+              await frame.evaluate(() => {
+                Object.defineProperty(document, "visibilityState", {
+                  configurable: true,
+                  value: "visible",
+                });
+                document.dispatchEvent(new Event("visibilitychange"));
+              });
+              await share
+                .and(frame.locator(`[href="${parentOrigin}/share/context-${initial + 2}"]`))
+                .waitFor();
+              assert.equal(
+                contextReads,
+                initial + 2,
+                "A visible tab renews its overdue link exactly once",
+              );
+              await host(false);
+              await clock.runFor(minute);
+              await host(true);
+              await quiet(initial + 2, "A short hidden interval keeps the current link");
+            },
+            { clock: true, viewport: { width, height: 960 } },
+          );
+        },
+      );
 
     for (const { populated, recovery, sourced } of sourceRef
       ? []
