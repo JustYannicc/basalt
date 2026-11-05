@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import { spawn, execFileSync } from "node:child_process";
+import { once } from "node:events";
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { test } from "node:test";
+
+test(
+  "real Bun cache hardlinks cannot carry an orphan's writes into a published generation",
+  { timeout: 15000 },
+  async (t) => {
+    const fixture = mkdtempSync(join(tmpdir(), "basalt-476-hardlink-"));
+    const realBun = execFileSync("which", ["bun"], { encoding: "utf8" }).trim();
+    const bin = join(fixture, "bin");
+    const template = join(fixture, "template");
+    mkdirSync(bin);
+    mkdirSync(template);
+    const lifecycle = join(fixture, "lifecycle.mjs");
+    const gate = join(fixture, "release");
+    const owned = new Set<number>();
+    t.after(() => {
+      for (const pid of owned) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e;
+        }
+      }
+      const writable = (path: string) => {
+        chmodSync(path, 0o755);
+        for (const e of readdirSync(path, { withFileTypes: true }))
+          if (e.isDirectory()) writable(join(path, e.name));
+      };
+      writable(fixture);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+    writeFileSync(
+      lifecycle,
+      `
+import { openSync, writeSync, closeSync, existsSync, watch, realpathSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
+const path = realpathSync('node_modules/is-number/index.js');
+if (process.env.FIXTURE_MODE === 'orphan') {
+  const fd = openSync(path, 'r+');
+  const gate = process.env.FIXTURE_GATE;
+  const released = new Promise(resolve => {
+    const watcher = watch(dirname(gate), () => {
+      if (existsSync(gate)) { watcher.close(); resolve(); }
+    });
+  });
+  console.log(JSON.stringify({type:'held', pid:process.pid, bunPid:process.ppid, path, inode:statSync(path).ino}));
+  await released;
+  writeSync(fd, Buffer.from('ORPHAN-WROTE-THIS'), 0, 17, 0);
+  closeSync(fd);
+  console.log(JSON.stringify({type:'orphan-finished'}));
+}
+`,
+    );
+    writeFileSync(
+      join(template, "package.json"),
+      JSON.stringify({
+        name: "hardlink-fixture",
+        scripts: { prepare: `node ${lifecycle}` },
+        dependencies: { "is-number": "7.0.0" },
+      }),
+    );
+    writeFileSync(join(template, "bunfig.toml"), '[install]\nlinker = "isolated"\n');
+    const common = {
+      ...process.env,
+      BUN_INSTALL_CACHE_DIR: join(fixture, "bun-cache"),
+      BASALT_UPSTREAM_CACHE: join(fixture, "cache"),
+      FIXTURE_GATE: gate,
+    };
+    execFileSync(realBun, ["install", "--ignore-scripts", "--backend=hardlink"], {
+      cwd: template,
+      env: common,
+      stdio: "pipe",
+    });
+    // --version must remain a version request, without install-only flags.
+    writeFileSync(
+      join(bin, "bun"),
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then exec '${realBun}' --version; fi\nexec '${realBun}' --backend=hardlink "$@"\n`,
+    );
+    chmodSync(join(bin, "bun"), 0o755);
+    function start(name: string) {
+      const root = join(fixture, name);
+      mkdirSync(root);
+      for (const file of ["package.json", "bunfig.toml", "bun.lock"])
+        cpSync(join(template, file), join(root, file));
+      const child = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+    import { installUpstreamDependencies } from ${JSON.stringify(new URL("./upstream-dependencies.ts", import.meta.url).href)};
+    const prepared = await installUpstreamDependencies(${JSON.stringify(root)}, 'fixture-pin');
+    console.log(JSON.stringify({type:'published', ...prepared}));
+  `,
+        ],
+        {
+          env: { ...common, PATH: `${bin}:${process.env.PATH}`, FIXTURE_MODE: name },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      owned.add(child.pid!);
+      child.on("exit", () => owned.delete(child.pid!));
+      let errors = "";
+      child.stderr!.on("data", (data) => {
+        errors += data;
+      });
+      const queued: Record<string, unknown>[] = [],
+        waiting: { type: string; resolve: (value: Record<string, unknown>) => void }[] = [];
+      createInterface({ input: child.stdout! }).on("line", (line) => {
+        if (!line.startsWith('{"type":')) return;
+        const message = JSON.parse(line);
+        if (message.type === "held") {
+          owned.add(Number(message.pid));
+          owned.add(Number(message.bunPid));
+        }
+        const index = waiting.findIndex((w) => w.type === message.type);
+        if (index < 0) queued.push(message);
+        else waiting.splice(index, 1)[0]!.resolve(message);
+      });
+      return {
+        child,
+        root,
+        next(type: string) {
+          const index = queued.findIndex((m) => m.type === type);
+          if (index >= 0) return Promise.resolve(queued.splice(index, 1)[0]!);
+          return new Promise<Record<string, unknown>>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error(`Waiting for ${type}: ${errors}`)),
+              12000,
+            );
+            waiting.push({
+              type,
+              resolve(value) {
+                clearTimeout(timer);
+                resolve(value);
+              },
+            });
+          });
+        },
+      };
+    }
+    const first = start("orphan");
+    const held = await first.next("held");
+    const stopped = once(first.child, "exit");
+    first.child.kill("SIGKILL");
+    await stopped;
+    const second = start("replacement");
+    const published = await second.next("published");
+    if (second.child.exitCode === null) await once(second.child, "exit");
+    const packageFile = join(String(published.store), "node_modules/is-number/index.js");
+    const before = readFileSync(packageFile, "utf8");
+    const state = statSync(packageFile);
+
+    writeFileSync(gate, "release");
+    await first.next("orphan-finished");
+    const after = readFileSync(packageFile, "utf8");
+    assert.notEqual(state.ino, held.inode, "private installs must not share package inodes");
+    assert.equal(after, before, "the orphan must not change published bytes");
+    console.log(
+      JSON.stringify(
+        {
+          realBun: execFileSync(realBun, ["--version"], { encoding: "utf8" }).trim(),
+          defaultBackend: "hardlink",
+          installBackend: "copyfile",
+          distinctAttemptAndGenerationPaths: held.path !== packageFile,
+          sharedInode: state.ino === held.inode,
+          linkCount: state.nlink,
+          publishedFileMode: (state.mode & 0o777).toString(8),
+          publishedFileChangedAfterOrphanRelease: after !== before,
+          prefixAfterOrphanRelease: after.slice(0, 17),
+        },
+        null,
+        2,
+      ),
+    );
+  },
+);

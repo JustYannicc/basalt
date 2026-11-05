@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-expiring-pool-manager-tokens",
+  "file": "0288-expiring-pool-manager-tokens.patch",
+  "content_sha256": "09920d10ca4e1ea6a6e38deed810b14b633728f7bc087b6a76fc1ba35e506792",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -9,6 +9,7 @@ import pathlib
 import socket
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -101,10 +102,18 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
 
 def cluster_yaml(database_url: str) -> str:
     # A JSON-quoted scalar is valid YAML and preserves URI query/credential bytes.
-    encoded_url = json.dumps(database_url)
+    parsed = urllib.parse.urlsplit(database_url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query = [(key, value) for key, value in query if key != "application_name"]
+    query.append(("application_name", "basalt-home"))
+    encoded_url = json.dumps(urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query))))
     return (
         "pgsql:\n"
         f"  postgres_uri: {encoded_url}\n"
+        "  max-open-conns: 6\n"
+        "  max-idle-conns: 6\n"
+        "  conn-max-idle-time: 5m\n"
+        "  conn-max-lifetime: 30m\n"
         "node:\n"
         "  external-ip: 127.0.0.1\n"
         "  external-port: 8327\n"

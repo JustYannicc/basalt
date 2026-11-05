@@ -33,6 +33,21 @@ test("each changed carry needs its own changed constraint file", () => {
   expect(check([patch, constraint], new Set([patch]))).not.toEqual([]);
 });
 
+test("pool carries retain their own changed constraint through edits and retirement", () => {
+  const poolPatch = "containers/pool/patches/0284-home-db-pool.patch";
+  const poolConstraint = "architecture/model/carries/0284-home-db-pool.c4";
+  const present = new Set([poolPatch, poolConstraint]);
+  expect(check([poolPatch], present).join("\n")).toContain(poolConstraint);
+  expect(check([poolPatch, poolConstraint], present)).toEqual([]);
+  expect(check([poolConstraint], new Set([poolPatch])).join("\n")).toContain(
+    "active carry requires",
+  );
+  expect(check([poolPatch, poolConstraint], new Set([poolConstraint])).join("\n")).toContain(
+    "remove",
+  );
+  expect(check([poolPatch, poolConstraint], new Set())).toEqual([]);
+});
+
 test("a second carry cannot use the first carry's constraint", () => {
   const other = "patches/0246-other.patch";
   const present = new Set([patch, other, constraint]);

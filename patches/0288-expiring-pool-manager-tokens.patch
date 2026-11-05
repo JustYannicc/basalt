@@ -1,0 +1,170 @@
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 4dc2be5a0..8b92d5271 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -5,6 +5,7 @@ import { hostCookieName } from "./browser.ts";
+ import { HostedWorkflowInputs } from "./workflow-inputs.ts";
+ import { HostedAppAccounts } from "./app-accounts.ts";
+ import { HostedResourceAccess } from "./resource-access.ts";
++import { HostedPoolManagerTokens } from "./pool-manager-tokens.ts";
+ import { HostedPoolUsage } from "./pool-usage.ts";
+ import { HostedPools } from "./pools.ts";
+ import { HostedOAuthClients } from "./oauth-clients.ts";
+@@ -187,6 +188,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedGroups,
+     HostedResourceAccess,
+     HostedPoolUsage,
++    HostedPoolManagerTokens,
+     HostedPools,
+     HostedModels,
+     HostedAppConnections,
+diff --git a/apps/hosted/server/src/contracts/pool-manager-tokens.ts b/apps/hosted/server/src/contracts/pool-manager-tokens.ts
+new file mode 100644
+index 000000000..5fb8e3e5f
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-manager-tokens.ts
+@@ -0,0 +1,38 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { ApiError } from "@executor-js/utils/api-error";
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { BrowserSessionOnly, Principal, RequireUser } from "./auth.ts";
++import { RequiredAction } from "./authorization.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++
++export const MintPoolManagerToken = Schema.Struct({
++  user: Principal.fields.userId,
++  lifetimeSeconds: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(900)),
++});
++export const PoolManagerTokenUnavailable = ApiError.define({
++  tag: "PoolManagerTokenUnavailable",
++  status: 503,
++  message: "Temporary pool access is unavailable.",
++});
++export const PoolManagerToken = Schema.Struct({
++  token: Schema.NonEmptyString,
++  expiresAt: Schema.NonEmptyString,
++});
++export const HostedPoolManagerTokens = HttpApiGroup.make("poolManagerTokens")
++  .add(
++    HttpApiEndpoint.post("mint", "/api/organizations/:organization/apps/:app/pool-manager-tokens", {
++      params: { organization: OrganizationReference, app: AppId },
++      payload: MintPoolManagerToken,
++      success: PoolManagerToken,
++      error: [OrganizationForbidden, StorageError, PoolManagerTokenUnavailable],
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(BrowserSessionOnly, true)
++      .middleware(RequireUser),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index 753d7c85d..5a0ab814f 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -12,6 +12,7 @@ import { HostedAppManagementApi, HostedFrameworkApi } from "../contracts/app-man
+ import { hostedAppAccess } from "../app-management.ts";
+ import { hostedResourceAccessHandlers } from "./resource-access.ts";
+ import { hostedModelHandlers } from "./model-bindings.ts";
++import { hostedPoolManagerTokenHandlers } from "./pool-manager-tokens.ts";
+ import { hostedPoolUsageHandlers } from "./pool-usage.ts";
+ import { hostedPoolHandlers } from "./pools.ts";
+ import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
+@@ -88,6 +89,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedGroupHandlers,
+   hostedResourceAccessHandlers,
+   hostedPoolUsageHandlers,
++  hostedPoolManagerTokenHandlers,
+   hostedPoolHandlers,
+   hostedModelHandlers,
+   hostedAppConnectionHandlers,
+diff --git a/apps/hosted/server/src/implementation/pool-manager-tokens.ts b/apps/hosted/server/src/implementation/pool-manager-tokens.ts
+new file mode 100644
+index 000000000..2498953b2
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-manager-tokens.ts
+@@ -0,0 +1,68 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import { HostedApi } from "../contracts/api.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import {
++  MintPoolManagerToken,
++  PoolManagerTokenUnavailable,
++} from "../contracts/pool-manager-tokens.ts";
++import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
++import { signPoolToken } from "./pool-token.ts";
++
++const Pool = Schema.Struct({ owner: Schema.String, authorization: Schema.NullOr(Schema.String) });
++
++/** Mint under the same access lock as role and app-policy changes; never accept a caller identity from a grant. */
++export const mintPoolManagerToken = (app: AppId, input: typeof MintPoolManagerToken.Type) =>
++  Effect.gen(function* () {
++    const parsed = yield* Schema.decodeUnknownEffect(MintPoolManagerToken)(input);
++    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(
++      Config.option,
++      Effect.mapError(() => new PoolManagerTokenUnavailable()),
++    );
++    if (Option.isNone(key)) return yield* new PoolManagerTokenUnavailable();
++    const sql = yield* policyDatabase;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        if (parsed.user !== actor.user) return yield* new OrganizationForbidden();
++        yield* requireAppAccessAs(actor, app, "manage");
++        const rows = yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner,
++        entry.value ->> 'authorization' as authorization
++        from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++        where o.id = ${actor.organization} and app.id = ${app}`;
++        const pools = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++        if (pools.length !== 1 || pools[0] === undefined) return yield* new OrganizationForbidden();
++        const pool = pools[0];
++        // Retained pools still use their recorded owner; app management alone cannot upgrade that authority.
++        if (pool.authorization !== "executor-app-v1" && pool.owner !== actor.user)
++          return yield* new OrganizationForbidden();
++        const exp = Math.floor((yield* Clock.currentTimeMillis) / 1000) + parsed.lifetimeSeconds;
++        const token = yield* Effect.tryPromise({
++          try: () =>
++            signPoolToken(Redacted.value(key.value), {
++              pool: app,
++              owner: actor.user,
++              organization: actor.organization,
++              exp,
++            }),
++          catch: () => new PoolManagerTokenUnavailable(),
++        });
++        return { token, expiresAt: new Date(exp * 1000).toISOString() };
++      }),
++    );
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new OrganizationForbidden(),
++    }),
++  );
++
++export const hostedPoolManagerTokenHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "poolManagerTokens",
++  (handlers) =>
++    handlers.handle("mint", ({ params, payload }) => mintPoolManagerToken(params.app, payload)),
++);
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 26cd124c2..c168589f6 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -21,6 +21,7 @@ const errorMessage = Match.type<HostedError>().pipe(
+     AccountProvisioned: ({ message }) => message,
+     AccountResetUnavailable: ({ message }) => message,
+     AccountResetRefused: ({ message }) => message,
++    PoolManagerTokenUnavailable: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,
+     AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",

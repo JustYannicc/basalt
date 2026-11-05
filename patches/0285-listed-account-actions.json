@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-listed-account-actions",
+  "file": "0285-listed-account-actions.patch",
+  "content_sha256": "a732682906d62543fc4d2b1aa79a709fd90101a3535c4a764c4eca74f8f3a237",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

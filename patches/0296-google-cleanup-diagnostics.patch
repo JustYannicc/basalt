@@ -1,0 +1,176 @@
+diff --git a/e2e/support/google-race-cleanup.ts b/e2e/support/google-race-cleanup.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/google-race-cleanup.ts
+@@ -0,0 +1,126 @@
++/** Persist cleanup progress before scope closure can time out and hide its request evidence. */
++import { expect } from "@effect/vitest";
++import { Clock, Effect, Option, Schema } from "effect";
++import { Api, type Session } from "./api.ts";
++import { Evidence } from "./evidence.ts";
++import {
++  settleWebhookSubscriptions,
++  WebhookSubscriptionRow,
++  webhookSubscriptions,
++} from "./webhook-sources.ts";
++
++export const googleRaceCleanup = (
++  actor: Session,
++  appPath: string,
++  primary: string,
++  subscription: string,
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const evidence = yield* Evidence;
++    const started = yield* Clock.currentTimeMillis;
++    const unlinkPath = `${appPath}/accounts/user/primary/${primary}`;
++    const subscriptionPath = `${appPath}/webhooks/${subscription}`;
++    const listPath = `${appPath}/webhooks`;
++    let phase = "starting";
++    let requestFailure: string | undefined;
++    let polls = 0;
++    let failed = false;
++    let subscriptions = Array<{ id: string; status: string; failure: string | null }>();
++    const requests = new Map<
++      string,
++      { method: string; status: number | null; durationMs: number }
++    >();
++    const save = Effect.suspend(() =>
++      Clock.currentTimeMillis.pipe(
++        Effect.flatMap((now) =>
++          evidence.json("duplicate-race-cleanup-progress.json", {
++            phase,
++            failed,
++            elapsedMs: now - started,
++            requests: [...requests].map(([operation, result]) => ({ operation, ...result })),
++            requestFailure,
++            polls,
++            subscriptionCount: subscriptions.length,
++            subscriptions: subscriptions.slice(0, 20),
++          }),
++        ),
++      ),
++    );
++    const observed = Api.of({
++      ...api,
++      request: (session, method, path, data, headers) =>
++        Effect.gen(function* () {
++          const operation =
++            path === unlinkPath
++              ? "unlink-primary"
++              : path === subscriptionPath
++                ? "remove-manual-webhook"
++                : "read-webhooks";
++          const sentAt = yield* Clock.currentTimeMillis;
++          phase = operation;
++          requests.set(operation, { method, status: null, durationMs: 0 });
++          yield* save;
++          const response = yield* api.request(session, method, path, data, headers).pipe(
++            Effect.tapError((error) =>
++              Effect.gen(function* () {
++                requestFailure = error.reason;
++                requests.set(operation, {
++                  method,
++                  status: error.status ?? null,
++                  durationMs: (yield* Clock.currentTimeMillis) - sentAt,
++                });
++                yield* save;
++              }),
++            ),
++          );
++          requests.set(operation, {
++            method,
++            status: response.status,
++            durationMs: (yield* Clock.currentTimeMillis) - sentAt,
++          });
++          yield* save;
++          if (method === "GET" && path === listPath && response.status === 200) {
++            const rows = Schema.decodeUnknownOption(Schema.Array(WebhookSubscriptionRow))(
++              response.body,
++            );
++            if (Option.isSome(rows))
++              subscriptions = rows.value.map(({ id, status, failure }) => ({
++                id,
++                status,
++                failure,
++              }));
++            polls++;
++            yield* save;
++          }
++          return response;
++        }),
++    });
++    yield* save;
++    return yield* Effect.gen(function* () {
++      yield* webhookSubscriptions(actor, appPath);
++      const unlinked = yield* observed.request(actor, "DELETE", unlinkPath);
++      expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++      const removed = yield* observed.request(actor, "DELETE", subscriptionPath);
++      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++      const stopped = yield* settleWebhookSubscriptions(
++        actor,
++        appPath,
++        (hooks) =>
++          hooks.some((item) => item.id === subscription) &&
++          hooks.every((item) => item.status === "stopped"),
++      );
++      phase = "stopped";
++      yield* save;
++      yield* evidence.json("duplicate-race-cleanup-stopped.json", {
++        primaryUnlinked: true,
++        subscriptions: stopped.map(({ id, status }) => ({ id, status })),
++      });
++    }).pipe(
++      Effect.provideService(Api, observed),
++      Effect.onError(() => {
++        failed = true;
++        return save;
++      }),
++    );
++  });
+diff --git a/e2e/tests/google-duplicate-binding-race.spec.ts b/e2e/tests/google-duplicate-binding-race.spec.ts
+--- a/e2e/tests/google-duplicate-binding-race.spec.ts
++++ b/e2e/tests/google-duplicate-binding-race.spec.ts
+@@ -9,7 +9,7 @@
+ import { Artifact } from "../support/production-ops-client.ts";
+ import { boundary } from "../support/provider-adoption-steps.ts";
+ import { Evidence } from "../support/evidence.ts";
+-import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
++import { googleRaceCleanup } from "../support/google-race-cleanup.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const source = `import { defineApp, defineProvider, oauth2, secrets, object, string, router } from "apps";
+@@ -45,31 +45,7 @@
+         const hook = yield* body(Subscription, created);
+         expect(hook.status).toBe("active");
+         yield* Effect.addFinalizer(() =>
+-          Effect.gen(function* () {
+-            const unlinked = yield* api.request(
+-              actors.owner,
+-              "DELETE",
+-              `${path}/accounts/user/primary/${primary}`,
+-            );
+-            expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+-            const removed = yield* api.request(
+-              actors.owner,
+-              "DELETE",
+-              `${path}/webhooks/${hook.id}`,
+-            );
+-            expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+-            const stopped = yield* settleWebhookSubscriptions(
+-              actors.owner,
+-              path,
+-              (hooks) =>
+-                hooks.some((item) => item.id === hook.id) &&
+-                hooks.every((item) => item.status === "stopped"),
+-            );
+-            yield* (yield* Evidence).json("duplicate-race-cleanup-stopped.json", {
+-              primaryUnlinked: true,
+-              subscriptions: stopped.map(({ id, status }) => ({ id, status })),
+-            });
+-          }).pipe(Effect.orDie),
++          googleRaceCleanup(actors.owner, path, primary, hook.id).pipe(Effect.orDie),
+         );
+         const requirement = yield* body(
+           LinkRequirement,

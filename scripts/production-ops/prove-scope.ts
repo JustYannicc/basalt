@@ -98,7 +98,7 @@ try {
   );
   for (const scenario of cases) {
     console.log(`Isolated scope proof: ${scenario.title}`);
-    const evidenceRoot = `${root}/.upstream/.local/e2e`;
+    const evidenceRoot = `${root}/.generated/e2e-evidence`;
     await mkdir(evidenceRoot, { recursive: true });
     const previousRuns = new Set(await readdir(evidenceRoot));
     const environment = { ...process.env };
@@ -119,6 +119,7 @@ try {
         stdio: "inherit",
         env: {
           ...environment,
+          BASALT_E2E_EXPORT: "1",
           BASALT_E2E_PRODUCTION_OPS: "1",
           ...(scenario.binding === undefined
             ? {}

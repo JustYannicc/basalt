@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const carryPath = /^patches\/(\d{4}-.+)\.(?:patch|json)$/;
+const carryPath = /^(?:patches|containers\/pool\/patches)\/(\d{4}-.+)\.(?:patch|json)$/;
 const constraintPath = /^architecture\/model\/carries\/(\d{4}-.+)\.c4$/;
 const identifier = "[a-zA-Z_][a-zA-Z0-9_-]*";
 const statement = new RegExp(
@@ -46,7 +46,10 @@ export function architectureChangeErrors(
   ]);
   for (const stem of governed) {
     const constraint = `architecture/model/carries/${stem}.c4`;
-    const active = present.has(`patches/${stem}.patch`) || present.has(`patches/${stem}.json`);
+    const active =
+      present.has(`patches/${stem}.patch`) ||
+      present.has(`patches/${stem}.json`) ||
+      present.has(`containers/pool/patches/${stem}.patch`);
     if (!active) {
       if (present.has(constraint))
         errors.push(`${stem}: remove ${constraint} when retiring the carry`);

@@ -8,8 +8,12 @@ const claims = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org
 
 test("pool tokens carry a SHA-256 key id and return the original claims", async () => {
   const token = await signPoolToken(current, claims);
-  const payload = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()) as { kid: string };
-  const digest = Buffer.from(await crypto.subtle.digest("SHA-256", Buffer.from(current, "hex"))).toString("hex");
+  const payload = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString()) as {
+    kid: string;
+  };
+  const digest = Buffer.from(
+    await crypto.subtle.digest("SHA-256", Buffer.from(current, "hex")),
+  ).toString("hex");
   assert.equal(payload.kid, digest.slice(0, 8));
   assert.deepEqual(await verifyPoolToken(current, token), claims);
 });
@@ -33,4 +37,28 @@ test("a key id never bypasses signature verification or accepts an unknown key",
   const unknown = await signEnvelope(current, "sbp1", { ...claims, kid: "00000000" });
   assert.equal(await verifyPoolToken(current, unknown, previous), undefined);
   assert.equal(await verifyPoolToken(current, `${currentToken}x`, previous), undefined);
+});
+
+test("optional pool expiry rejects expired tokens while preserving tokens without expiry", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  for (const key of [current, previous]) {
+    for (const exp of [now - 1, now]) {
+      const token = await signPoolToken(key, { ...claims, exp });
+      assert.equal(await verifyPoolToken(current, token, previous), undefined);
+    }
+    const exp = now + 900;
+    const token = await signPoolToken(key, { ...claims, exp });
+    assert.deepEqual(await verifyPoolToken(current, token, previous), { ...claims, exp });
+    assert.deepEqual(
+      await verifyPoolToken(current, await signPoolToken(key, claims), previous),
+      claims,
+    );
+  }
+});
+
+test("malformed optional expiries cannot become permanent pool tokens", async () => {
+  for (const exp of [null, "9999999999", 1.5, -1, 0, Number.MAX_SAFE_INTEGER + 1]) {
+    const token = await signEnvelope(current, "sbp1", { ...claims, exp });
+    assert.equal(await verifyPoolToken(current, token), undefined);
+  }
 });
