@@ -66,10 +66,10 @@
       "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
     "poolSetupConnect": [
-      "declared:self-host"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ],
     "poolKeysConnect": [
-      "declared:self-host"
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab"
     ]
   },
   "inputs": [

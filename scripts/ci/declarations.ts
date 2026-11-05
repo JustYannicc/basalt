@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
+import { frozenInputMatcher, isRelativeInput } from "./inputs.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const targets = ["self-host", "local", "cloud"] as const;
@@ -35,6 +36,7 @@ const json = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export function readDeclarations(root = repository) {
+  let matchesInput: ReturnType<typeof frozenInputMatcher> | undefined;
   const manualTargets = Object.fromEntries(
     Object.entries(
       record(record(json(join(root, "scripts/ci/inherited-tests.json"))).manualTargets ?? {}),
@@ -135,8 +137,13 @@ export function readDeclarations(root = repository) {
         if (!Object.keys(scenarios).length && !config.length && !inherited.length)
           throw new Error(file + ": test has no declared owner or CI job");
         const inputs = source.inputs === undefined ? [] : strings(source.inputs);
-        if (inputs.some((path) => path.startsWith("/") || path.split("/").includes("..")))
+        if (inputs.some((path) => !isRelativeInput(path)))
           throw new Error(file + ": input escapes the repository");
+        for (const input of inputs) {
+          matchesInput ??= frozenInputMatcher(root);
+          if (!matchesInput(input))
+            throw new Error(file + ": input matches no frozen source or carried target: " + input);
+        }
         const fixture =
           source.fixture === undefined
             ? undefined

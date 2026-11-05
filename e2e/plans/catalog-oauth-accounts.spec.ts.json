@@ -28,7 +28,6 @@
     ".upstream/apps/hosted/server/src/implementation/shared-catalog-oauth.ts",
     ".upstream/apps/hosted/web/src/contracts/errors.ts",
     ".upstream/packages/sdk/src/contracts/oauth-families.ts",
-    ".upstream/packages/sdk/src/contracts/oauth-scopes.ts",
     ".upstream/packages/sdk/src/contracts/oauth.ts",
     ".upstream/packages/sdk/src/implementation/oauth.ts"
   ]

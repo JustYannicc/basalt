@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Adopted scenarios declare their exact fixtures, applicability and CI groups beside each test. Preparation and source verification derive the same typed overlay, and coverage rejects missing plans, drift and scheduled targets without a runner. Input patterns must match frozen source or carried targets. Undeclared executable inputs and shared E2E helpers select the full suite and all declaration matrices; area heuristics cannot establish coverage."
+    }
+  }
+}

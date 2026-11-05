@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { Schema } from "effect";
 import { legacyScenarios, scenarios, TestPlan } from "../../.upstream/e2e/test-plan.ts";
 import { readDeclarations } from "./declarations.ts";
+import { upstreamInputFiles } from "./inputs.ts";
 
 const root = process.cwd();
 const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
@@ -19,6 +20,16 @@ const inventory = JSON.parse(readFileSync("scripts/ci/inherited-tests.json", "ut
 };
 const pin = JSON.parse(readFileSync("upstream.json", "utf8")).commit;
 assert.equal(inventory.pin, pin, "Refresh the inherited inventory when the upstream pin changes");
+assert.deepEqual(
+  upstreamInputFiles(root),
+  execFileSync("git", ["-C", ".upstream", "ls-tree", "-r", "--name-only", "-z", pin], {
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+  })
+    .split("\0")
+    .filter(Boolean),
+  "Frozen upstream input inventory differs from the pinned source",
+);
 const original = execFileSync("git", ["-C", ".upstream", "show", pin + ":e2e/test-plan.ts"], {
   encoding: "utf8",
   maxBuffer: 8 * 1024 * 1024,

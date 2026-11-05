@@ -21,6 +21,7 @@ import {
   readDeclarations,
 } from "./ci/declarations.ts";
 import { selectPaths } from "./ci/affected.ts";
+import { heavyJobs } from "./ci/areas.ts";
 
 const scenario = (title: string) => ({
   title,
@@ -47,6 +48,27 @@ const withFixture = (
       matrix: true,
     },
   });
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/first.ts"), "export const first = true;\n");
+  writeFileSync(join(root, "src/second.ts"), "export const second = true;\n");
+  write("upstream.json", { commit: "a".repeat(40) });
+  write("scripts/ci/upstream-files.json", { pin: "a".repeat(40), files: [] });
+  for (const args of [
+    ["init", "-q"],
+    ["add", "."],
+    [
+      "-c",
+      "user.name=CI fixture",
+      "-c",
+      "user.email=ci@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-qm",
+      "Frozen source",
+    ],
+  ])
+    execFileSync("git", args, { cwd: root, stdio: "pipe" });
   try {
     run(root, write);
   } finally {
@@ -118,6 +140,30 @@ test("an affected Maps declaration selects its file rather than every newly adop
   assert.ok(!selected.jobs.includes("declared-self-host"));
 });
 
+test("undeclared E2E helpers retain every heavy job and every declaration matrix", () => {
+  const all = declaredMatrices();
+  for (const path of [
+    ".upstream/e2e/support/account-family-product.ts",
+    ".upstream/e2e/support/account-rows.ts",
+    ".upstream/e2e/fixtures/google-provider-declarations.json",
+  ]) {
+    const selected = selectPaths([path]);
+    assert.deepEqual(selected.jobs, heavyJobs, path);
+    assert.equal(selected.declaredFiles, null, path);
+    assert.deepEqual(declaredMatrices(selected.declaredFiles), all, path);
+  }
+  assert.ok(
+    all["declared-local"]!.include.some(
+      (entry) => entry.file === "account-identity-screens.spec.ts",
+    ),
+  );
+  assert.ok(
+    Object.values(all).some((matrix) =>
+      matrix.include.some((entry) => entry.file === "account-directory-health.spec.ts"),
+    ),
+  );
+});
+
 test("every scheduled target requires a runner, with explicit inherited attached exceptions", () =>
   withFixture((root, write) => {
     const plan = scenario("Both hosted targets");
@@ -150,6 +196,11 @@ test("the coverage CLI rejects a changed inherited image test even with the old 
   const repository = fileURLToPath(new URL("../", import.meta.url));
   const root = mkdtempSync(join(tmpdir(), "basalt-coverage-"));
   try {
+    execFileSync(
+      "git",
+      ["clone", "--quiet", "--shared", "--no-checkout", "--single-branch", repository, root],
+      { stdio: "pipe" },
+    );
     for (const path of ["e2e", "scripts/ci", ".github/workflows"])
       mkdirSync(join(root, path), { recursive: true });
     cpSync(join(repository, "e2e/plans"), join(root, "e2e/plans"), { recursive: true });
@@ -159,6 +210,10 @@ test("the coverage CLI rejects a changed inherited image test even with the old 
     );
     cpSync(join(repository, ".github/workflows/ci.yml"), join(root, ".github/workflows/ci.yml"));
     cpSync(join(repository, "upstream.json"), join(root, "upstream.json"));
+    cpSync(
+      join(repository, "scripts/ci/upstream-files.json"),
+      join(root, "scripts/ci/upstream-files.json"),
+    );
     symlinkSync(join(repository, ".upstream"), join(root, ".upstream"), "dir");
     const inventory = JSON.parse(
       readFileSync(join(repository, "scripts/ci/inherited-tests.json"), "utf8"),
@@ -178,6 +233,20 @@ test("the coverage CLI rejects a changed inherited image test even with the old 
     assert.ifError(result.error);
     assert.notEqual(result.status, 0);
     assert.match(result.stdout + result.stderr, /Changed inherited test needs a declaration/);
+    cpSync(
+      join(repository, "e2e/plans/docker-release.spec.ts.json"),
+      join(root, "e2e/plans/docker-release.spec.ts.json"),
+    );
+    const upstream = JSON.parse(readFileSync(join(root, "scripts/ci/upstream-files.json"), "utf8"));
+    upstream.files.push("packages/sdk/nonexistent-source.ts");
+    writeFileSync(join(root, "scripts/ci/upstream-files.json"), JSON.stringify(upstream));
+    const stale = spawnSync("bun", [join(repository, "scripts/ci/check-plans.ts")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.ifError(stale.error);
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.stdout + stale.stderr, /Frozen upstream input inventory differs/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

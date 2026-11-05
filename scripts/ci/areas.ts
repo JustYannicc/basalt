@@ -69,6 +69,9 @@ export const heavyJobs = [
 
 // Shared infrastructure changes need every consumer. Feature rules below may overlap deliberately.
 export const sharedInputs = [
+  // Helpers and fixture assets may have consumers outside any one declaration.
+  ".upstream/e2e/support/**",
+  ".upstream/e2e/fixtures/**",
   "upstream.json",
   "brand.ts",
   "alchemy.run.ts",
@@ -236,21 +239,13 @@ export const areas = [
 ];
 
 export const staticInputs = [
-  "architecture/**",
-  "docs/**",
+  "architecture/**/*.c4",
+  "architecture/**/*.md",
+  "docs/**/*.md",
   "README.md",
   "LICENSE",
   "AGENTS.md",
   "CONTRIBUTING.md",
   ".github/pull_request_template.md",
   ".gitignore",
-  "scripts/cpa-*",
-  "scripts/cpa-*/**",
-  "scripts/architecture/**",
-  "scripts/app-lint/**",
-  "scripts/*.{test,spec}.{ts,mjs}",
-  "src/**/*.{test,spec}.{ts,mjs}",
-  "apps/pool/**/*.{test,spec}.{ts,mjs}",
-  "e2e/scale-{test,verdict}.test.mjs",
-  "e2e/slack/*.test.mjs",
 ];
