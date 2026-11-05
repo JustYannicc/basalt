@@ -529,12 +529,13 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index e7e6278..515e263 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -289,6 +289,28 @@ export const scenarios = plan({
+@@ -289,6 +289,29 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
 +  googleDuplicateBindingRace: {
 +    fixtures: "actors",
++    deferOnboarding: true,
 +    file: "google-duplicate-binding-race.spec.ts",
 +    title:
 +      "Google identity recovery retires exact duplicate bindings during secondary webhook registration",
