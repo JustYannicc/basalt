@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Overlapping hosted section navigations preserve one router pending boundary until content is ready. Leaving a section that has presented content still unmounts its active subscriptions, so inactive sections make no focus, visibility or periodic reads. First-entry and forced preceding-route-download guards retain their pending-element, revisit and deadline assertions on desktop and phone."
+    }
+  }
+}
