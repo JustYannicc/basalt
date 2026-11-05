@@ -1,0 +1,939 @@
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index d61bdc2..f83ad5c 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -21,6 +21,7 @@
+     "./resource-access": "./src/contracts/resource-access.ts",
+     "./account-resets": "./src/contracts/account-resets.ts",
+     "./account-observations": "./src/contracts/account-observations.ts",
++    "./account-traffic": "./src/contracts/account-traffic.ts",
+     "./oauth-clients": "./src/contracts/oauth-clients.ts",
+     "./database": "./src/implementation/database.ts",
+     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
+diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/server/src/contracts/account-traffic.ts
+new file mode 100644
+index 0000000..7fd8616
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/account-traffic.ts
+@@ -0,0 +1,51 @@
++import { AccountId, StorageError } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { RequiredAction } from "./authorization.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++
++/** The most accounts one read names; an Accounts list asks for its visible rows at once. */
++export const maxTrafficAccounts = 200;
++/** The recent hours an account row shows as ticks, the current partial hour last. */
++export const trafficTickHours = 8;
++
++const Count = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++export const AccountTrafficInput = Schema.Struct({
++  accounts: Schema.Array(AccountId).check(Schema.isMaxLength(maxTrafficAccounts)),
++});
++
++/** The tool calls one account served: 7 days of totals, recent hours and its latest success. */
++export const AccountTraffic = Schema.Struct({
++  account: AccountId,
++  requests: Count,
++  failed: Count,
++  /** Hours with calls among the last `trafficTickHours`, oldest first; ISO hour starts. */
++  recent: Schema.Array(Schema.Struct({ at: Schema.String, requests: Count, failed: Count })),
++  lastSuccessAt: Schema.NullOr(Schema.String),
++});
++export type AccountTraffic = typeof AccountTraffic.Type;
++
++/**
++ * Lists only accounts the caller may inspect that served a counted call; an account it may not
++ * inspect is left out exactly as one nothing called, so the answer never shows which is which.
++ */
++export const AccountTrafficPage = Schema.Struct({
++  readAt: Schema.String,
++  accounts: Schema.Array(AccountTraffic),
++});
++
++export const HostedAccountTraffic = HttpApiGroup.make("accountTraffic")
++  .add(
++    HttpApiEndpoint.post("read", "/api/organizations/:organization/account-traffic", {
++      params: { organization: OrganizationReference },
++      payload: AccountTrafficInput,
++      success: AccountTrafficPage,
++      error: [OrganizationForbidden, StorageError],
++    }).annotate(RequiredAction, "read"),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 8b92d52..7723886 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -7,6 +7,7 @@ import { HostedAppAccounts } from "./app-accounts.ts";
+ import { HostedResourceAccess } from "./resource-access.ts";
+ import { HostedPoolManagerTokens } from "./pool-manager-tokens.ts";
+ import { HostedPoolUsage } from "./pool-usage.ts";
++import { HostedAccountTraffic } from "./account-traffic.ts";
+ import { HostedPools } from "./pools.ts";
+ import { HostedOAuthClients } from "./oauth-clients.ts";
+ import { HostedSchedules } from "./schedules.ts";
+@@ -188,6 +189,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedGroups,
+     HostedResourceAccess,
+     HostedPoolUsage,
++    HostedAccountTraffic,
+     HostedPoolManagerTokens,
+     HostedPools,
+     HostedModels,
+diff --git a/apps/hosted/server/src/implementation/account-traffic.ts b/apps/hosted/server/src/implementation/account-traffic.ts
+new file mode 100644
+index 0000000..6e87796
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-traffic.ts
+@@ -0,0 +1,50 @@
++import { AccountTrafficHost, type AccountId } from "@executor-js/sdk/core";
++import { Clock, Effect } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import { trafficTickHours, type AccountTraffic } from "../contracts/account-traffic.ts";
++import { HostedApi } from "../contracts/api.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { inspectableAccounts } from "./proofs/account-access.ts";
++
++const hour = 3_600_000;
++const week = 7 * 24 * hour;
++
++/**
++ * The tool calls each named account served in the last 7 days, for those the caller may inspect.
++ * Each account is judged on its own, so one the caller may not see never hides the others.
++ */
++export const readAccountTraffic = (accounts: readonly AccountId[]) =>
++  Effect.gen(function* () {
++    const visible = yield* inspectableAccounts([...new Set(accounts)]);
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const now = yield* Clock.currentTimeMillis;
++    const current = Math.floor(now / hour) * hour;
++    const recentFrom = current - (trafficTickHours - 1) * hour;
++    const records = yield* executor[AccountTrafficHost].read({
++      accounts: visible,
++      from: now - week,
++    });
++    return {
++      readAt: new Date(now).toISOString(),
++      accounts: records.map((record): AccountTraffic => ({
++        account: record.account,
++        requests: record.hours.reduce((sum, entry) => sum + entry.requests, 0),
++        failed: record.hours.reduce((sum, entry) => sum + entry.failed, 0),
++        recent: record.hours
++          .filter((entry) => entry.at >= recentFrom)
++          .map((entry) => ({
++            at: new Date(entry.at).toISOString(),
++            requests: entry.requests,
++            failed: entry.failed,
++          })),
++        lastSuccessAt:
++          record.lastSuccessAt === null ? null : new Date(record.lastSuccessAt).toISOString(),
++      })),
++    };
++  });
++
++export const hostedAccountTrafficHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "accountTraffic",
++  (handlers) => handlers.handle("read", ({ payload }) => readAccountTraffic(payload.accounts)),
++);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index 5a0ab81..c0641d0 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -14,6 +14,7 @@ import { hostedResourceAccessHandlers } from "./resource-access.ts";
+ import { hostedModelHandlers } from "./model-bindings.ts";
+ import { hostedPoolManagerTokenHandlers } from "./pool-manager-tokens.ts";
+ import { hostedPoolUsageHandlers } from "./pool-usage.ts";
++import { hostedAccountTrafficHandlers } from "./account-traffic.ts";
+ import { hostedPoolHandlers } from "./pools.ts";
+ import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
+ import { hostedScheduleHandlers } from "./schedules.ts";
+@@ -89,6 +90,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedGroupHandlers,
+   hostedResourceAccessHandlers,
+   hostedPoolUsageHandlers,
++  hostedAccountTrafficHandlers,
+   hostedPoolManagerTokenHandlers,
+   hostedPoolHandlers,
+   hostedModelHandlers,
+diff --git a/apps/hosted/server/src/implementation/proofs/account-access.ts b/apps/hosted/server/src/implementation/proofs/account-access.ts
+index d197a03..924030b 100644
+--- a/apps/hosted/server/src/implementation/proofs/account-access.ts
++++ b/apps/hosted/server/src/implementation/proofs/account-access.ts
+@@ -24,6 +24,7 @@ import { CurrentAuthorization } from "../../contracts/authorization.ts";
+ import { HostedExecutor } from "../../contracts/executor.ts";
+ import { OrganizationForbidden, organizationOwner } from "../../contracts/organization.ts";
+ import {
++  accountAccesses,
+   currentResourceAuthority,
+   requireAccountAccessAs,
+   visibleAppsAs,
+@@ -60,6 +61,32 @@ const checkAccountAccess = (account: AccountId, action: AccountAction) =>
+     return { owner, account, access };
+   });
+ 
++/**
++ * The accounts among `accounts` the caller may inspect, by the same rule as `AccountGrants.inspect`
++ * but read together: one policy query, and the token's app scope worked out once. It grants
++ * nothing and mints no proof; a read that only filters what it shows uses it.
++ */
++export const inspectableAccounts = (accounts: readonly AccountId[]) =>
++  Effect.gen(function* () {
++    if (accounts.length === 0) return [];
++    const actor = yield* currentResourceAuthority;
++    const readable = (yield* accountAccesses(accounts, actor))
++      .filter((access) => access.canUse || access.canManage)
++      .map((access) => access.account);
++    const scope = yield* CurrentAuthorization;
++    if (scope.tools.kind === "all") return readable;
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const apps = yield* executor.apps.list({
++      owner: organizationOwner(actor.organization),
++      ids: permittedAppIds(scope),
++    });
++    const reachable = yield* visibleAppsAs(actor, apps);
++    const linked = new Set(
++      (yield* callerLinkedAccounts(reachable.map((app) => app.id))).map((entry) => entry.id),
++    );
++    return readable.filter((account) => linked.has(account));
++  });
++
+ /** Check the request's target for `action` and return its proof. */
+ const grant = <A extends AccountAction>(action: A) =>
+   Effect.flatMap(AccountTargets[action], ({ account }) =>
+diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+new file mode 100644
+index 0000000..635da7b
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/connector-traffic.ts
+@@ -0,0 +1,82 @@
++/**
++ * The tool calls each visible account served, read in one polled request per page. The host
++ * leaves out accounts the caller may not inspect and accounts no call used, so either gets no
++ * numbers, never 0. A failed read gives nothing at all.
++ */
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import type { TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
++import { Effect } from "effect";
++import { Atom } from "effect/reactivity";
++import type { AccountId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { maxTrafficAccounts, trafficTickHours } from "@executor-js/hosted-server/account-traffic";
++import { HostedClient } from "./api.ts";
++
++const hour = 3_600_000;
++
++/** One account's counted tool calls, before the page names who counted them. */
++export interface ToolCallTraffic {
++  readonly requests: number;
++  readonly failed: number;
++  readonly ticks: readonly TrafficTick[];
++  readonly lastSuccessAt: string | null;
++}
++
++interface Key {
++  readonly organization: OrganizationReference;
++  readonly accounts: readonly AccountId[];
++}
++
++const read = ({ organization, accounts }: Key) =>
++  Effect.gen(function* () {
++    const client = yield* HostedClient;
++    const pages = yield* Effect.forEach(
++      Array.from({ length: Math.ceil(accounts.length / maxTrafficAccounts) }, (_, index) =>
++        accounts.slice(index * maxTrafficAccounts, (index + 1) * maxTrafficAccounts),
++      ),
++      (batch) =>
++        client.accountTraffic.read({ params: { organization }, payload: { accounts: batch } }),
++      { concurrency: 2 },
++    );
++    return new Map(
++      pages.flatMap((page) => {
++        // The server's hours, so a skewed browser clock never shifts the ticks.
++        const current = Math.floor(Date.parse(page.readAt) / hour) * hour;
++        return page.accounts.map((entry) => {
++          const traffic: ToolCallTraffic = {
++            requests: entry.requests,
++            failed: entry.failed,
++            ticks: Array.from({ length: trafficTickHours }, (_, index): TrafficTick => {
++              const start = current - (trafficTickHours - 1 - index) * hour;
++              const bucket = entry.recent.find((recent) => Date.parse(recent.at) === start);
++              return bucket === undefined || bucket.requests === 0
++                ? "none"
++                : bucket.failed > 0
++                  ? "bad"
++                  : "good";
++            }),
++            lastSuccessAt: entry.lastSuccessAt,
++          };
++          return [entry.account, traffic] as const;
++        });
++      }),
++    );
++  });
++
++// String keys: the family reuses the atom, and its polling, while the visible accounts stay put.
++const traffic = Atom.family((key: string) => {
++  const parsed = JSON.parse(key) as Key;
++  return pollingQuery(
++    browserOnly(
++      HostedClient.runtime.atom(
++        parsed.accounts.length === 0
++          ? Effect.succeed(undefined)
++          : read(parsed).pipe(Effect.catch(() => Effect.succeed(undefined))),
++      ),
++    ),
++  );
++});
++
++/** Each visible account's counted tool calls; undefined while unread or when the read failed. */
++export const toolCallTrafficAtom = (key: Key) => traffic(JSON.stringify(key));
+diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+index 2e2cf23..94a6142 100644
+--- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+@@ -1,4 +1,7 @@
+-/** The Accounts list's pool traffic: Requests 7d, the Health ticks and usage cell token counts. */
++/**
++ * The Accounts list's traffic: Requests 7d, the Health ticks and usage cell token counts from the
++ * pools carrying an account, and the tool calls it served from apps.
++ */
+ import { useAtomValue } from "@effect/atom-react";
+ import { Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+@@ -20,6 +23,10 @@ import {
+   windowTokensAtom,
+   windowTokensKey,
+ } from "../../contracts/pool-usage-series.ts";
++import { toolCallTrafficAtom } from "../../contracts/connector-traffic.ts";
++
++/** Who counted an account's tool calls, as its Details line names it. */
++const toolCalls = "tool calls";
+ 
+ type Window = Parameters<typeof windowStart>[0];
+ 
+@@ -30,8 +37,9 @@ type Rows = readonly {
+ }[];
+ 
+ /**
+- * One batched, polled read for every visible pool account. App (connector) accounts have no pool
+- * link, so they get no Requests value and keep their sign-in health.
++ * One batched, polled read for every visible pool account, and one for the tool calls every
++ * visible account served. An account neither counted gets no Requests value and keeps its sign-in
++ * health.
+  */
+ export function useAccountTraffic(
+   organization: OrganizationReference,
+@@ -75,21 +83,34 @@ export function useAccountTraffic(
+     }),
+     [organization, accountPools, counted],
+   );
++  const toolCallKey = useMemo(
++    () => ({ organization, accounts: [...new Set((rows ?? []).map((row) => row.id))].sort() }),
++    [organization, rows],
++  );
++  const called = Option.getOrUndefined(
++    AsyncResult.value(useAtomValue(toolCallTrafficAtom(toolCallKey))),
++  );
+   const needs = useAtomValue(windowNeedsAtom(named));
+   const tokens = Option.getOrUndefined(AsyncResult.value(useAtomValue(windowTokensAtom(needs))));
+ 
+-  // Callers who may read no visible pool's series get no Requests column at all, rather than a
+-  // column of blank cells; it appears once a read answers.
+-  const readable = counted !== undefined && [...counted.values()].some((pool) => pool.readable);
++  // Callers who may read no visible pool's series and have no counted tool call get no Requests
++  // column at all, rather than a column of blank cells; it appears once a read answers.
++  const readable =
++    (counted !== undefined && [...counted.values()].some((pool) => pool.readable)) ||
++    (called !== undefined && called.size > 0);
+   const traffic = readable
+     ? (accounts: readonly AccountSummary[]): AccountRowTraffic | undefined =>
+         mergeTraffic(
+-          accounts.flatMap((account) =>
+-            (accountPools.get(account.id) ?? []).map((pool) => {
+-              const entry = counted.get(pool)?.traffic.get(account.id);
+-              return entry === undefined ? undefined : { ...entry, gateways: [poolName(pool)] };
+-            }),
+-          ),
++          accounts.flatMap((account) => {
++            const calls = called?.get(account.id);
++            return [
++              ...(accountPools.get(account.id) ?? []).map((pool) => {
++                const entry = counted?.get(pool)?.traffic.get(account.id);
++                return entry === undefined ? undefined : { ...entry, gateways: [poolName(pool)] };
++              }),
++              calls === undefined ? undefined : { ...calls, gateways: [toolCalls] },
++            ];
++          }),
+         )
+     : undefined;
+   const windowTokens =
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 1b0b6da..de68719 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9607,6 +9607,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account rows and native pool usage."),
+     },
+   },
++  accountToolCalls: {
++    fixtures: "actors",
++    file: "account-tool-calls.spec.ts",
++    title:
++      "tool calls count toward the account they used on the Accounts list and its app's tab, and a member reads no counts for an account they cannot inspect",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The counts are the SDK's own storage on every host; self-host proves the path."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
+   appAccountTraffic: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/account-tool-calls.spec.ts b/e2e/tests/account-tool-calls.spec.ts
+new file mode 100644
+index 0000000..098f5dc
+--- /dev/null
++++ b/e2e/tests/account-tool-calls.spec.ts
+@@ -0,0 +1,179 @@
++/** Tool calls count toward the account they used, on the Accounts list and its app's tab. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { accountRow } from "../support/account-rows.ts";
++
++const files = [
++  {
++    path: "index.ts",
++    content: `import { defineApp, defineProvider, secrets, object, string, router, query } from "apps";
++const service = defineProvider({ name: "Tool call service", auth: {
++  key: secrets({ label: "API key", fields: object({ token: string() }) }),
++} });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({
++  ping: query({ input: object({}) }, async () => true),
++  fail: query({ input: object({}) }, async () => { throw new Error("Synthetic tool failure"); }),
++}) });`,
++  },
++  appsManifest,
++];
++
++const Count = Schema.Struct({ at: Schema.String, requests: Schema.Number, failed: Schema.Number });
++const Traffic = Schema.Struct({
++  readAt: Schema.String,
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Schema.String,
++      requests: Schema.Number,
++      failed: Schema.Number,
++      recent: Schema.Array(Count),
++      lastSuccessAt: Schema.NullOr(Schema.String),
++    }),
++  ),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account tool calls", (it) => {
++  it.effect(scenarios.accountToolCalls.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const suffix = randomUUID().slice(0, 8);
++        const label = `Counted key ${suffix}`;
++        const created: { app?: string; account?: string } = {};
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            if (created.app)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`))
++                  .status,
++              ).toBe(200);
++            if (created.account)
++              expect(
++                (yield* api.request(
++                  actors.owner,
++                  "DELETE",
++                  `${prefix}/accounts/${created.account}`,
++                )).status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Tool calls ${suffix}`,
++          files,
++        });
++        expect(deployed.status).toBe(200);
++        const app = (yield* body(App, deployed)).id;
++        created.app = app;
++        // Connecting from the app links the account to it, so calls need no choice. Personal, so
++        // only the owner may inspect it.
++        const connection = yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
++          {},
++        );
++        expect(connection.status).toBe(200);
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
++          { method: "key", label, fields: { token: "synthetic-tool-call-token" } },
++        );
++        expect(saved.status).toBe(200);
++        const account = (yield* body(Resource, saved)).id;
++        created.account = account;
++
++        // Two calls succeed and one throws in the app's code: three requests, one failed.
++        const call = (tool: "ping" | "fail" | "missing") =>
++          api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
++            tool,
++            kind: "query",
++            input: {},
++          });
++        expect((yield* call("ping")).status).toBe(200);
++        expect((yield* call("fail")).status).toBeGreaterThanOrEqual(400);
++        expect((yield* call("ping")).status).toBe(200);
++        // A refusal of the caller's own request is not the account's failure and counts nothing.
++        expect((yield* call("missing")).status).toBeGreaterThanOrEqual(400);
++
++        const read = (actor: typeof actors.owner) =>
++          api.request(actor, "POST", `${prefix}/account-traffic`, { accounts: [account] });
++        const owned = yield* read(actors.owner);
++        expect(owned.status).toBe(200);
++        const counted = (yield* body(Traffic, owned)).accounts;
++        expect(
++          counted.map(({ account, requests, failed }) => ({ account, requests, failed })),
++        ).toEqual([{ account, requests: 3, failed: 1 }]);
++        expect(counted[0]?.recent.reduce((sum, hour) => sum + hour.requests, 0)).toBe(3);
++        expect(counted[0]?.lastSuccessAt).not.toBeNull();
++        // A member who may not inspect the owner's personal account reads no counts for it, the
++        // same answer as an account no call used.
++        const other = yield* read(actors.member);
++        expect(other.status).toBe(200);
++        expect((yield* body(Traffic, other)).accounts).toEqual([]);
++
++        yield* browser.login(actors.owner);
++        const accounts = `/org/${actors.organization.slug}/accounts`;
++        const appTab = `/org/${actors.organization.slug}/apps/${app}?view=accounts`;
++        for (const width of [1280, 390]) {
++          const listed = yield* browser.use(`Read the counted row at ${width}px`, (page) => {
++            const cell = accountRow(page, label).locator("[data-account-requests]");
++            return page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(accounts))
++              .then(() => cell.waitFor())
++              .then(() =>
++                Promise.all([
++                  cell.getAttribute("data-account-requests"),
++                  cell.getAttribute("title"),
++                ]),
++              );
++          });
++          expect(listed[0]).toBe("3");
++          expect(listed[1]).toContain("tool calls");
++          yield* evidence.attach(
++            `tool-calls-accounts-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the Accounts list", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          const tabbed = yield* browser.use(`Read the app tab row at ${width}px`, (page) => {
++            const cell = page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .locator("li")
++              .filter({ has: page.getByRole("button", { name: `Manage ${label}`, exact: true }) })
++              .locator("[data-account-requests]");
++            return page
++              .goto(appTab)
++              .then(() => cell.waitFor())
++              .then(() => cell.getAttribute("data-account-requests"));
++          });
++          expect(tabbed).toBe("3");
++          yield* evidence.attach(
++            `tool-calls-app-tab-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the app's Accounts tab", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++        }
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/account-traffic.ts b/packages/sdk/src/contracts/account-traffic.ts
+new file mode 100644
+index 0000000..69c6666
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-traffic.ts
+@@ -0,0 +1,32 @@
++import type { Effect } from "effect";
++import type { AccountId, StorageError } from "./shared.ts";
++
++/** Host-only reads of the tool calls each account served, for account lists. */
++export const AccountTrafficHost = Symbol("executor.AccountTrafficHost");
++
++/** One UTC hour's tool calls for an account. `at` is the hour's start in epoch milliseconds. */
++export interface AccountTrafficHour {
++  readonly at: number;
++  readonly requests: number;
++  readonly failed: number;
++}
++
++/** An account's counted tool calls since `from`, and its latest success in the kept history. */
++export interface AccountTrafficRecord {
++  readonly account: AccountId;
++  readonly hours: readonly AccountTrafficHour[];
++  /** Epoch milliseconds; null when no call it served succeeded in the kept history. */
++  readonly lastSuccessAt: number | null;
++}
++
++/**
++ * Counts are best-effort and carry no inputs, outputs or identities. The host checks that its
++ * caller may inspect every account it asks about; this read checks nothing.
++ */
++export interface AccountTrafficHost {
++  readonly read: (input: {
++    readonly accounts: readonly AccountId[];
++    /** Epoch milliseconds; earlier hours are left out. */
++    readonly from: number;
++  }) => Effect.Effect<readonly AccountTrafficRecord[], StorageError>;
++}
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 76c44e5..20be136 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -15,6 +15,7 @@ import type { ExecutorApi } from "./http.ts";
+ import type { LegacyVersionEndpoints } from "./apps.ts";
+ import { StorageHost, type Credentials } from "./storage.ts";
+ import { AppViewsHost, AppSourceHost } from "./app-views.ts";
++import { AccountTrafficHost } from "./account-traffic.ts";
+ import { PrefetchHost } from "./tools.ts";
+ import { SavedOAuthClientsHost } from "./oauth-clients.ts";
+ import { OwnerMovesHost } from "./owner.ts";
+@@ -566,6 +567,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+   readonly [AccountAcquisitionHost]: AccountAcquisitionHost;
+   readonly [PrefetchHost]: PrefetchHost;
+   readonly [AppViewsHost]: AppViewsHost;
++  readonly [AccountTrafficHost]: AccountTrafficHost;
+   readonly [AppSourceHost]: AppSourceHost;
+   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
+   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+@@ -600,6 +602,7 @@ export type PromiseExecutor = Promisify<
+     | typeof PersonalDataReportingHost
+     | typeof PrefetchHost
+     | typeof AppViewsHost
++    | typeof AccountTrafficHost
+     | typeof AppSourceHost
+     | typeof SavedOAuthClientsHost
+     | typeof OwnerMovesHost
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index d5c0cda..c756900 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -63,6 +63,7 @@ export { asciiJson } from "./implementation/ascii-json.ts";
+ export * from "./contracts/account-target.ts";
+ 
+ export * from "./contracts/app-views.ts";
++export * from "./contracts/account-traffic.ts";
+ export * from "./contracts/app-calls.ts";
+ 
+ export {
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+new file mode 100644
+index 0000000..24ab26d
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -0,0 +1,129 @@
++/**
++ * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
++ * show requests, failures and the latest success. Derived data no reactive reader watches: the
++ * table creates itself the first time a write finds it missing instead of taking a schema version,
++ * and every write is best-effort for its caller.
++ */
++import { Clock, Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import type { AccountTrafficRecord } from "../contracts/account-traffic.ts";
++import { AccountId, StorageError } from "../contracts/shared.ts";
++
++const hour = 3_600_000;
++/** Hours older than this are dropped and never read. */
++export const accountTrafficRetention = 31 * 24 * hour;
++
++const Hour = Schema.Struct({
++  account: AccountId,
++  at: Schema.Number,
++  requests: Schema.Number,
++  failed: Schema.Number,
++});
++const Last = Schema.Struct({ account: AccountId, at: Schema.NullOr(Schema.Number) });
++const Opened = Schema.Struct({ opened: Schema.Boolean });
++
++/** Postgres and PGlite report an undefined table as SQLSTATE 42P01, wrapped by the SQL client. */
++const missingTable = (error: unknown) => {
++  let at: unknown = error;
++  for (let depth = 0; depth < 5 && typeof at === "object" && at !== null; depth += 1) {
++    if ("code" in at && at.code === "42P01") return true;
++    at = "cause" in at ? at.cause : undefined;
++  }
++  return false;
++};
++
++export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
++  const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++    effect.pipe(Effect.mapError(() => new StorageError()));
++  // Only after a write found the table missing, serialized so concurrent first writes cannot race
++  // on the catalog. Postgres and PGlite alike.
++  const create = Effect.gen(function* () {
++    yield* sql`select pg_advisory_xact_lock(hashtext('executor-account-tool-calls'))`;
++    yield* sql`create table if not exists executor_account_tool_calls (
++      account text not null,
++      hour timestamptz not null,
++      requests integer not null default 0,
++      failed integer not null default 0,
++      last_success timestamptz,
++      primary key (account, hour)
++    )`;
++  }).pipe(sql.withTransaction);
++  const upsert = (account: AccountId, start: Date, failed: number, success: Date | null) => {
++    const statement = sql`insert into executor_account_tool_calls ${sql.insert({
++      account,
++      hour: start,
++      requests: 1,
++      failed,
++      last_success: success,
++    })}
++    on conflict (account, hour) do update set
++      requests = executor_account_tool_calls.requests + 1,
++      failed = executor_account_tool_calls.failed + excluded.failed,
++      last_success = greatest(executor_account_tool_calls.last_success, excluded.last_success)
++    returning (xmax = 0) as opened`;
++    return statement.pipe(
++      Effect.catchIf(missingTable, () => create.pipe(Effect.andThen(statement))),
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Opened))),
++      Effect.map((rows) => rows[0]?.opened === true),
++    );
++  };
++  return {
++    /** One call's outcome for each distinct account it used. */
++    record: (input: {
++      readonly accounts: readonly AccountId[];
++      readonly at: number;
++      readonly ok: boolean;
++    }) =>
++      input.accounts.length === 0
++        ? Effect.void
++        : Effect.gen(function* () {
++            const accounts = [...new Set(input.accounts)];
++            const start = new Date(Math.floor(input.at / hour) * hour);
++            const opened = yield* Effect.forEach(accounts, (account) =>
++              upsert(account, start, input.ok ? 0 : 1, input.ok ? new Date(input.at) : null),
++            );
++            // Old hours go when an account opens a new one, so a busy hour pays nothing extra.
++            const fresh = accounts.filter((_, index) => opened[index] === true);
++            if (fresh.length > 0)
++              yield* sql`delete from executor_account_tool_calls
++                where ${sql.in("account", fresh)}
++                and hour < ${new Date(input.at - accountTrafficRetention)}`;
++          }).pipe(safe),
++    read: (input: { readonly accounts: readonly AccountId[]; readonly from: number }) =>
++      input.accounts.length === 0
++        ? Effect.succeed<readonly AccountTrafficRecord[]>([])
++        : Effect.gen(function* () {
++            const accounts = [...new Set(input.accounts)];
++            // An idle account keeps its old hours until it opens a new one; they are never read.
++            const kept = new Date((yield* Clock.currentTimeMillis) - accountTrafficRetention);
++            const from = new Date(Math.max(Math.floor(input.from / hour) * hour, kept.getTime()));
++            const hours = yield* sql`select account,
++                extract(epoch from hour)::float8 * 1000 as at,
++                requests::float8 as requests, failed::float8 as failed
++              from executor_account_tool_calls
++              where ${sql.in("account", accounts)} and hour >= ${from}
++              order by account, hour`.pipe(
++              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Hour))),
++            );
++            const last = yield* sql`select account,
++                extract(epoch from max(last_success))::float8 * 1000 as at
++              from executor_account_tool_calls
++              where ${sql.in("account", accounts)} and hour >= ${kept}
++              group by account`.pipe(
++              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Last))),
++            );
++            // Only accounts with a counted call are listed: no row means nothing was counted.
++            return last.map((entry): AccountTrafficRecord => ({
++              account: entry.account,
++              hours: hours
++                .filter((row) => row.account === entry.account)
++                .map(({ at, requests, failed }) => ({ at, requests, failed })),
++              lastSuccessAt: entry.at,
++            }));
++          }).pipe(
++            // Nothing has been counted before the first write creates the table.
++            Effect.catchIf(missingTable, () => Effect.succeed<readonly AccountTrafficRecord[]>([])),
++            safe,
++          ),
++  };
++};
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 5676d61..d5533ad 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -29,6 +29,7 @@ import { RepositoryHost } from "../contracts/source.ts";
+ import { StorageHost } from "../contracts/storage.ts";
+ import { makeAppViews } from "./app-views.ts";
+ import { AppViewsHost, AppSourceHost } from "../contracts/app-views.ts";
++import { AccountTrafficHost } from "../contracts/account-traffic.ts";
+ import { PrefetchHost } from "../contracts/tools.ts";
+ import { OAuthGrantImport } from "../contracts/oauth.ts";
+ import { gitSourceStorage } from "./git-sources.ts";
+@@ -599,6 +600,7 @@ export const createExecutor = (
+       [PersonalDataReportingHost]: personalDataReporting,
+       [PrefetchHost]: { invocation: tools.prefetchInvocation },
+       [AppViewsHost]: makeAppViews(options.database.appViews, credentials, crypto),
++      [AccountTrafficHost]: { read: options.database.accountTraffic.read },
+       [AppSourceHost]: { dispatch: tools.mcpAppSource },
+       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
+         ...(options.oauth?.savedClientCallbacks ?? []),
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 1943dc6..4f095d2 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -13,6 +13,7 @@ import {
+   trailingStorageIndexVersions,
+ } from "./storage-migrations.ts";
+ import { storageMigrationFailed } from "./storage-migration-error.ts";
++import { makeAccountTrafficStore } from "./account-traffic-store.ts";
+ import { makeAppViewStorage } from "./app-view-storage.ts";
+ import { makeToolSearchStore } from "./tool-search-store.ts";
+ 
+@@ -89,6 +90,8 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
+       toolSearch: makeToolSearchStore(sql),
+       appViews: makeAppViewStorage(sql),
++      // Tool-call counts per account; the table creates itself, so it takes no schema version.
++      accountTraffic: makeAccountTrafficStore(sql),
+       checkMigration,
+       migrateTables,
+       migrate,
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index ea518b8..5357143 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -19,6 +19,7 @@ import {
+   Exit,
+   Match,
+   Option,
++  Predicate,
+   Redacted,
+   Result,
+   Schema,
+@@ -766,6 +767,14 @@ const summarizeTool = ({
+ }: Tool): ToolSummary => summary;
+ 
+ /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
++/** Failures that count against the accounts a call used: its app's code or its service failed. */
++const accountFailures = [
++  "ToolCallFailed",
++  "AppProviderFailed",
++  "OAuthReconnectRequired",
++  "OAuthRenewalFailed",
++] as const;
++
+ export const makeTools = (
+   storage: ExecutorDatabase,
+   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+@@ -800,6 +809,43 @@ export const makeTools = (
+   };
+   const resolveAccount = oauth.resolveSelected;
+   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
++  /**
++   * Counts a call's outcome toward each account it used, for account lists, once the app's code
++   * ran for it. A completed call succeeded unless its result was a tool error. It failed when the
++   * app's code failed or its service refused the account. A refusal of the caller's own request,
++   * such as invalid input, a blocked tool or approval, and an interruption count nothing.
++   * Best-effort and bounded: counting never changes the call's result and never holds it long.
++   */
++  const countCall =
++    (state: InvocationSnapshot, entered: () => boolean) =>
++    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++      Effect.onExit(effect, (exit) => {
++        if (!entered()) return Effect.void;
++        const ok = Exit.isSuccess(exit)
++          ? Predicate.hasProperty(exit.value, "status") && exit.value.status === "completed"
++            ? !(Predicate.hasProperty(exit.value, "toolError") && exit.value.toolError === true)
++            : undefined
++          : Cause.findErrorOption(exit.cause).pipe(
++                Option.exists((error) =>
++                  accountFailures.some((tag) => Predicate.isTagged(error, tag)),
++                ),
++              )
++            ? false
++            : undefined;
++        if (ok === undefined) return Effect.void;
++        return Clock.currentTimeMillis.pipe(
++          Effect.flatMap((at) =>
++            storage.accountTraffic.record({
++              accounts: distinctSelection(state).map(({ account }) => account.id),
++              at,
++              ok,
++            }),
++          ),
++          Effect.interruptible,
++          Effect.timeout("2 seconds"),
++          Effect.catchCause(() => Effect.void),
++        );
++      });
+   /** Renew an account the service refused without repeating what it refused; undefined when none was. */
+   const renewOnce = (state: InvocationSnapshot, context: InvocationContext, error: unknown) =>
+     renewRefused(oauth, clients, sitePolicy, state, context, error).pipe(
+@@ -1746,6 +1792,7 @@ export const makeTools = (
+                 ),
+           ),
+           Effect.provideService(AppCodeEntered, appCode),
++          countCall(state, () => enteredApp),
+         );
+       }).pipe(Effect.withSpan("sdk.tools.call")),
+     pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
+@@ -1944,6 +1991,7 @@ export const makeTools = (
+                         enteredApp = true;
+                       },
+                     }),
++                    countCall(state, () => enteredApp),
+                   );
+                 }).pipe(
+                   // The request is consumed, so its caller receives the call's own failure.
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 587cafc..061d8e2 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -239,7 +239,7 @@ function AccountsList({
+               ? {
+                   requests: {
+                     title: traffics.some((traffic) => traffic === undefined)
+-                      ? "Requests in the last 7 days, counted by the account's pool. An empty cell means there's no request history you can see for that account."
++                      ? "Requests in the last 7 days, counted by the account's pool or by the tool calls that used it. An empty cell means there's no request history you can see for that account."
+                       : undefined,
+                   },
+                 }
