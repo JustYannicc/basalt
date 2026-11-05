@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Saved Google client diagnosis accepts only exact organization-owned Google accounts and compares provenance inside a read-only transaction. Encrypted results contain presence and equality booleans, never client IDs or credentials, and cause no provider calls or account changes."
+    }
+  }
+}

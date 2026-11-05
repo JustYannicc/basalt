@@ -1,0 +1,229 @@
+diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
+@@ -3,7 +3,7 @@
+ import type { AccountsPage as AccountsClient } from "./accounts-client.tsx";
+ import type { OrganizationPageReads } from "../components/organization.tsx";
+ import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+-import { AccountRowsSkeleton } from "@executor-js/ui/dashboard/loading";
++import { InventoryPageSkeleton } from "@executor-js/ui/dashboard/loading";
+ /** The organization's account directory. */
+ export const accountsPageReads: OrganizationPageReads = (organization) => [
+   resourceDirectoryAtom(organization),
+@@ -17,10 +17,10 @@
+ export function AccountsPage(props: Parameters<typeof AccountsClient>[0]) {
+   const hydrated = useHydrated();
+   return hydrated ? (
+-    <Suspense fallback={<AccountRowsSkeleton />}>
++    <Suspense fallback={<InventoryPageSkeleton kind="accounts" />}>
+       <Client {...props} />
+     </Suspense>
+   ) : (
+-    <AccountRowsSkeleton />
++    <InventoryPageSkeleton kind="accounts" />
+   );
+ }
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5671,6 +5671,16 @@
+       "self-host": scheduled,
+       cloud: scheduled,
+       local: na("Personal tokens are hosted only."),
++    },
++  },
++  dashboardClientLoading: {
++    fixtures: "actors",
++    file: "dashboard-client-loading.spec.ts",
++    title: "Dashboard client code keeps the Accounts page frame while its module loads",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no hosted account directory."),
+     },
+   },
+   dashboardLoading: {
+diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-client-loading.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/dashboard-client-loading.spec.ts
+@@ -0,0 +1,179 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it) => {
++  it.effect(scenarios.dashboardClientLoading.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        yield* browser.login(actors.owner);
++        for (const viewport of [
++          { name: "Desktop", width: 1280, height: 800 },
++          { name: "Mobile", width: 390, height: 844 },
++        ])
++          yield* Effect.scoped(
++            Effect.gen(function* () {
++              const chunk = yield* holdQuery(/\/assets\/accounts-client-[^/]+\.js$/, "continue", {
++                allRequests: true,
++              });
++              yield* browser.use(`${viewport.name}: open a fresh dashboard document`, (page) =>
++                page
++                  .setViewportSize({ width: viewport.width, height: viewport.height })
++                  .then(() => page.goto(`/org/${actors.organization.slug}/organization`))
++                  .then(() => page.locator("html[data-hydrated]").waitFor()),
++              );
++              yield* browser.use("Watch the Accounts frame throughout module loading", (page) =>
++                page.evaluate(() => {
++                  const samples: Array<{ heading: number; description: number; frame: number }> =
++                    [];
++                  const visible = (element: Element) => {
++                    const rect = element.getBoundingClientRect();
++                    return (
++                      rect.width > 0 &&
++                      rect.height > 0 &&
++                      getComputedStyle(element).visibility !== "hidden"
++                    );
++                  };
++                  let started = false;
++                  const sample = () => {
++                    if (!location.pathname.endsWith("/accounts")) return;
++                    const rows = [
++                      ...document.querySelectorAll(
++                        '[role="status"][aria-label="Loading accounts"]',
++                      ),
++                    ].find(visible);
++                    if (!started && rows === undefined) return;
++                    started = true;
++                    samples.push({
++                      heading: [...document.querySelectorAll("h1")].filter(visible).length,
++                      description: [...document.querySelectorAll("p")].filter(
++                        (p) =>
++                          visible(p) && p.textContent === "Saved sign-ins, available to your apps.",
++                      ).length,
++                      frame: [...document.querySelectorAll("section.page")].filter(visible).length,
++                    });
++                  };
++                  const observer = new MutationObserver(sample);
++                  observer.observe(document.body, {
++                    childList: true,
++                    subtree: true,
++                    characterData: true,
++                    attributes: true,
++                    attributeFilter: ["style", "hidden", "class"],
++                  });
++                  Object.assign(window, { accountFrameProbe: { samples, observer } });
++                }),
++              );
++              yield* openInApp("Open Accounts", `/org/${actors.organization.slug}/accounts`);
++              const held = yield* chunk.requested;
++              expect(held).toMatch(/\/assets\/accounts-client-[^/]+\.js$/);
++              yield* browser.use("The suspended page has painted its loading rows", (page) =>
++                page
++                  .getByRole("status", { name: "Loading accounts", exact: true })
++                  .waitFor({ state: "visible" })
++                  .then(() =>
++                    page.evaluate(
++                      () =>
++                        new Promise<void>((resolve) =>
++                          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
++                        ),
++                    ),
++                  ),
++              );
++              const before = yield* browser.use(
++                "Read the frame while client code is held",
++                (page) =>
++                  Promise.all([
++                    page.getByRole("heading", { level: 1, name: "Accounts", exact: true }).count(),
++                    page
++                      .getByText("Saved sign-ins, available to your apps.", { exact: true })
++                      .count(),
++                    page.locator("section.page").count(),
++                    page.getByRole("heading", { level: 1 }).evaluateAll((headings) => {
++                      const rect = headings[0]?.getBoundingClientRect();
++                      return rect ? { x: rect.x, y: rect.y } : null;
++                    }),
++                  ]),
++              );
++              yield* browser.checkpoint(
++                `${viewport.name}: Accounts while its client module is held`,
++              );
++              yield* evidence.json(`${viewport.name.toLowerCase()}-held-frame.json`, {
++                held,
++                before,
++              });
++              expect(before[0], "Accounts keeps its heading while its client module is held").toBe(
++                1,
++              );
++              expect(
++                before[1],
++                "Accounts keeps its description while its client module is held",
++              ).toBe(1);
++              expect(
++                before[2],
++                "Accounts keeps its page frame while its client module is held",
++              ).toBe(1);
++              expect(before[3]).not.toBeNull();
++              yield* chunk.release;
++              yield* browser.use("The account directory replaces the loading rows", (page) =>
++                page
++                  .getByRole("status", { name: "Loading accounts", exact: true })
++                  .waitFor({ state: "hidden" }),
++              );
++              const after = yield* browser.use(
++                "Read the completed frame and stop recording",
++                (page) =>
++                  Promise.all([
++                    page
++                      .getByRole("heading", { level: 1, name: /^Accounts(?:\s*\d+)?$/ })
++                      .boundingBox(),
++                    page.evaluate(() => {
++                      const probe = (
++                        window as unknown as {
++                          accountFrameProbe: {
++                            samples: Array<{ heading: number; description: number; frame: number }>;
++                            observer: MutationObserver;
++                          };
++                        }
++                      ).accountFrameProbe;
++                      probe.observer.disconnect();
++                      return probe.samples;
++                    }),
++                  ]),
++              );
++              yield* evidence.json(`${viewport.name.toLowerCase()}-module-transition.json`, {
++                before,
++                after,
++              });
++              expect(after[0]).not.toBeNull();
++              if (before[3] === null || after[0] === null)
++                throw new Error("Accounts heading has no bounds");
++              expect(Math.abs(before[3].x - after[0].x)).toBeLessThanOrEqual(2);
++              expect(Math.abs(before[3].y - after[0].y)).toBeLessThanOrEqual(2);
++              expect(after[1].length).toBeGreaterThan(0);
++              expect(
++                after[1].every(
++                  (sample) =>
++                    sample.heading === 1 && sample.description === 1 && sample.frame === 1,
++                ),
++                "Every Accounts loading commit retains its heading, description and frame",
++              ).toBe(true);
++              yield* browser.checkpoint(
++                `${viewport.name}: Accounts after its client module arrives`,
++              );
++            }),
++          );
++      }),
++    ),
++  );
++});

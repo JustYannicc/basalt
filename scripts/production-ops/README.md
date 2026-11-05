@@ -135,6 +135,23 @@ a verified restore. Restoring data needs its own reviewed operation and GO.
 
 ## Apply the reviewed plan
 
+`released-interactive-retirement-v1` repairs one exact completed connection whose
+retirement state is exactly `{ "removed": false }`. Back up that migration's
+tables first. Use `prepare` with selection
+`released-interactive-retirement-proof-v1` and the reviewed account, connection,
+organization, actor, provider, method, generation, acquiring app/version and
+reference checksum. Copy only the returned `snapshotSha256` into the same request
+for the migration dry run. The reference itself stays inside the runtime.
+
+The dry run proposes one connection update. Apply performs another Home read,
+verifies the decrypted account reference, then rechecks the complete saved rows
+under locks before removing only the released marker. Active or expired lease
+objects, successful removals, ambiguous connections, changed rows and unavailable
+Home references refuse. Credentials, account metadata, links and all other
+provenance survive. Receipt replay verifies the committed result without repeating
+the repair. After the repair, provider adoption needs a separate dry run with
+current version bindings and its own GO.
+
 Get the coordinator's GO for that exact plan hash. Dispatch the same migration
 and request with `mode=apply`, `source_run` equal to the successful dry-run run ID,
 `plan_sha256` equal to the reviewed plaintext plan checksum, and `go` exactly

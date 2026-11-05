@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
 import { beforeAll, afterAll, expect, test } from "vitest";
 import { LikeC4 } from "likec4";
 import type { $ElementId } from "./gen/model.ts";
@@ -10,17 +9,28 @@ import { discoverStackInventory } from "./native-stack.ts";
 import { readGeneratedInventory } from "./generated-inventory.ts";
 import { serviceArchitecture } from "../../src/router.ts";
 import { pipelineDependencies } from "./pipeline.ts";
+import { SourceWorkspace } from "./source-workspace.ts";
+import { repositoryArchitectureErrors } from "./carry-constraints.ts";
 
 const routerId: $ElementId = "basalt.router";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
 let workspace: LikeC4;
 let model: Awaited<ReturnType<LikeC4["computedModel"]>>;
 let resources: ReturnType<typeof discoverStackInventory>;
+let source: ReturnType<typeof sourceDependencies>;
+let imports: ReturnType<typeof sourceDependencies>;
+let pipeline: ReturnType<typeof pipelineDependencies>;
+let ownershipErrors: ReturnType<typeof moduleErrors>;
 beforeAll(async () => {
   workspace = await LikeC4.fromWorkspace(`${root}/architecture`, { logger: false });
   expect(workspace.getErrors()).toEqual([]);
   model = await workspace.computedModel();
   resources = readGeneratedInventory(root) ?? discoverStackInventory(root);
+  const sources = new SourceWorkspace();
+  source = sourceDependencies(root, modules(), services(), sources);
+  imports = sourceDependencies(root, modules(), [], sources);
+  pipeline = pipelineDependencies(root, modules(), services());
+  ownershipErrors = moduleErrors(root, modules());
 }, 30_000);
 afterAll(() => workspace?.dispose());
 
@@ -62,22 +72,22 @@ test("deployed resources and deployment instances correspond in both directions"
   );
 });
 
-test("outside hosts, SDKs and service bindings have caller relationships", () => {
-  const services = [...model.elements()]
+const services = () =>
+  [...model.elements()]
     .filter((e) => e.isTagged("external") || values(e.metadata.endpointHosts).length)
     .map((element) => ({
       id: element.id,
       hosts: [...values(element.metadata.hosts), ...values(element.metadata.endpointHosts)],
       sdks: values(element.metadata.sdks),
     }));
+
+test("outside hosts, SDKs and service bindings have caller relationships", () => {
   const router = modules().find((module) => module.id === routerId);
   expect(router?.bindings.sort()).toEqual(
     Object.entries(serviceArchitecture)
       .map(([binding, id]) => `${binding}=${id}`)
       .sort(),
   );
-  const source = sourceDependencies(root, modules(), services);
-  const pipeline = pipelineDependencies(root, modules(), services);
   expect([...source.errors, ...pipeline.errors]).toEqual([]);
   const dependencies = [...source.dependencies, ...pipeline.dependencies];
   const relationships = new Set(
@@ -94,8 +104,8 @@ test("outside hosts, SDKs and service bindings have caller relationships", () =>
 });
 
 test("every owned package and module has code and all cross-module imports have relationships", () => {
-  expect(moduleErrors(root, modules())).toEqual([]);
-  const { dependencies } = sourceDependencies(root, modules(), []);
+  expect(ownershipErrors).toEqual([]);
+  const { dependencies } = imports;
   const relationships = new Set(
     [...model.relationships()].map((r) => `${r.source.id}->${r.target.id}`),
   );
@@ -159,19 +169,6 @@ test("kinds, tags and domain language match the glossary", () => {
   expect(languageErrors(root)).toEqual([]);
 });
 
-test("PRs changing runtime or stack update the architecture in the same PR", () => {
-  const base = process.env.ARCHITECTURE_BASE_SHA;
-  if (!base) return;
-  if (!/^[a-f0-9]{40}$/.test(base)) throw new Error("Invalid architecture comparison commit");
-  const changed = execFileSync("git", ["diff", "--name-only", `${base}...HEAD`], {
-    cwd: root,
-    encoding: "utf8",
-  })
-    .trim()
-    .split("\n");
-  const boundary = changed.some((file) =>
-    /^(?:src\/|packages\/|containers\/|alchemy\.run\.ts$|upstream\.json$|patches\/)/.test(file),
-  );
-  if (boundary)
-    expect(changed.some((file) => /^architecture\/.+\.(?:c4|likec4|md)$/.test(file))).toBe(true);
+test("PRs changing runtime or carries retain their architecture constraints", () => {
+  expect(repositoryArchitectureErrors(root, process.env.ARCHITECTURE_BASE_SHA)).toEqual([]);
 });

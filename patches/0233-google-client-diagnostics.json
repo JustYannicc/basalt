@@ -1,7 +1,7 @@
 {
   "identity": "executor-google-client-diagnostics",
   "file": "0233-google-client-diagnostics.patch",
-  "content_sha256": "609d1d70aefd44a6c05458cd192b51334c70c2245253d68afc4f78343d0a4ed6",
+  "content_sha256": "fd875af87453339328f9e4279a00c62c59fa44cacb84623701ae94accfc7a571",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

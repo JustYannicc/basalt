@@ -1,0 +1,366 @@
+[
+  {
+    "provider": "prv_b570538340e0aac99cec141d53dc5258d2e8e4f929860ce795683d93172e18ff",
+    "method": "oauth",
+    "definition": {
+      "name": "Gmail",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_55858fb517723264941041af4e04f3de90ef151b83d240cdfa8cf9ba203ad7c5",
+    "method": "oauth",
+    "definition": {
+      "name": "GitHub",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        },
+        "token": {
+          "type": "secrets"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_b570538340e0aac99cec141d53dc5258d2e8e4f929860ce795683d93172e18ff",
+    "method": "oauth",
+    "definition": {
+      "name": "Gmail",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_2b75c3056562dbf5eeb5d1a37f9d5de7fb28a0dd83a6c76ffe7ea2e2d4a8605c",
+    "method": "apiKey",
+    "definition": {
+      "name": "Vercel",
+      "auth": {
+        "apiKey": {
+          "type": "secrets"
+        }
+      }
+    },
+    "expected": "API key"
+  },
+  {
+    "provider": "prv_18bb54217e216de5533e5baa846e78ee147913029f183f7b219880fe230b0856",
+    "method": "codex",
+    "definition": {
+      "name": "Subscription",
+      "auth": {
+        "antigravity": {
+          "type": "interactive"
+        },
+        "claude": {
+          "type": "interactive"
+        },
+        "codex": {
+          "type": "interactive"
+        },
+        "devin": {
+          "type": "interactive"
+        },
+        "kimi": {
+          "type": "interactive"
+        },
+        "loginFile": {
+          "type": "interactive"
+        },
+        "meta": {
+          "type": "interactive"
+        },
+        "xai": {
+          "type": "interactive"
+        }
+      }
+    },
+    "expected": "Subscription"
+  },
+  {
+    "provider": "prv_cbc5c9e6d109b1a5bcaeb823b8328203f4729b6e8cc6b0f5614143b10638530e",
+    "method": "oauth",
+    "definition": {
+      "name": "Trello",
+      "auth": {
+        "credentials": {
+          "type": "secrets"
+        },
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "atlassian",
+        "name": "Atlassian"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_ba76d7b3d90a3fd6b0862b14a1d119537dbe5a69b573e6592ba7777366eaa911",
+    "method": "apiKey",
+    "definition": {
+      "name": "Jev",
+      "auth": {
+        "apiKey": {
+          "type": "secrets"
+        }
+      }
+    },
+    "expected": "API key"
+  },
+  {
+    "provider": "prv_e1553dba87e10052c5442cfef71104164b8ab2a1d1c01dae91cfe08ac2b3fb56",
+    "method": "oauth",
+    "definition": {
+      "name": "Google Photos",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_521e364a2127811b7f5ceda3f439e4b9d7ecbdde3e0b13b392b95bf0b9cbdc5d",
+    "method": "user",
+    "definition": {
+      "name": "Slack",
+      "auth": {
+        "token": {
+          "type": "secrets"
+        },
+        "user": {
+          "type": "oauth2"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_facc3265eeced7b218a2eacc35bb9b90b3df731f241787e2a82194f6a6bdd1a9",
+    "method": "oauth",
+    "definition": {
+      "name": "Miro",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        },
+        "token": {
+          "type": "secrets"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_04a3d80297ac9209ed6fa9e87a9d7e330b9e46cf465b748fa45bd1e44dfe8fbf",
+    "method": "OAuth2",
+    "definition": {
+      "name": "Jira",
+      "auth": {
+        "OAuth2": {
+          "type": "oauth2"
+        },
+        "token": {
+          "type": "secrets"
+        }
+      },
+      "family": {
+        "id": "atlassian",
+        "name": "Atlassian"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_39f28a4cc4fffff5f24842d11c9b25bbcf5e83dbdf0bd698858968bce1ec6c7c",
+    "method": "oauth",
+    "definition": {
+      "name": "Atlassian",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "atlassian",
+        "name": "Atlassian"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_f5720cb16bfb23de4683236de5c03542c539c8f5f97fdeda99bba87558335036",
+    "method": "oauth",
+    "definition": {
+      "name": "Google Sheets",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_521e364a2127811b7f5ceda3f439e4b9d7ecbdde3e0b13b392b95bf0b9cbdc5d",
+    "method": "user",
+    "definition": {
+      "name": "Slack",
+      "auth": {
+        "token": {
+          "type": "secrets"
+        },
+        "user": {
+          "type": "oauth2"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_de61650be628746589f86be25eacc195ef0b9f2b3002b8deb40b540426bac58b",
+    "method": "oauth",
+    "definition": {
+      "name": "Cloudflare",
+      "auth": {
+        "accountToken": {
+          "type": "secrets"
+        },
+        "apiToken": {
+          "type": "secrets"
+        },
+        "oauth": {
+          "type": "oauth2"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_fd21a550eee97d34881abed247b7fb74a7dc8f9c35e3e9d4cc023f78ffcec433",
+    "method": "oauth",
+    "definition": {
+      "name": "Sentry",
+      "auth": {
+        "authToken": {
+          "type": "secrets"
+        },
+        "oauth": {
+          "type": "oauth2"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_8dfb49073cff9b5b4a23c0c817c7207aa2fb6fec1ac20331c6c2a84eae4266e7",
+    "method": "oauth",
+    "definition": {
+      "name": "Google Meet",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_aacca9970ba51bbf9f883fb51063ad1d7f329832b159ee6945d6068ea57d62d8",
+    "method": "oauth",
+    "definition": {
+      "name": "PostHog",
+      "auth": {
+        "apiKey": {
+          "type": "secrets"
+        },
+        "oauth": {
+          "type": "oauth2"
+        }
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_aeada7bde8511c05a161774d83700260b1269344adad08958389b63e64cddd5b",
+    "method": "oauth",
+    "definition": {
+      "name": "Google Docs",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_b570538340e0aac99cec141d53dc5258d2e8e4f929860ce795683d93172e18ff",
+    "method": "oauth",
+    "definition": {
+      "name": "Gmail",
+      "auth": {
+        "oauth": {
+          "type": "oauth2"
+        }
+      },
+      "family": {
+        "id": "google",
+        "name": "Google"
+      }
+    },
+    "expected": "OAuth"
+  },
+  {
+    "provider": "prv_6d677ada2e24ae9d7c21495d1a90ccf93e37bc185766a1ae0aaeb5792969df07",
+    "method": "apiKey",
+    "definition": {
+      "name": "ElevenLabs",
+      "auth": {
+        "apiKey": {
+          "type": "secrets"
+        }
+      }
+    },
+    "expected": "API key"
+  }
+]

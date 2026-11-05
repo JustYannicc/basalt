@@ -1,0 +1,212 @@
+diff --git a/e2e/support/account-definition-host.ts b/e2e/support/account-definition-host.ts
+index e036dbf..09d7baf 100644
+--- a/e2e/support/account-definition-host.ts
++++ b/e2e/support/account-definition-host.ts
+@@ -13,7 +13,10 @@ import { createServer } from "node:http";
+ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+   const path = yield* Path.Path;
+   const directory = process.env.DEFINITION_FIXTURE_DIRECTORY!;
+-  const blobs = filesystemBlobStore({ directory: path.join(directory, "blobs") });
++  const storage = filesystemBlobStore({ directory: path.join(directory, "blobs") });
++  let blobReads = 0;
++  const blobs = { ...storage, get: (key: Parameters<typeof storage.get>[0]) =>
++    Effect.sync(() => { blobReads++; }).pipe(Effect.andThen(storage.get(key))) };
+   const host = yield* workerdApps({ directory: path.join(directory, "workerd"), blobs,
+     executor: Effect.never, npmRegistry: process.env.DEFINITION_FIXTURE_REGISTRY!,
+     allowPrivateAppFetch: true, encryptionKey: Redacted.make("b".repeat(64)) });
+@@ -29,7 +32,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+       const input = yield* body(Schema.Struct({ files: Schema.NonEmptyArray(Schema.Struct({ path: Schema.String, content: Schema.String })) }));
+       const built = yield* runtime.build(input);
+       builds.set(built.build, built);
+-      return yield* HttpServerResponse.json({ build: built.build });
++      return yield* HttpServerResponse.json({ build: built.build, blobReads });
+     })),
+     HttpRouter.add("POST", "/invoke", Effect.gen(function* () {
+       const input = yield* body(Input);
+@@ -59,6 +62,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+         retained: before === JSON.stringify(accounts),
+         definitions: Object.fromEntries(Object.entries(selected).map(([slot, account]) => [slot, account.provider])),
+         reads,
++        blobReads,
+       });
+     })),
+     HttpRouter.add("GET", "/provider/:slot", Effect.gen(function* () {
+diff --git a/e2e/tests/account-definition-projection.spec.ts b/e2e/tests/account-definition-projection.spec.ts
+index c28f7ea..a152347 100644
+--- a/e2e/tests/account-definition-projection.spec.ts
++++ b/e2e/tests/account-definition-projection.spec.ts
+@@ -7,13 +7,14 @@ import { protocol26Framework } from "../support/app-package.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import definitions from "../fixtures/google-provider-declarations.json" with { type: "json" };
+ 
+-const Built = Schema.Struct({ build: Schema.String });
++const Built = Schema.Struct({ build: Schema.String, blobReads: Schema.Number });
+ const Reply = Schema.Struct({
+   ok: Schema.Boolean,
+   tag: Schema.optionalKey(Schema.String),
+   value: Schema.optionalKey(Schema.Json),
+   retained: Schema.Boolean,
+   reads: Schema.Number,
++  blobReads: Schema.Number,
+   definitions: Schema.Record(
+     Schema.String,
+     Schema.Struct({
+@@ -67,6 +68,7 @@ it.live("host-added Google metadata preserves retained and current account-check
+         ),
+         Effect.flatMap((response) => Schema.decodeUnknownEffect(Reply)(response.body)),
+       );
++    const builds = new Set<string>();
+     for (const framework of [retained, undefined]) {
+       for (const explicit of [false, true]) {
+         const manifest =
+@@ -86,7 +88,11 @@ it.live("host-added Google metadata preserves retained and current account-check
+           ],
+         });
+         expect(response.status, JSON.stringify(response.body)).toBe(200);
+-        const { build } = yield* Schema.decodeUnknownEffect(Built)(response.body);
++        const { build, blobReads } = yield* Schema.decodeUnknownEffect(Built)(response.body);
++        expect(builds.has(build), "different declarations have distinct immutable builds").toBe(
++          false,
++        );
++        builds.add(build);
+         for (const [index, definition] of definitions.entries()) {
+           const slot = `service${index}`;
+           const checked = yield* invoke(build, slot);
+@@ -95,6 +101,18 @@ it.live("host-added Google metadata preserves retained and current account-check
+           expect(checked.retained).toBe(true);
+           expect(checked.definitions[slot]?.family).toEqual(definition.added.family);
+           expect(checked.definitions[slot]?.auth.oauth.identity).toEqual(definition.added.identity);
++          if (index === 0) {
++            expect(checked.blobReads, "a distinct build loads its own code").toBeGreaterThan(
++              blobReads,
++            );
++            // Each HTTP call creates a new runner. A warm call must reuse only this build's declaration.
++            const warm = yield* invoke(build, slot);
++            expect(warm.ok, JSON.stringify(warm)).toBe(true);
++            expect(warm.retained).toBe(true);
++            expect(warm.blobReads, "a separate invocation reuses the completed declaration").toBe(
++              checked.blobReads,
++            );
++          }
+         }
+         const called = yield* invoke(build, "service0", { call: true });
+         expect(called.ok, JSON.stringify(called)).toBe(true);
+diff --git a/packages/sdk/src/implementation/app-account-projection.ts b/packages/sdk/src/implementation/app-account-projection.ts
+index 22bac6c..90abaaa 100644
+--- a/packages/sdk/src/implementation/app-account-projection.ts
++++ b/packages/sdk/src/implementation/app-account-projection.ts
+@@ -76,44 +76,44 @@ const hasDefaults = (account: HostAccount) => {
+   );
+ };
+ 
+-/** Immutable declarations only, bounded per runner. No credentials or cross-request promises. */
+-export const makeBuildAccountProjection = () => {
+-  const declarations = new Map<string, DeclaredRequirements>();
+-  return <E, R>(
+-    build: string,
+-    accounts: HostAccounts,
+-    read: Effect.Effect<DeclaredRequirements, E, R>,
+-  ): Effect.Effect<HostAccounts, E, R> =>
+-    Effect.gen(function* () {
+-      if (![...accountsOf(accounts.app), ...accountsOf(accounts.user ?? {})].some(hasDefaults))
+-        return accounts;
+-      let declared = declarations.get(build);
+-      if (declared === undefined) {
+-        declared = yield* read;
+-        declarations.set(build, declared);
+-        if (declarations.size > 4096) {
+-          const oldest = declarations.keys().next();
+-          if (!oldest.done) declarations.delete(oldest.value);
+-        }
++// oxlint-disable-next-line executor/no-module-level-mutable-state -- completed credential-free declarations are immutable by build ID and shared across request-owned runners
++const declarations = new Map<string, DeclaredRequirements>();
++
++/** Bounded isolate data only. Each cache miss evaluates in its own request's I/O context. */
++export const projectBuildAccounts = <E, R>(
++  build: string,
++  accounts: HostAccounts,
++  read: Effect.Effect<DeclaredRequirements, E, R>,
++): Effect.Effect<HostAccounts, E, R> =>
++  Effect.gen(function* () {
++    if (![...accountsOf(accounts.app), ...accountsOf(accounts.user ?? {})].some(hasDefaults))
++      return accounts;
++    let declared = declarations.get(build);
++    if (declared === undefined) {
++      declared = yield* read;
++      declarations.set(build, declared);
++      if (declarations.size > 4096) {
++        const oldest = declarations.keys().next();
++        if (!oldest.done) declarations.delete(oldest.value);
+       }
+-      const requirements = declared.accounts;
+-      const projectScope = (scope: "app" | "user", slots: HostAccountSlots) =>
+-        Object.fromEntries(
+-          Object.entries(slots).map(([slot, selected]) => {
+-            const definition = Object.hasOwn(requirements[scope], slot)
+-              ? requirements[scope][slot]?.definition
+-              : undefined;
+-            if (definition === undefined) return [slot, selected];
+-            const project = (account: HostAccount): HostAccount => ({
+-              ...account,
+-              provider: projectProvider(account.provider, definition),
+-            });
+-            return [slot, isMany(selected) ? selected.map(project) : project(selected)];
+-          }),
+-        );
+-      return {
+-        app: projectScope("app", accounts.app),
+-        ...(accounts.user === undefined ? {} : { user: projectScope("user", accounts.user) }),
+-      };
+-    });
+-};
++    }
++    const requirements = declared.accounts;
++    const projectScope = (scope: "app" | "user", slots: HostAccountSlots) =>
++      Object.fromEntries(
++        Object.entries(slots).map(([slot, selected]) => {
++          const definition = Object.hasOwn(requirements[scope], slot)
++            ? requirements[scope][slot]?.definition
++            : undefined;
++          if (definition === undefined) return [slot, selected];
++          const project = (account: HostAccount): HostAccount => ({
++            ...account,
++            provider: projectProvider(account.provider, definition),
++          });
++          return [slot, isMany(selected) ? selected.map(project) : project(selected)];
++        }),
++      );
++    return {
++      app: projectScope("app", accounts.app),
++      ...(accounts.user === undefined ? {} : { user: projectScope("user", accounts.user) }),
++    };
++  });
+diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
+index 3491c9b..4a5ff78 100644
+--- a/packages/sdk/src/implementation/app-runner.ts
++++ b/packages/sdk/src/implementation/app-runner.ts
+@@ -58,7 +58,7 @@ import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
+ import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
+ import { invocationWorkflow } from "./worker-workflow-rpc.ts";
+ import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
+-import { makeBuildAccountProjection } from "./app-account-projection.ts";
++import { projectBuildAccounts } from "./app-account-projection.ts";
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ 
+@@ -523,7 +523,6 @@ const runnerTiming = (within: AppRunnerHost["within"]) => {
+ 
+ /** Build the runner for one host's bindings. */
+ export const makeAppRunner = (host: AppRunnerHost) => {
+-  const projectAccounts = makeBuildAccountProjection();
+   /** Start one call in a loaded Worker and release its invocation capability afterwards. */
+   const startOnce = (
+     name: string | null,
+@@ -880,7 +879,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
+           );
+         });
+         const accountsFor = (resolved: HostAccounts) =>
+-          projectAccounts(invocation.build, resolved, declared).pipe(
++          projectBuildAccounts(invocation.build, resolved, declared).pipe(
+             Effect.flatMap((projected) =>
+               bundleAccounts(protocol, invocation.app, host.credentialKey, projected),
+             ),

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes, createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Exit, Layer } from "effect";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
 import { prepareScenario } from "../../.upstream/e2e/sdk/scenario.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
@@ -11,6 +11,8 @@ import { createCloudScenarioActors } from "../../.upstream/e2e/support/actors.ts
 import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { bundlePoolApp } from "../../scripts/pool-app-bundle.ts";
 import { root } from "./harness.mjs";
+import { cloudLocks } from "../../.upstream/e2e/support/cloud-locks.ts";
+import { redactLogText } from "../../src/feedback/logs.ts";
 import { startPoolFixture } from "./pool-fixture.mjs";
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -42,7 +44,16 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
     resetPaths.map(async (path) => [path, await readFile(join(upstream, path))]),
   );
   const signingKey = randomBytes(32).toString("hex");
-  const fixture = await startPoolFixture(signingKey);
+  const catalog = resetOptions
+    ? await Promise.all(
+        ["openai", "anthropic"].map(async (lab) =>
+          JSON.parse(
+            await readFile(join(root, "src/catalog/provider-apps", `${lab}.json`), "utf8"),
+          ),
+        ),
+      )
+    : [];
+  const fixture = await startPoolFixture(signingKey, { catalog });
   const previous = { path: process.env.PATH, setup: process.env.BASALT_E2E_POOL_SETUP };
   const restore = async () => {
     process.env.PATH = previous.path;
@@ -97,7 +108,7 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
     await mkdir(bin, { recursive: true, mode: 0o700 });
     await writeFile(
       join(bin, "node"),
-      `#!/bin/sh\nexport POOL_APP_SIGNING_KEY=${quote(signingKey)}\nexport EXECUTOR_NPM_REGISTRY=${quote(registry.url)}\nexport EXECUTOR_URL_ALLOW_LOOPBACK_HTTP=true\nexec ${quote(process.execPath)} "$@"\n`,
+      `#!/bin/sh\nexport POOL_APP_SIGNING_KEY=${quote(signingKey)}\nexport EXECUTOR_NPM_REGISTRY=${quote(registry.url)}\nexport EXECUTOR_URL_ALLOW_LOOPBACK_HTTP=true\n${resetOptions ? `export EXECUTOR_CATALOG_URL=${quote(`${fixture.origin}/catalog/index.json`)}\n` : ""}exec ${quote(process.execPath)} "$@"\n`,
       { mode: 0o700 },
     );
     process.env.PATH = `${bin}:${previous.path}`;
@@ -118,17 +129,79 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
     );
     const base = yield* startEnvironment({ target: "cloud", headless: true });
     const target = yield* prepareScenario(base.target, "Native pool recipe public path");
+    setup.fixture.product(target.metadata.origin);
     const services = yield* Layer.build(
       SessionClients.layer.pipe(Layer.provideMerge(Layer.succeed(Target, target))),
     );
     const api = Context.get(services, SessionClients);
     let actors = yield* createCloudScenarioActors.pipe(Effect.provideContext(services));
+    // Capture before actor and environment finalizers remove the failed runtime.
+    let lastApps;
+    let organization;
+    if (resets)
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isFailure(exit)
+          ? Effect.gen(function* () {
+              const diagnostics = { runtimeDirectory: target.directory, apps: lastApps };
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
+                  diagnostics.provisioning = yield* database.run({
+                    sql: `select kind, status, attempts, available_at, updated_at from hosted_provisioning
+                    where organization_id = $1 order by kind, updated_at limit 50`,
+                    params: [organization ?? ""],
+                  });
+                }),
+              ).pipe(
+                Effect.timeout("3 seconds"),
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    diagnostics.provisioningUnavailable = true;
+                  }),
+                ),
+              );
+              yield* Effect.promise(async () => {
+                try {
+                  const log = await readFile(join(target.directory, "cloud.log"), "utf8");
+                  await writeFile(
+                    join(directory, "runtime-cloud.log"),
+                    redactLogText(log).slice(-2 * 1024 * 1024),
+                    { mode: 0o600 },
+                  );
+                } catch {
+                  diagnostics.cloudLogUnavailable = true;
+                }
+                await writeFile(
+                  join(directory, "runtime-diagnostics.json"),
+                  JSON.stringify(diagnostics, null, 2) + "\n",
+                  { mode: 0o600 },
+                );
+              });
+            }).pipe(Effect.catchCause(() => Effect.logWarning("Reset diagnostic retention failed")))
+          : Effect.void,
+      );
+
     const raw = (role, method, path, input, headers) =>
       api.request(actors[role], method, path, input, headers);
     const requestAs = (role, method, path, input) =>
       raw(role, method, path, input).pipe(
         Effect.map((response) => {
           assert.equal(response.status, 200, `${method} ${path}: ${JSON.stringify(response.body)}`);
+          if (
+            resets &&
+            method === "GET" &&
+            path === `/api/organizations/${organization}/apps` &&
+            Array.isArray(response.body)
+          ) {
+            lastApps = {
+              total: response.body.length,
+              rows: response.body.slice(0, 50).map((app) => ({
+                id: app.id,
+                name: redactLogText(String(app.name ?? "")).slice(0, 200),
+                activeVersion: app.activeVersion,
+              })),
+            };
+          }
           return response.body;
         }),
       );
@@ -138,6 +211,7 @@ export const poolCloudHarness = (directory, { resets = false } = {}) =>
       slug: `recipe-${randomBytes(8).toString("hex")}`,
       keepCurrentActiveOrganization: true,
     });
+    organization = team.id;
     actors = { ...actors, organization: { id: team.id, slug: team.slug } };
     for (const role of ["member"]) {
       const identity = yield* requestAs(role, "GET", "/api/auth/get-session");

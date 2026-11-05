@@ -107,10 +107,9 @@ index 0000000..b8f5ee0
 +    };
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
-index 4fe15bb..51c255d 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
-@@ -16,6 +16,10 @@ import {
+@@ -16,6 +16,10 @@
    prepareAtlassianAccountProofs,
  } from "./migrations/atlassian-account-proofs.ts";
  import type { ProductionPreparation } from "./contracts.ts";
@@ -121,10 +120,10 @@ index 4fe15bb..51c255d 100644
  
  /** Key access runs inside the signed invocation; preparation never initializes a mutating executor. */
  export const cloudProductionPreparations = Effect.gen(function* () {
-@@ -31,6 +35,20 @@ export const cloudProductionPreparations = Effect.gen(function* () {
-     urlPolicy: egress.policy,
-   });
-   const preparations: Readonly<Record<string, ProductionPreparation>> = {
+@@ -45,6 +49,20 @@
+           );
+         }),
+     },
 +    "google-client-diagnostics": {
 +      name: "google-client-diagnostics",
 +      readOnly: true,
@@ -139,8 +138,8 @@ index 4fe15bb..51c255d 100644
 +          );
 +        }),
 +    },
-     "atlassian-account-proofs": {
-       name: "atlassian-account-proofs",
+     "google-account-proofs": {
+       name: "google-account-proofs",
        run: (request) =>
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 index 1bfaefc..a61f7a9 100644
@@ -160,17 +159,6 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 index b548a9a..b67fe4d 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -261,7 +261,9 @@ export const startCloudEnvironment = (input: {
-       ).pipe(Effect.asVoid, Effect.orDie),
-     );
-     const emulators = `${directory}/emulators.json`;
--    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), { mode: 0o600 });
-+    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(routesFixture)), {
-+      mode: 0o600,
-+    });
-     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
-     const analyticsPort = yield* startAnalyticsCollector(directory);
-     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
 @@ -331,6 +333,19 @@ export const startCloudEnvironment = (input: {
        BETTER_AUTH_URL: input.origin,
        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),

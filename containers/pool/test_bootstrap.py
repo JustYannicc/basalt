@@ -48,6 +48,7 @@ class BootstrapContractTests(unittest.TestCase):
     ) -> list[str]:
         child = object.__new__(Child)
         child.name = name
+        child.diagnostics = None
         child.config_empty = threading.Event()
         child._on_policy_fused = None
         child._on_policy_probe = on_policy_probe

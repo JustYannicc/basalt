@@ -3,7 +3,7 @@
   "package": "zendesk",
   "sourceSdk": "apps@0.0.1-beta.104-basalt.1",
   "origin": "Derived from the provided Zendesk source snapshot and official Zendesk Support API OpenAPI document",
-  "snapshotSha256": "6b10c1a49b5ca83acfdec09d4b2e3eb40569f8671241f0bf978670dfda3ce922",
+  "snapshotSha256": "4c0bf98e9a47f41a124d239bf706411c5879f59efe7cd10cdc53a0ebcb655232",
   "originalFileSha256": {
     "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
     "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
@@ -15,7 +15,7 @@
     "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
     "icon.ts": "903979f3230451a2cd1a5a854a85253e15f6b527f8041b458507043084fad886",
     "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
-    "openapi.ts": "ce31570fa69381d1f5faea8fd2d0a015bbf9171256b14a2772c0ee0aaa2661cc",
+    "openapi.ts": "505dc12cbf64e6d78d8918e8a1b2d0cacb80f518b93657a919ac68f0202082bc",
     "package.json": "5ed7e8191fcdc616828ed92ec4cdc1e34ac2b823b413a34d67f81d7d5f9c558b"
   },
   "authoringDocs": "https://executor.sh/docs/author-an-app",
@@ -59,12 +59,39 @@
     "bytes": 16946,
     "sha256": "ea6a73c169befa298e7bd1cd2fa289d79326af96cbe9dc80cb9daac6d6b73927",
     "mark": {
-      "crop": [374, 228, 221, 160],
-      "size": [128, 93],
+      "crop": [
+        374,
+        228,
+        221,
+        160
+      ],
+      "size": [
+        128,
+        93
+      ],
       "variants": {
-        "light": { "color": "source", "sha256": "943499bc755ccc03f2c158b0e5bc5e86f5f561d21073c22727920622b92cdcea" },
-        "dark": { "color": "#FFFFFF", "sha256": "370eb15ce28e40a9cd2eacbe916b645b84df49afe4ce1c7ed614234e8a62a8a2" }
+        "light": {
+          "color": "source",
+          "sha256": "943499bc755ccc03f2c158b0e5bc5e86f5f561d21073c22727920622b92cdcea"
+        },
+        "dark": {
+          "color": "#FFFFFF",
+          "sha256": "370eb15ce28e40a9cd2eacbe916b645b84df49afe4ce1c7ed614234e8a62a8a2"
+        }
       }
     }
+  },
+  "catalogSource": {
+    "repository": "https://github.com/JustYannicc/signalbox-app-zendesk",
+    "commit": "a233fd61b47b6ae89076e89e9c4440037b3ed071",
+    "fileSha256": {
+      "README.md": "a246ba0d781ec5c2d9f47a3fa5bcd8c0bbbd6b0d37375bb82c3e120f561136ae",
+      "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
+      "icon.ts": "903979f3230451a2cd1a5a854a85253e15f6b527f8041b458507043084fad886",
+      "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
+      "openapi.ts": "505dc12cbf64e6d78d8918e8a1b2d0cacb80f518b93657a919ac68f0202082bc",
+      "package.json": "5ed7e8191fcdc616828ed92ec4cdc1e34ac2b823b413a34d67f81d7d5f9c558b"
+    },
+    "snapshotSha256": "4c0bf98e9a47f41a124d239bf706411c5879f59efe7cd10cdc53a0ebcb655232"
   }
 }
