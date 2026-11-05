@@ -24,7 +24,9 @@ for (const encrypted of [false, true])
               )
             : undefined;
           const service = Cloudflare.Workflows.WorkflowStep.of({
-            do: (options) => options.effect,
+            // The continuation captures its callback services before the native journal runs it.
+            do: <A, E>(options: Cloudflare.Workflows.WorkflowTaskOptions<A, unknown, unknown, E>) =>
+              options.effect as Effect.Effect<A, E>,
             sleep: (_name, duration) =>
               Effect.gen(function* () {
                 assert.equal(duration, 3_000);
@@ -32,7 +34,7 @@ for (const encrypted of [false, true])
                 steps.push("native-alarm");
                 if (runnable)
                   yield* sql`insert into hosted_provisioning values ('queued', now(), now())`;
-              }),
+              }).pipe(Effect.orDie),
             sleepUntil: () => Effect.die("unexpected sleepUntil"),
             waitForEvent: () => Effect.die("unexpected waitForEvent"),
           });
