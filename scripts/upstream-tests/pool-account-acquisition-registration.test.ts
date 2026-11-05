@@ -1,3 +1,7 @@
+import { HomeAccountAcquisitions } from "../../src/pool/account-acquisition.ts";
+import { PoolRuntimeUnhealthy } from "../../src/pool/lifecycle.ts";
+import { InteractiveConnectionFailed } from "../../.upstream/packages/sdk/src/core.ts";
+import { Schema } from "effect";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -15,14 +19,21 @@ const signingKey = "ab".repeat(32);
 const reference = "12345678-abcd-4000-8000-000000000001";
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(size),
-  digest: (_algorithm, data) => Effect.succeed(new Uint8Array(createHash("sha256").update(data).digest())),
+  digest: (_algorithm, data) =>
+    Effect.succeed(new Uint8Array(createHash("sha256").update(data).digest())),
 });
-const registrations = () => Effect.runPromise(poolAccountAcquisition(
-  Option.some(Redacted.make(signingKey)), "https://pool.example",
-).pipe(Effect.provideService(Crypto.Crypto, crypto)));
-const jevIdentity = () => Effect.runPromise(providerDeclaration(providers.jev).pipe(
-  Effect.flatMap((definition) => identifyProvider(definition, crypto)),
-));
+const registrations = () =>
+  Effect.runPromise(
+    poolAccountAcquisition(Option.some(Redacted.make(signingKey)), "https://pool.example").pipe(
+      Effect.provideService(Crypto.Crypto, crypto),
+    ),
+  );
+const jevIdentity = () =>
+  Effect.runPromise(
+    providerDeclaration(providers.jev).pipe(
+      Effect.flatMap((definition) => identifyProvider(definition, crypto)),
+    ),
+  );
 
 test("the trusted registry resolves canonical and retained Jev keys without offering unsupported methods", async () => {
   const options = await registrations();
@@ -37,28 +48,45 @@ test("the trusted registry resolves canonical and retained Jev keys without offe
     assert.equal(registration.driver.revision, "key-mirror-v1");
     assert.ok(registration.driver.mirror);
   }
-  for (const capability of providerCapabilities.filter((item) => item.connection === "unavailable")) {
+  for (const capability of providerCapabilities.filter(
+    (item) => item.connection === "unavailable",
+  )) {
     const definition = await Effect.runPromise(providerDeclaration(providers[capability.lab]));
     const identity = await Effect.runPromise(identifyProvider(definition, crypto));
     assert.equal(registry.current(identity.identity, capability.method), undefined);
   }
   assert.deepEqual(jev.definition.auth.apiKey, {
-    type: "secrets", label: "TypeSafe API key",
-    fields: { type: "object", properties: { token: { type: "string", minLength: 1 } }, required: ["token"], additionalProperties: true, $defs: {}, $schema: "https://json-schema.org/draft/2020-12/schema" },
+    type: "secrets",
+    label: "TypeSafe API key",
+    fields: {
+      type: "object",
+      properties: { token: { type: "string", minLength: 1 } },
+      required: ["token"],
+      additionalProperties: true,
+      $defs: {},
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+    },
   });
-  assert.equal(providerCapabilities.find((item) => item.lab === "jev")?.protocol, "typesafe-systemone");
+  assert.equal(
+    providerCapabilities.find((item) => item.lab === "jev")?.protocol,
+    "typesafe-systemone",
+  );
 });
 
 test("Jev's registered Promise adapter mirrors its original token through the signed Home endpoint", async () => {
   const options = await registrations();
   const identity = await jevIdentity();
-  const registration = options.registrations.find((entry) => entry.provider === identity.identity && entry.method === "apiKey");
+  const registration = options.registrations.find(
+    (entry) => entry.provider === identity.identity && entry.method === "apiKey",
+  );
   assert.ok(registration?.driver.mirror);
   const homeCalls: { path: string; method: string; body: unknown }[] = [];
   const home = new HomeClient(async (path, init) => {
     const body: unknown = init?.body === undefined ? null : JSON.parse(String(init.body));
     homeCalls.push({ path, method: init?.method ?? "GET", body });
-    return init?.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ name: `${reference}.json` });
+    return init?.method === "DELETE"
+      ? new Response(null, { status: 204 })
+      : Response.json({ name: `${reference}.json` });
   });
   let unavailable = true;
   const requestFetch: typeof fetch = async (input, init) => {
@@ -69,31 +97,148 @@ test("Jev's registered Promise adapter mirrors its original token through the si
   };
   const fields = { token: "synthetic-existing-tool-token" };
   const context = {
-    owner: OwnerId.make("organization:fixture"), provider: identity.identity, method: "apiKey",
-    operation: "fixture-mirror", deadline: Date.now() + 30_000,
-    signal: new AbortController().signal, fetch: requestFetch,
+    owner: OwnerId.make("organization:fixture"),
+    provider: identity.identity,
+    method: "apiKey",
+    operation: "fixture-mirror",
+    deadline: Date.now() + 30_000,
+    signal: new AbortController().signal,
+    fetch: requestFetch,
     binding: {
-      account: AccountId.make("acc_fixture"), owner: OwnerId.make("organization:fixture"),
-      provider: identity.identity, method: "apiKey", driver: "basalt-home", driverRevision: "key-mirror-v1",
-      generation: 1, revision: "fixture-r1", removal: null,
+      account: AccountId.make("acc_fixture"),
+      owner: OwnerId.make("organization:fixture"),
+      provider: identity.identity,
+      method: "apiKey",
+      driver: "basalt-home",
+      driverRevision: "key-mirror-v1",
+      generation: 1,
+      revision: "fixture-r1",
+      removal: null,
     },
-    reference: Redacted.make(reference), fields: Redacted.make(fields),
+    reference: Redacted.make(reference),
+    fields: Redacted.make(fields),
   };
-  await assert.rejects(Effect.runPromise(registration.driver.mirror(context)), /Account mirror backend unavailable/);
+  await assert.rejects(
+    Effect.runPromise(registration.driver.mirror(context)),
+    /Account mirror backend unavailable/,
+  );
   assert.equal(homeCalls.length, 0);
   unavailable = false;
   await Effect.runPromise(registration.driver.mirror(context));
   await Effect.runPromise(registration.driver.mirror(context));
-  assert.deepEqual(homeCalls.map((call) => call.body), [
-    { type: "typesafe", token: fields.token, uuid: reference },
-    { type: "typesafe", token: fields.token, uuid: reference },
-  ]);
+  assert.deepEqual(
+    homeCalls.map((call) => call.body),
+    [
+      { type: "typesafe", token: fields.token, uuid: reference },
+      { type: "typesafe", token: fields.token, uuid: reference },
+    ],
+  );
   assert.deepEqual(fields, { token: "synthetic-existing-tool-token" });
   await Effect.runPromise(registration.driver.remove(context));
   assert.equal(homeCalls.at(-1)?.path, `/v8/management/credentials?id=${reference}`);
-  assert.equal(homeCalls.some((call) => call.path.includes("channel-group")), false);
+  assert.equal(
+    homeCalls.some((call) => call.path.includes("channel-group")),
+    false,
+  );
 });
 
 test("a host without a signing key registers no acquisition or mirror driver", async () => {
-  assert.deepEqual(await Effect.runPromise(poolAccountAcquisition(Option.none(), "https://pool.example").pipe(Effect.provideService(Crypto.Crypto, crypto))), { registrations: [] });
+  assert.deepEqual(
+    await Effect.runPromise(
+      poolAccountAcquisition(Option.none(), "https://pool.example").pipe(
+        Effect.provideService(Crypto.Crypto, crypto),
+      ),
+    ),
+    { registrations: [] },
+  );
+});
+
+test("Claude status retries are bounded and preserve the runtime receipt without repeating a callback", async () => {
+  const options = await registrations();
+  const registration = options.registrations.find((entry) => entry.method === "claude");
+  assert.ok(registration?.driver.submit);
+  const stored = new Map<string, unknown>();
+  const storage = {
+    async get<T>(key: string): Promise<T | undefined> {
+      return structuredClone(stored.get(key)) as T | undefined;
+    },
+    async put(key: string, value: unknown) {
+      stored.set(key, structuredClone(value));
+    },
+    async getAlarm() {
+      return null;
+    },
+    async setAlarm() {},
+  };
+  let unavailable = false,
+    requests = 0,
+    callbacks = 0,
+    starts = 0;
+  const home = new HomeClient(async (path) => {
+    if (path.includes("/oauth/callback")) callbacks++;
+    if (unavailable) throw new PoolRuntimeUnhealthy();
+    if (path.includes("/credentials")) return Response.json({ files: [] });
+    if (path.includes("/oauth/auth-url")) {
+      starts++;
+      return Response.json({
+        state: "synthetic-state",
+        url: "https://provider.invalid/authorize",
+        flow: "callback",
+      });
+    }
+    return Response.json({ status: "wait" });
+  });
+  const controller = new HomeAccountAcquisitions(storage, home, signingKey, {
+    async begin() {
+      return "fixture-marker";
+    },
+    async settle() {},
+  });
+  const context = {
+    owner: OwnerId.make("organization:fixture"),
+    provider: registration.provider,
+    method: "claude",
+    operation: "fixture-start",
+    deadline: Date.now() + 30_000,
+    signal: new AbortController().signal,
+    fetch: (async (input, init) => {
+      requests++;
+      return controller.handle(new Request(input, init));
+    }) satisfies typeof fetch,
+  };
+  const started = await Effect.runPromise(registration.driver.start(context));
+  unavailable = true;
+  const before = requests;
+  const failed = await Effect.runPromise(
+    registration.driver
+      .status(context, { session: started.session })
+      .pipe(Effect.match({ onFailure: (error) => error, onSuccess: (value) => value })),
+  );
+  assert.equal(requests - before, 3);
+  assert.ok(Schema.is(InteractiveConnectionFailed)(failed));
+  assert.deepEqual(failed.receipt, {
+    phase: "oauth_status",
+    errorClass: "runtime_unhealthy",
+    retryable: true,
+  });
+  assert.match(failed.message, /temporarily unhealthy/);
+  const beforeSubmit = requests;
+  const submitted = await Effect.runPromise(
+    registration.driver
+      .submit(context, {
+        session: started.session,
+        value: "http://localhost/callback?state=synthetic-state&code=synthetic",
+      })
+      .pipe(Effect.match({ onFailure: (error) => error, onSuccess: (value) => value })),
+  );
+  assert.ok(Schema.is(InteractiveConnectionFailed)(submitted));
+  assert.equal(submitted.receipt?.phase, "oauth_callback");
+  assert.equal(requests - beforeSubmit, 1);
+  assert.equal(callbacks, 1);
+  unavailable = false;
+  assert.deepEqual(
+    await Effect.runPromise(registration.driver.status(context, { session: started.session })),
+    { state: "waiting" },
+  );
+  assert.equal(starts, 1);
 });

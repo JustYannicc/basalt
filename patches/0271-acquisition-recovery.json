@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-acquisition-recovery",
+  "file": "0271-acquisition-recovery.patch",
+  "content_sha256": "df6e09bcec25585aa33726adf0e49698f9dd0f4e185ad5426aa89634eda70801",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
