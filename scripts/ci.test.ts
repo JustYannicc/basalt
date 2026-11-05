@@ -378,7 +378,7 @@ test("Google recovery provisions Chromium before its bounded offline verificatio
     "The one-minute step must launch the prepared engine without downloading it",
   );
   const preparation = job.steps.findIndex((step: { run?: string }) =>
-    step.run?.includes("playwright install --with-deps chromium"),
+    step.uses === "./.github/actions/setup-browser",
   );
   assert.ok(
     preparation >= 0 && preparation < verification,
