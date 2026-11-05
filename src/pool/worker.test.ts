@@ -960,3 +960,20 @@ test("uncertain container model sends suppress retries while definite Home refus
   assert.equal(response.headers.get("x-should-retry"), null);
   await Promise.all(background);
 });
+
+test("the Worker answers its release without waking the pool container", async () => {
+  const env = {
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    PoolContainer: {
+      jurisdiction() {
+        throw new Error("The release route must not reach the container");
+      },
+    },
+  };
+  const response = await poolWorker.fetch(new Request("https://pool.example/pool/v1/release"), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys((await response.json()) as object).sort(), [
+    "keyVersion",
+    "revision",
+  ]);
+});

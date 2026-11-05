@@ -31,3 +31,4 @@ clients/mobile/dist-ios/
 clients/mobile/dist-android/
 
 scripts/scale-test/sources.generated.ts
+/src/pool/worker-revision.ts

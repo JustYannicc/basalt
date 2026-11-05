@@ -1,0 +1,82 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  poolWorkerRevision,
+  poolWorkerRevisionModule,
+  poolWorkerSources,
+  writePoolWorkerRevision,
+} from "./pool-worker-revision.ts";
+
+function checkout(files: Record<string, string>) {
+  const root = mkdtempSync(join(tmpdir(), "pool-worker-revision-"));
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  return root;
+}
+
+const worker = {
+  "src/pool/worker.ts": `import { route } from "./route.ts";\nimport { poolWorkerRevision } from "./worker-revision.ts";\nexport default { route, poolWorkerRevision };\n`,
+  "src/pool/route.ts": `export { name } from "../shared/name.ts";\nexport const route = () => import("./lazy.ts");\n`,
+  "src/pool/lazy.ts": "export const lazy = 1;\n",
+  "src/shared/name.ts": `export const name = "pool";\n`,
+  "src/pool/route.test.ts": `import "./route.ts";\n`,
+  "src/other/unrelated.ts": "export const unrelated = 1;\n",
+};
+
+test("the revision follows the Worker's local import graph and nothing else", () => {
+  const root = checkout(worker);
+  try {
+    assert.deepEqual(poolWorkerSources(root), [
+      "src/pool/lazy.ts",
+      "src/pool/route.ts",
+      "src/pool/worker.ts",
+      "src/shared/name.ts",
+    ]);
+    const first = poolWorkerRevision(root);
+    assert.match(first, /^[a-f0-9]{64}$/);
+    // Writing the revision module, editing a test or an unrelated file, or a new release
+    // changes nothing the Worker bundles, so the revision and the Worker bytes stay put.
+    writePoolWorkerRevision(root, join(root, ".upstream"));
+    writeFileSync(join(root, "src/pool/route.test.ts"), "// edited\n");
+    writeFileSync(join(root, "src/other/unrelated.ts"), "export const unrelated = 2;\n");
+    process.env.GITHUB_SHA = "another-release";
+    assert.equal(poolWorkerRevision(root), first);
+    // Any file it imports, however deep, is part of it.
+    writeFileSync(join(root, "src/shared/name.ts"), `export const name = "renamed";\n`);
+    assert.notEqual(poolWorkerRevision(root), first);
+  } finally {
+    delete process.env.GITHUB_SHA;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the Worker and the tools service get the same generated revision", () => {
+  const root = checkout(worker);
+  try {
+    const revision = writePoolWorkerRevision(root, join(root, ".upstream"));
+    const own = readFileSync(join(root, poolWorkerRevisionModule), "utf8");
+    const tools = readFileSync(
+      join(root, ".upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts"),
+      "utf8",
+    );
+    assert.equal(own, tools);
+    assert.ok(own.includes(JSON.stringify(revision)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the real pool Worker's revision inputs are its own sources", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const sources = poolWorkerSources(root);
+  assert.ok(sources.includes("src/pool/worker.ts"));
+  assert.ok(sources.includes("src/pool/release.ts"));
+  assert.ok(!sources.includes(poolWorkerRevisionModule));
+  assert.ok(sources.every((path) => !/\.test\.tsx?$/.test(path)));
+});

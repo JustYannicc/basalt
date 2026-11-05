@@ -2,7 +2,17 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { Context, Crypto, Deferred, Effect, Logger, Option, Redacted, Schema } from "effect";
+import {
+  Context,
+  Crypto,
+  Deferred,
+  Effect,
+  Logger,
+  Option,
+  Redacted,
+  References,
+  Schema,
+} from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -26,8 +36,16 @@ const [sdk, organizationContracts, scheduleContracts, lifecycleModule, defaults,
     load("apps/hosted/server/src/implementation/pool-app-source.ts"),
     load("apps/hosted/server/src/implementation/pool-app-upgrades.ts"),
   ]);
-const { AccountId, AppId, AppNameTaken, AppNotFound, AccountNotFound, StorageHost, VersionId } =
-  sdk;
+const {
+  AccountId,
+  AppId,
+  AppNameTaken,
+  AppNotFound,
+  AccountNotFound,
+  StorageError,
+  StorageHost,
+  VersionId,
+} = sdk;
 const { AccountProvisioned } = sdk;
 const { OrganizationId } = organizationContracts;
 const { ScheduleWakeup } = scheduleContracts;
@@ -42,13 +60,36 @@ const poolAppFiles: SourceFiles = Schema.decodeUnknownSync(sdk.SourceFiles)(
     ),
   ),
 );
-const { queuePoolAppUpgrades, poolReconcileRevision } = upgrades;
+const { queuePoolAppUpgrades, poolReconcileRevision, poolRollout } = upgrades;
 const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
 const { provision, drainProvisioning, selfHostProvisioningServices } = await load(
   "apps/hosted/server/src/implementation/provisioning.ts",
 );
-const { poolBundleJobPrefix } = await load("apps/hosted/server/src/contracts/pool-defaults.ts");
+const { poolBundleJobPrefix, PoolWorkerReport } = await load(
+  "apps/hosted/server/src/contracts/pool-defaults.ts",
+);
+const { poolWorkerRevision } = await load(
+  "apps/hosted/server/src/implementation/pool-worker-revision.ts",
+);
+const rolloutJob = (bundle: string, suffix: string) =>
+  `${poolBundleJobPrefix}${poolRollout(bundle)}:${suffix}`;
+// Pool setup that waits for the deploy reports why at debug level; the tests read that reason.
+const reasons: string[] = [];
+const withPendingReasons = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+  Effect.sync(() => void reasons.splice(0)).pipe(
+    Effect.andThen(work),
+    Effect.provide(
+      Logger.layer([
+        Logger.make(({ message }) => {
+          const [text, detail] = Array.isArray(message) ? message : [message];
+          if (text === "Pool setup is waiting for the deploy to finish")
+            reasons.push((detail as { reason: string }).reason);
+        }),
+      ]),
+    ),
+    Effect.provideService(References.MinimumLogLevel, "Debug"),
+  );
 const { OrganizationDefaults } = await load(
   "apps/hosted/server/src/contracts/organization-defaults.ts",
 );
@@ -730,7 +771,7 @@ test("bundle rollouts queue verified owners once while rotation has its own jour
       yield* queue;
       // Bundle jobs name their bundle and wait only a short margin; old servers refuse them.
       const jobs =
-        yield* sql`select user_id, id like ${`${poolBundleJobPrefix}${poolAppVersion}:%`} as tagged,
+        yield* sql`select user_id, id like ${`${rolloutJob(poolAppVersion, "")}%`} as tagged,
           available_at > now() + interval '1 minute' and available_at <= now() + interval '2 minutes' as delayed
         from hosted_provisioning order by user_id`;
       assert.deepEqual(jobs, [
@@ -770,20 +811,19 @@ test("a release with an unchanged bundle queues no rollout and never redeploys a
           Effect.provideService(OrganizationDefaults, defaults),
         );
       yield* sql`delete from hosted_provisioning`;
-      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
-        values (${`${poolBundleJobPrefix}${poolAppVersion}:first`}, 'member', ${organization}, 'person-a')`;
-      yield* run(`${poolBundleJobPrefix}${poolAppVersion}:first`);
-      const [installed] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
-      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
-        values (${`${poolBundleJobPrefix}${poolAppVersion}:again`}, 'member', ${organization}, 'person-a')`;
-      yield* run(`${poolBundleJobPrefix}${poolAppVersion}:again`);
-      const [after] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
-      assert.equal(after!.active_deployment, installed!.active_deployment);
+      for (const id of [rolloutJob(poolAppVersion, "first"), rolloutJob(poolAppVersion, "again")]) {
+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+          values (${id}, 'member', ${organization}, 'person-a')`;
+        const before = yield* sql`select active_deployment from executor_apps`;
+        yield* run(id);
+        if (before.length)
+          assert.deepEqual(yield* sql`select active_deployment from executor_apps`, before);
+      }
     }),
   );
 });
 
-test("a server on another bundle refuses its rollout job, which retries a bounded number of times", async () => {
+test("a server on an earlier bundle refuses a rollout job, which retries a bounded number of times", async () => {
   await fixture(({ sql, executor, setup }) =>
     Effect.gen(function* () {
       yield* setup();
@@ -799,8 +839,8 @@ test("a server on another bundle refuses its rollout job, which retries a bounde
       const services = selfHostProvisioningServices;
       const withDefaults = <A, E, R>(work: Effect.Effect<A, E, R>) =>
         work.pipe(Effect.provideService(OrganizationDefaults, defaults));
-      // This server still runs `poolAppVersion`; the job was queued by a release shipping "next-bundle".
-      const stale = `${poolBundleJobPrefix}next-bundle:job`;
+      // This server runs `poolAppVersion`; a newer release queued "next-bundle" and is still deploying.
+      const stale = rolloutJob("next-bundle", "job");
       yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
         values (${stale}, 'member', ${organization}, 'person-a')`;
       const refused = yield* Effect.exit(withDefaults(provision(stale, services)));
@@ -824,7 +864,7 @@ test("a server on another bundle refuses its rollout job, which retries a bounde
         { status: "failed", attempts: 8 },
       ]);
       // The same rollout on a server running its bundle upgrades the pool.
-      const current = `${poolBundleJobPrefix}${poolAppVersion}:job`;
+      const current = rolloutJob(poolAppVersion, "job");
       yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
         values (${current}, 'member', ${organization}, 'person-a')`;
       yield* withDefaults(provision(current, services));
@@ -838,6 +878,159 @@ test("a server on another bundle refuses its rollout job, which retries a bounde
         metadata: { basaltPools: Record<string, { bundle: string }> };
       }>`select metadata::jsonb as metadata from organization`;
       assert.equal(ownedRecord(team!.metadata.basaltPools)!.bundle, poolAppVersion);
+    }),
+  );
+});
+
+test("a rollout left behind by a later release settles without deploying", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [before] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+      // Release B queued "earlier-bundle"; this server's release queued its own rollout afterwards.
+      yield* sql`insert into private_hosted_data_steps (name, run, mode, completed_at) values
+        (${`basalt-pools:${poolRollout("earlier-bundle")}`}, 'apply', 'apply', now() - interval '1 minute'),
+        (${`basalt-pools:${poolRollout(poolAppVersion)}`}, 'apply', 'apply', now())`;
+      const defaults = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
+      const id = rolloutJob("earlier-bundle", "job");
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values (${id}, 'member', ${organization}, 'person-a')`;
+      yield* provision(id, selfHostProvisioningServices).pipe(
+        Effect.provideService(OrganizationDefaults, defaults),
+      );
+      assert.deepEqual(yield* sql`select status from hosted_provisioning`, [
+        { status: "succeeded" },
+      ]);
+      const [after] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+      assert.equal(after!.active_deployment, before!.active_deployment);
+    }),
+  );
+});
+
+for (const [name, report, reason] of [
+  ["code revision", { revision: "earlier-pool-worker" }, "worker-revision"],
+  ["signing key", { keyVersion: "earlier-key" }, "key-version"],
+  [
+    "code revision and signing key",
+    { revision: "earlier-pool-worker", keyVersion: "earlier-key" },
+    "worker-revision-and-key",
+  ],
+] as const)
+  test(`a bundle rollout waits while the pool Worker reports a different ${name}`, async () => {
+    await fixture(({ sql, executor, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
+        yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+          array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
+        yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+        const [before] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+        const ready = { revision: poolWorkerRevision, keyVersion: yield* poolTokenKeyVersion(key) };
+        const defaults = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
+        const id = rolloutJob(poolAppVersion, "job");
+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+          values (${id}, 'member', ${organization}, 'person-a')`;
+        const run = (worker: { revision: string; keyVersion: string }) =>
+          provision(id, selfHostProvisioningServices).pipe(
+            Effect.provideService(OrganizationDefaults, defaults),
+            Effect.provideService(PoolWorkerReport, Effect.succeed(worker)),
+          );
+        const pending = yield* Effect.exit(withPendingReasons(run({ ...ready, ...report })));
+        assert.equal(pending._tag, "Failure");
+        assert.deepEqual(reasons, [reason]);
+        const [unchanged] = yield* sql<{
+          active_deployment: string;
+          files: unknown;
+        }>`select * from executor_apps`;
+        assert.equal(unchanged!.active_deployment, before!.active_deployment);
+        assert.deepEqual(unchanged!.files, JSON.parse(old));
+        // Once the pool Worker reports this release's code and key, the same job upgrades.
+        yield* run(ready);
+        const [upgraded] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
+        assert.match(upgraded!.active_deployment, /^dpl_upgrade_/);
+      }),
+    );
+  });
+
+test("rotated tokens are never re-signed before the pool Worker reports the new key", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* queuePoolAppUpgrades(key);
+      yield* sql`delete from hosted_provisioning`;
+      yield* setup();
+      const tokens = () => sql<{ token: string }>`select token from executor_accounts order by id`;
+      const issued = yield* tokens();
+      const rotated = Redacted.make("cd".repeat(32));
+      yield* queuePoolAppUpgrades(rotated);
+      const [rotation] = yield* sql<{
+        id: string;
+      }>`select id from hosted_provisioning where id like 'basalt-pool-token:%'`;
+      yield* sql`update hosted_provisioning set available_at = now() where id = ${rotation!.id}`;
+      const defaults = yield* withPoolDefaults(executor, Option.some(rotated), () => Effect.void);
+      const run = (keyVersion: string) =>
+        provision(rotation!.id, selfHostProvisioningServices).pipe(
+          Effect.provideService(OrganizationDefaults, defaults),
+          Effect.provideService(
+            PoolWorkerReport,
+            Effect.succeed({ revision: poolWorkerRevision, keyVersion }),
+          ),
+        );
+      // The pool Worker still verifies with the previous key: nothing is re-signed yet.
+      const early = yield* Effect.exit(run(yield* poolTokenKeyVersion(key)));
+      assert.equal(early._tag, "Failure");
+      assert.deepEqual(yield* tokens(), issued);
+      const underRotated = () =>
+        Effect.gen(function* () {
+          let count = 0;
+          for (const { token } of yield* tokens())
+            if (yield* Effect.promise(() => verifyPoolToken(Redacted.value(rotated), token)))
+              count++;
+          return count;
+        });
+      assert.equal(yield* underRotated(), 0);
+      // Once it reports the new key, the job re-signs under it.
+      yield* run(yield* poolTokenKeyVersion(rotated));
+      assert.equal(yield* underRotated(), 1);
+      const [state] = yield* sql<{
+        pools: Record<string, { tokenKeyVersion?: string }>;
+      }>`select metadata::jsonb -> 'basaltPools' as pools from organization`;
+      assert.equal(ownedRecord(state!.pools)!.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
+    }),
+  );
+});
+
+test("ordinary member jobs ask the pool Worker only when they would re-sign", async () => {
+  await fixture(({ sql, executor }) =>
+    Effect.gen(function* () {
+      let asked = 0;
+      const unreachable = Effect.suspend(() => {
+        asked++;
+        return Effect.fail(new StorageError());
+      });
+      const member = (signingKey: Redacted.Redacted<string>, id: string) =>
+        Effect.gen(function* () {
+          const defaults = yield* withPoolDefaults(
+            executor,
+            Option.some(signingKey),
+            () => Effect.void,
+          );
+          yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+            values (${id}, 'member', ${organization}, 'person-a')`;
+          return yield* Effect.exit(
+            provision(id, selfHostProvisioningServices).pipe(
+              Effect.provideService(OrganizationDefaults, defaults),
+              Effect.provideService(PoolWorkerReport, unreachable),
+            ),
+          );
+        });
+      // A first install and an already current pool never depend on the pool Worker.
+      assert.equal((yield* member(key, "install"))._tag, "Success");
+      assert.equal((yield* member(key, "current"))._tag, "Success");
+      assert.equal(asked, 0);
+      // A pool whose tokens are from another key would be re-signed, so it waits.
+      const rotated = Redacted.make("cd".repeat(32));
+      assert.equal((yield* member(rotated, "behind"))._tag, "Failure");
+      assert.equal(asked, 1);
     }),
   );
 });

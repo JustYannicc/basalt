@@ -1,25 +1,57 @@
+diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
+index aa062a9..8270a2e 100644
+--- a/apps/hosted/server/src/contracts/organization-defaults.ts
++++ b/apps/hosted/server/src/contracts/organization-defaults.ts
+@@ -31,9 +31,18 @@ export class OrganizationDefaultsPending extends Schema.TaggedError<Organization
+   {},
+ ) {}
+ 
++/**
++ * Pool setup waits for the deploy to finish: this server's pool bundle, or the pool Worker's code
++ * or signing key, is not yet the one the job needs. The job retries; nothing is changed.
++ */
++export class PoolSetupPending extends Schema.TaggedError<PoolSetupPending>()("PoolSetupPending", {
++  reason: Schema.Literals(["bundle", "worker-revision", "key-version", "worker-revision-and-key"]),
++}) {}
++
+ /** Setup preserves safe generation and deploy failures alongside storage failures. */
+ export const OrganizationDefaultsError = Schema.Union([
+   OrganizationDefaultsPending,
++  PoolSetupPending,
+   StorageError,
+   SourceError,
+   SourcePathConflict,
 diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
-index 25ac448..5903dbd 100644
+index 25ac448..05ff1c5 100644
 --- a/apps/hosted/server/src/contracts/pool-defaults.ts
 +++ b/apps/hosted/server/src/contracts/pool-defaults.ts
-@@ -7,6 +7,15 @@ export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRot
+@@ -7,6 +7,24 @@ export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRot
    defaultValue: () => false,
  });
  
 +/**
-+ * Bundle rollout jobs name the bundle they install. A server still running another bundle refuses
-+ * the job, so the provisioning retry lands it on a server that has the new source.
++ * Bundle rollout jobs name the bundle and reconcile revision they apply. A server running another
++ * one never settles the job with its own source; see `withPoolDefaults`.
 + */
 +export const poolBundleJobPrefix = "basalt-pool-bundle:";
 +export const PoolBundleTarget = Context.Reference<string | undefined>("hosted/PoolBundleTarget", {
 +  defaultValue: () => undefined,
 +});
 +
++/** What the pool Worker reports about itself; tests and other hosts may supply it directly. */
++export interface PoolWorkerRelease {
++  readonly revision: string;
++  readonly keyVersion: string;
++}
++export const PoolWorkerReport = Context.Reference<
++  Effect.Effect<PoolWorkerRelease, StorageError> | undefined
++>("hosted/PoolWorkerReport", { defaultValue: () => undefined });
++
  /** The host supplies verified seed files lazily; checking the current version performs no I/O. */
  export class PoolAppSource extends Context.Service<
    PoolAppSource,
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
-index f16764c..4ed6bcb 100644
+index f16764c..eb034b5 100644
 --- a/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 @@ -1,6 +1,10 @@
@@ -34,59 +66,128 @@ index f16764c..4ed6bcb 100644
  import { poolTokenKeyVersion } from "./pool-account.ts";
  
  /**
-@@ -9,7 +13,10 @@ import { poolTokenKeyVersion } from "./pool-account.ts";
+@@ -9,7 +13,13 @@ import { poolTokenKeyVersion } from "./pool-account.ts";
   */
  export const poolReconcileRevision = 3;
  
 -/** Delay both rollouts: the pool Worker can deploy after tools; previous-key tokens keep working. */
++/** One rollout per bundle and reconcile revision; its job tag and journal step share this name. */
++export const poolRollout = (bundle: string) => `${bundle}:reconcile-${poolReconcileRevision}`;
++
 +/**
-+ * Token rotation waits for the pool Worker to deploy after tools; previous-key tokens keep working.
-+ * Bundle jobs need only a short margin: a server still on the previous bundle refuses them.
++ * Rotation waits for the pool Worker to deploy after tools; previous-key tokens keep working. A
++ * bundle job needs only a short margin: it waits for the pool Worker's code and key itself.
 + */
  export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: string) => {
    let completed = false;
    return Effect.gen(function* () {
-@@ -31,8 +38,9 @@ export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: s
+@@ -29,10 +39,11 @@ export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: s
+           group by team.id, coalesce(pool.value ->> 'owner', pool.key)`,
+       },
        {
-         name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`,
+-        name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`,
++        name: `basalt-pools:${poolRollout(poolAppVersion)}`,
          cursor: null,
 -        jobs: sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 -          select 'member', member."organizationId", member."userId", now() + interval '15 minutes'
 +        jobs: sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
-+          select ${poolBundleJobPrefix} || ${poolAppVersion} || ':' || gen_random_uuid()::text,
++          select ${poolBundleJobPrefix} || ${poolRollout(poolAppVersion)} || ':' || gen_random_uuid()::text,
 +            'member', member."organizationId", member."userId", now() + interval '2 minutes'
            from member join "user" on "user".id = member."userId"
            where member.role = 'owner' and "user"."emailVerified" = true`,
        },
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index af5e329..8692ad0 100644
+index af5e329..a3e7b1a 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -12,7 +12,7 @@ import { Config, Effect, Option, type Redacted, Schema } from "effect";
+@@ -12,7 +12,10 @@ import { Config, Effect, Option, type Redacted, Schema } from "effect";
  import { SqlClient } from "effect/sql";
  import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
  import type { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 -import { PoolAppSource, PoolTokenRotation } from "../contracts/pool-defaults.ts";
 +import { PoolAppSource, PoolBundleTarget, PoolTokenRotation } from "../contracts/pool-defaults.ts";
++import { PoolSetupPending } from "../contracts/organization-defaults.ts";
++import { poolRollout } from "./pool-app-upgrades.ts";
++import { awaitPoolWorker } from "./pool-worker-gate.ts";
  import { ScheduleWakeup } from "../contracts/schedules.ts";
  import { lockAppLinks } from "./app-accounts.ts";
  import { poolAppSetup } from "./resource-lifecycle.ts";
-@@ -467,6 +467,10 @@ export const withPoolDefaults = (
+@@ -455,6 +458,25 @@ export const poolDefaults = (
+       yield* reconcilePool(executor, key, organization, user);
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 
++/** Whether one of this owner's recorded pools still carries tokens from another signing key. */
++const recordBehindKey = (
++  sql: SqlClient.SqlClient,
++  key: Option.Option<Redacted.Redacted<string>>,
++  organization: OrganizationId,
++  owner: string,
++) =>
++  Effect.gen(function* () {
++    if (Option.isNone(key)) return false;
++    const version = yield* poolTokenKeyVersion(key.value);
++    const rows = yield* sql`select 1 from organization team
++      cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++      where team.id = ${organization} and coalesce(pool.value ->> 'owner', pool.key) = ${owner}
++        and pool.value ->> 'tokenKeyVersion' is distinct from ${version}`.pipe(
++      Effect.mapError(() => new StorageError()),
++    );
++    return rows.length > 0;
++  });
++
+ /** Ordinary setup commits first; rotation jobs have authority only to renew existing pool tokens. */
+ export const withPoolDefaults = (
+   executor: Executor,
+@@ -467,11 +489,43 @@ export const withPoolDefaults = (
      return (organization: OrganizationId, user?: Parameters<typeof initialize>[1]) =>
        Effect.gen(function* () {
          const rotationOnly = yield* PoolTokenRotation;
-+        // A server on the previous bundle must not settle this rollout; the job's bounded retry
-+        // reaches a server with the new source instead of recording the old one as current.
 +        const target = yield* PoolBundleTarget;
-+        if (target !== undefined && target !== poolSeed.version) return yield* new StorageError();
++        const own = poolRollout(poolSeed.version);
++        if (target !== undefined && target !== own) {
++          // A later release that queued its own rollout replaces this one; an earlier server waits.
++          const steps = yield* sql<{ name: string; completed_at: Date | string }>`select name,
++              completed_at from private_hosted_data_steps
++            where name in (${`basalt-pools:${target}`}, ${`basalt-pools:${own}`})
++              and run = 'apply' and completed_at is not null`.pipe(
++            Effect.mapError(() => new StorageError()),
++          );
++          const at = (name: string) => {
++            const row = steps.find((step) => step.name === `basalt-pools:${name}`);
++            return row === undefined ? null : new Date(row.completed_at).getTime();
++          };
++          const mine = at(own);
++          const theirs = at(target);
++          if (mine !== null && (theirs === null || mine > theirs))
++            return yield* Effect.logInfo("Pool rollout superseded by a later release", {
++              target,
++              own,
++            });
++          return yield* new PoolSetupPending({ reason: "bundle" });
++        }
          if (!rotationOnly) yield* initialize(organization, user);
-         if (user !== undefined)
+-        if (user !== undefined)
++        if (user !== undefined) {
++          // Deploys and re-signs wait until the pool Worker runs the code and key they rely on.
++          // A first install or an already current pool has nothing to wait for.
++          if (
++            target !== undefined ||
++            rotationOnly ||
++            (yield* recordBehindKey(sql, key, organization, user.userId))
++          )
++            yield* awaitPoolWorker(key);
            yield* poolDefaults(executor, key, organization, user.userId, rotationOnly).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
+             Effect.provideService(PoolAppSource, poolSeed),
+           );
++        }
+       });
+   });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 1c0aef7..7b780b1 100644
+index 1c0aef7..9d79008 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -2,7 +2,12 @@
+@@ -2,12 +2,18 @@
  import { StorageError } from "@executor-js/sdk/core";
  import { Effect, Exit, Schedule, Schema } from "effect";
  import { SqlClient } from "effect/sql";
@@ -100,17 +201,45 @@ index 1c0aef7..7b780b1 100644
  import { CatalogAppSweep, catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
  import { OrganizationId } from "../contracts/organization.ts";
  import {
-@@ -191,6 +196,9 @@ export const provision = (id: string, services: ProvisioningServices) =>
+   OrganizationDefaults,
+   OrganizationDefaultsPending,
++  PoolSetupPending,
+ } from "../contracts/organization-defaults.ts";
+ 
+ /** Parsed durable event; constraints in the table mirror these variants. */
+@@ -123,10 +129,15 @@ const attempt = <E, R>(
+     Effect.tapError((error) =>
+       Schema.is(OrganizationDefaultsPending)(error)
+         ? Effect.logDebug("Member setup is waiting for team installation", { job: id })
+-        : Effect.logWarning("Provisioning step failed", {
+-            job: id,
+-            reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
+-          }),
++        : Schema.is(PoolSetupPending)(error)
++          ? Effect.logDebug("Pool setup is waiting for the deploy to finish", {
++              job: id,
++              reason: error.reason,
++            })
++          : Effect.logWarning("Provisioning step failed", {
++              job: id,
++              reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
++            }),
+     ),
+     Effect.mapError(() => new ProvisioningFailed()),
+     Effect.withSpan("hosted.provision"),
+@@ -191,6 +202,11 @@ export const provision = (id: string, services: ProvisioningServices) =>
            const initialize = yield* OrganizationDefaults;
            const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
            const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
-+          const bundle = job.id.startsWith(poolBundleJobPrefix)
-+            ? job.id.slice(poolBundleJobPrefix.length).split(":")[0]
++          // `<prefix><bundle>:reconcile-<n>:<uuid>`: the target is everything before the uuid.
++          const tagged = job.id.startsWith(poolBundleJobPrefix)
++            ? job.id.slice(poolBundleJobPrefix.length)
 +            : undefined;
++          const bundle = tagged?.slice(0, tagged.lastIndexOf(":"));
            if (!rotationOnly && !catalogOnly) yield* services.member?.(job.user_id) ?? Effect.void;
            const [member] = yield* managers(
              job.organization_id,
-@@ -201,6 +209,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -201,6 +217,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
            if (member !== undefined)
              yield* initialize(job.organization_id, member).pipe(
                Effect.provideService(PoolTokenRotation, rotationOnly),
@@ -118,3 +247,62 @@ index 1c0aef7..7b780b1 100644
                Effect.provideService(CatalogAppSweep, catalogOnly),
              );
            return;
+diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
+new file mode 100644
+index 0000000..aa57f05
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-worker-gate.ts
+@@ -0,0 +1,53 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Config, Effect, Option, type Redacted, Schema } from "effect";
++import { PoolSetupPending } from "../contracts/organization-defaults.ts";
++import { PoolWorkerReport } from "../contracts/pool-defaults.ts";
++import { poolTokenKeyVersion } from "./pool-account.ts";
++import { poolWorkerRevision } from "./pool-worker-revision.ts";
++
++/** Matches `poolReleasePath` in Basalt's src/pool/release.ts. */
++const releasePath = "/pool/v1/release";
++const Release = Schema.Struct({ revision: Schema.String, keyVersion: Schema.String });
++
++/** Organization setup runs with no HTTP client in its context, so this one read uses fetch. */
++async function readRelease(origin: string): Promise<unknown> {
++  const response = await fetch(new URL(releasePath, origin), {
++    redirect: "error",
++    signal: AbortSignal.timeout(10_000),
++  });
++  if (!response.ok) throw new Error(`Pool release read failed: ${response.status}`);
++  return response.json();
++}
++
++const fetchRelease = (origin: string) =>
++  Effect.tryPromise({ try: () => readRelease(origin), catch: () => new StorageError() }).pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Release)),
++    Effect.mapError(() => new StorageError()),
++  );
++
++/**
++ * Fail until the pool Worker runs the code revision this server was prepared with and signs with
++ * this server's key. Hosts without a separate pool Worker origin have nothing to wait for.
++ */
++export const awaitPoolWorker = (key: Option.Option<Redacted.Redacted<string>>) =>
++  Effect.gen(function* () {
++    const supplied = yield* PoolWorkerReport;
++    let report;
++    if (supplied !== undefined) report = yield* supplied;
++    else {
++      const origin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(
++        Config.option,
++        Effect.mapError(() => new StorageError()),
++      );
++      if (Option.isNone(origin)) return;
++      report = yield* fetchRelease(origin.value);
++    }
++    const revision = report.revision === poolWorkerRevision;
++    const keyVersion = Option.isNone(key)
++      ? true
++      : report.keyVersion === (yield* poolTokenKeyVersion(key.value));
++    if (revision && keyVersion) return;
++    return yield* new PoolSetupPending({
++      reason: revision ? "key-version" : keyVersion ? "worker-revision" : "worker-revision-and-key",
++    });
++  });
