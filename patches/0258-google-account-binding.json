@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-google-account-binding",
+  "file": "0258-google-account-binding.patch",
+  "content_sha256": "dcf20372adce5f533f5142acb4ab477a040a8023ade98efe7c26fcfe6c8872de",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

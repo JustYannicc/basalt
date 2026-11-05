@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-declaration-cache",
+  "file": "0261-account-declaration-cache.patch",
+  "content_sha256": "8c860da7d02c4afeee90d6b4dbe81e0c714d2dfad7279ffb5ba585e14306a3d8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
