@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Production compiler cache reuse requires matching source, framework release and intact output; test stages bypass inherited production cache settings."
+    }
+  }
+}

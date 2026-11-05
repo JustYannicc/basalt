@@ -1,0 +1,53 @@
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 4a3373f..ea043bb 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -418,14 +418,19 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         expect((yield* product.connect(unverified)).identity).toBeUndefined();
+         // Production families have public issuers; the loopback issuer verified these subjects.
+         const family = (id: string, issuer: string, name: string) => ({
+-          sql: "UPDATE executor_account_identities SET issuer = $1, name = $2 WHERE id = $3",
++          sql: "UPDATE executor_account_identities SET issuer = $1, name = $2 WHERE id = $3 RETURNING id, issuer, name",
+           params: [issuer, name, id],
+         });
+-        yield* legacyStorage([
++        const rewritten = yield* legacyStorage([
+           family(google, "https://accounts.google.com", "Google"),
+           family(atlassian, "https://auth.atlassian.com", "Atlassian"),
+           family(single, "https://accounts.google.com", "Google"),
+         ]);
++        expect(rewritten, "each family fixture updates exactly its expected identity").toEqual([
++          [{ id: google, issuer: "https://accounts.google.com", name: "Google" }],
++          [{ id: atlassian, issuer: "https://auth.atlassian.com", name: "Atlassian" }],
++          [{ id: single, issuer: "https://accounts.google.com", name: "Google" }],
++        ]);
+         yield* serverControl("start");
+         const paired = yield* body(
+           Schema.Struct({ url: Schema.String }),
+@@ -511,18 +516,21 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+               expect(shown.name).toBe(app);
+               expect(shown.images.filter((image) => image.src.includes("/logo/"))).toEqual([]);
+             }
++            expect(
++              yield* browser.use(`${width}: the layout does not overflow`, (page) =>
++                page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++              ),
++            ).toBe(true);
+           });
++        yield* browser.use("Set the desktop width to 1280 px", (page) =>
++          page.setViewportSize({ width: 1280, height: 960 }),
++        );
+         yield* expectMarks("Desktop");
+         yield* browser.checkpoint("Shared identities show their family marks");
+         yield* browser.use("Switch to phone width", (page) =>
+           page.setViewportSize({ width: 390, height: 844 }),
+         );
+         yield* expectMarks("Phone");
+-        expect(
+-          yield* browser.use("The phone layout does not overflow", (page) =>
+-            page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+-          ),
+-        ).toBe(true);
+         yield* browser.checkpoint("Shared identity family marks at phone width");
+       }),
+     ),

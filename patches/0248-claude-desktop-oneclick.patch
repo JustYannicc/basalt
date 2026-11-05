@@ -1,0 +1,592 @@
+diff --git a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+index a439227..6311869 100644
+--- a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+@@ -1,4 +1,4 @@
+-import { useState } from "react";
++import { useRef, useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { AssistantGuideSteps, EndpointField } from "@executor-js/ui/dashboard/connect";
+ import { PoolSelect } from "./computer-quick-setup.tsx";
+@@ -7,8 +7,8 @@ import { computerName, type PoolKey, type PoolSetup } from "./pool-setup.tsx";
+ /*
+  * Claude Desktop runs on a pool through its third-party inference mode. That mode has no claude.ai
+  * account, so its connectors come from the same configuration: the deployment's MCP server with
+- * OAuth sign-in, never a stored token. Anthropic documents Import configuration only for files
+- * holding bootstrap keys, so the steps lead and the file is offered as untested.
++ * OAuth sign-in, never a stored tools token. The downloaded fields match the documented settings;
++ * native Desktop acceptance of this full static configuration has not been proven.
+  */
+ 
+ /** The fields the in-app configuration window writes, as its exported JSON config names them. */
+@@ -46,87 +46,126 @@ export function ClaudeDesktopSetup({
+   readonly server: string;
+   readonly mcpUrl: string;
+ }) {
+-  const [issued, setIssued] = useState<PoolKey>();
++  const [issued, setIssued] = useState<{
++    readonly pool: string | undefined;
++    readonly key: PoolKey;
++  }>();
++  const attempts = useRef(new Map<string | undefined, string>());
++  const revoked =
++    issued !== undefined &&
++    setup.view?.computers.some(
++      (computer) =>
++        computer.id === issued.key.computerId &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed"),
++    );
++  if (issued !== undefined && (revoked || setup.view === undefined)) setIssued(undefined);
++  const [manualOpen, setManualOpen] = useState(false);
++  const issuing = useRef(false);
++  const current =
++    setup.view !== undefined && !revoked && issued?.pool === setup.pool ? issued?.key : undefined;
+   const [busy, setBusy] = useState(false);
+   const [problem, setProblem] = useState<string>();
+-  const create = async () => {
++  const create = async (saveFile: boolean) => {
++    if (issuing.current) return;
++    issuing.current = true;
+     setBusy(true);
+     setProblem(undefined);
+     try {
+-      setIssued(await setup.issueKey(`${computerName()} · Claude Desktop`));
++      const pool = setup.pool;
++      let attempt = attempts.current.get(pool);
++      if (attempt === undefined) {
++        attempt = crypto.randomUUID();
++        attempts.current.set(pool, attempt);
++      }
++      const key = current ?? (await setup.issueKey(`${computerName()} · Claude Desktop`, attempt));
++      setIssued({ pool, key });
++      if (saveFile) download("claude-desktop-config.json", desktopConfig(key, server, mcpUrl));
+     } catch (error) {
+       setProblem(setup.failure(error));
+     }
++    issuing.current = false;
+     setBusy(false);
+   };
+   return (
+     <>
+-      <div className="flex flex-wrap items-center gap-2">
++      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+         <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">Models from</span>
+-        <PoolSelect setup={setup} />
+-        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create()}>
+-          {issued ? "Create another key" : "Create key"}
++        <PoolSelect setup={setup} disabled={busy} />
++        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create(true)}>
++          Download setup file
+         </Button>
+       </div>
+       {problem ? (
+         <p role="alert" className="mt-3 text-[13px] leading-5 text-destructive">
+           {problem}
++          <button
++            type="button"
++            className="block underline"
++            onClick={() =>
++              document
++                .querySelector('[aria-label="Connected agents"]')
++                ?.scrollIntoView({ behavior: "auto", block: "start" })
++            }
++          >
++            Show Connected agents
++          </button>
+         </p>
+       ) : (
+         <p className="mt-3 text-[13px] leading-5 text-muted-foreground">
+-          {issued
+-            ? "Your key is shown only now. It's listed under Connected agents, where you can revoke it."
+-            : "Creates a key for Claude Desktop on this computer, then shows the steps."}
++          {current
++            ? "Open Developer › Configure Third-Party Inference in Claude Desktop, import this file, then apply the changes. Revoke its key under Connected agents."
++            : "Downloads your pool connection and tools configuration."}
+         </p>
+       )}
+-      {issued && (
+-        <>
+-          <AssistantGuideSteps
+-            className="mt-4"
+-            guide={{
+-              steps: [
+-                <>
+-                  In Claude Desktop, open <Ui>Help › Troubleshooting › Enable Developer Mode</Ui>,
+-                  then <Ui>Developer › Configure Third-Party Inference</Ui>.
+-                </>,
+-                <>
+-                  Under <Ui>Connection</Ui>, choose <Ui>Gateway</Ui> and paste this base URL.
+-                  <EndpointField endpoint={issued.baseUrl} label="Copy base URL" />
+-                </>,
+-                <>
+-                  Keep <Ui>Static API key</Ui> and the <Ui>Bearer</Ui> auth scheme, and paste this
+-                  key. Leave model discovery on; your pool&rsquo;s models fill the picker.
+-                  <EndpointField endpoint={issued.key} label="Copy key" />
+-                </>,
+-                <>
+-                  Under <Ui>MCP servers</Ui>, add <Ui>{server}</Ui> as a Streamable HTTP server with
+-                  this URL and OAuth sign-in.
+-                  <EndpointField endpoint={mcpUrl} />
+-                </>,
+-                <>
+-                  Click <Ui>Apply Changes</Ui>, then <Ui>Save & Restart</Ui>, and choose the
+-                  third-party option at sign-in.
+-                </>,
+-              ],
+-            }}
+-          />
+-          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-3">
+-            <Button
+-              variant="outline"
+-              size="sm"
+-              onClick={() =>
+-                download("claude-desktop-config.json", desktopConfig(issued, server, mcpUrl))
+-              }
+-            >
+-              Download setup file
+-            </Button>
+-            <span className="text-xs leading-5 text-muted-foreground">
+-              Untested: load it with <Ui>Import configuration</Ui> in the same window instead of
+-              steps 2 to 4.
+-            </span>
+-          </div>
+-        </>
+-      )}
++      <details
++        className="mt-4 min-w-0 border-t pt-3"
++        onToggle={(event) => setManualOpen(event.currentTarget.open)}
++      >
++        <summary className="cursor-pointer text-[13px] font-medium text-foreground">
++          Set it up by hand
++        </summary>
++        {manualOpen && !current && (
++          <Button size="sm" loading={busy} disabled={busy} onClick={() => void create(false)}>
++            Create key
++          </Button>
++        )}
++        {manualOpen && current && (
++          <>
++            <AssistantGuideSteps
++              className="mt-4"
++              guide={{
++                steps: [
++                  <>
++                    In Claude Desktop, open <Ui>Help › Troubleshooting › Enable Developer Mode</Ui>,
++                    then <Ui>Developer › Configure Third-Party Inference</Ui>.
++                  </>,
++                  <>
++                    Under <Ui>Connection</Ui>, choose <Ui>Gateway</Ui> and paste this base URL.
++                    <EndpointField endpoint={current.baseUrl} label="Copy base URL" />
++                  </>,
++                  <>
++                    Keep <Ui>Static API key</Ui> and the <Ui>Bearer</Ui> auth scheme, and paste this
++                    key. Leave model discovery on; your pool&rsquo;s models fill the picker.
++                    <EndpointField endpoint={current.key} label="Copy key" />
++                  </>,
++                  <>
++                    Under <Ui>MCP servers</Ui>, add <Ui>{server}</Ui> as a Streamable HTTP server
++                    with this URL and OAuth sign-in.
++                    <EndpointField endpoint={mcpUrl} />
++                  </>,
++                  <>
++                    Click <Ui>Apply Changes</Ui>, then <Ui>Save & Restart</Ui>, and choose the
++                    third-party option at sign-in.
++                  </>,
++                ],
++              }}
++            />
++          </>
++        )}
++      </details>
+       <p className="mt-3 text-xs leading-5 text-muted-foreground">
+         Claude Desktop then runs on your pool in its third-party mode: chats stay on this computer,
+         with no claude.ai or mobile access, sharing or voice.
+diff --git a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+index 36b483c..b0e22a0 100644
+--- a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+@@ -10,10 +10,20 @@ import { Spinner } from "@executor-js/ui/components/spinner";
+ import { poolLabel, type PoolSetup } from "./pool-setup.tsx";
+ 
+ /** Which pool a new computer's models run on. */
+-export function PoolSelect({ setup }: { readonly setup: PoolSetup }) {
++export function PoolSelect({
++  setup,
++  disabled = false,
++}: {
++  readonly setup: PoolSetup;
++  readonly disabled?: boolean;
++}) {
+   const pools = setup.view?.pools ?? [];
+   return (
+-    <Select value={setup.pool ?? ""} onValueChange={setup.setPool} disabled={!pools.length}>
++    <Select
++      value={setup.pool ?? ""}
++      onValueChange={setup.setPool}
++      disabled={disabled || !pools.length}
++    >
+       <SelectTrigger size="sm" aria-label="Pool for models" className="w-44 text-xs">
+         <SelectValue placeholder="Your pool" />
+       </SelectTrigger>
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+index e2cd9d1..413fa42 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -47,6 +47,7 @@ interface SetupLink {
+ }
+ /** A models-only key this page shows once, for clients the person configures by hand. */
+ export interface PoolKey {
++  readonly computerId: string;
+   readonly key: string;
+   readonly baseUrl: string;
+ }
+@@ -140,6 +141,23 @@ export function usePoolSetup() {
+   const { slug } = useOrganizationRoute();
+   const scope = useSetupScope(slug);
+   const { view, pool } = useRetainedSetup(scope);
++  const keyAttempts = useRef(new Map<string, { link?: SetupLink; key?: PoolKey }>());
++  useEffect(() => {
++    for (const [id, attempt] of keyAttempts.current) {
++      const computer = view?.computers.find((computer) => computer.id === attempt.link?.computerId);
++      if (
++        computer &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed")
++      ) {
++        delete attempt.key;
++        keyAttempts.current.delete(id);
++      }
++    }
++  }, [view]);
++  useEffect(() => () => keyAttempts.current.clear(), [scope]);
+   const intent = useRef<{ value: Promise<string>; at: number } | undefined>(undefined);
+   const [pending, setPending] = useState<Pending>();
+   const [problem, setProblem] = useState<string>();
+@@ -158,6 +176,7 @@ export function usePoolSetup() {
+   /** Refused here: nothing this person saw stays to be shown again. */
+   const forget = useCallback(() => {
+     reader.current = { inFlight: 0, issued: 0, committed: 0 };
++    keyAttempts.current.clear();
+     intent.current = undefined;
+     rearm.current();
+     const stored = registry.get(retainedSetupAtom);
+@@ -370,18 +389,50 @@ export function usePoolSetup() {
+    * computer.
+    */
+   const issueKey = useCallback(
+-    async (name: string): Promise<PoolKey> => {
+-      const link = await post<SetupLink>("links", {
+-        intent: await signed(),
+-        name,
+-        tools: false,
+-        ...(pool && { pool }),
+-      });
++    async (name: string, attemptId: string = crypto.randomUUID()): Promise<PoolKey> => {
++      const identity = JSON.stringify([scope, pool, attemptId]);
++      let attempt = keyAttempts.current.get(identity);
++      const computer = view?.computers.find(
++        (computer) => computer.id === attempt?.link?.computerId,
++      );
++      if (
++        computer &&
++        (computer.revokedAt ||
++          computer.removedAt ||
++          computer.state === "revoked" ||
++          computer.state === "removed")
++      ) {
++        if (attempt !== undefined) delete attempt.key;
++        keyAttempts.current.delete(identity);
++        attempt = undefined;
++      }
++      if (attempt?.key !== undefined) return attempt.key;
++      const recovery = `A key may already have been issued for ${name}, but it was not downloaded. This attempt will not create another key. Retry the same link, or revoke that entry under Connected agents before starting over. If the creation response was lost, reload this page after revoking it.`;
++      if (attempt === undefined) {
++        const intent = await signed();
++        attempt = {};
++        // A lost creation response is uncertain too. Never blindly repeat the mint request.
++        keyAttempts.current.set(identity, attempt);
++        try {
++          attempt.link = await post<SetupLink>("links", {
++            intent,
++            name,
++            tools: false,
++            ...(pool && { pool }),
++          });
++        } catch {
++          void refresh().catch(() => undefined);
++          throw new SetupFailure(recovery);
++        }
++      }
++      if (attempt.link === undefined) throw new SetupFailure(recovery);
++      const link = attempt.link;
+       let claimed: Response;
+       try {
+         claimed = await fetch(`${link.link}?format=json`, { credentials: "same-origin" });
+       } catch {
+-        throw new SetupFailure("Setup couldn't be reached. Try again.");
++        void refresh().catch(() => undefined);
++        throw new SetupFailure(recovery);
+       }
+       const body = (await claimed.json().catch(() => ({}))) as {
+         credentials?: { modelKey?: unknown; modelUrl?: unknown };
+@@ -389,10 +440,12 @@ export function usePoolSetup() {
+       const { modelKey, modelUrl } = body.credentials ?? {};
+       void refresh().catch(() => undefined);
+       if (!claimed.ok || typeof modelKey !== "string" || typeof modelUrl !== "string")
+-        throw new SetupFailure("Couldn't create the key. Try again.");
+-      return { key: modelKey, baseUrl: modelUrl };
++        throw new SetupFailure(recovery);
++      if (keyAttempts.current.get(identity) !== attempt) throw new SetupFailure(recovery);
++      attempt.key = { key: modelKey, baseUrl: modelUrl, computerId: link.computerId };
++      return attempt.key;
+     },
+-    [pool, refresh, signed],
++    [pool, refresh, scope, signed, view],
+   );
+ 
+   /** Runs one change against the signed intent, then reloads; returns the error to show, if any. */
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+index 3904ce6..d8e1a7e 100644
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -5,7 +5,7 @@
+  * deployment's own Worker, so the scenario stands in for it with a small fake.
+  */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, FileSystem } from "effect";
+ import type { Page, Route } from "playwright";
+ import { scenarios } from "../test-plan.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -323,8 +323,12 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Stand in for the setup service", (page) =>
+           page.route("**/setup/v1/**", service.handle),
+         );
+-        yield* browser.use("Stand in for one-time links", (page) =>
+-          page.route("**/setup/claim/**", service.claim),
++        let claimRequests = 0;
++        yield* browser.use("Lose the first claim response", (page) =>
++          page.route("**/setup/claim/**", (route) => {
++            claimRequests++;
++            return claimRequests === 1 ? route.abort("failed") : service.claim(route);
++          }),
+         );
+         yield* browser.use("Open Connect", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
+@@ -335,27 +339,191 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Its limits are stated up front", (page) =>
+           guide(page, "Claude Desktop").getByText("third-party mode", { exact: false }).waitFor(),
+         );
+-        yield* browser.checkpoint("Claude Desktop: before a key");
+-        yield* browser.use("Create a key", (page) =>
+-          guide(page, "Claude Desktop").getByRole("button", { name: "Create key" }).click(),
++        const fs = yield* FileSystem.FileSystem;
++        yield* browser.use("Use phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
+         );
+-        yield* browser.use("The steps show the key once", (page) =>
+-          guide(page, "Claude Desktop").getByText("sk-fake-pool-key").waitFor(),
++        const manual = () =>
++          browser.use("Manual steps stay collapsed", (page) =>
++            guide(page, "Claude Desktop")
++              .getByText("Set it up by hand", { exact: true })
++              .evaluate((element) => element.parentElement?.hasAttribute("open")),
++          );
++        expect(yield* manual()).toBe(false);
++        const download = () =>
++          Effect.gen(function* () {
++            const [file] = yield* browser.use("One click issues and downloads setup", (page) =>
++              Promise.all([
++                page.waitForEvent("download"),
++                guide(page, "Claude Desktop")
++                  .getByRole("button", { name: "Download setup file", exact: true })
++                  .click(),
++              ]),
++            );
++            const path = yield* browser.use("Wait for the setup download", () => file.path());
++            return { name: file.suggestedFilename(), path };
++          });
++        yield* browser.use("First click loses the claim response", (page) =>
++          guide(page, "Claude Desktop")
++            .getByRole("button", { name: "Download setup file", exact: true })
++            .click(),
++        );
++        yield* browser.use("Lost claim offers recovery", (page) =>
++          guide(page, "Claude Desktop")
++            .getByRole("alert")
++            .getByText("A key may already have been issued", { exact: false })
++            .waitFor(),
+         );
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(1);
++        const file = yield* download();
++        expect(claimRequests).toBe(2);
++        expect(file.name).toBe("claude-desktop-config.json");
++        if (file.path === null) return yield* Effect.die("Download has no local file");
++        const text = yield* fs.readFileString(file.path);
++        const config = JSON.parse(text);
+         const desktop = service.calls.filter((call) => call.path === "links");
+         expect(desktop).toHaveLength(1);
+         expect(desktop[0]?.body).toMatchObject({ tools: false, pool: "own" });
+         expect(String(desktop[0]?.body.name)).toContain("Claude Desktop");
+-        yield* browser.checkpoint("Claude Desktop: steps with the key");
+-        const file = yield* browser.use("Download the setup file", (page) =>
++        expect(config).toEqual({
++          inferenceProvider: "gateway",
++          inferenceGatewayBaseUrl: yield* browser.use("Read fixture origin", (page) =>
++            Promise.resolve(new URL(page.url()).origin),
++          ),
++          inferenceGatewayApiKey: "sk-fake-pool-key",
++          inferenceGatewayAuthScheme: "bearer",
++          managedMcpServers: [
++            {
++              name: expect.any(String),
++              transport: "http",
++              url: expect.stringMatching(/^https?:\/\/.+\/mcp$/),
++              oauth: true,
++            },
++          ],
++        });
++        expect(text).toBe(JSON.stringify(config, null, 2) + "\n");
++        const repeated = yield* download();
++        if (repeated.path === null) return yield* Effect.die("Repeated download has no local file");
++        expect(yield* fs.readFileString(repeated.path)).toBe(text);
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(1);
++        expect(yield* manual()).toBe(false);
++        expect(
++          yield* browser.use("Collapsed manual fields never mount the key", (page) =>
++            guide(page, "Claude Desktop").getByText("sk-fake-pool-key", { exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Show manual setup", (page) =>
++          guide(page, "Claude Desktop").getByText("Set it up by hand", { exact: true }).click(),
++        );
++        yield* browser.use("The existing key is available by hand", (page) =>
++          guide(page, "Claude Desktop").getByText("sk-fake-pool-key").waitFor(),
++        );
++        expect(
++          yield* browser.use("Phone layout keeps actions inside the viewport", (page) =>
++            guide(page, "Claude Desktop").evaluate((element) => {
++              const controls = [...element.querySelectorAll("button,summary")].filter(
++                (item) => item.getClientRects().length,
++              );
++              return (
++                controls.every((item) => {
++                  const r = item.getBoundingClientRect();
++                  return r.left >= 0 && r.right <= window.innerWidth;
++                }) && document.documentElement.scrollWidth <= window.innerWidth
++              );
++            }),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Claude Desktop: phone single-click setup and manual fallback");
++        yield* browser.use("Close manual setup", (page) =>
++          guide(page, "Claude Desktop").getByText("Set it up by hand", { exact: true }).click(),
++        );
++        yield* browser.use("Closing unmounts the key", (page) =>
++          guide(page, "Claude Desktop")
++            .getByText("sk-fake-pool-key", { exact: true })
++            .waitFor({ state: "detached" }),
++        );
++        yield* browser.use("Open the pool selector", (page) =>
++          guide(page, "Claude Desktop").getByRole("combobox", { name: "Pool for models" }).click(),
++        );
++        yield* browser.use("Choose another pool for an uncertain claim", (page) =>
++          page.getByRole("option", { name: "Team pool" }).click(),
++        );
++        yield* browser.use("Stop answering claims normally", (page) =>
++          page.unroute("**/setup/claim/**"),
++        );
++        let consumed = false;
++        yield* browser.use("Lose a consumed claim response", (page) =>
++          page.route("**/setup/claim/**", (route) => {
++            if (!consumed) {
++              consumed = true;
++              return route.fulfill({ status: 200, contentType: "application/json", body: "{" });
++            }
++            return route.fulfill({
++              status: 410,
++              contentType: "application/json",
++              body: JSON.stringify({ error: "already consumed" }),
++            });
++          }),
++        );
++        yield* browser.use("Request setup with the uncertain claim", (page) =>
++          guide(page, "Claude Desktop")
++            .getByRole("button", { name: "Download setup file", exact: true })
++            .click(),
++        );
++        yield* browser.use("The uncertain claim offers recovery", (page) =>
++          guide(page, "Claude Desktop").getByRole("alert").waitFor(),
++        );
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++        yield* browser.use("Retry a consumed link without minting again", (page) =>
+           Promise.all([
+-            page.waitForEvent("download"),
++            page.waitForResponse(
++              (response) => response.url().includes("/setup/claim/") && response.status() === 410,
++            ),
+             guide(page, "Claude Desktop")
+-              .getByRole("button", { name: "Download setup file" })
++              .getByRole("button", { name: "Download setup file", exact: true })
+               .click(),
+-          ]).then(([download]) => download.suggestedFilename()),
++          ]),
++        );
++        yield* browser.use("A consumed claim keeps its recovery message", (page) =>
++          guide(page, "Claude Desktop")
++            .getByRole("alert")
++            .getByText("A key may already have been issued", { exact: false })
++            .waitFor(),
++        );
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++        yield* browser.use("Uncertain key exposes revocation recovery", (page) =>
++          guide(page, "Claude Desktop")
++            .getByRole("button", { name: "Show Connected agents" })
++            .waitFor(),
++        );
++        yield* browser.use("Stop answering consumed claims", (page) =>
++          page.unroute("**/setup/claim/**"),
++        );
++        yield* browser.use("Restore normal claim delivery", (page) =>
++          page.route("**/setup/claim/**", service.claim),
++        );
++        const failedDesktop = (page: Page) =>
++          rows(page).filter({ hasText: "Claude Desktop" }).filter({ hasText: "Team pool" }).first();
++        yield* browser.use("Manage the failed Desktop attempt", (page) =>
++          failedDesktop(page)
++            .getByRole("button", { name: /Manage/ })
++            .click(),
++        );
++        yield* browser.use("Revoke the failed Desktop attempt", (page) =>
++          page.getByRole("menuitem", { name: "Revoke", exact: true }).click(),
++        );
++        yield* browser.use("Confirm revoking the failed Desktop attempt", (page) =>
++          page.getByRole("button", { name: "Revoke computer", exact: true }).click(),
++        );
++        yield* browser.use("The failed Desktop attempt leaves the list", (page) =>
++          failedDesktop(page).waitFor({ state: "detached" }),
++        );
++        const recovered = yield* download();
++        expect(recovered.name).toBe("claude-desktop-config.json");
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(3);
++        yield* browser.use("Restore desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
+         );
+-        expect(file).toBe("claude-desktop-config.json");
+ 
+         yield* browser.use("Open the pool endpoint", (page) =>
+           page.getByRole("tab", { name: "Pool endpoint" }).click(),
+@@ -371,7 +539,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+           page.getByText("export OPENAI_API_KEY=sk-fake-pool-key").waitFor(),
+         );
+         yield* browser.checkpoint("Pool endpoint: key and example");
+-        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(4);
+       }),
+     ),
+   );

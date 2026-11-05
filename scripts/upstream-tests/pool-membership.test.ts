@@ -301,6 +301,71 @@ test("the signed native reader returns only current app links and verified Home 
         assert.equal(JSON.stringify(body).includes("alice"), false);
         assert.equal(JSON.stringify(body).includes("home-ref-acc_changed"), false);
 
+        const control = {
+          scope: "app",
+          provider: "prv_control",
+          cardinality: "one",
+          definition: {
+            name: "Pool access",
+            auth: {
+              token: { type: "secrets", provisioned: true },
+            },
+          },
+        };
+        yield* sql`insert into hosted_account_access values
+            ('acc_control', ${organization}, 'shared', null, 'owner')`;
+        yield* sql`insert into executor_accounts values
+            ('acc_control', ${owner}, 'prv_control', 'token', 1)`;
+        yield* sql`insert into hosted_app_account_links values
+            (${pool}, 'pool', null, 'acc_control', now())`;
+        yield* sql`update executor_deployments set requirements = ${JSON.stringify({
+          accounts: { ...requirements().accounts, pool: control },
+        })} where id = 'dpl_app'`;
+        const provisioned = yield* Effect.tryPromise(() => request("sbq1"));
+        assert.equal(provisioned.status, 200);
+        const controlSnapshot = yield* Effect.tryPromise(() => provisioned.json());
+        assert.equal(
+          controlSnapshot.accounts.some(
+            (row: { account: string }) => row.account === "acc_control",
+          ),
+          false,
+        );
+        assert.equal(
+          controlSnapshot.accounts.some((row: { account: string }) => row.account === "acc_home"),
+          true,
+        );
+
+        yield* sql`delete from hosted_app_account_links where app = ${pool} and requirement = 'pool'`;
+        yield* sql`insert into hosted_app_account_links values
+            (${pool}, 'pool', null, 'acc_home', now())`;
+        yield* sql`update executor_deployments set requirements = ${JSON.stringify({
+          accounts: {
+            ...requirements().accounts,
+            pool: {
+              scope: "app",
+              provider: "prv_home",
+              cardinality: "many",
+              definition: { name: "Model provider", auth: { apiKey: { type: "secrets" } } },
+            },
+          },
+        })} where id = 'dpl_app'`;
+        const collision = yield* Effect.tryPromise(() => request("sbq1"));
+        assert.equal(collision.status, 200);
+        const collisionSnapshot = yield* Effect.tryPromise(() => collision.json());
+        assert.deepEqual(
+          collisionSnapshot.accounts.filter(
+            (row: { requirement: string }) => row.requirement === "pool",
+          ),
+          [
+            {
+              ...byId.get("acc_home"),
+              requirement: "pool",
+            },
+          ],
+        );
+        yield* sql`delete from hosted_app_account_links where app = ${pool} and requirement = 'pool'`;
+        yield* sql`update executor_deployments set requirements = ${JSON.stringify(requirements())} where id = 'dpl_app'`;
+
         const denied = yield* Effect.tryPromise(() => request("sbm1"));
         assert.equal(denied.status, 503);
         const wrongKey = yield* Effect.tryPromise(() => request("sbq1", "cd".repeat(32)));
