@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An app header that displayed a publishing placeholder retains its box after a late non-publishing answer. Loading and loaded app metadata share that publishing check; a host already known not to publish holds no place. Public desktop and phone member guards hold publishing status across the unchanged card-position measurement, without changing publication authority."
+    }
+  }
+}

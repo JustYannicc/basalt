@@ -181,6 +181,8 @@ export const areas = [
       ".upstream/apps/hosted/web/src/implementation/pages/{resource-settings,app-detail,account-actions}.tsx",
       ".upstream/e2e/tests/access-editor-reads.spec.ts",
       ".upstream/e2e/support/read-dispatch.ts",
+      ".upstream/e2e/tests/member-controls.spec.ts",
+      ".upstream/e2e/tests/publishing-off.spec.ts",
     ],
     jobs: ["human-in-the-loop"],
   },

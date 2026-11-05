@@ -115,6 +115,19 @@ test("pool ingress and carried shared workflow views retain the gates that consu
   assert.ok(jobs.includes("production-build"));
 });
 
+test("app header and member layout changes retain the publishing layout guard", () => {
+  for (const path of [
+    ".upstream/packages/ui/src/implementation/dashboard/app-detail.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/publish-app.tsx",
+  ])
+    assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop"), path);
+  for (const path of [
+    ".upstream/e2e/tests/member-controls.spec.ts",
+    ".upstream/e2e/tests/publishing-off.spec.ts",
+  ])
+    assert.deepEqual(selectPaths([path]).jobs, ["human-in-the-loop"], path);
+});
+
 test("AWS catalog, proof inputs and loopback carries select the AWS runtime proof", () => {
   for (const path of [
     "src/catalog/aws/index.ts",
