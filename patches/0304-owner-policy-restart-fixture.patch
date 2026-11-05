@@ -8,13 +8,13 @@ diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
  import { connectionsPath } from "../support/app-accounts.ts";
  import { Api, body } from "../support/api.ts";
  import { Actors } from "../support/actors.ts";
-@@ -7,30 +7,11 @@
+@@ -7,29 +7,10 @@
  import { withHostedHttpCase } from "../support/case.ts";
  import { Resource } from "../support/contracts.ts";
  import { RuntimeLive } from "../support/platform.ts";
 -import { serverControl } from "../support/server-control.ts";
+-import { Target } from "../support/platform.ts";
 +import { ownerToolPolicyCase } from "../support/owner-tool-policy-case.ts";
- import { Target } from "../support/platform.ts";
  import { scenarios } from "../test-plan.ts";
  
  const Policy = Schema.Struct({ id: Schema.String, revision: Schema.Int, revoked: Schema.Boolean });
@@ -36,10 +36,9 @@ diff --git a/e2e/tests/tool-policies.spec.ts b/e2e/tests/tool-policies.spec.ts
 -const failed=mutation({input,approval:()=>{throw new Error("policy failure");}},async()=>({ran:true}));
 -const probe=workflow({input},async(ctx,value)=>{try{return {result:await ctx.step.runQuery("read",read,value,{retries:{limit:0,delay:0}})};}catch{return {blocked:true};}});
 -export default defineApp({}, {tools:router({read,write,denied,failed}),workflows:{probe,other:probe}});`;
--
+ 
  layer(RuntimeLive, { excludeTestServices: true })("General approval policies", (it) => {
    it.effect(scenarios.hostedAccountToolPolicies.title, (context) =>
-     withHostedHttpCase(
 @@ -168,189 +149,6 @@
      ),
    );
