@@ -37,7 +37,7 @@ export function proveTenantPublic({
       assert.equal(setup.mode, "automatic");
       assert.equal(
         setup.firstParty.label,
-        global ? "Synthetic global Zendesk" : "Zendesk tenant public client",
+        global ? "Synthetic global Zendesk" : "Company client (hosted callback)",
       );
       assert.deepEqual(
         setup.clients,
@@ -121,7 +121,11 @@ export function proveTenantPublic({
       ),
     );
     const probes = fixtures.observations().filter((event) => event.phase === "authorization_check");
-    assert.equal(probes.length, global ? 0 : 2, "Only the tenant fallback checks registration");
+    assert.equal(
+      probes.length,
+      global ? 8 : 10,
+      "Setup and start check each public callback, while only the selected public client checks its final authorization URL",
+    );
     assert.ok(probes.every((event) => !event.cookiePresent && !event.authHeaderPresent));
     if (!global) {
       fixtures.revokeTenantUser(9101);
@@ -153,7 +157,7 @@ export function proveTenantPublic({
       });
       assert.equal(wrongCallback.status, 422);
       assert.equal(wrongCallback.body.reason, "invalid_client");
-      assert.ok(wrongCallback.body.clientSetupInstructions.includes(callback));
+      assert.match(wrongCallback.body.clientSetupInstructions, /adds this callback URL/);
       fixtures.setTenantCallback("site-b", callback);
       for (const [status, reason] of [
         [503, "service_unavailable"],
@@ -187,21 +191,23 @@ export function proveTenantPublic({
       });
       assert.equal(removed.status, 400);
       assert.equal(removed.body.reason, "invalid_client");
-      assert.match(removed.body.clientSetupInstructions, /public client site-b_zendesk/);
-      assert.ok(removed.body.clientSetupInstructions.includes(callback));
+      assert.match(removed.body.clientSetupInstructions, /public OAuth client site-b_zendesk/);
       const missing = yield* request(actors.owner, "POST", `${path}/oauth/start`, {
         method: "oauth",
       });
       assert.equal(missing.status, 422);
       assert.equal(missing.body._tag, "OAuthSetupFailed");
       assert.equal(missing.body.reason, "invalid_client");
-      assert.match(
-        missing.body.clientSetupInstructions,
-        /Admin Center > Apps and integrations > APIs > OAuth clients/,
+      assert.match(missing.body.clientSetupInstructions, /A Zendesk admin adds this callback URL/);
+      assert.match(missing.body.clientSetupInstructions, /public OAuth client site-b_zendesk/);
+      const unavailableSetup = checked(
+        yield* request(actors.owner, "GET", `${path}/oauth/oauth/setup`),
+        200,
+        "Read refused callback guidance",
       );
-      assert.match(missing.body.clientSetupInstructions, /public client site-b_zendesk/);
-      assert.ok(missing.body.clientSetupInstructions.includes(callback));
-      assert.match(missing.body.clientSetupInstructions, /No client secret is needed/);
+      assert.equal(unavailableSetup.mode, "client-required");
+      assert.ok(unavailableSetup.operatorClients.every((client) => !client.available));
+      assert.equal(unavailableSetup.operatorClients[0].redirectUri, callback);
       assert.equal(
         fixtures.observations().filter((event) => event.phase === "token_exchange").length,
         2,

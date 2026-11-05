@@ -1,0 +1,569 @@
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -55,6 +55,18 @@
+   scopes: Schema.Array(Schema.String),
+   /** Signing in uses the instance's own OAuth client, named here; see `FirstPartyOAuthClient`. */
+   firstParty: Schema.optionalKey(Schema.Struct({ label: Schema.NonEmptyString })),
++  /** Host-reviewed sign-in choices, in preference order. No credentials leave the host. */
++  operatorClients: Schema.optionalKey(
++    Schema.Array(
++      Schema.Struct({
++        id: Schema.NonEmptyString,
++        label: Schema.NonEmptyString,
++        available: Schema.Boolean,
++        redirectUri: HttpUrl,
++        setupInstructions: Schema.optionalKey(Schema.NonEmptyString),
++      }),
++    ),
++  ),
+ };
+ /** Safe form metadata resolved from provider code and discovery. Never contains client IDs or secrets. */
+ export const OAuthClientSetup = Schema.Union([
+@@ -439,6 +451,23 @@
+   setupInstructions: Schema.optionalKey(Schema.NonEmptyString),
+   /** Check a public client's authorization URL without cookies before sending the person there. */
+   checkAuthorization: Schema.optionalKey(Schema.Literal(true)),
++  /** A fixed browser destination completed by pasting its address; never a network target. */
++  loopbackRedirectUri: Schema.optionalKey(
++    HttpUrl.check(
++      Schema.makeFilter((value) => {
++        const url = new URL(value);
++        return (
++          url.protocol === "http:" &&
++          ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++          url.port !== "" &&
++          url.username === "" &&
++          url.password === "" &&
++          url.search === "" &&
++          url.hash === ""
++        );
++      }),
++    ),
++  ),
+   clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
+   tokenEndpointAuthMethod: OAuthClientAuth,
+   /** Requested for a provider method that asks for no scopes. */
+@@ -467,6 +496,11 @@
+   Schema.makeFilter(
+     (client) => client.checkAuthorization !== true || client.tokenEndpointAuthMethod === "none",
+     { message: "Authorization checks are only supported for public clients." },
++  ),
++  Schema.makeFilter(
++    (client) =>
++      client.loopbackRedirectUri === undefined || client.tokenEndpointAuthMethod === "none",
++    { message: "Pasted callbacks require a public client." },
+   ),
+   Schema.makeFilter(
+     (client) => (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
+diff --git a/packages/sdk/src/contracts/oauth-clients.ts b/packages/sdk/src/contracts/oauth-clients.ts
+--- a/packages/sdk/src/contracts/oauth-clients.ts
++++ b/packages/sdk/src/contracts/oauth-clients.ts
+@@ -56,7 +56,11 @@
+  * registered now. It is found or created from the sign-in's own discovery, so the service is
+  * discovered once.
+  */
+-export const OAuthAutomaticClient = Schema.Struct({ automatic: Schema.Literal(true) });
++export const OAuthAutomaticClient = Schema.Struct({
++  automatic: Schema.Literal(true),
++  /** An exact host-reviewed choice; omitted lets the host select the first usable one. */
++  operator: Schema.optional(Schema.NonEmptyString),
++});
+ 
+ /**
+  * The client a connection signs in with: a stored client of its owner, the automatic client, or
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -673,12 +673,14 @@
+     },
+     reconnecting?: FirstPartyOAuthClientId,
+     site?: string,
++    selected?: string,
+   ) => {
+     if (discovered.grant !== "authorization_code") return undefined;
+     const { server } = discovered;
+     const same = (declared: string | undefined, configured: string) =>
+       declared !== undefined && new URL(declared).href === new URL(configured).href;
+     for (const configured of firstPartyClients.values()) {
++      if (selected !== undefined && configured.id !== selected) continue;
+       const client = firstPartyClientAtSite(configured, site, sitePolicy);
+       if (client === undefined) continue;
+       if (client.unlisted === true && client.id !== reconnecting) continue;
+@@ -827,6 +829,76 @@
+     });
+   type Resolved = Effect.Success<ReturnType<typeof resolveSetup>>;
+ 
++  const operatorChoices = (resolved: Resolved, reconnecting?: FirstPartyOAuthClientId) =>
++    Effect.gen(function* () {
++      const choices = [];
++      for (const id of firstPartyClients.keys()) {
++        const selected = firstPartyClient(resolved.discovered, reconnecting, resolved.site, id);
++        if (selected === undefined) continue;
++        const redirectUri = selected.client.loopbackRedirectUri ?? resolved.redirect?.href;
++        if (redirectUri === undefined) continue;
++        let available = true;
++        let failure: OAuthSetupFailed | undefined;
++        if (selected.client.checkAuthorization === true) {
++          if (protocol === undefined) return yield* new OAuthSetupFailed({ reason: "unsupported" });
++          const operator = yield* operatorClient(id, resolved.site);
++          if (operator === undefined) continue;
++          // The anonymous check never follows redirects or submits consent. No attempt is saved.
++          const checked = yield* protocol
++            .authorize({
++              server: operator.server,
++              client: operator.client,
++              redirectUri,
++              scopes: selected.scopes,
++              checkAuthorization: true,
++              ...(selected.client.server.scopeSeparator === undefined
++                ? {}
++                : { scopeSeparator: selected.client.server.scopeSeparator }),
++              ...(selected.client.server.authorizationParams === undefined
++                ? {}
++                : { authorizationParams: selected.client.server.authorizationParams }),
++              ...(selected.client.server.resource === undefined
++                ? {}
++                : { resource: selected.client.server.resource }),
++            })
++            .pipe(Effect.result);
++          if (Result.isFailure(checked)) {
++            const error = checked.failure;
++            if (error.reason !== "invalid_client")
++              failure = new OAuthSetupFailed({
++                reason: error.status === 429 ? "rate_limited" : "service_unavailable",
++                cause: causeOf("authorize", error),
++                ...retryAfterOf(
++                  error.status === 429 ? "rate_limited" : "service_unavailable",
++                  error,
++                ),
++              });
++            available = false;
++          }
++        }
++        choices.push({
++          selected,
++          failure,
++          view: {
++            id: selected.client.id,
++            label: selected.client.label,
++            available,
++            redirectUri: HttpUrl.make(redirectUri),
++            ...(!available &&
++            failure === undefined &&
++            selected.client.setupInstructions !== undefined
++              ? {
++                  setupInstructions: selected.client.setupInstructions
++                    .replaceAll("{clientId}", selected.client.clientId)
++                    .replaceAll("{redirectUri}", redirectUri),
++                }
++              : {}),
++          },
++        });
++      }
++      return choices;
++    });
++
+   /**
+    * What a registered client was registered for, as its registration request said it: the
+    * authorization server, the callback (`redirect_uris`, which also decides `application_type`),
+@@ -1166,8 +1238,12 @@
+       // A registered client the caller is refused still counts, as a start finds it too.
+       const existing = yield* existingAutomatic(input.owner, resolved);
+       // The operator's own client, after the owner's registered clients and before CIMD and DCR.
+-      const firstParty =
+-        existing === undefined ? firstPartyClient(discovered, undefined, resolved.site) : undefined;
++      const choices = existing === undefined ? yield* operatorChoices(resolved) : [];
++      const firstParty = choices.find((choice) => choice.view.available)?.selected;
++      if (firstParty === undefined) {
++        const failed = choices.find((choice) => choice.failure !== undefined)?.failure;
++        if (failed !== undefined) return yield* failed;
++      }
+       const mode =
+         existing === undefined && firstParty === undefined && registration === "manual"
+           ? ("client-required" as const)
+@@ -1198,6 +1274,7 @@
+         grant: "authorization_code",
+         issuer: HttpUrl.make(resolved.issuer),
+         ...operator,
++        ...(choices.length > 1 ? { operatorClients: choices.map((choice) => choice.view) } : {}),
+         ...(discovered.tokenEndpointAuthMethod === undefined
+           ? {}
+           : { tokenEndpointAuthMethod: discovered.tokenEndpointAuthMethod }),
+@@ -1418,20 +1495,44 @@
+     input: SignInScope,
+     resolved: Resolved,
+     reconnecting?: FirstPartyOAuthClientId,
++    selectedOperator?: string,
+   ) =>
+     Effect.gen(function* () {
+       if (protocol === undefined || options === undefined)
+         return yield* new OAuthClientUnavailable(input);
+       const { method, redirect, discovered, registration } = resolved;
+-      const existing = yield* existingAutomatic(input.owner, resolved);
++      const existing =
++        selectedOperator === undefined
++          ? yield* existingAutomatic(input.owner, resolved)
++          : undefined;
+       if (existing?.kind === "refused") return yield* new OAuthClientNotFound({});
+       if (existing !== undefined)
+         return {
+           kind: "stored" as const,
+           ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
+         };
+-      const firstParty = firstPartyClient(discovered, reconnecting, resolved.site);
+-      if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
++      const choices = yield* operatorChoices(resolved, reconnecting);
++      const offered =
++        selectedOperator === undefined
++          ? choices.find((choice) => choice.view.available)
++          : choices.find((choice) => choice.view.id === selectedOperator);
++      if (offered?.view.available === true)
++        return { kind: "firstParty" as const, firstParty: offered.selected };
++      const failed =
++        offered?.failure ??
++        (selectedOperator === undefined
++          ? choices.find((choice) => choice.failure !== undefined)?.failure
++          : undefined);
++      if (failed !== undefined) return yield* failed;
++      if (selectedOperator !== undefined || choices.length > 0) {
++        const unavailable = offered ?? choices[0];
++        return yield* new OAuthSetupFailed({
++          reason: "invalid_client",
++          ...(unavailable?.view.setupInstructions === undefined
++            ? {}
++            : { clientSetupInstructions: unavailable.view.setupInstructions }),
++        });
++      }
+       if (registration === "client_id_metadata_document") {
+         const url =
+           options.clientMetadataUrl === undefined
+@@ -1530,6 +1631,15 @@
+       const reconnecting =
+         previous !== undefined && isFirstPartyGrant(previous) ? previous.firstParty : undefined;
+       if (exact) {
++        if (
++          input.client !== undefined &&
++          Schema.is(OAuthAutomaticClient)(input.client) &&
++          input.client.operator !== undefined &&
++          (previous === undefined ||
++            !isFirstPartyGrant(previous) ||
++            previous.firstParty !== input.client.operator)
++        )
++          return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+         if (previous === undefined || previous.grant === "client_credentials")
+           return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+         if (isFirstPartyGrant(previous)) {
+@@ -1617,7 +1727,7 @@
+         return { kind: "stored" as const, ...(yield* storedClient(choice.id, input, resolved)) };
+       }
+       if (Schema.is(OAuthAutomaticClient)(choice))
+-        return yield* automaticChoice(input, resolved, reconnecting);
++        return yield* automaticChoice(input, resolved, reconnecting, choice.operator);
+       if (choice.save === true && discovered.grant === "client_credentials")
+         return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+       const client = yield* enteredClient(
+@@ -1990,7 +2100,11 @@
+   ) =>
+     Effect.gen(function* () {
+       if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
+-      if (redirect === undefined)
++      const callback =
++        firstParty.client.loopbackRedirectUri === undefined
++          ? redirect
++          : new URL(firstParty.client.loopbackRedirectUri);
++      if (callback === undefined)
+         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
+       const operator = yield* operatorClient(firstParty.client.id, input.site);
+       if (operator === undefined) return yield* new OAuthClientUnavailable(input);
+@@ -1999,7 +2113,7 @@
+         .authorize({
+           server: operator.server,
+           client: operator.client,
+-          redirectUri: redirect.href,
++          redirectUri: callback.href,
+           scopes: firstParty.scopes,
+           ...(firstParty.client.checkAuthorization === true ? { checkAuthorization: true } : {}),
+           ...(scopeSeparator === undefined ? {} : { scopeSeparator }),
+@@ -2020,7 +2134,7 @@
+           Effect.mapError((error) => {
+             const instructions = firstParty.client.setupInstructions
+               ?.replaceAll("{clientId}", firstParty.client.clientId)
+-              .replaceAll("{redirectUri}", redirect.href);
++              .replaceAll("{redirectUri}", callback.href);
+             return new OAuthSetupFailed({
+               reason:
+                 error.reason === "invalid_client"
+@@ -2042,7 +2156,7 @@
+       const attempt = yield* decode(OAuthFirstPartyAttempt, {
+         ...input,
+         ...authorization,
+-        redirectUri: redirect.href,
++        redirectUri: callback.href,
+         account: existing?.id ?? AccountId.make(`acc_${yield* nextId}`),
+         ...(existing === undefined ? {} : { reconnect: true }),
+         firstParty: firstParty.client.id,
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -569,25 +569,34 @@
+       clients.push(
+         service === undefined
+           ? client.value
+-          : { ...client.value, label: `${productName} for ${service}` },
++          : {
++              ...client.value,
++              label:
++                definition.id === "zendesk" ? "Marketplace app" : `${productName} for ${service}`,
++            },
+       );
+     }
+     if (problems.length > 0) return yield* invalid(problems);
+     // A tenant registers this public client once. Every grant still belongs to its signed-in user.
++    const tenant = yield* Schema.decodeUnknownEffect(Schema.toType(FirstPartyOAuthClient))({
++      ...zendeskClientDefinition(productName),
++      id: "zendesk-tenant",
++      label: "Company client (hosted callback)",
++      issuerSite: { subdomainOf: "zendesk.com", clientIdTemplate: true },
++      clientId: "{subdomain}_zendesk",
++      tokenEndpointAuthMethod: "none",
++      checkAuthorization: true,
++      allowedScopes: ["read", "write"],
++      setupInstructions:
++        "A Zendesk admin adds this callback URL to the public OAuth client {clientId} with read and write access.",
++    }).pipe(Effect.orDie);
+     clients.push(
++      tenant,
+       yield* Schema.decodeUnknownEffect(Schema.toType(FirstPartyOAuthClient))({
+-        ...zendeskClientDefinition(productName),
+-        id: "zendesk-tenant",
+-        label: "Zendesk tenant public client",
+-        issuerSite: { subdomainOf: "zendesk.com", clientIdTemplate: true },
+-        clientId: "{subdomain}_zendesk",
+-        tokenEndpointAuthMethod: "none",
+-        checkAuthorization: true,
+-        allowedScopes: ["read", "write"],
+-        setupInstructions:
+-          "Ask your Zendesk admin to open Admin Center > Apps and integrations > APIs > OAuth clients. " +
+-          "Create or edit the public client {clientId}, add {redirectUri} to its redirect URLs, " +
+-          "and allow read and write. Then connect again. No client secret is needed.",
++        ...tenant,
++        id: "zendesk-tenant-paste",
++        label: "Company client (paste callback)",
++        loopbackRedirectUri: "http://localhost:27439/callback",
+       }).pipe(Effect.orDie),
+     );
+     return clients;
+diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+--- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
++++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+@@ -80,19 +80,31 @@
+   method: string,
+ ): string | undefined => deferrals?.find((deferral) => deferral.method === method)?.message;
+ 
++/** A sign-in client the host reviewed and offers by name; it holds no credentials. */
++type OperatorClient = NonNullable<OAuthConnectOptions["operatorClients"]>[number];
++
+ /** Where the connection's OAuth client comes from. */
+ type ClientChoice =
+   | { readonly kind: "current" }
+   | { readonly kind: "registered"; readonly id: OAuthClientId }
+   | { readonly kind: "automatic" }
++  | { readonly kind: "operator"; readonly client: OperatorClient }
+   | { readonly kind: "manual" };
+ 
+ const choiceKey = (choice: ClientChoice) =>
+-  choice.kind === "registered" ? `client:${choice.id}` : choice.kind;
++  choice.kind === "registered"
++    ? `client:${choice.id}`
++    : choice.kind === "operator"
++      ? `operator:${choice.client.id}`
++      : choice.kind;
++
++/** An operator client the host can't sign in with yet stays selectable so its setup shows. */
++const usable = (choice: ClientChoice) => choice.kind !== "operator" || choice.client.available;
+ 
+ /**
+  * The clients this connection can use, in order of preference: the account's own on a reconnect,
+- * then clients registered for the provider, the automatic client, and entered details last.
++ * then clients registered for the provider, the automatic client, and entered details last. Several
++ * host-reviewed clients replace the single automatic choice, each named, in the host's order.
+  * Client credentials are each account's own, so only the current ones or new ones apply.
+  */
+ const clientChoices = (
+@@ -105,7 +117,11 @@
+   return [
+     ...current,
+     ...options.clients.map((client) => ({ kind: "registered" as const, id: client.id })),
+-    ...(options.mode === "automatic" ? [{ kind: "automatic" as const }] : []),
++    ...(options.operatorClients !== undefined && options.operatorClients.length > 0
++      ? options.operatorClients.map((client) => ({ kind: "operator" as const, client }))
++      : options.mode === "automatic"
++        ? [{ kind: "automatic" as const }]
++        : []),
+     { kind: "manual" },
+   ];
+ };
+@@ -174,11 +190,17 @@
+   const [picked, setPicked] = useState<ClientChoice | undefined>(
+     manualClient ? { kind: "manual" } : undefined,
+   );
+-  // A pick that is no longer offered, such as a removed client, falls back to the first choice.
++  // A pick that is no longer offered, such as a removed client, falls back to the first usable
++  // client, then the first choice, so a host whose clients all need setup shows that setup.
+   const choice =
+     (picked === undefined
+       ? undefined
+-      : choices.find((offered) => choiceKey(offered) === choiceKey(picked))) ?? choices[0];
++      : choices.find((offered) => choiceKey(offered) === choiceKey(picked))) ??
++    choices.find((offered) => offered.kind !== "manual" && usable(offered)) ??
++    choices[0];
++  const operatorChoices = choices.some((offered) => offered.kind === "operator");
++  const unavailable =
++    choice?.kind === "operator" && !choice.client.available ? choice.client : undefined;
+   const setup = options;
+   const machine = setup !== "unresolved" && setup.grant === "client_credentials";
+   // Without a client to sign in with, entering one is a deliberate choice rather than the default.
+@@ -220,6 +242,7 @@
+     disabled ||
+     setupLoading ||
+     choice === undefined ||
++    unavailable !== undefined ||
+     (missing && !manual) ||
+     pending ||
+     (manual && (!clientId.trim() || (needsSecret && !clientSecret.trim())));
+@@ -249,6 +272,15 @@
+       }
+       case "automatic":
+         return `${brand.name} (automatic)`;
++      case "operator":
++        return offered.client.available ? (
++          offered.client.label
++        ) : (
++          <span className="flex min-w-0 items-baseline gap-2">
++            <span className="truncate">{offered.client.label}</span>
++            <span className="shrink-0 text-xs text-muted-foreground">Needs setup</span>
++          </span>
++        );
+       case "manual":
+         return machine ? "New client credentials" : `Your own ${ownAppName} app (OAuth)`;
+     }
+@@ -272,14 +304,17 @@
+           ? { client: { id: choice.id } }
+           : choice.kind === "automatic"
+             ? { client: { automatic: true } }
+-            : {};
++            : choice.kind === "operator"
++              ? { client: { automatic: true, operator: choice.client.id } }
++              : {};
+     const operation = start(submission);
+     void operation.then((exit) => {
+       if (Exit.isSuccess(exit)) {
+         setClientSecret("");
+         if (onAuthorized(exit.value) === "navigating") return;
+       } else {
+-        if (requiresClient(exit.cause)) setPicked({ kind: "manual" });
++        // A named host client failing says nothing about entering one; keep the person's pick.
++        if (requiresClient(exit.cause) && choice.kind !== "operator") setPicked({ kind: "manual" });
+         setError(exit.cause);
+       }
+       setPending(false);
+@@ -294,11 +329,13 @@
+     choices.some((offered) => offered.kind !== "manual");
+   const prominent =
+     googleOwnClientChoice ||
++    operatorChoices ||
+     (account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1);
++  const selectLabel = operatorChoices ? "Sign-in method" : "OAuth client";
+   const clientSelect =
+     choice === undefined || choices.length < 2 ? undefined : (
+       <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+-        OAuth client
++        {selectLabel}
+         <Select
+           value={choiceKey(choice)}
+           disabled={pending || disabled}
+@@ -307,7 +344,7 @@
+             setError(undefined);
+           }}
+         >
+-          <SelectTrigger aria-label="OAuth client">
++          <SelectTrigger aria-label={selectLabel}>
+             <SelectValue />
+           </SelectTrigger>
+           <SelectContent>
+@@ -361,25 +398,18 @@
+           {manual && (
+             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">{guidance}</p>
+           )}
++          {unavailable !== undefined && (
++            <p className="text-[13px] leading-5 text-pretty text-muted-foreground">
++              {`${unavailable.label} isn’t set up yet.`}
++              {unavailable.setupInstructions !== undefined && ` ${unavailable.setupInstructions}`}
++            </p>
++          )}
+         </>
+       )}
+-      {manual && !machine && (
+-        <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
+-          <span>Redirect URL</span>
+-          <div className="oauth-redirect flex min-h-9 items-center gap-1 rounded-md border bg-muted/60 py-0.5 pr-0.5 pl-3">
+-            <code className="min-w-0 flex-1 font-mono text-xs font-normal wrap-anywhere [user-select:all]">
+-              {redirectUri}
+-            </code>
+-            <CopyButton
+-              code={redirectUri}
+-              label="Copy redirect URL"
+-              text=""
+-              size="icon-sm"
+-              inline
+-            />
+-          </div>
+-        </div>
++      {unavailable?.setupInstructions !== undefined && (
++        <CallbackUrl label="Callback URL" url={unavailable.redirectUri} />
+       )}
++      {manual && !machine && <CallbackUrl label="Redirect URL" url={redirectUri} />}
+       {manual && (
+         <>
+           <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+@@ -458,6 +488,27 @@
+   );
+ }
+ 
++/** A URL someone registers at the provider, copied exactly; long URLs wrap at phone width. */
++function CallbackUrl({ label, url }: { readonly label: string; readonly url: string }) {
++  return (
++    <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
++      <span>{label}</span>
++      <div className="oauth-redirect flex min-h-9 items-center gap-1 rounded-md border bg-muted/60 py-0.5 pr-0.5 pl-3">
++        <code className="min-w-0 flex-1 font-mono text-xs font-normal wrap-anywhere [user-select:all]">
++          {url}
++        </code>
++        <CopyButton
++          code={url}
++          label={`Copy ${label.charAt(0).toLowerCase()}${label.slice(1)}`}
++          text=""
++          size="icon-sm"
++          inline
++        />
++      </div>
++    </div>
++  );
++}
++
+ /** What sign-in asks the provider for, shown before the user leaves for its consent page. */
+ function Permissions({
+   label,
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -138,7 +138,7 @@
+   };
+   return (
+     <form
+-      className="setup-form flex max-w-145 flex-col gap-4"
++      className="setup-form flex min-w-0 max-w-145 flex-col gap-4"
+       onSubmit={(event) => {
+         event.preventDefault();
+         if (

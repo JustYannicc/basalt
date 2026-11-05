@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-zendesk-callback-choices",
+  "file": "0293-zendesk-callback-choices.patch",
+  "content_sha256": "86a34cac7c0a33e3efa6671b6561236c19ca1b4f2536029a1b2dd561cf974528",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
