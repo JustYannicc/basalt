@@ -82,24 +82,15 @@
   },
   "catalogSource": {
     "repository": "https://github.com/JustYannicc/signalbox-app-zendesk",
-    "commit": "a233fd61b47b6ae89076e89e9c4440037b3ed071",
+    "commit": "4cb688f16a0aaa9000be232405f4124df4f4e63e",
     "fileSha256": {
-      "README.md": "a246ba0d781ec5c2d9f47a3fa5bcd8c0bbbd6b0d37375bb82c3e120f561136ae",
+      "README.md": "1f036e9c5226eb31fe09a325f1e6053b7298e1e46dda09fc5c9767f9dfcf1bb9",
       "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
       "icon.ts": "903979f3230451a2cd1a5a854a85253e15f6b527f8041b458507043084fad886",
-      "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
+      "index.ts": "9f37137c422889655da302caf00eb1da2c02924014fd585f6fe34c7f7420ff2c",
       "openapi.ts": "505dc12cbf64e6d78d8918e8a1b2d0cacb80f518b93657a919ac68f0202082bc",
       "package.json": "5ed7e8191fcdc616828ed92ec4cdc1e34ac2b823b413a34d67f81d7d5f9c558b"
     },
-    "snapshotSha256": "4c0bf98e9a47f41a124d239bf706411c5879f59efe7cd10cdc53a0ebcb655232"
-  },
-  "hostOverlay": {
-    "kind": "tenant-public-client",
-    "source": "catalog snapshot",
-    "scopes": [
-      "read",
-      "write"
-    ],
-    "originalSource": "4c0bf98e9a47f41a124d239bf706411c5879f59efe7cd10cdc53a0ebcb655232"
+    "snapshotSha256": "829a149f12b44319d2d1437e876afcd785f334c134324f7bf1b1945e0864d3f9"
   }
 }
