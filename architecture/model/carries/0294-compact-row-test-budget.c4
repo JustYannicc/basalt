@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Compact account row proof retains every assertion and the 60-second deadline. Independent app fixtures and health checks use bounded concurrency; theme and measurement changes reuse loaded pages, while each width retains a fresh hydration measurement."
+    }
+  }
+}

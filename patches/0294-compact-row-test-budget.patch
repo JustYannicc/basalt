@@ -1,0 +1,289 @@
+diff --git a/e2e/tests/account-compact-rows.spec.ts b/e2e/tests/account-compact-rows.spec.ts
+--- a/e2e/tests/account-compact-rows.spec.ts
++++ b/e2e/tests/account-compact-rows.spec.ts
+@@ -110,49 +110,78 @@
+       Effect.gen(function* () {
+         const browser = yield* Browser;
+         const evidence = yield* Evidence;
++        // Each fixture owns a different app and account; keep its dependent requests ordered.
++        const { plain, rejected, outdated, usage, savedOnly, generated, unreported, many } =
++          yield* Effect.all(
++            {
++              plain: observationFixture({
++                name: "Plain fixture",
++                providerName: "Compact API service",
++                observe: false,
++                health: true,
++                family: {
++                  id: "compact-plain",
++                  name: "Compact plain",
++                  methods: { key: { mechanism: "api-key" } },
++                },
++              }),
++              rejected: observationFixture({
++                name: "Rejected fixture",
++                observe: false,
++                health: true,
++              }),
++              outdated: observationFixture({
++                name: "Outdated fixture",
++                observe: false,
++                health: true,
++              }),
++              usage: observationFixture({
++                name: "Usage fixture",
++                providerName: "Compact subscription service",
++                observe: true,
++                health: true,
++                family: {
++                  id: "compact-usage",
++                  name: "Compact usage",
++                  methods: { key: { mechanism: "other", offering: "subscription" } },
++                },
++              }),
++              savedOnly: observationFixture({
++                name: "Saved fixture",
++                observe: false,
++                health: false,
++              }),
++              generated: observationFixture({
++                name: "Generated fixture",
++                providerName: "Generated service",
++                observe: false,
++                health: true,
++              }),
++              unreported: observationFixture({
++                name: "Unreported fixture",
++                providerName: "Unreported service",
++                observe: false,
++                health: false,
++              }),
++              many: observationFixture({
++                name: "Many apps first, the shared workspace mail and calendar sync",
++                providerName: "Compact shared service",
++                observe: false,
++                health: true,
++              }),
++            },
++            { concurrency: 4 },
++          );
+         // A connector whose check reports an email but no host-verified identity.
+         // Declared as an API key, so its Type names it.
+-        const plain = yield* observationFixture({
+-          name: "Plain fixture",
+-          providerName: "Compact API service",
+-          observe: false,
+-          health: true,
+-          family: {
+-            id: "compact-plain",
+-            name: "Compact plain",
+-            methods: { key: { mechanism: "api-key" } },
+-          },
+-        });
+         yield* plain.backend.health({
+           status: 200,
+           body: { accountInfo: { email: "reported@example.test" } },
+         });
+         // A connector whose current check rejects the sign-in.
+-        const rejected = yield* observationFixture({
+-          name: "Rejected fixture",
+-          observe: false,
+-          health: true,
+-        });
+         yield* rejected.backend.health({ status: 401, body: {} });
+-        // A connector whose only check predates its app's current version.
+-        const outdated = yield* observationFixture({
+-          name: "Outdated fixture",
+-          observe: false,
+-          health: true,
+-        });
+         // A reporter with a plan label and one limited window.
+         // Declared as a subscription, so its Type names it.
+-        const usage = yield* observationFixture({
+-          name: "Usage fixture",
+-          providerName: "Compact subscription service",
+-          observe: true,
+-          health: true,
+-          family: {
+-            id: "compact-usage",
+-            name: "Compact usage",
+-            methods: { key: { mechanism: "other", offering: "subscription" } },
+-          },
+-        });
+         const reading = allowance();
+         yield* usage.backend.answer({
+           status: 200,
+@@ -165,11 +194,6 @@
+           },
+         });
+         // A saved grant that nothing checks.
+-        const savedOnly = yield* observationFixture({
+-          name: "Saved fixture",
+-          observe: false,
+-          health: false,
+-        });
+         expect(
+           (yield* savedOnly.api.request(savedOnly.actors.owner, "PATCH", savedOnly.accountPath, {
+             label: "Saved only",
+@@ -178,50 +202,37 @@
+         // A sign-in saved without a name keeps the generated "Default" label, and its check reports
+         // an email: the email titles the row, without the verified mark.
+         // Its own provider, so its generated label is "Default" whatever was saved before it.
+-        const generated = yield* observationFixture({
+-          name: "Generated fixture",
+-          providerName: "Generated service",
+-          observe: false,
+-          health: true,
+-        });
+         yield* generated.backend.health({
+           status: 200,
+           body: { accountInfo: { email: "generated@example.test" } },
+         });
+         expect((yield* generated.check()).status).toBe(200);
+         // A generated label with nothing reported stays the title.
+-        const unreported = yield* observationFixture({
+-          name: "Unreported fixture",
+-          providerName: "Unreported service",
+-          observe: false,
+-          health: false,
+-        });
+         expect(
+           (yield* unreported.api.request(unreported.actors.owner, "PATCH", unreported.accountPath, {
+             label: "Default 2",
+           })).status,
+         ).toBe(200);
+-        for (const [fixture, label] of [
+-          [plain, "Plain mail"],
+-          [rejected, "Rejected mail"],
+-          [outdated, "Outdated mail"],
+-          [usage, "Usage account"],
+-        ] as const) {
+-          expect(
+-            (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
+-              label,
+-            })).status,
+-          ).toBe(200);
+-          expect((yield* fixture.check()).status).toBe(200);
+-        }
++        yield* Effect.forEach(
++          [
++            [plain, "Plain mail"],
++            [rejected, "Rejected mail"],
++            [outdated, "Outdated mail"],
++            [usage, "Usage account"],
++          ] as const,
++          ([fixture, label]) =>
++            Effect.gen(function* () {
++              expect(
++                (yield* fixture.api.request(fixture.actors.owner, "PATCH", fixture.accountPath, {
++                  label,
++                })).status,
++              ).toBe(200);
++              expect((yield* fixture.check()).status).toBe(200);
++            }),
++          { concurrency: 4 },
++        );
+         expect((yield* usage.refresh()).status).toBe(200);
+         // One sign-in used by three apps: the row shows the first and "+2 more", which lists the rest.
+-        const many = yield* observationFixture({
+-          name: "Many apps first, the shared workspace mail and calendar sync",
+-          providerName: "Compact shared service",
+-          observe: false,
+-          health: true,
+-        });
+         expect(
+           (yield* many.api.request(many.actors.owner, "PATCH", many.accountPath, {
+             label: "Many apps mail",
+@@ -256,6 +267,7 @@
+           );
+           yield* linkAccount(many.actors.owner, appPath, "service", many.account);
+         }
++        // Redeploy only after retaining the old version's check.
+         expect((yield* outdated.deploy({ observe: true, health: true })).status).toBe(200);
+         const checkOf = (detail: { readonly body: unknown }) =>
+           JSON.stringify((detail.body as { health?: unknown }).health ?? null);
+@@ -314,22 +326,26 @@
+         yield* browser.use("Observe the verified row through hydration and setup", (page) =>
+           trackAccountRowHeight(page, "Verified mail"),
+         );
+-        for (const width of [1280, 390])
+-          for (const scheme of ["light", "dark"] as const)
+-            for (const [name, url] of surfaces) {
+-              yield* browser.use(`Open ${name} at ${width}px in ${scheme} mode`, (page) =>
+-                page
+-                  .setViewportSize({ width, height: 900 })
+-                  .then(() => page.emulateMedia({ colorScheme: scheme }))
+-                  .then(() => page.goto(url))
+-                  .then(() =>
+-                    name === "accounts"
+-                      ? ready(page).then(() => undefined)
+-                      : page
+-                          .getByRole("region", { name: "Your accounts", exact: true })
+-                          .locator('[data-reading="requests"]')
+-                          .waitFor(),
+-                  ),
++        for (const [name, url] of surfaces)
++          for (const width of [1280, 390]) {
++            // Hydration is measured at each width; theme changes reuse that same document.
++            yield* browser.use(`Open ${name} at ${width}px`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.emulateMedia({ colorScheme: "light" }))
++                .then(() => page.goto(url))
++                .then(() =>
++                  name === "accounts"
++                    ? ready(page).then(() => undefined)
++                    : page
++                        .getByRole("region", { name: "Your accounts", exact: true })
++                        .locator('[data-reading="requests"]')
++                        .waitFor(),
++                ),
++            );
++            for (const scheme of ["light", "dark"] as const) {
++              yield* browser.use(`Use ${scheme} mode`, (page) =>
++                page.emulateMedia({ colorScheme: scheme }),
+               );
+               if (name === "accounts") {
+                 const layout = yield* browser.use(
+@@ -456,6 +472,7 @@
+                 ),
+               );
+             }
++          }
+ 
+         // "+2 more" lists the other apps, each still a link to its Accounts tab.
+         const others = yield* browser.use("Open the many-apps list", (page) =>
+@@ -487,6 +504,9 @@
+ 
+         // The generated-label account's own app tab uses the same title.
+         const generatedTab = `/org/${plain.actors.organization.slug}/apps/${generated.app.id}?view=accounts`;
++        yield* browser.use("Open the generated account's app tab", (page) =>
++          page.goto(generatedTab),
++        );
+         for (const width of [1280, 390]) {
+           const tabTitle = yield* browser.use(`Read the app tab's title at ${width}px`, (page) => {
+             const name = page
+@@ -497,7 +517,6 @@
+             return page
+               .setViewportSize({ width, height: 900 })
+               .then(() => page.emulateMedia({ colorScheme: "light" }))
+-              .then(() => page.goto(generatedTab))
+               .then(() => name.filter({ hasText: "generated@example.test" }).waitFor())
+               .then(() =>
+                 Promise.all([
+@@ -679,7 +698,6 @@
+         const phone = yield* browser.use("Measure the rows at 390px", (page) =>
+           page
+             .setViewportSize({ width: 390, height: 900 })
+-            .then(() => page.goto(accounts))
+             .then(() => ready(page))
+             .then(() =>
+               Promise.all([
+@@ -705,7 +723,6 @@
+         const menu = yield* browser.use("Read the reporter's menu", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+-            .then(() => page.goto(accounts))
+             .then(() => ready(page))
+             .then(() => openRowMenu(page, accountRow(page, "New reporter"), "New reporter"))
+             .then((open) =>
