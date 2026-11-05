@@ -18,7 +18,8 @@ import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
 import {
   currentProcessOwner,
   installerGroupAlive,
-  ownerInSnapshot,
+  installerGroupState,
+  processOwnerAlive,
   processSnapshot,
 } from "./process-owner.ts";
 
@@ -86,15 +87,24 @@ export function collectDependencyStore() {
   const entries = directories(join(upstreamCache(), "prepared"))
     .flatMap((pin) => directories(pin))
     .filter((entry) => record(join(entry, "store-format.json"))?.version === 3);
-  const attempts = entries
+  const leases = entries
     .flatMap((entry) => directories(join(entry, "attempts")))
     .map((path) => ({
       path,
       parent: record(join(path, "parent.json")),
       installer: record(join(path, "installer.json")),
     }));
-  const groups = attempts.flatMap(({ installer }) =>
-    typeof installer?.group === "number" ? [installer.group] : [],
+  let attempts;
+  try {
+    attempts = leases.map((lease) => ({
+      ...lease,
+      state: processOwnerAlive(lease.parent) ? "live" : installerGroupState(lease.installer),
+    }));
+  } catch {
+    return;
+  }
+  const groups = attempts.flatMap(({ installer, state }) =>
+    state === "unknown" && typeof installer?.group === "number" ? [installer.group] : [],
   );
   const live = processSnapshot(groups);
   if (!live.complete) return;
@@ -124,8 +134,8 @@ export function collectDependencyStore() {
   try {
     abandoned = attempts
       .filter(
-        ({ parent, installer }) =>
-          !ownerInSnapshot(parent, live) && !installerGroupAlive(installer, live),
+        ({ state, installer }) =>
+          state === "dead" || (state === "unknown" && !installerGroupAlive(installer, live)),
       )
       .map(({ path }) => path);
   } catch {
@@ -143,6 +153,11 @@ export const collectUpstreamDependencies = () => withDependencyStoreLock(collect
 
 export const createInstallAttempt = (entry: string) =>
   withDependencyStoreLock(() => {
+    collectDependencyStore();
+    if (directories(join(entry, "attempts")).length >= 3)
+      throw new Error(
+        "Reached the limit of 3 pending dependency attempts for one key. Resolve live installers or process observation failures before retrying.",
+      );
     atomicStoreJson(join(entry, "store-format.json"), { version: 3 });
     const attempt = join(entry, "attempts", randomUUID());
     mkdirSync(attempt, { recursive: true });

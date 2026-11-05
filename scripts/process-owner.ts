@@ -176,6 +176,8 @@ export function processOwnerAlive(value: unknown) {
 
 export function processSnapshot(groups?: ReadonlyArray<number>) {
   const boot = bootIdentity();
+  if (groups?.length === 0)
+    return { boot, complete: true, processes: new Map<number, ProcessEntry>() };
   try {
     const observed = readProcesses(undefined, groups);
     return {
@@ -188,16 +190,18 @@ export function processSnapshot(groups?: ReadonlyArray<number>) {
   }
 }
 
-export function ownerInSnapshot(value: unknown, snapshot: ReturnType<typeof processSnapshot>) {
-  if (!snapshot.complete) return true;
-  if (!isOwner(value)) {
-    const pid = legacyPid(value);
-    return pid !== undefined && pidAlive(pid);
+export function installerGroupState(value: unknown) {
+  if (!isOwner(value)) return legacyPid(value, "group") === undefined ? "dead" : "unknown";
+  if (value.boot !== bootIdentity()) return "dead";
+  const lease = value as ProcessOwner & { group?: unknown; token?: unknown };
+  if (lease.group !== lease.pid || typeof lease.token !== "string" || !lease.token) return "dead";
+  try {
+    const leader = readProcesses(lease.pid).entries[0];
+    if (!leader) return "unknown";
+    return leader.group === lease.group && leader.start === lease.start ? "live" : "dead";
+  } catch {
+    return "unknown";
   }
-  return (
-    value.boot === snapshot.boot &&
-    (snapshot.processes.get(value.pid)?.start ?? readProcessOwner(value.pid)?.start) === value.start
-  );
 }
 
 function inheritedInstallerToken(pid: number, token: string) {

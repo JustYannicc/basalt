@@ -125,7 +125,13 @@ test("failed process enumeration skips every deletion and a later complete pass 
   const previousPath = process.env.PATH,
     previousCache = process.env.BASALT_UPSTREAM_CACHE;
   const realPs = execFileSync("which", ["ps"], { encoding: "utf8" }).trim();
+  const holder = spawn(
+    process.execPath,
+    ["-e", "process.on('message',()=>process.exit(0));process.send('ready');"],
+    { detached: true, stdio: ["ignore", "ignore", "inherit", "ipc"] },
+  );
   t.after(() => {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
     process.env.PATH = previousPath;
     if (previousCache === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
     else process.env.BASALT_UPSTREAM_CACHE = previousCache;
@@ -139,6 +145,10 @@ test("failed process enumeration skips every deletion and a later complete pass 
   mkdirSync(attempt, { recursive: true });
   mkdirSync(generation, { recursive: true });
   writeFileSync(join(entry, "store-format.json"), JSON.stringify({ version: 3 }));
+  await once(holder, "message");
+  const currentOwner = join(entry, "attempts/current-owner");
+  mkdirSync(currentOwner);
+  writeFileSync(join(currentOwner, "installer.json"), JSON.stringify({ group: holder.pid }));
   const bin = join(fixture, "bin");
   mkdirSync(bin);
   writeFileSync(
@@ -154,4 +164,5 @@ test("failed process enumeration skips every deletion and a later complete pass 
   await collectUpstreamDependencies();
   assert.equal(existsSync(attempt), false);
   assert.equal(existsSync(generation), false);
+  assert.equal(existsSync(currentOwner), true, "a live legacy group remains protected");
 });
