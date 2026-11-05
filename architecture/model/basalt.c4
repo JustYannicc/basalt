@@ -247,6 +247,9 @@ model {
         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
         Replacement rotates boot identity and requires fresh policy and service health.
         Exhaustion emits a closed recovery record and the normal runtime failure before exit 1.
+        A known startup exit retains exactly one closed receipt if its bounded reader drain
+        fails or exhausts the operation deadline. The drain failure stays terminal; it cannot
+        authorize another launch or publish readiness.
         A runtime Home exit 1 permits two replacement generations per supervisor lifetime,
         with 1-second then 5-second backoff and one 180-second deadline per recovery episode.
         Replacement rotates boot identity and requires fresh policy and service health.
