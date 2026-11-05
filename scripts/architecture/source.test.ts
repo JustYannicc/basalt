@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { moduleErrors, sourceDependencies, type Module } from "./source.ts";
 const temporary: string[] = [];
-afterEach(() => temporary.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
+afterEach(() =>
+  temporary.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })),
+);
 function fixture(files: Record<string, string>) {
   const root = mkdtempSync(join(tmpdir(), "architecture-source-"));
   temporary.push(root);
@@ -15,12 +17,20 @@ function fixture(files: Record<string, string>) {
   }
   return root;
 }
-const module = (id: string, code: string, extra: Partial<Module> = {}): Module => ({ id, code, bindings: [], libraries: [], ...extra });
+const module = (id: string, code: string, extra: Partial<Module> = {}): Module => ({
+  id,
+  code,
+  bindings: [],
+  libraries: [],
+  ...extra,
+});
 
 test("new package folders and deleted code are rejected", () => {
   const root = fixture({ "packages/new/index.ts": "export const value = 1" });
   expect(moduleErrors(root, [module("old", "packages/old")])).toEqual([
-    "old: missing code packages/old", "Unmodelled module: packages/new", "Unmodelled code: packages/new/index.ts",
+    "old: missing code packages/old",
+    "Unmodelled module: packages/new",
+    "Unmodelled code: packages/new/index.ts",
   ]);
 });
 
@@ -30,13 +40,20 @@ test("relative and workspace package imports preserve their module endpoints", (
     "packages/b/index.ts": "export const b = 1",
     "packages/b/package.json": '{"name":"@demo/b"}',
   });
-  const result = sourceDependencies(root, [module("a", "packages/a"), module("b", "packages/b")], []);
+  const result = sourceDependencies(
+    root,
+    [module("a", "packages/a"), module("b", "packages/b")],
+    [],
+  );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["a->b", "a->b"]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["a->b", "a->b"]);
 });
 
 test("new outside hosts and SDKs fail, including template URLs and dynamic imports", () => {
-  const root = fixture({ "src/router.ts": "fetch('https://unmodelled.invalid/v1'); const url = `https://other.invalid/${path}`; import('unmodelled-sdk');" });
+  const root = fixture({
+    "src/router.ts":
+      "fetch('https://unmodelled.invalid/v1'); const url = `https://other.invalid/${path}`; import('unmodelled-sdk');",
+  });
   const result = sourceDependencies(root, [module("router", "src/router.ts")], []);
   expect(result.errors).toHaveLength(3);
   expect(result.errors.join("\n")).toContain("Unmodelled outside host: unmodelled.invalid");
@@ -45,26 +62,56 @@ test("new outside hosts and SDKs fail, including template URLs and dynamic impor
 });
 
 test("host and SDK evidence resolves to the calling module", () => {
-  const root = fixture({ "src/router.ts": "import api from '@demo/sdk'; fetch('https://api.example.invalid/v1')" });
-  const result = sourceDependencies(root, [module("router", "src/router.ts")], [{ id: "service", hosts: ["api.example.invalid"], sdks: ["@demo/sdk"] }]);
+  const root = fixture({
+    "src/router.ts": "import api from '@demo/sdk'; fetch('https://api.example.invalid/v1')",
+  });
+  const result = sourceDependencies(
+    root,
+    [module("router", "src/router.ts")],
+    [{ id: "service", hosts: ["api.example.invalid"], sdks: ["@demo/sdk"] }],
+  );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["router->service", "router->service"]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual([
+    "router->service",
+    "router->service",
+  ]);
 });
 
 test("a module's declared listener permits internal loopback calls without allowing other hosts", () => {
-  const root = fixture({ "src/connection.ts": "fetch('http://127.0.0.1:8123/mcp'); fetch('http://localhost/mcp'); fetch('https://unmodelled.invalid/');" });
-  const result = sourceDependencies(root, [module("connection", "src/connection.ts", {
-    endpointHosts: ["127.0.0.1", "localhost"],
-  })], []);
+  const root = fixture({
+    "src/connection.ts":
+      "fetch('http://127.0.0.1:8123/mcp'); fetch('http://localhost/mcp'); fetch('https://unmodelled.invalid/');",
+  });
+  const result = sourceDependencies(
+    root,
+    [
+      module("connection", "src/connection.ts", {
+        endpointHosts: ["127.0.0.1", "localhost"],
+      }),
+    ],
+    [],
+  );
   expect(result.dependencies).toEqual([]);
-  expect(result.errors).toEqual(["src/connection.ts:1: Unmodelled outside host: unmodelled.invalid"]);
+  expect(result.errors).toEqual([
+    "src/connection.ts:1: Unmodelled outside host: unmodelled.invalid",
+  ]);
 });
 
 test("computed egress and undeclared service bindings cannot disappear from the check", () => {
-  const root = fixture({ "src/router.ts": "fetch(destination); fetch(env.URL); env.UNKNOWN.fetch(request);" });
-  const errors = sourceDependencies(root, [module("router", "src/router.ts", { endpointHosts: ["api.example.invalid"] })], []).errors;
+  const root = fixture({
+    "src/router.ts": "fetch(destination); fetch(env.URL); env.UNKNOWN.fetch(request);",
+  });
+  const errors = sourceDependencies(
+    root,
+    [module("router", "src/router.ts", { endpointHosts: ["api.example.invalid"] })],
+    [],
+  ).errors;
   expect(errors).toHaveLength(3);
-  expect(errors.filter(error => error.includes("Computed outbound fetch needs a statically known host"))).toHaveLength(2);
+  expect(
+    errors.filter((error) =>
+      error.includes("Computed outbound fetch needs a statically known host"),
+    ),
+  ).toHaveLength(2);
 });
 
 test("bounded URL returns resolve only through a matching outside-service host", () => {
@@ -89,7 +136,9 @@ test("bounded URL returns resolve only through a matching outside-service host",
   const services = [{ id: "sentry", hosts: ["*.ingest.de.sentry.io"], sdks: [] }];
   const result = sourceDependencies(root, [module("telemetry", "src/telemetry.ts")], services);
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(edge => `${edge.source}->${edge.target}`)).toEqual(["telemetry->sentry"]);
+  expect(result.dependencies.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+    "telemetry->sentry",
+  ]);
 
   const otlpTarget = [
     "function otlpTarget(env: { DSN: string; ENDPOINT: string; HOST: string }) {",
@@ -104,101 +153,363 @@ test("bounded URL returns resolve only through a matching outside-service host",
   ].join("\n");
   const withOtlp = (target: string) => `${source}\n${target}`;
   const otlpBaseline = sourceDependencies(
-    fixture({ "src/telemetry.ts": withOtlp(otlpTarget) }), [module("telemetry", "src/telemetry.ts")], services,
+    fixture({ "src/telemetry.ts": withOtlp(otlpTarget) }),
+    [module("telemetry", "src/telemetry.ts")],
+    services,
   );
   expect(otlpBaseline.errors).toEqual([]);
 
   const expectBlocked = (candidate: string) => {
     const candidateRoot = fixture({ "src/telemetry.ts": candidate });
-    const errors = sourceDependencies(candidateRoot, [module("telemetry", "src/telemetry.ts")], services).errors;
-    expect(errors.map(error => error.replace(/:\d+:/, ":LINE:"))).toEqual([
+    const errors = sourceDependencies(
+      candidateRoot,
+      [module("telemetry", "src/telemetry.ts")],
+      services,
+    ).errors;
+    expect(errors.map((error) => error.replace(/:\d+:/, ":LINE:"))).toEqual([
       "src/telemetry.ts:LINE: Outside URL has a dynamic host",
       "src/telemetry.ts:LINE: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
     ]);
   };
 
-  const changedHost = fixture({ "src/telemetry.ts": source.replace("ingest\\.de\\.sentry\\.io", "other\\.invalid") });
-  expect(sourceDependencies(changedHost, [module("telemetry", "src/telemetry.ts")], services).errors).toEqual([
+  const changedHost = fixture({
+    "src/telemetry.ts": source.replace("ingest\\.de\\.sentry\\.io", "other\\.invalid"),
+  });
+  expect(
+    sourceDependencies(changedHost, [module("telemetry", "src/telemetry.ts")], services).errors,
+  ).toEqual([
     "src/telemetry.ts:12: Unmodelled outside host: *.other.invalid",
     "src/telemetry.ts:15: Unmodelled outside host: *.other.invalid",
   ]);
 
   expectBlocked(source.replace("url.password !== ''", "url.password !== 'accepted'"));
-  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() === host.toLowerCase()"));
-  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "false && url.hostname.toLowerCase() !== host.toLowerCase()"));
+  expectBlocked(
+    source.replace(
+      "url.hostname.toLowerCase() !== host.toLowerCase()",
+      "url.hostname.toLowerCase() === host.toLowerCase()",
+    ),
+  );
+  expectBlocked(
+    source.replace(
+      "url.hostname.toLowerCase() !== host.toLowerCase()",
+      "false && url.hostname.toLowerCase() !== host.toLowerCase()",
+    ),
+  );
 
   const aliasHost = source
-    .replace("  const [, key, host, project] = match;", "  const otherMatch = match;\n  const [, otherKey, otherHost, otherProject] = otherMatch;\n  const [, key, host, project] = match;")
-    .replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() !== otherHost.toLowerCase()");
+    .replace(
+      "  const [, key, host, project] = match;",
+      "  const otherMatch = match;\n  const [, otherKey, otherHost, otherProject] = otherMatch;\n  const [, key, host, project] = match;",
+    )
+    .replace(
+      "url.hostname.toLowerCase() !== host.toLowerCase()",
+      "url.hostname.toLowerCase() !== otherHost.toLowerCase()",
+    );
   expectBlocked(aliasHost);
 
-  expectBlocked(source.replace("  const url = new URL(value);", "  const url = new URL(value);\n  url.hostname = 'evil.invalid';"));
-  expectBlocked(source.replace("  const url = new URL(value);", "  const URL = CustomURL;\n  const url = new URL(value);"));
+  expectBlocked(
+    source.replace(
+      "  const url = new URL(value);",
+      "  const url = new URL(value);\n  url.hostname = 'evil.invalid';",
+    ),
+  );
+  expectBlocked(
+    source.replace(
+      "  const url = new URL(value);",
+      "  const URL = CustomURL;\n  const url = new URL(value);",
+    ),
+  );
 
-  const urlGuard = "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;";
+  const urlGuard =
+    "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;";
   const parsedDsn = "  return { host: host.toLowerCase(), project };";
   expectBlocked(source.replace(`${urlGuard}\n${parsedDsn}`, `${parsedDsn}\n${urlGuard}`));
   expectBlocked(source.replace(urlGuard, `  if (enabled) {\n${urlGuard}\n  }`));
 
-  const withHostOverride = (returned: string) => source
-    .replace("function parseDsn(value: string) {", "function parseDsn(value: string, override?: string) {")
-    .replace(parsedDsn, returned)
-    .replace("function sentryTarget(env: { DSN: string }) {", "function sentryTarget(env: { DSN: string; HOST: string }) {")
-    .replace("  const dsn = parseDsn(env.DSN);", "  const dsn = parseDsn(env.DSN, env.HOST);");
+  const withHostOverride = (returned: string) =>
+    source
+      .replace(
+        "function parseDsn(value: string) {",
+        "function parseDsn(value: string, override?: string) {",
+      )
+      .replace(parsedDsn, returned)
+      .replace(
+        "function sentryTarget(env: { DSN: string }) {",
+        "function sentryTarget(env: { DSN: string; HOST: string }) {",
+      )
+      .replace("  const dsn = parseDsn(env.DSN);", "  const dsn = parseDsn(env.DSN, env.HOST);");
   const unsafeProofs: [string, string][] = [
-    ["shadowed undefined", source.replace(
-      "  if (!match) return undefined;\n  const [, key, host, project] = match;\n  const url = new URL(value);",
-      "  const url = new URL(value);\n  const undefined = { host: url.hostname, project: '1' };\n  if (!match) return undefined;\n  const [, key, host, project] = match;")],
-    ["spread overrides host", withHostOverride("  return { host: host.toLowerCase(), ...{ host: override }, project };")],
-    ["duplicate host overrides host", withHostOverride("  return { host: host.toLowerCase(), host: override, project };")],
-    ["unknown call mutates URL", withOtlp(otlpTarget.replace("  return { url: url.href };", "  rewrite(url);\n  return { url: url.href };"))],
-    ["Object.assign mutates URL through alias", withOtlp(otlpTarget.replace("  return { url: url.href };", "  const alias = url;\n  Object.assign(alias, { hostname: env.HOST });\n  return { url: url.href };"))],
-    ["direct setter after guard", withOtlp(otlpTarget.replace("  return { url: url.href };", "  url.hostname = env.HOST;\n  return { url: url.href };"))],
-    ["alias setter after guard", withOtlp(otlpTarget.replace("  return { url: url.href };", "  const alias = url;\n  alias.hostname = env.HOST;\n  return { url: url.href };"))],
-    ["helper result mutates through alias", withOtlp(otlpTarget.replace(
-      "  const url = new URL(env.ENDPOINT);",
-      "  const url = new URL(env.ENDPOINT);\n  const alias = dsn;\n  alias.host = url.hostname;"))],
+    [
+      "shadowed undefined",
+      source.replace(
+        "  if (!match) return undefined;\n  const [, key, host, project] = match;\n  const url = new URL(value);",
+        "  const url = new URL(value);\n  const undefined = { host: url.hostname, project: '1' };\n  if (!match) return undefined;\n  const [, key, host, project] = match;",
+      ),
+    ],
+    [
+      "spread overrides host",
+      withHostOverride("  return { host: host.toLowerCase(), ...{ host: override }, project };"),
+    ],
+    [
+      "duplicate host overrides host",
+      withHostOverride("  return { host: host.toLowerCase(), host: override, project };"),
+    ],
+    [
+      "unknown call mutates URL",
+      withOtlp(
+        otlpTarget.replace(
+          "  return { url: url.href };",
+          "  rewrite(url);\n  return { url: url.href };",
+        ),
+      ),
+    ],
+    [
+      "Object.assign mutates URL through alias",
+      withOtlp(
+        otlpTarget.replace(
+          "  return { url: url.href };",
+          "  const alias = url;\n  Object.assign(alias, { hostname: env.HOST });\n  return { url: url.href };",
+        ),
+      ),
+    ],
+    [
+      "direct setter after guard",
+      withOtlp(
+        otlpTarget.replace(
+          "  return { url: url.href };",
+          "  url.hostname = env.HOST;\n  return { url: url.href };",
+        ),
+      ),
+    ],
+    [
+      "alias setter after guard",
+      withOtlp(
+        otlpTarget.replace(
+          "  return { url: url.href };",
+          "  const alias = url;\n  alias.hostname = env.HOST;\n  return { url: url.href };",
+        ),
+      ),
+    ],
+    [
+      "helper result mutates through alias",
+      withOtlp(
+        otlpTarget.replace(
+          "  const url = new URL(env.ENDPOINT);",
+          "  const url = new URL(env.ENDPOINT);\n  const alias = dsn;\n  alias.host = url.hostname;",
+        ),
+      ),
+    ],
     ...[
       "(url as any)[env.URL_FIELD] = env.HOST;",
       "const alias = url; (alias as any)[env.URL_FIELD] = env.HOST;",
       "const alias = (url as any); alias[env.URL_FIELD] = env.HOST;",
       "const alias = url; delete (alias as any)[env.URL_FIELD];",
       "const alias = url; (alias as any)[env.URL_FIELD]++;",
-    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
-      "  return { url: url.href };", `  ${mutation}\n  return { url: url.href };`))]),
+    ].map((mutation): [string, string] => [
+      mutation,
+      withOtlp(
+        otlpTarget.replace(
+          "  return { url: url.href };",
+          `  ${mutation}\n  return { url: url.href };`,
+        ),
+      ),
+    ]),
     ...[
       "(dsn as any)[env.URL_FIELD] = url.hostname;",
       "const alias = dsn; (alias as any)[env.URL_FIELD] = url.hostname;",
       "const alias = dsn; delete (alias as any)[env.URL_FIELD];",
-    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
-      "  const url = new URL(env.ENDPOINT);", `  const url = new URL(env.ENDPOINT);\n  ${mutation}`))]),
+    ].map((mutation): [string, string] => [
+      mutation,
+      withOtlp(
+        otlpTarget.replace(
+          "  const url = new URL(env.ENDPOINT);",
+          `  const url = new URL(env.ENDPOINT);\n  ${mutation}`,
+        ),
+      ),
+    ]),
   ];
-  const rejected = (candidate: string) => sourceDependencies(
-    fixture({ "src/telemetry.ts": candidate }), [module("telemetry", "src/telemetry.ts")], services,
-  ).errors;
-  const missed = unsafeProofs.filter(([, candidate]) => rejected(candidate).length === 0).map(([name]) => name);
+  const rejected = (candidate: string) =>
+    sourceDependencies(
+      fixture({ "src/telemetry.ts": candidate }),
+      [module("telemetry", "src/telemetry.ts")],
+      services,
+    ).errors;
+  const missed = unsafeProofs
+    .filter(([, candidate]) => rejected(candidate).length === 0)
+    .map(([name]) => name);
   expect(missed).toEqual([]);
 });
 
-
 test("network SDKs and aliased fetch cannot bypass outside-service coverage", () => {
-  const root = fixture({ "src/router.ts": "import { request } from 'node:https'; const send = fetch;" });
+  const root = fixture({
+    "src/router.ts": "import { request } from 'node:https'; const send = fetch;",
+  });
   const result = sourceDependencies(root, [module("router", "src/router.ts")], []);
   expect(result.errors).toHaveLength(2);
 });
 
-
 test("bound container and actor transports ignore placeholder HTTP hosts", () => {
-  const root = fixture({ "src/router.ts": "container.getTcpPort(port).fetch('http://pool/ready'); singleton(env).fetch('http://pool/__warm');" });
-  const caller = { ...module("gateway", "src/router.ts"), bindings: ["container.getTcpPort=runtime", "singleton=runtime"] };
+  const root = fixture({
+    "src/router.ts":
+      "container.getTcpPort(port).fetch('http://pool/ready'); singleton(env).fetch('http://pool/__warm');",
+  });
+  const caller = {
+    ...module("gateway", "src/router.ts"),
+    bindings: ["container.getTcpPort=runtime", "singleton=runtime"],
+  };
   const result = sourceDependencies(root, [caller], []);
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["gateway->runtime", "gateway->runtime"]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual([
+    "gateway->runtime",
+    "gateway->runtime",
+  ]);
+});
+
+test("bound transports survive formatting while retaining exact arguments and literal contents", () => {
+  const root = fixture({
+    "src/router.ts": `
+      container
+        .getTcpPort(8327)
+        .fetch(new Request(\`http://pool\${path}\`, init));
+      container /* transport */ . getTcpPort ( 8327 ).fetch(request);
+      singleton(
+        env
+      ).fetch(request);
+      container.getTcpPort(8318).fetch(request);
+      select("a b").fetch(request);
+    `,
+  });
+  const caller = module("gateway", "src/router.ts", {
+    bindings: [
+      "container.getTcpPort(8327)=runtime",
+      "singleton(env)=runtime",
+      'select("ab")=runtime',
+    ],
+  });
+  const result = sourceDependencies(root, [caller], []);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual([
+    "gateway->runtime",
+    "gateway->runtime",
+    "gateway->runtime",
+  ]);
+  expect(result.errors).toEqual([
+    "src/router.ts:9: Unmodelled fetch binding: container.getTcpPort(8318)",
+    'src/router.ts:10: Unmodelled fetch binding: select("a b")',
+  ]);
+});
+
+test("super transports retain their parsed receiver kind", () => {
+  const result = sourceDependencies(
+    fixture({
+      "src/router.ts":
+        "class Child extends Parent { send() { return super.fetch(`http://pool${path}`); } }",
+    }),
+    [module("gateway", "src/router.ts", { bindings: ["super=runtime"] })],
+    [],
+  );
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+});
+
+test.each([
+  ["select(`pool${id} a`)", "select(`pool${id}a`)"],
+  ["select(/a b/)", "select(/a  b/)"],
+])("bound transport literals retain parser structure: %s", (declared, different) => {
+  const caller = module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] });
+  const same = sourceDependencies(
+    fixture({ "src/router.ts": `${declared}.fetch(request);` }),
+    [caller],
+    [],
+  );
+  expect(same.errors).toEqual([]);
+  expect(same.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+  const result = sourceDependencies(
+    fixture({ "src/router.ts": `${different}.fetch(\`https://\${destination}/v1\`);` }),
+    [caller],
+    [],
+  );
+  expect(result.dependencies).toEqual([]);
+  expect(result.errors).toEqual([
+    `src/router.ts:1: Unmodelled fetch binding: ${different}`,
+    "src/router.ts:1: Outside URL has a dynamic host",
+  ]);
+});
+
+test("trailing declaration comments preserve the exact receiver and dynamic-host refusals", () => {
+  const caller = module("gateway", "src/router.ts", {
+    bindings: ["container.getTcpPort(8327) // selected port=runtime"],
+  });
+  const same = sourceDependencies(
+    fixture({
+      "src/router.ts": "container.getTcpPort(8327).fetch(request);",
+    }),
+    [caller],
+    [],
+  );
+  expect(same.errors).toEqual([]);
+  expect(same.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
+  const different = sourceDependencies(
+    fixture({
+      "src/router.ts": "container.fetch(`https://${destination}/v1`);",
+    }),
+    [caller],
+    [],
+  );
+  expect(different.dependencies).toEqual([]);
+  expect(different.errors).toEqual([
+    "src/router.ts:1: Unmodelled fetch binding: container",
+    "src/router.ts:1: Outside URL has a dynamic host",
+  ]);
+});
+
+test.each(["container.getTcpPort(8327) /*", "container.getTcpPort(8327", "container.\n// broken"])(
+  "malformed binding declarations cannot suppress host errors: %s",
+  (declared) => {
+    const result = sourceDependencies(
+      fixture({
+        "src/router.ts": "container.fetch(`https://${destination}/v1`);",
+      }),
+      [module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] })],
+      [],
+    );
+    expect(result.dependencies).toEqual([]);
+    expect(result.errors).toEqual([
+      "src/router.ts:1: Unmodelled fetch binding: container",
+      "src/router.ts:1: Outside URL has a dynamic host",
+    ]);
+  },
+);
+
+test.each([
+  ["select({port:8327})", "select({ /** transport */ port:8327 })"],
+  ["select({port:8327})", "select({\n /** transport */\n port:8327 })"],
+  ["select(`pool${({port:8327}).port}`)", "select(`pool${({ /** transport */ port:8327 }).port}`)"],
+  [
+    "select(`pool${({port:8327}).port}`)",
+    "select(`pool${({\n /** transport */\n port:8327 }).port}`)",
+  ],
+])("attached JSDoc does not change transport identity: %s", (declared, commented) => {
+  const result = sourceDependencies(
+    fixture({
+      "src/router.ts": `${commented}.fetch(\`https://\${destination}/v1\`);`,
+    }),
+    [module("gateway", "src/router.ts", { bindings: [`${declared}=runtime`] })],
+    [],
+  );
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map((d) => `${d.source}->${d.target}`)).toEqual(["gateway->runtime"]);
 });
 
 test("declared runtime code outside conventional folders participates in source checks", () => {
-  const root = fixture({ "brand.ts": "fetch('https://unmodelled.invalid/v1');", ".upstream/runtime.ts": "fetch(destination);" });
-  const result = sourceDependencies(root, [module("router", "brand.ts"), module("tools", ".upstream")], []);
+  const root = fixture({
+    "brand.ts": "fetch('https://unmodelled.invalid/v1');",
+    ".upstream/runtime.ts": "fetch(destination);",
+  });
+  const result = sourceDependencies(
+    root,
+    [module("router", "brand.ts"), module("tools", ".upstream")],
+    [],
+  );
   expect(result.errors).toEqual(["brand.ts:1: Unmodelled outside host: unmodelled.invalid"]);
 });
 
@@ -211,7 +522,11 @@ test("owned deploy scripts and root entrypoints are checked while fixture and ch
     "alchemy.run.ts": "export const ready = true",
     ".upstream/runtime.ts": "fetch(destination);",
   });
-  const modules = [module("build", "scripts/build.ts"), module("deployment", "scripts/deploy.ts"), module("worker", "alchemy.run.ts")];
+  const modules = [
+    module("build", "scripts/build.ts"),
+    module("deployment", "scripts/deploy.ts"),
+    module("worker", "alchemy.run.ts"),
+  ];
   expect(moduleErrors(root, modules)).toEqual([]);
   expect(sourceDependencies(root, modules, []).errors).toEqual([
     "scripts/deploy.ts:1: Unmodelled outside host: new-host.invalid",
@@ -229,19 +544,30 @@ test("configuration URL values stay data and imports still produce module edges"
   ];
   const result = sourceDependencies(root, modules, []);
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(dependency => `${dependency.source}->${dependency.target}`)).toEqual(["deployment->brandConfig"]);
+  expect(
+    result.dependencies.map((dependency) => `${dependency.source}->${dependency.target}`),
+  ).toEqual(["deployment->brandConfig"]);
 });
 
 test("configuration calls fail the pure-data rule before URL data can be ignored", () => {
-  const root = fixture({ "brand.ts": `export const brand = { host: fetch("https://new-host.invalid") };` });
-  const result = sourceDependencies(root, [module("brandConfig", "brand.ts", { configuration: true })], []);
-  expect(result.errors).toEqual(["brand.ts:1: Configuration modules allow only literal const declarations"]);
+  const root = fixture({
+    "brand.ts": `export const brand = { host: fetch("https://new-host.invalid") };`,
+  });
+  const result = sourceDependencies(
+    root,
+    [module("brandConfig", "brand.ts", { configuration: true })],
+    [],
+  );
+  expect(result.errors).toEqual([
+    "brand.ts:1: Configuration modules allow only literal const declarations",
+  ]);
   expect(result.dependencies).toEqual([]);
 });
 
 test("computed fetch traces a const URL host with a dynamic path and query mutations", () => {
   const root = fixture({
-    "scripts/ensure-artifacts.ts": "const account = process.env.ACCOUNT_ID;\nconst url = new URL(`https://api.example.test/client/${account}`);\nurl.searchParams.set('limit', '200');\nawait fetch(url);",
+    "scripts/ensure-artifacts.ts":
+      "const account = process.env.ACCOUNT_ID;\nconst url = new URL(`https://api.example.test/client/${account}`);\nurl.searchParams.set('limit', '200');\nawait fetch(url);",
   });
   const result = sourceDependencies(
     root,
@@ -249,35 +575,48 @@ test("computed fetch traces a const URL host with a dynamic path and query mutat
     [{ id: "cloudflare", hosts: ["api.example.test"], sdks: [] }],
   );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(dependency => `${dependency.source}->${dependency.target}`)).toEqual(["deployment->cloudflare"]);
+  expect(
+    result.dependencies.map((dependency) => `${dependency.source}->${dependency.target}`),
+  ).toEqual(["deployment->cloudflare"]);
 });
 
 test("replacing URL href cannot retain the original modelled host", () => {
   const root = fixture({
-    "scripts/ensure-artifacts.ts": 'const url = new URL("https://api.example.test/v1"); url.href = process.env.API_URL; fetch(url);',
+    "scripts/ensure-artifacts.ts":
+      'const url = new URL("https://api.example.test/v1"); url.href = process.env.API_URL; fetch(url);',
   });
-  const result = sourceDependencies(root, [module("deployment", "scripts/ensure-artifacts.ts")],
-    [{ id: "provider", hosts: ["api.example.test"], sdks: [] }]);
-  expect(result.errors).toContain("scripts/ensure-artifacts.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter");
+  const result = sourceDependencies(
+    root,
+    [module("deployment", "scripts/ensure-artifacts.ts")],
+    [{ id: "provider", hosts: ["api.example.test"], sdks: [] }],
+  );
+  expect(result.errors).toContain(
+    "scripts/ensure-artifacts.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
+  );
 });
 
 test("unknown, reassigned, and shadowed computed fetch hosts fail closed", () => {
   const root = fixture({
-    "scripts/unknown.ts": "export {}; const origin = `https://${process.env.API_HOST}/v1`; fetch(origin);",
-    "scripts/reassigned.ts": "export {}; let destination = process.env.API_URL; destination = 'https://api.example.test/v1'; fetch(destination);",
-    "scripts/shadowed.ts": "export {}; const origin = 'https://api.example.test/v1'; function send(origin: string) { return fetch(origin); }",
+    "scripts/unknown.ts":
+      "export {}; const origin = `https://${process.env.API_HOST}/v1`; fetch(origin);",
+    "scripts/reassigned.ts":
+      "export {}; let destination = process.env.API_URL; destination = 'https://api.example.test/v1'; fetch(destination);",
+    "scripts/shadowed.ts":
+      "export {}; const origin = 'https://api.example.test/v1'; function send(origin: string) { return fetch(origin); }",
   });
   const result = sourceDependencies(
     root,
     [module("deployment", "scripts")],
     [{ id: "cloudflare", hosts: ["api.example.test"], sdks: [] }],
   );
-  expect(result.errors.filter(error => error.includes("Computed outbound fetch"))).toEqual([
+  expect(result.errors.filter((error) => error.includes("Computed outbound fetch"))).toEqual([
     "scripts/reassigned.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
     "scripts/shadowed.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
     "scripts/unknown.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
   ]);
-  expect(result.errors.some(error => error.includes("Outside URL has a dynamic host"))).toBe(true);
+  expect(result.errors.some((error) => error.includes("Outside URL has a dynamic host"))).toBe(
+    true,
+  );
 });
 
 test("smoke requests resolve the imported brand host to the modeled router endpoint", () => {
@@ -299,9 +638,9 @@ test("smoke requests resolve the imported brand host to the modeled router endpo
   ];
   const result = sourceDependencies(root, modules, []);
   expect(result.errors).toEqual([]);
-  expect(new Set(result.dependencies.map(dependency => `${dependency.source}->${dependency.target}`))).toEqual(
-    new Set(["deployment->brandConfig", "deployment->router"]),
-  );
+  expect(
+    new Set(result.dependencies.map((dependency) => `${dependency.source}->${dependency.target}`)),
+  ).toEqual(new Set(["deployment->brandConfig", "deployment->router"]));
 });
 
 test("dynamic package imports resolve symbolically and enforce relative URLs", () => {
@@ -312,7 +651,11 @@ test("dynamic package imports resolve symbolically and enforce relative URLs", (
       `await import(module.href);`,
     ].join("\n"),
   });
-  const result = sourceDependencies(root, [module("build", "scripts/pool-worker-build.ts", { libraries: ["alchemy"] })], []);
+  const result = sourceDependencies(
+    root,
+    [module("build", "scripts/pool-worker-build.ts", { libraries: ["alchemy"] })],
+    [],
+  );
   expect(result.errors).toEqual([]);
 });
 
@@ -324,7 +667,9 @@ test("modeled provider SDKs win over generic framework imports", () => {
     [{ id: "databaseProvider", hosts: [], sdks: ["alchemy/Planetscale"] }],
   );
   expect(result.errors).toEqual([]);
-  expect(result.dependencies.map(dependency => `${dependency.source}->${dependency.target}`)).toEqual(["deployment->databaseProvider"]);
+  expect(
+    result.dependencies.map((dependency) => `${dependency.source}->${dependency.target}`),
+  ).toEqual(["deployment->databaseProvider"]);
 });
 
 test("unknown and absolute URLs cannot inherit a package base for dynamic imports", () => {
@@ -332,8 +677,20 @@ test("unknown and absolute URLs cannot inherit a package base for dynamic import
     "scripts/unknown.ts": `const entry = import.meta.resolve("alchemy"); await import(new URL(computeURL(), new URL("./", entry)).href);`,
     "scripts/absolute.ts": `const entry = import.meta.resolve("alchemy"); await import(new URL("https://outside.example.test/module.js", new URL("./", entry)).href);`,
   });
-  const result = sourceDependencies(root, [module("build", "scripts", { libraries: ["alchemy"] })], []);
-  expect(result.errors.some(error => error.includes("Dynamic import needs a statically known module"))).toBe(true);
-  expect(result.errors.some(error => error.includes("Unmodelled SDK or library: https://outside.example.test/module.js"))).toBe(true);
-  expect(result.errors.some(error => error.includes("Unmodelled outside host: outside.example.test"))).toBe(true);
+  const result = sourceDependencies(
+    root,
+    [module("build", "scripts", { libraries: ["alchemy"] })],
+    [],
+  );
+  expect(
+    result.errors.some((error) => error.includes("Dynamic import needs a statically known module")),
+  ).toBe(true);
+  expect(
+    result.errors.some((error) =>
+      error.includes("Unmodelled SDK or library: https://outside.example.test/module.js"),
+    ),
+  ).toBe(true);
+  expect(
+    result.errors.some((error) => error.includes("Unmodelled outside host: outside.example.test")),
+  ).toBe(true);
 });

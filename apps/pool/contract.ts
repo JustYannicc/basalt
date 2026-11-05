@@ -2,8 +2,8 @@
 // Base path: `/pool/v1` on the public host.
 // Every request carries `Authorization: Bearer <pool token>`.
 // Requests made for a person carry `X-Signalbox-Caller: <tools-service user id>`.
-// Changes (starting a sign-in, pasting a callback, uploading a login file,
-// polling a sign-in status, removing an account) are refused with 403 `not_owner` unless the caller owns the pool.
+// Account changes require the pool owner. Legacy sign-in endpoints refuse acquisition even
+// for the owner; provider apps own new connections.
 
 export const controlBasePath = "/pool/v1";
 export const callerHeader = "x-signalbox-caller";
@@ -12,7 +12,7 @@ export function isControlPath(pathname: string): boolean {
   return pathname === controlBasePath || pathname.startsWith(`${controlBasePath}/`);
 }
 
-/** One provider the pool backend can sign in. Ids are the backend's own. */
+/** One provider the pool backend can serve. Ids are the backend's own. */
 export interface Provider {
   readonly id: string;
   readonly name: string;
@@ -100,12 +100,20 @@ export interface PoolView {
     readonly source: "snapshot" | "live";
     readonly revalidationFailed: boolean;
     /** Completion of each Home read. Provider observations retain their own original timestamps. */
-    readonly readAt: { readonly membership: string; readonly credentials: string; readonly quota: string };
+    readonly readAt: {
+      readonly membership: string;
+      readonly credentials: string;
+      readonly quota: string;
+    };
   };
   /** Native removal intent is visible to the owner only. `since` bounds retained history. */
   readonly removals?: {
     readonly since: string | null;
-    readonly items: readonly { readonly account: string; readonly actor: string; readonly at: string }[];
+    readonly items: readonly {
+      readonly account: string;
+      readonly actor: string;
+      readonly at: string;
+    }[];
   };
   readonly providers: readonly Provider[];
   readonly accounts: readonly Account[];
@@ -249,8 +257,13 @@ export const maxWeeklyCap = 100_000;
 
 /** Whole cents, more than nothing and at most `maxWeeklyCap` US dollars a week. */
 export function isWeeklyCap(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= maxWeeklyCap
-    && Math.round(value * 100) / 100 === value;
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= maxWeeklyCap &&
+    Math.round(value * 100) / 100 === value
+  );
 }
 
 /** POST /sign-ins `{ provider }` */
@@ -297,6 +310,7 @@ export interface LoginFileAdded {
  */
 
 export type ControlErrorCode =
+  | "ProviderAppConnectionRequired"
   | "unauthorized"
   | "not_owner"
   | "unknown_provider"
@@ -311,4 +325,12 @@ export type ControlErrorCode =
 export interface ControlError {
   readonly error: ControlErrorCode;
   readonly message: string;
+}
+
+/** Old deployed pool apps receive a safe refusal, without a host account or credential reference. */
+export interface ProviderAppConnectionRequired extends ControlError {
+  readonly error: "ProviderAppConnectionRequired";
+  readonly app: string;
+  readonly requirement: "subscriptions";
+  readonly destination: { readonly kind: "unavailable"; readonly reason: string };
 }

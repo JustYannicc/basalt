@@ -1,0 +1,11 @@
+{
+  "identity": "provider-config-mirrors",
+  "file": "0184-provider-config-mirrors.patch",
+  "content_sha256": "1be61d4f0a5f43d7677e4f74ceb1ddb10fbcf2b9d174a4780f9dce05586f5a26",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "native-model-provider-host-adapters",
+  "requires": "A pinned upstream host supports native and compatible API-key mirrors, stable service-account references and reusable provider apps. Preserve account identities and removal/retry behavior before retiring this integration."
+}
