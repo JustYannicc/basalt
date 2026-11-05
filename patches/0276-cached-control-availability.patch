@@ -505,7 +505,7 @@ diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/accou
  import { scenarios } from "../test-plan.ts";
 
  const Links = Schema.Array(Schema.Struct({ account: Resource }));
-@@ -219,6 +220,52 @@
+@@ -219,6 +220,53 @@
              );
          });
          yield* browser.checkpoint("Read-only retry refreshed the account without another reuse");
@@ -524,6 +524,7 @@ diff --git a/e2e/tests/account-identity-reconciliation.spec.ts b/e2e/tests/accou
 +            (organization) => `/api/organizations/${organization}/apps/${target}/accounts/methods`,
 +          ),
 +          "continue",
++          { allRequests: true },
 +        );
 +        yield* refreshVisiblePage;
 +        yield* refresh.requested;
