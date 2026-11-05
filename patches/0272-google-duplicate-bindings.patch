@@ -713,7 +713,7 @@ new file mode 100644
 index 0000000..b039fc9
 --- /dev/null
 +++ b/e2e/tests/google-duplicate-bindings.spec.ts
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,151 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -736,7 +736,6 @@ index 0000000..b039fc9
 +          person,
 +          app,
 +          client,
-+          organization,
 +          snapshot,
 +          oldBefore,
 +          keepBefore,

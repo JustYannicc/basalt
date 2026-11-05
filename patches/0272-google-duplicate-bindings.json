@@ -1,7 +1,7 @@
 {
   "identity": "basalt-google-duplicate-bindings",
   "file": "0272-google-duplicate-bindings.patch",
-  "content_sha256": "7f4b3e882e843679f0202943ad73fde404ab9573bd2abe6bd96da99fd159ea0e",
+  "content_sha256": "7455973e5e923671339d69ed40780006f7ba1bd9d907934af88f6110dd51a5d5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
