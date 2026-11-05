@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "id": "setup-v2",
+  "artifact": {
+    "name": "setup-v2.html",
+    "sha256": "650a1699e36b2c6bfb603202cee7a3f9019b8ada45394fe42a333742b25fdbcf"
+  },
+  "requirements": [
+    {
+      "id": "additive-one-click",
+      "text": "Claude Code leads with a one-click pool setup prompt, retains expandable manual steps, and reaches waiting and connected states; Codex retains its ChatGPT sign-in guidance and Claude keeps its existing guide.",
+      "proofs": [
+        {
+          "scenario": "poolSetupConnect",
+          "target": "self-host",
+          "job": "human-in-the-loop"
+        }
+      ]
+    },
+    {
+      "id": "desktop-pool-key",
+      "text": "Claude Desktop can obtain its pool key and download a setup file; the pool endpoint supplies a key and example for arbitrary clients.",
+      "proofs": [
+        {
+          "scenario": "poolKeysConnect",
+          "target": "self-host",
+          "job": "human-in-the-loop"
+        }
+      ]
+    },
+    {
+      "id": "all-assistants-methods",
+      "text": "All ten existing assistants and Assistant, Prompt, MCP URL, Command and personal-token methods remain available with their full original guides.",
+      "gap": {
+        "state": "open",
+        "owner": "Setup owner",
+        "reason": "The bound journey checks Claude, Cursor and selected pool-capable guides, not the complete preserved assistant/method set."
+      }
+    },
+    {
+      "id": "desktop-one-click-delta",
+      "text": "The accepted Claude Desktop addition leads with one-click setup and keeps manual instructions expandable.",
+      "gap": {
+        "state": "open",
+        "owner": "Setup owner",
+        "reason": "The current poolKeysConnect scenario starts with Create key and later downloads a file; it does not prove the accepted one-click primary flow and manual expander."
+      }
+    },
+    {
+      "id": "expired-setup-link",
+      "text": "An expired setup link is clearly identified and can be replaced without damaging a previously pasted valid link.",
+      "gap": {
+        "state": "open",
+        "owner": "Setup owner",
+        "reason": "The bound scenario proves replacement links do not revoke a previous link, but does not assert the expired-link presentation."
+      }
+    }
+  ],
+  "approvalDeltas": [
+    "Setup v2 is approved with one-click pool-capable clients, expandable manual steps and the Claude Desktop addition. V3 has no recorded approval and is not substituted wholesale."
+  ]
+}
