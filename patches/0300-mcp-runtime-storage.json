@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-mcp-runtime-storage",
+  "file": "0300-mcp-runtime-storage.patch",
+  "content_sha256": "b7e5cc0aeba02549a7f992474e9940817b12cb55d7f741b6d505ef7e808a3b7a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

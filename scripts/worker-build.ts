@@ -2,7 +2,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
+import { checkMcpRuntimeBundle } from "./mcp-runtime-bundle.ts";
 
+const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
 // Use upstream's credential-free bundling check with this stack's configuration.
 const credentials = Object.fromEntries(requiredSecrets.map((name) => [name, "0".repeat(64)]));
@@ -30,4 +32,6 @@ writeFileSync(
       `const production: Target = ${JSON.stringify({ stage: configuration.ALCHEMY_STAGE, configuration })};`,
     ),
 );
+run("bun", ["packages/sdk/scripts/check-storage-versions.ts"], upstream);
 run("bun", ["scripts/basalt-worker-sizes.ts"], cloud);
+checkMcpRuntimeBundle();
