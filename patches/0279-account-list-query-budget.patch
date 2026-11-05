@@ -252,10 +252,10 @@ index bda20d0..2c64551 100644
  export const accountObservationsAtom = (key: {
 diff --git a/apps/hosted/web/src/contracts/account-polling.ts b/apps/hosted/web/src/contracts/account-polling.ts
 new file mode 100644
-index 0000000..a936e41
+index 0000000..1b0509e
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/account-polling.ts
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,82 @@
 +/** One mounted clock reconciles account views; failures never create a faster polling lane. */
 +import type { AccountHealth } from "@executor-js/sdk";
 +import { Effect } from "effect";
@@ -284,14 +284,15 @@ index 0000000..a936e41
 +): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
 +  Atom.readable(
 +    (get) => {
++      if (typeof window === "undefined") return get(source);
 +      let value = get.once(source);
-+      if (typeof window === "undefined") return value;
 +      let tick = get.once(cadence);
 +      let readAt = tick;
 +      let unsettledAt: number | undefined;
 +      let backoff = 2;
 +      const unavailable = () =>
-+        !AsyncResult.isSuccess(value) || unavailableHealth?.(value.value) === true;
++        AsyncResult.isFailure(value) ||
++        (AsyncResult.isSuccess(value) && unavailableHealth?.(value.value) === true);
 +      const unsettled = () =>
 +        unavailable() || (AsyncResult.isSuccess(value) && pending?.(value.value) === true);
 +      const observe = () => {
@@ -415,7 +416,7 @@ index ff7abf7..f919832 100644
    ),
  );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 01a865f..de37d00 100644
+index 01a865f..4793705 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -320,6 +320,15 @@ export const scenarios = plan({
@@ -434,7 +435,7 @@ index 01a865f..de37d00 100644
    accountIdentityPolicy: {
      fixtures: "actors",
      file: "account-identity-policy.spec.ts",
-@@ -9217,6 +9226,36 @@ export const scenarios = plan({
+@@ -9217,6 +9226,46 @@ export const scenarios = plan({
        local: na("Exercises hosted sharing policy and rows."),
      },
    },
@@ -466,6 +467,16 @@ index 01a865f..de37d00 100644
 +      "self-host": scheduled,
 +      cloud: na("Controlled loopback reports and browser clock."),
 +      local: na("Hosted account rows."),
++    },
++  },
++  accountFirstDocumentRead: {
++    fixtures: "actors",
++    file: "account-observation-row-polling.spec.ts",
++    title: "app accounts finish their initial document reads before browser hydration",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback allowance service."),
++      local: na("Hosted account pages."),
 +    },
 +  },
    accountObservationRowPolling: {
@@ -738,10 +749,66 @@ index 0000000..2fadfc6
 +  );
 +});
 diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
-index 9aa5327..d37107a 100644
+index 9aa5327..2bcecde 100644
 --- a/e2e/tests/account-observation-row-polling.spec.ts
 +++ b/e2e/tests/account-observation-row-polling.spec.ts
-@@ -68,4 +68,116 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+@@ -6,7 +6,11 @@ import { body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
+-import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
++import {
++  advanceToReconciliation,
++  holdQuery,
++  installBrowserClock,
++} from "../support/query-transition.ts";
+ import { accountRow, openRowDetails } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -16,6 +20,42 @@ const Retained = Schema.Struct({
+ });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Account observation row polling", (it) => {
++  it.effect(scenarios.accountFirstDocumentRead.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser;
++        const f = yield* observationFixture({ observe: true, health: true, shared: true });
++        yield* browser.login(f.actors.owner);
++        const modules = yield* holdQuery(/\/assets\/.*\.js$/, "continue", { allRequests: true });
++        yield* browser.use(
++          "Load the first app Accounts document with browser modules held",
++          (page) =>
++            page
++              .goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`, {
++                waitUntil: "commit",
++              })
++              .then((response) => response?.finished()),
++        );
++        yield* modules.requested;
++        const rendered = yield* browser.use(
++          "Read the server result before hydration can start a cadence",
++          (page) =>
++            page
++              .waitForFunction(
++                () =>
++                  document.readyState !== "loading" &&
++                  document.querySelector('[hidden][id^="S:"]') === null,
++              )
++              .then(() =>
++                page.getByRole("status", { name: "Loading accounts", exact: true }).count(),
++              ),
++        );
++        expect(rendered, "Initial reads settle before hydration or a polling tick").toBe(0);
++        yield* modules.release;
++      }),
++    ),
++  );
+   it.effect(scenarios.accountObservationRowPolling.title, (context) =>
+     withHostedCase(
+       context,
+@@ -68,4 +108,116 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
        }),
      ),
    );
