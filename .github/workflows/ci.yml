@@ -814,6 +814,9 @@ jobs:
           bun run e2e:local --test-name
           "^local Approvals renders|^browser schedule controls enable"
           --workers 1
+      - name: Verify the app overview stays in place as publishing access settles
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name "^Member restrictions keep controls|^Mobile member restrictions keep controls|^A host that does not publish says so" --workers 1
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "^Before a route|^Organization entry prefetches|^Dashboard loading shows content|^Dashboard client code keeps" --workers 1
