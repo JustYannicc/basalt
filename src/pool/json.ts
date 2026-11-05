@@ -1,4 +1,4 @@
-import type { ControlErrorCode } from "../../apps/pool/contract.ts";
+import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts";
 
 export type Json = Record<string, unknown>;
 
@@ -12,8 +12,16 @@ export class ControlFailure extends Error {
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+  response(): ControlError {
+    return { error: this.code, message: this.message };
+  }
 }
-export function fail(status: number, code: ControlErrorCode, message: string, retryAfterSeconds?: number): never {
+export function fail(
+  status: number,
+  code: ControlErrorCode,
+  message: string,
+  retryAfterSeconds?: number,
+): never {
   throw new ControlFailure(status, code, message, retryAfterSeconds);
 }
 const unavailableMessage = "The pool backend is unavailable. Try again later.";
@@ -37,7 +45,11 @@ export function rows(value: unknown): Json[] {
   return value;
 }
 export function post(value: unknown): RequestInit {
-  return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) };
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(value),
+  };
 }
 
 /** Backend status stays internal; callers receive the fixed unavailable message. */
@@ -50,8 +62,9 @@ export class BackendFailure extends ControlFailure {
 }
 export function failureResponse(error: unknown): Response {
   if (!(error instanceof ControlFailure)) return unavailableResponse();
-  const response = json({ error: error.code, message: error.message }, error.status);
-  if (error.retryAfterSeconds !== undefined) response.headers.set("Retry-After", String(error.retryAfterSeconds));
+  const response = json(error.response(), error.status);
+  if (error.retryAfterSeconds !== undefined)
+    response.headers.set("Retry-After", String(error.retryAfterSeconds));
   return response;
 }
 
@@ -73,6 +86,8 @@ export async function readBody(request: Request, limit: number): Promise<Uint8Ar
       }
       if (done) break;
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    reader.releaseLock();
+  }
   return bytes.subarray(0, size);
 }

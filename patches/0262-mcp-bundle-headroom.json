@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-mcp-bundle-headroom",
+  "file": "0262-mcp-bundle-headroom.patch",
+  "content_sha256": "bb39c3886dbd9e73d9ccefc9829eac16ceaab553a9ed28b4903bb79e3fb7946e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

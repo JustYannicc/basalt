@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  PreviewClient,
-  type PreviewClientConfig,
-  type SetupPayload,
-} from "./preview-client.ts";
+import { PreviewClient, type PreviewClientConfig, type SetupPayload } from "./preview-client.ts";
 
 const origin = "https://preview.example";
 const token = "ab".repeat(32);
@@ -26,7 +22,11 @@ const payload: SetupPayload = {
   brand: {
     name: "Signalbox",
     mcpServerName: "signalbox",
-    setup: { id: "basalt-computer-v1", marker: "Signalbox managed computer setup", keyPrefix: "sb_" },
+    setup: {
+      id: "basalt-computer-v1",
+      marker: "Signalbox managed computer setup",
+      keyPrefix: "sb_",
+    },
     host: "preview.example",
   },
   credentials,
@@ -55,7 +55,9 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
   let now = 0;
   const client = new PreviewClient(config, {
     now: () => now,
-    delay: async (ms) => { now += ms; },
+    delay: async (ms) => {
+      now += ms;
+    },
     computerWaitMs: 5_000,
     computerPollMs: 250,
     fetch: async (input, init) => {
@@ -74,40 +76,69 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
           password: config.password,
         });
         const response = Response.json({ user: { id: "owner-1" } });
-        response.headers.append("set-cookie", "executor-hosted.session_token=session-a; Path=/; HttpOnly; SameSite=Lax");
-        response.headers.append("set-cookie", "executor-hosted.session_data=data-a; Path=/; HttpOnly");
+        response.headers.append(
+          "set-cookie",
+          "executor-hosted.session_token=session-a; Path=/; HttpOnly; SameSite=Lax",
+        );
+        response.headers.append(
+          "set-cookie",
+          "executor-hosted.session_data=data-a; Path=/; HttpOnly",
+        );
         return response;
       }
 
       if (url.pathname.endsWith("/data/query")) {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a");
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+        );
         assert.equal(url.pathname, "/api/organizations/seeded-org/apps/seeded-pool-app/data/query");
         const body = JSON.parse(String(init?.body));
         if (body.name === "view") return operation(poolView(poolAccounts));
         assert.equal(body.name, "computerContext");
         assert.deepEqual(body.input, {});
         contextNumber += 1;
-        return operation({ href: contextHref(`intent-${contextNumber}`), computers: [], undoPrompt: "undo" });
+        return operation({
+          href: contextHref(`intent-${contextNumber}`),
+          computers: [],
+          undoPrompt: "undo",
+        });
       }
 
-      if (url.pathname.endsWith("/data/mutate")) {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a");
-        assert.equal(url.pathname, "/api/organizations/seeded-org/apps/seeded-pool-app/data/mutate");
-        const body = JSON.parse(String(init?.body));
-        if (body.name === "addLoginFile") {
-          assert.deepEqual(body.input, { file: { access_token: "fixture-login-file" } });
-          poolAccounts = [...poolAccounts, { id: "account-claude" }];
-          return operation({ accountId: "account-claude" });
+      if (
+        url.pathname ===
+        "/api/organizations/seeded-org/apps/seeded-pool-app/accounts/app/anthropic/acc_claude"
+      ) {
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+          init?.method,
+        );
+        if (init?.method === "PUT") poolAccounts = [{ id: "backend-claude" }];
+        else {
+          assert.equal(init?.method, "DELETE");
+          poolAccounts = [];
         }
-        assert.equal(body.name, "removeAccount");
-        assert.deepEqual(body.input, { id: "account-claude" });
-        poolAccounts = poolAccounts.filter((account) => account.id !== body.input.id);
-        return operation(null);
+        return Response.json(null);
+      }
+      if (url.pathname === "/api/organizations/seeded-org/apps/seeded-pool-app/accounts/app")
+        return Response.json(
+          poolAccounts.length ? [{ requirement: "anthropic", account: { id: "acc_claude" } }] : [],
+        );
+      if (url.pathname === "/api/organizations/seeded-org/accounts/acc_claude") {
+        assert.equal(init?.method, "GET");
+        return Response.json({ id: "acc_claude" });
       }
 
       if (url.pathname === "/setup/v1/links") {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a");
-        assert.deepEqual(JSON.parse(String(init?.body)), { intent: `intent-${contextNumber}`, name: "Work laptop" });
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+        );
+        assert.deepEqual(JSON.parse(String(init?.body)), {
+          intent: `intent-${contextNumber}`,
+          name: "Work laptop",
+        });
         return Response.json({
           computerId: "computer-1",
           prompt: `Open ${origin}/setup/claim/${token} for one-time instructions.`,
@@ -126,33 +157,50 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
       }
 
       if (url.pathname === "/setup/v1/computers") {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a", "GET");
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+          "GET",
+        );
         assert.equal(url.searchParams.get("intent"), `intent-${contextNumber}`);
         listNumber += 1;
-        return Response.json({ computers: [listNumber === 3 ? {
-          id: "computer-1",
-          state: "revoked",
-          firstModelRequestAt: "2026-10-24T08:12:13.456Z",
-          firstToolCallAt: "2026-10-24T08:12:14.000Z",
-          revokedAt: "2026-10-24T08:13:00.000Z",
-        } : {
-          id: "computer-1",
-          state: "active",
-          firstModelRequestAt: listNumber === 1 ? null : "2026-10-24T08:12:13.456Z",
-          firstToolCallAt: listNumber === 1 ? null : "2026-10-24T08:12:14.000Z",
-          revokedAt: null,
-        }] });
+        return Response.json({
+          computers: [
+            listNumber === 3
+              ? {
+                  id: "computer-1",
+                  state: "revoked",
+                  firstModelRequestAt: "2026-10-24T08:12:13.456Z",
+                  firstToolCallAt: "2026-10-24T08:12:14.000Z",
+                  revokedAt: "2026-10-24T08:13:00.000Z",
+                }
+              : {
+                  id: "computer-1",
+                  state: "active",
+                  firstModelRequestAt: listNumber === 1 ? null : "2026-10-24T08:12:13.456Z",
+                  firstToolCallAt: listNumber === 1 ? null : "2026-10-24T08:12:14.000Z",
+                  revokedAt: null,
+                },
+          ],
+        });
       }
 
       if (url.pathname === "/setup/v1/computers/computer-1") {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a", "DELETE");
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+          "DELETE",
+        );
         assert.equal(url.searchParams.get("intent"), `intent-${contextNumber}`);
         return Response.json({ success: true });
       }
 
       if (url.pathname === "/v1/messages") {
         assert.equal(init?.method, "POST");
-        assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${credentials.modelKey}`);
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          `Bearer ${credentials.modelKey}`,
+        );
         assert.equal(new Headers(init?.headers).get("x-api-key"), null);
         assert.equal(new Headers(init?.headers).get("cookie"), null);
         assert.deepEqual(JSON.parse(String(init?.body)), {
@@ -165,7 +213,10 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
 
       if (url.pathname === "/mcp") {
         assert.equal(init?.method, "POST");
-        assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${credentials.toolsToken}`);
+        assert.equal(
+          new Headers(init?.headers).get("authorization"),
+          `Bearer ${credentials.toolsToken}`,
+        );
         assert.equal(new Headers(init?.headers).get("cookie"), null);
         assert.deepEqual(JSON.parse(String(init?.body)), {
           jsonrpc: "2.0",
@@ -177,14 +228,20 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
       }
 
       if (url.pathname === "/api/auth/sign-out") {
-        assertCookieCall(init, "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a");
+        assertCookieCall(
+          init,
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+        );
         assert.deepEqual(JSON.parse(String(init?.body)), {});
         return Response.json({ success: true });
       }
 
       if (url.pathname === "/api/auth/get-session") {
         assert.equal(init?.method, "GET");
-        assert.equal(new Headers(init?.headers).get("cookie"), "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a");
+        assert.equal(
+          new Headers(init?.headers).get("cookie"),
+          "executor-hosted.session_token=session-a; executor-hosted.session_data=data-a",
+        );
         return Response.json(null);
       }
 
@@ -194,11 +251,15 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
 
   await client.signIn();
   await client.verifyEmptyPool();
-  const accountId = await client.importAccount({ access_token: "fixture-login-file" });
-  assert.equal(accountId, "account-claude");
-  assert.deepEqual(await client.poolView(), { isOwner: true, accounts: [{ id: "account-claude" }] });
+  const saved = { id: "acc_claude", requirement: "anthropic" as const };
+  await client.selectAccount(saved);
+  const accountId = "backend-claude";
+  assert.deepEqual(await client.poolView(), {
+    isOwner: true,
+    accounts: [{ id: "backend-claude" }],
+  });
   await client.verifyAccounts([accountId]);
-  await client.removeAccount(accountId);
+  await client.unselectAccount(saved);
   await client.verifyAccountsRemoved([accountId]);
 
   const created = await client.claimComputer("Work laptop");
@@ -210,11 +271,17 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
     firstToolCallAt: "2026-10-24T08:12:14.000Z",
   });
   await client.revokeComputer(created.id);
-  await client.verifyRevoked(created.payload.credentials, { client: "claude", model: "claude-sonnet-4-6" });
+  await client.verifyRevoked(created.payload.credentials, {
+    client: "claude",
+    model: "claude-sonnet-4-6",
+  });
   await client.signOut();
 
-  const contextQueries = calls.filter(({ url, init }) => url.pathname.endsWith("/data/query") &&
-    JSON.parse(String(init?.body)).name === "computerContext");
+  const contextQueries = calls.filter(
+    ({ url, init }) =>
+      url.pathname.endsWith("/data/query") &&
+      JSON.parse(String(init?.body)).name === "computerContext",
+  );
   assert.equal(contextQueries.length, 5); // create, each list read, and revoke plus its public status check get fresh intents
   assert.equal(listNumber, 3);
   assert.ok(calls.some(({ url }) => url.pathname === "/api/auth/sign-out"));
@@ -223,12 +290,15 @@ test("public app, setup, revoke, and sign-out flows preserve the cookie boundary
 test("claim uses only the prompt URL and rejects a model credential from another origin", async () => {
   const requests: string[] = [];
   const client = new PreviewClient(config, {
-    fetch: async (input, init) => {
+    fetch: async (input) => {
       const url = new URL(input.toString());
       requests.push(url.pathname);
       if (url.pathname === "/api/auth/sign-in/email") {
         const response = Response.json({ user: { id: "owner-1" } });
-        response.headers.set("set-cookie", "executor-hosted.session_token=session-a; Path=/; HttpOnly");
+        response.headers.set(
+          "set-cookie",
+          "executor-hosted.session_token=session-a; Path=/; HttpOnly",
+        );
         return response;
       }
       if (url.pathname.endsWith("/data/query")) {
@@ -242,18 +312,32 @@ test("claim uses only the prompt URL and rejects a model credential from another
         });
       }
       if (url.pathname === `/setup/claim/${token}`) {
-        return Response.json({ ...payload, credentials: { ...credentials, modelUrl: "https://wrong.example" } });
+        return Response.json({
+          ...payload,
+          credentials: { ...credentials, modelUrl: "https://wrong.example" },
+        });
       }
-      if (url.pathname === "/setup/v1/computers/computer-2") return Response.json({ success: true });
-      if (url.pathname === "/setup/v1/computers") return Response.json({ computers: [{
-        id: "computer-2", state: "revoked", revokedAt: "2026-10-24T08:13:00.000Z",
-      }] });
+      if (url.pathname === "/setup/v1/computers/computer-2")
+        return Response.json({ success: true });
+      if (url.pathname === "/setup/v1/computers")
+        return Response.json({
+          computers: [
+            {
+              id: "computer-2",
+              state: "revoked",
+              revokedAt: "2026-10-24T08:13:00.000Z",
+            },
+          ],
+        });
       throw new Error(`Unexpected fixture route ${url.pathname}`);
     },
   });
 
   await client.signIn();
-  await assert.rejects(client.claimComputer("Other laptop"), /model URL did not match the preview origin/);
+  await assert.rejects(
+    client.claimComputer("Other laptop"),
+    /model URL did not match the preview origin/,
+  );
   assert.deepEqual(requests, [
     "/api/auth/sign-in/email",
     "/api/organizations/seeded-org/apps/seeded-pool-app/data/query",
@@ -274,14 +358,19 @@ test("a bare claim field is not accepted and one-time claims are never retried",
       const url = new URL(input.toString());
       if (url.pathname === "/api/auth/sign-in/email") {
         const response = Response.json({ user: { id: "owner-1" } });
-        response.headers.set("set-cookie", "executor-hosted.session_token=session-a; Path=/; HttpOnly");
+        response.headers.set(
+          "set-cookie",
+          "executor-hosted.session_token=session-a; Path=/; HttpOnly",
+        );
         return response;
       }
       if (url.pathname.endsWith("/data/query")) return operation({ href: contextHref("intent") });
       if (url.pathname === "/setup/v1/links") {
         return Response.json({
           computerId: "computer-3",
-          prompt: bareLinkOnly ? "One-time setup is ready." : `Open ${origin}/setup/claim/${token}.`,
+          prompt: bareLinkOnly
+            ? "One-time setup is ready."
+            : `Open ${origin}/setup/claim/${token}.`,
           link: `${origin}/setup/claim/${token}`,
         });
       }
@@ -289,10 +378,18 @@ test("a bare claim field is not accepted and one-time claims are never retried",
         claimRequests += 1;
         return new Response("expired one-time claim", { status: 410 });
       }
-      if (url.pathname === "/setup/v1/computers/computer-3") return Response.json({ success: true });
-      if (url.pathname === "/setup/v1/computers") return Response.json({ computers: [{
-        id: "computer-3", state: "revoked", revokedAt: "2026-10-24T08:13:00.000Z",
-      }] });
+      if (url.pathname === "/setup/v1/computers/computer-3")
+        return Response.json({ success: true });
+      if (url.pathname === "/setup/v1/computers")
+        return Response.json({
+          computers: [
+            {
+              id: "computer-3",
+              state: "revoked",
+              revokedAt: "2026-10-24T08:13:00.000Z",
+            },
+          ],
+        });
       throw new Error(`Unexpected fixture route ${url.pathname}`);
     },
   });
@@ -307,9 +404,26 @@ test("a bare claim field is not accepted and one-time claims are never retried",
 
 test("computer evidence requires the exact active ID and canonical ISO timestamps", async (t) => {
   for (const [label, computer, failure] of [
-    ["wrong ID", { id: "another", state: "active", firstModelRequestAt: null, firstToolCallAt: null }, /exactly the created computer/],
-    ["inactive", { id: "computer-1", state: "issuing", firstModelRequestAt: null, firstToolCallAt: null }, /was not active/],
-    ["non-ISO time", { id: "computer-1", state: "active", firstModelRequestAt: "2026-10-24", firstToolCallAt: null }, /not an ISO timestamp/],
+    [
+      "wrong ID",
+      { id: "another", state: "active", firstModelRequestAt: null, firstToolCallAt: null },
+      /exactly the created computer/,
+    ],
+    [
+      "inactive",
+      { id: "computer-1", state: "issuing", firstModelRequestAt: null, firstToolCallAt: null },
+      /was not active/,
+    ],
+    [
+      "non-ISO time",
+      {
+        id: "computer-1",
+        state: "active",
+        firstModelRequestAt: "2026-10-24",
+        firstToolCallAt: null,
+      },
+      /not an ISO timestamp/,
+    ],
   ] as const) {
     await t.test(label, async () => {
       const client = new PreviewClient(config, {
@@ -317,11 +431,16 @@ test("computer evidence requires the exact active ID and canonical ISO timestamp
           const url = new URL(input.toString());
           if (url.pathname === "/api/auth/sign-in/email") {
             const response = Response.json({ user: { id: "owner-1" } });
-            response.headers.set("set-cookie", "executor-hosted.session_token=session-a; Path=/; HttpOnly");
+            response.headers.set(
+              "set-cookie",
+              "executor-hosted.session_token=session-a; Path=/; HttpOnly",
+            );
             return response;
           }
-          if (url.pathname.endsWith("/data/query")) return operation({ href: contextHref("fresh-intent") });
-          if (url.pathname === "/setup/v1/computers") return Response.json({ computers: [computer] });
+          if (url.pathname.endsWith("/data/query"))
+            return operation({ href: contextHref("fresh-intent") });
+          if (url.pathname === "/setup/v1/computers")
+            return Response.json({ computers: [computer] });
           throw new Error(`Unexpected fixture route ${url.pathname}`);
         },
       });
@@ -354,15 +473,24 @@ test("sign-in retains issued cookies before validating the response and sign-out
       calls.push({ path: url.pathname, init });
       if (url.pathname === "/api/auth/sign-in/email") {
         const response = new Response("malformed sign-in response", { status: 200 });
-        response.headers.set("set-cookie", "executor-hosted.session_token=session-kept; Path=/; HttpOnly");
+        response.headers.set(
+          "set-cookie",
+          "executor-hosted.session_token=session-kept; Path=/; HttpOnly",
+        );
         return response;
       }
       if (url.pathname === "/api/auth/sign-out") {
-        assert.equal(new Headers(init?.headers).get("cookie"), "executor-hosted.session_token=session-kept");
+        assert.equal(
+          new Headers(init?.headers).get("cookie"),
+          "executor-hosted.session_token=session-kept",
+        );
         return Response.json({ success: true });
       }
       if (url.pathname === "/api/auth/get-session") {
-        assert.equal(new Headers(init?.headers).get("cookie"), "executor-hosted.session_token=session-kept");
+        assert.equal(
+          new Headers(init?.headers).get("cookie"),
+          "executor-hosted.session_token=session-kept",
+        );
         return Response.json(null);
       }
       throw new Error(`Unexpected fixture route ${url.pathname}`);
@@ -371,11 +499,10 @@ test("sign-in retains issued cookies before validating the response and sign-out
 
   await assert.rejects(client.signIn(), /Preview sign-in did not return valid JSON/);
   await client.signOut();
-  assert.deepEqual(calls.map(({ path }) => path), [
-    "/api/auth/sign-in/email",
-    "/api/auth/sign-out",
-    "/api/auth/get-session",
-  ]);
+  assert.deepEqual(
+    calls.map(({ path }) => path),
+    ["/api/auth/sign-in/email", "/api/auth/sign-out", "/api/auth/get-session"],
+  );
 });
 
 test("sign-out rejects a malformed HTTP 200 session payload", async () => {
@@ -384,7 +511,10 @@ test("sign-out rejects a malformed HTTP 200 session payload", async () => {
       const path = new URL(input.toString()).pathname;
       if (path === "/api/auth/sign-in/email") {
         const response = Response.json({ user: { id: "owner-1" } });
-        response.headers.set("set-cookie", "executor-hosted.session_token=session-a; Path=/; HttpOnly");
+        response.headers.set(
+          "set-cookie",
+          "executor-hosted.session_token=session-a; Path=/; HttpOnly",
+        );
         return response;
       }
       if (path === "/api/auth/sign-out") return Response.json({ success: true });
@@ -414,9 +544,14 @@ test("revocation probes the native model route and actual MCP search call throug
           seen.push(url.pathname);
           if (url.pathname === probe.path) {
             assert.equal(init?.method, "POST");
-            assert.equal(headers.get(probe.client === "claude" ? "authorization" : "x-api-key"),
-              probe.client === "claude" ? `Bearer ${credentials.modelKey}` : credentials.modelKey);
-            assert.equal(headers.get(probe.client === "claude" ? "x-api-key" : "authorization"), null);
+            assert.equal(
+              headers.get(probe.client === "claude" ? "authorization" : "x-api-key"),
+              probe.client === "claude" ? `Bearer ${credentials.modelKey}` : credentials.modelKey,
+            );
+            assert.equal(
+              headers.get(probe.client === "claude" ? "x-api-key" : "authorization"),
+              null,
+            );
             const body = JSON.parse(String(init?.body));
             assert.equal(body.model, probe.model);
             if (probe.client === "claude") {
@@ -426,7 +561,11 @@ test("revocation probes the native model route and actual MCP search call throug
                 messages: [{ role: "user", content: "Reply with exactly OK." }],
               });
             } else {
-              assert.deepEqual(body, { model: probe.model, input: "Reply with exactly OK.", max_output_tokens: 8 });
+              assert.deepEqual(body, {
+                model: probe.model,
+                input: "Reply with exactly OK.",
+                max_output_tokens: 8,
+              });
             }
             return new Response("private model denial", { status: 403 });
           }
@@ -451,10 +590,13 @@ test("revocation probes the native model route and actual MCP search call throug
 
 test("revocation does not accept a successful model request", async () => {
   const client = new PreviewClient(config, {
-    fetch: async (input) => new URL(input.toString()).pathname === "/v1/responses"
-      ? Response.json({ status: "completed" })
-      : new Response(null, { status: 401 }),
+    fetch: async (input) =>
+      new URL(input.toString()).pathname === "/v1/responses"
+        ? Response.json({ status: "completed" })
+        : new Response(null, { status: 401 }),
   });
-  await assert.rejects(client.verifyRevoked(credentials, { client: "codex", model: "gpt-5.4" }),
-    /Revoked model credential returned HTTP 200/);
+  await assert.rejects(
+    client.verifyRevoked(credentials, { client: "codex", model: "gpt-5.4" }),
+    /Revoked model credential returned HTTP 200/,
+  );
 });
