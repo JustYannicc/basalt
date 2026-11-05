@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Receipt renderer assets are generated from the fully applied protocol and framework source and must pass the pinned generator freshness check."
+    }
+  }
+}
