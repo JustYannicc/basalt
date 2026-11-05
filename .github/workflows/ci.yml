@@ -1091,6 +1091,8 @@ jobs:
           path: |
             .generated/aws-proof/run-*/aws-*.png
             .generated/aws-proof/run-*/failure-summary.json
+            .generated/aws-proof/run-*/phase-context.json
+            .generated/aws-proof/run-*/child-output-tail.json
           if-no-files-found: warn
           include-hidden-files: true
   gitlab-connectors:
