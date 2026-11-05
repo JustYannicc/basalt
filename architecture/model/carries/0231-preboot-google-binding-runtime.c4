@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Outside-service recovery binding proofs switch between exactly two prebooted runtimes and restore the original binding during finalization. A binding switch cannot launch a replacement runtime."
+    }
+  }
+}
