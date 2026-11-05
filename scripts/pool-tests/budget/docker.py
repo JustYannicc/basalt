@@ -37,12 +37,6 @@ if args and args[0] == 'run' and '--name' in args and args[args.index('--name') 
         assert item['Platform'] == 'linux'
         state = {'id': identifier, 'startedMs': started, 'nanoCpus': 250000000, 'memoryBytes': 1073741824,
                  'image': item['Image'], 'boots': []}
-        # The host observer runs outside the constrained container's cgroup.
-        process = subprocess.Popen(['sudo', 'nsenter', '--target', str(item['State']['Pid']), '--net',
-                                    sys.executable, str(Path(__file__).resolve().with_name('pong.py')),
-                                    str(ROOT / 'pong.json'), str(started)],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        state['observerPid'] = process.pid
         save(state)
     sys.stdout.write(run.stdout)
     sys.stderr.write(run.stderr)
@@ -58,10 +52,6 @@ if state_path.exists() and args and args[0] in ['restart', 'rm']:
         if args[0] == 'restart':
             state.setdefault('restartsMs', []).append(time.time() * 1000)
         else:
-            pidfile = ROOT / 'pong.json.pid'
-            if pidfile.exists():
-                subprocess.run(['sudo', 'kill', '-TERM', pidfile.read_text().strip()], check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             state['finishedMs'] = time.time() * 1000
         save(state)
 result = docker(args)
