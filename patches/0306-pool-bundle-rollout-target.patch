@@ -1,21 +1,37 @@
 diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
-index e41cb24..1233831 100644
+index e41cb24..b321946 100644
 --- a/apps/hosted/cloud/src/implementation/default-app.ts
 +++ b/apps/hosted/cloud/src/implementation/default-app.ts
-@@ -20,6 +20,7 @@ export const defaultApp = (
+@@ -17,9 +17,11 @@ export const defaultApp = (
+   document: Effect.Effect<HostedApiDocument>,
+   poolKey: Option.Option<Redacted.Redacted<string>>,
+   catalogFeed?: CatalogAppFeed,
++  /** Where the router serves the pool Worker, as for the other pool backends. */
++  poolOrigin?: string,
  ) =>
    Effect.gen(function* () {
      const initialize = yield* organizationDefaults(executor, origin, document);
 -    const pools = yield* withPoolDefaults(executor, poolKey, initialize);
-+    // The router serves the pool Worker on this origin unless BASALT_POOL_ORIGIN names another.
-+    const pools = yield* withPoolDefaults(executor, poolKey, initialize, origin);
++    const pools = yield* withPoolDefaults(executor, poolKey, initialize, poolOrigin);
      return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
    });
+diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
+index 21ef0fb..7bc6e94 100644
+--- a/apps/hosted/cloud/src/infrastructure/product.ts
++++ b/apps/hosted/cloud/src/infrastructure/product.ts
+@@ -96,6 +96,7 @@ export const cloudProduct = Effect.fn(function* (
+                   client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
+                 },
+               },
++          hosts.browser,
+         ).pipe(Effect.provideService(PoolAppSource, poolSource)),
+       );
+     }).pipe(
 diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
-index aa062a9..8270a2e 100644
+index aa062a9..ef1bc09 100644
 --- a/apps/hosted/server/src/contracts/organization-defaults.ts
 +++ b/apps/hosted/server/src/contracts/organization-defaults.ts
-@@ -31,9 +31,18 @@ export class OrganizationDefaultsPending extends Schema.TaggedError<Organization
+@@ -31,9 +31,24 @@ export class OrganizationDefaultsPending extends Schema.TaggedError<Organization
    {},
  ) {}
  
@@ -24,7 +40,13 @@ index aa062a9..8270a2e 100644
 + * or signing key, is not yet the one the job needs. The job retries; nothing is changed.
 + */
 +export class PoolSetupPending extends Schema.TaggedError<PoolSetupPending>()("PoolSetupPending", {
-+  reason: Schema.Literals(["bundle", "worker-revision", "key-version", "worker-revision-and-key"]),
++  reason: Schema.Literals([
++    "bundle",
++    "worker-unreachable",
++    "worker-revision",
++    "key-version",
++    "worker-revision-and-key",
++  ]),
 +}) {}
 +
  /** Setup preserves safe generation and deploy failures alongside storage failures. */
@@ -110,7 +132,7 @@ index f16764c..eb034b5 100644
            where member.role = 'owner' and "user"."emailVerified" = true`,
        },
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index af5e329..9981f90 100644
+index af5e329..f594e08 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -12,7 +12,10 @@ import { Config, Effect, Option, type Redacted, Schema } from "effect";
@@ -125,24 +147,28 @@ index af5e329..9981f90 100644
  import { ScheduleWakeup } from "../contracts/schedules.ts";
  import { lockAppLinks } from "./app-accounts.ts";
  import { poolAppSetup } from "./resource-lifecycle.ts";
-@@ -455,11 +458,32 @@ export const poolDefaults = (
+@@ -455,11 +458,36 @@ export const poolDefaults = (
        yield* reconcilePool(executor, key, organization, user);
    }).pipe(Effect.mapError(() => new StorageError()));
  
-+/** Whether one of this owner's recorded pools still carries tokens from another signing key. */
-+const recordBehindKey = (
++/**
++ * Whether reconciling one of this owner's recorded pools would deploy this server's bundle or
++ * re-sign its tokens under this server's key.
++ */
++const recordBehind = (
 +  sql: SqlClient.SqlClient,
 +  key: Option.Option<Redacted.Redacted<string>>,
++  bundle: string,
 +  organization: OrganizationId,
 +  owner: string,
 +) =>
 +  Effect.gen(function* () {
-+    if (Option.isNone(key)) return false;
-+    const version = yield* poolTokenKeyVersion(key.value);
++    const version = Option.isNone(key) ? null : yield* poolTokenKeyVersion(key.value);
 +    const rows = yield* sql`select 1 from organization team
 +      cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
 +      where team.id = ${organization} and coalesce(pool.value ->> 'owner', pool.key) = ${owner}
-+        and pool.value ->> 'tokenKeyVersion' is distinct from ${version}`.pipe(
++        and (pool.value ->> 'bundle' is distinct from ${bundle}
++          or (${version}::text is not null and pool.value ->> 'tokenKeyVersion' is distinct from ${version}))`.pipe(
 +      Effect.mapError(() => new StorageError()),
 +    );
 +    return rows.length > 0;
@@ -158,7 +184,7 @@ index af5e329..9981f90 100644
  ) =>
    Effect.gen(function* () {
      const sql = yield* SqlClient.SqlClient;
-@@ -467,11 +491,43 @@ export const withPoolDefaults = (
+@@ -467,11 +495,43 @@ export const withPoolDefaults = (
      return (organization: OrganizationId, user?: Parameters<typeof initialize>[1]) =>
        Effect.gen(function* () {
          const rotationOnly = yield* PoolTokenRotation;
@@ -193,7 +219,7 @@ index af5e329..9981f90 100644
 +          if (
 +            target !== undefined ||
 +            rotationOnly ||
-+            (yield* recordBehindKey(sql, key, organization, user.userId))
++            (yield* recordBehind(sql, key, poolSeed.version, organization, user.userId))
 +          )
 +            yield* awaitPoolWorker(key, poolOrigin);
            yield* poolDefaults(executor, key, organization, user.userId, rotationOnly).pipe(
@@ -204,7 +230,7 @@ index af5e329..9981f90 100644
        });
    });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
-index 1c0aef7..9d79008 100644
+index 1c0aef7..5810706 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
 @@ -2,12 +2,18 @@
@@ -236,7 +262,7 @@ index 1c0aef7..9d79008 100644
 -            reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
 -          }),
 +        : Schema.is(PoolSetupPending)(error)
-+          ? Effect.logDebug("Pool setup is waiting for the deploy to finish", {
++          ? Effect.logInfo("Pool setup is waiting for the deploy to finish", {
 +              job: id,
 +              reason: error.reason,
 +            })
@@ -269,12 +295,13 @@ index 1c0aef7..9d79008 100644
            return;
 diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
 new file mode 100644
-index 0000000..2a84759
+index 0000000..37601a5
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-worker-gate.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,55 @@
 +import { StorageError } from "@executor-js/sdk/core";
 +import { Config, Effect, Option, type Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 +import { PoolSetupPending } from "../contracts/organization-defaults.ts";
 +import { PoolWorkerReport } from "../contracts/pool-defaults.ts";
 +import { poolTokenKeyVersion } from "./pool-account.ts";
@@ -284,20 +311,17 @@ index 0000000..2a84759
 +const releasePath = "/pool/v1/release";
 +const Release = Schema.Struct({ revision: Schema.String, keyVersion: Schema.String });
 +
-+/** Organization setup runs with no HTTP client in its context, so this one read uses fetch. */
-+async function readRelease(origin: string): Promise<unknown> {
-+  const response = await fetch(new URL(releasePath, origin), {
-+    redirect: "error",
-+    signal: AbortSignal.timeout(10_000),
-+  });
-+  if (!response.ok) throw new Error(`Pool release read failed: ${response.status}`);
-+  return response.json();
-+}
-+
 +const fetchRelease = (origin: string) =>
-+  Effect.tryPromise({ try: () => readRelease(origin), catch: () => new StorageError() }).pipe(
-+    Effect.flatMap(Schema.decodeUnknownEffect(Release)),
-+    Effect.mapError(() => new StorageError()),
++  Effect.gen(function* () {
++    const client = yield* HttpClient.HttpClient;
++    const response = yield* client.get(new URL(releasePath, origin).href);
++    if (response.status !== 200) return yield* new StorageError();
++    return yield* HttpClientResponse.schemaBodyJson(Release)(response);
++  }).pipe(
++    Effect.timeout("10 seconds"),
++    Effect.provide(FetchHttpClient.layer),
++    // Before this release's pool Worker is live it may have no release route at all.
++    Effect.catch(() => new PoolSetupPending({ reason: "worker-unreachable" })),
 +  );
 +
 +/**

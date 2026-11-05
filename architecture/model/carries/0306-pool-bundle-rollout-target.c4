@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "A pool bundle rollout job names the bundle and reconcile revision it applies. A server running an earlier one refuses the job before any setup; a job left behind by a later release settles without deploying. Before deploying a bundle or re-signing pool tokens, every member job waits until the pool Worker at the pool origin reports the code revision this server was prepared with and the version of this server's signing key, never key material. Waiting is a retryable pending failure logged at debug, bounded by the provisioning retries. Rollout jobs keep a two-minute margin; token rotation keeps its fifteen-minute delay."
+      constraint "A pool bundle rollout job names the bundle and reconcile revision it applies. A server running an earlier one refuses the job before any setup; a job left behind by a later release settles without deploying. Rollout jobs, token rotation jobs and member jobs whose recorded pool is on another bundle or holds tokens from another signing key wait until the pool Worker, at BASALT_POOL_ORIGIN or else the hosted origin the router serves it on, reports the code revision this server was prepared with and the version of this server's signing key, never key material, before deploying or re-signing. A first install does not wait. Waiting, including on a pool Worker that can't be reached yet, is a retryable pending failure logged with its reason, bounded by the provisioning retries. Rollout jobs keep a two-minute margin; token rotation keeps its fifteen-minute delay."
     }
   }
 }

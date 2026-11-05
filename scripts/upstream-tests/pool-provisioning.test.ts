@@ -75,7 +75,7 @@ const { poolWorkerRevision } = await load(
 );
 const rolloutJob = (bundle: string, suffix: string) =>
   `${poolBundleJobPrefix}${poolRollout(bundle)}:${suffix}`;
-// Pool setup that waits for the deploy reports why at debug level; the tests read that reason.
+// Pool setup that waits for the deploy logs why; the tests read that reason.
 const reasons: string[] = [];
 const withPendingReasons = <A, E, R>(work: Effect.Effect<A, E, R>) =>
   Effect.sync(() => void reasons.splice(0)).pipe(
@@ -812,14 +812,14 @@ test("a release with an unchanged bundle queues no rollout and never redeploys a
           Effect.provideService(OrganizationDefaults, defaults),
         );
       yield* sql`delete from hosted_provisioning`;
-      for (const id of [rolloutJob(poolAppVersion, "first"), rolloutJob(poolAppVersion, "again")]) {
-        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
-          values (${id}, 'member', ${organization}, 'person-a')`;
-        const before = yield* sql`select active_deployment from executor_apps`;
-        yield* run(id);
-        if (before.length)
-          assert.deepEqual(yield* sql`select active_deployment from executor_apps`, before);
-      }
+      const job = (id: string) =>
+        sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+          values (${id}, 'member', ${organization}, 'person-a')`.pipe(Effect.andThen(run(id)));
+      yield* job(rolloutJob(poolAppVersion, "install"));
+      const installed = yield* sql`select active_deployment from executor_apps`;
+      assert.equal(installed.length, 1);
+      yield* job(rolloutJob(poolAppVersion, "again"));
+      assert.deepEqual(yield* sql`select active_deployment from executor_apps`, installed);
     }),
   );
 });
@@ -1044,7 +1044,7 @@ test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the
   }
 });
 
-test("ordinary member jobs ask the pool Worker only when they would re-sign", async () => {
+test("ordinary member jobs ask the pool Worker only when they would deploy or re-sign", async () => {
   await fixture(({ sql, executor }) =>
     Effect.gen(function* () {
       let asked = 0;
@@ -1072,10 +1072,17 @@ test("ordinary member jobs ask the pool Worker only when they would re-sign", as
       assert.equal((yield* member(key, "install"))._tag, "Success");
       assert.equal((yield* member(key, "current"))._tag, "Success");
       assert.equal(asked, 0);
+      // A pool on an earlier bundle would be redeployed, so it waits.
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
+      assert.equal((yield* member(key, "old-bundle"))._tag, "Failure");
+      assert.equal(asked, 1);
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], ${JSON.stringify(poolAppVersion)}::jsonb)::text`;
       // A pool whose tokens are from another key would be re-signed, so it waits.
       const rotated = Redacted.make("cd".repeat(32));
       assert.equal((yield* member(rotated, "behind"))._tag, "Failure");
-      assert.equal(asked, 1);
+      assert.equal(asked, 2);
     }),
   );
 });

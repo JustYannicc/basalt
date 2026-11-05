@@ -1,5 +1,5 @@
 import { tokenKeyVersion } from "./token.ts";
-import { poolWorkerRevision } from "./worker-revision.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 
 export const poolReleasePath = "/pool/v1/release";
 
