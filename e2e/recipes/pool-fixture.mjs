@@ -4,10 +4,13 @@ import { once } from "node:events";
 import { PoolControl } from "../../src/pool/attribution.ts";
 import { HomeClient } from "../../src/pool/control.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
+import { NativeMemberships } from "../../src/pool/membership.ts";
+import { readNativeMembership } from "../../src/pool/membership-read.ts";
+import { HomeMembership } from "../../src/pool/home-membership.ts";
 import { Computers } from "../../src/pool/computers.ts";
 
 /** The production control API with only its external Home management service simulated. */
-export async function startPoolFixture(signingKey) {
+export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   let clockOffset = 0;
   const now = () => Date.now() + clockOffset;
   const resets = resetProvider(now);
@@ -90,6 +93,16 @@ export async function startPoolFixture(signingKey) {
       }
       return Response.json({ files: [...files.values()] });
     }
+    if (route === "/channel-groups" && init?.method === "POST") {
+      const group = { id: ++sequence, channel_name: JSON.parse(init.body).channel_name };
+      groups.set(group.channel_name.replace("signalbox-pool-", ""), group);
+      return Response.json({ channel_group: group });
+    }
+    if (route === "/channel-group-details" && init?.method === "POST") {
+      const member = { id: ++sequence, ...JSON.parse(init.body) };
+      members.set(member.id, member);
+      return Response.json({ channel_group_detail: member });
+    }
     if (route === "/channel-groups") return Response.json({ channel_groups: [...groups.values()] });
     if (route === "/channel-group-details") {
       const group = Number(url.searchParams.get("channel_group_id"));
@@ -136,6 +149,36 @@ export async function startPoolFixture(signingKey) {
     signingKey,
     home: new ComputerHome(new HomeClient(home)),
   });
+  let productOrigin;
+  const homeMembership = new HomeMembership(new HomeClient(home));
+  const memberships = new NativeMemberships({
+    storage,
+    signingKey,
+    read: (pool, organization) => {
+      if (!productOrigin) throw new Error("The fixture has no product origin");
+      return readNativeMembership(
+        { fetch: (input, init) => fetch(new URL(new URL(input).pathname, productOrigin), init) },
+        signingKey,
+        pool,
+        organization,
+      );
+    },
+    actual: (pool) => homeMembership.actual(pool),
+    reconcile: (pool, accounts) => homeMembership.reconcile(pool, accounts),
+    install: async () => {},
+    abort: () => {},
+    invalidateView: (pool) => control.invalidateViews(pool),
+    schedule: async (at) => {
+      const timer = setTimeout(
+        () => {
+          timers.delete(timer);
+          void memberships.tick();
+        },
+        Math.max(0, at - now()),
+      );
+      timers.add(timer);
+    },
+  });
   const server = createServer(async (request, response) => {
     try {
       const chunks = [];
@@ -146,6 +189,41 @@ export async function startPoolFixture(signingKey) {
         response
           .writeHead(200, { "Content-Type": "application/json" })
           .end(JSON.stringify({ receipt: `synthetic-${sends.length}` }));
+        return;
+      }
+      if (request.method === "GET" && request.url === "/catalog/index.json") {
+        response.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            version: 1,
+            apps: catalog.map((source) => ({
+              id: source.package,
+              package: source.package,
+              name: source.package === "provider-openai" ? "OpenAI" : "Anthropic",
+              description: "Synthetic provider app source",
+              auth: [],
+              icons: [],
+              source: `apps/${source.package}.json`,
+            })),
+          }),
+        );
+        return;
+      }
+      const source = catalog.find(
+        (source) => request.url === `/catalog/apps/${source.package}.json`,
+      );
+      if (request.method === "GET" && source) {
+        response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(source));
+        return;
+      }
+      if (request.method === "POST" && request.url === "/pool/v1/membership") {
+        await memberships.reserve(
+          new Request(`http://127.0.0.1${request.url}`, {
+            method: "POST",
+            headers: request.headers,
+            body,
+          }),
+        );
+        response.writeHead(200, { "Content-Type": "application/json" }).end("null");
         return;
       }
       const access = request.url === "/pool/v1/access";
@@ -177,6 +255,22 @@ export async function startPoolFixture(signingKey) {
       acquisition = { pool, id, provider };
     },
     origin: `http://127.0.0.1:${server.address().port}`,
+    async reconcile(pool) {
+      await memberships.refresh(pool);
+      console.error(
+        "RESET_MEMBERSHIP",
+        JSON.stringify({
+          state: values.get("native-pool-memberships-v1"),
+          actual: await homeMembership.actual(pool),
+          groups: [...groups.values()],
+          members: [...members.values()],
+          files: [...files.keys()],
+        }),
+      );
+    },
+    product(origin) {
+      productOrigin = origin;
+    },
     sends,
     accessCalls,
     resets,
@@ -203,18 +297,20 @@ export async function startPoolFixture(signingKey) {
         attemptedAt = Date.now() - 10,
       } = {},
     ) {
-      let group = groups.get(pool);
-      if (!group) {
-        group = { id: ++sequence, channel_name: `signalbox-pool-${pool}` };
-        groups.set(pool, group);
-      }
-      if (
-        ![...members.values()].some(
-          (row) => row.auth_id === id && row.channel_group_id === group.id,
-        )
-      ) {
-        const member = { id: ++sequence, channel_group_id: group.id, auth_id: id };
-        members.set(member.id, member);
+      if (pool !== null) {
+        let group = groups.get(pool);
+        if (!group) {
+          group = { id: ++sequence, channel_name: `signalbox-pool-${pool}` };
+          groups.set(pool, group);
+        }
+        if (
+          ![...members.values()].some(
+            (row) => row.auth_id === id && row.channel_group_id === group.id,
+          )
+        ) {
+          const member = { id: ++sequence, channel_group_id: group.id, auth_id: id };
+          members.set(member.id, member);
+        }
       }
       files.set(id, { id, provider: "codex", disabled: false });
       const at = new Date(attemptedAt).toISOString();
@@ -266,8 +362,8 @@ export async function startPoolFixture(signingKey) {
       for (const removal of removals.values()) removal.release();
       removals.clear();
       for (const timer of timers) {
-        clearTimeout(timer.id);
-        timer.reject(new Error("Synthetic collection closed"));
+        clearTimeout(timer.id ?? timer);
+        timer.reject?.(new Error("Synthetic collection closed"));
       }
       timers.clear();
       collections.clear();

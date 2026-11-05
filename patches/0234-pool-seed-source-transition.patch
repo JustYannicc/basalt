@@ -1,0 +1,285 @@
+diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-native-upgrade.spec.ts
+--- a/e2e/tests/pool-seed-native-upgrade.spec.ts
++++ b/e2e/tests/pool-seed-native-upgrade.spec.ts
+@@ -32,9 +32,19 @@
+         const files = yield* fs
+           .readFileString(path.join(directory, bundles[0]!))
+           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Files))));
+-        const previous = files.map((file) =>
+-          file.path === "requirements.ts" ? { ...file, content: legacyRequirements } : file,
+-        );
++        // The current bundle no longer contains the released acquisition hooks or their imports.
++        const retained = yield* fs
++          .readFileString(path.resolve("e2e/fixtures/pool-seed-legacy.json"))
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Files))));
++        const replaced = new Set(retained.map((file) => file.path));
++        const previous = [
++          ...files
++            .filter((file) => !replaced.has(file.path))
++            .map((file) =>
++              file.path === "requirements.ts" ? { ...file, content: legacyRequirements } : file,
++            ),
++          ...retained,
++        ];
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const apps: string[] = [],
+           accounts: string[] = [];
+@@ -66,8 +76,14 @@
+             apps.push(app.id);
+             return app;
+           });
+-        const old = yield* deploy("Retained pool seed", previous),
+-          appPath = `${prefix}/apps/${old.id}`;
++        const fresh = yield* deploy("Retained pool seed", files);
++        const appPath = `${prefix}/apps/${fresh.id}`;
++        expect(fresh.requirements.accounts.subscriptions).toBeUndefined();
++        const legacy = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, {
++          files: previous,
++        });
++        expect(legacy.status, JSON.stringify(legacy.body)).toBe(200);
++        const old = (yield* body(Schema.Struct({ app: App }), legacy)).app;
+         expect(Object.keys(old.requirements.accounts).sort()).toEqual(["pool", "subscriptions"]);
+         const viewer = yield* body(
+           Schema.Struct({ userId: Schema.String }),
+@@ -107,38 +123,58 @@
+             },
+           ]);
+         }
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) || $1::jsonb)::text where id = $2`,
++            params: [
++              JSON.stringify({
++                [old.id]: {
++                  app: old.id,
++                  version: old.activeVersion,
++                  bundle: "retained-seed-source",
++                  owner: viewer.userId,
++                },
++              }),
++              actors.organization.id,
++            ],
++          },
++        ]);
+         yield* serverControl("start");
+         const links = () => api.request(actors.owner, "GET", `${appPath}/accounts/app`);
++        const readApp = () =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "GET", appPath);
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return yield* body(App, response);
++          });
+         const before = yield* links();
+         expect(before.status).toBe(200);
+         for (const account of accounts) expect(JSON.stringify(before.body)).toContain(account);
+-        const upgraded = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, { files });
+-        expect(upgraded.status, JSON.stringify(upgraded.body)).toBe(200);
+-        const current = (yield* body(Schema.Struct({ app: App }), upgraded)).app;
+-        expect(Object.keys(current.requirements.accounts).sort()).toEqual([
+-          "anthropic",
+-          "openai",
+-          "pool",
+-          "subscriptions",
+-        ]);
+-        expect(current.activeVersion).not.toBe(old.activeVersion);
+-        for (const slot of ["pool", "subscriptions"])
+-          expect(current.requirements.accounts[slot]).toEqual(old.requirements.accounts[slot]);
+-        for (const lab of ["openai", "anthropic"]) {
+-          const source = yield* fs
+-            .readFileString(path.resolve(`../src/catalog/provider-apps/${lab}.json`))
+-            .pipe(
+-              Effect.flatMap(
+-                Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ files: Files }))),
+-              ),
+-            );
+-          const providerApp = yield* deploy(`Canonical ${lab}`, source.files);
+-          expect(current.requirements.accounts[lab]).toMatchObject({
+-            provider: providerApp.requirements.accounts[lab]!.provider,
+-            cardinality: "many",
+-            contributed: true,
+-          });
+-        }
++        const policy = yield* api.request(actors.owner, "GET", `${appPath}/accounts/methods`);
++        expect(policy.status, JSON.stringify(policy.body)).toBe(200);
++        expect(policy.body).toMatchObject({
++          connections: expect.arrayContaining([
++            {
++              requirement: "subscriptions",
++              canConnect: false,
++              canSelect: false,
++              importMethods: [],
++              destination: expect.anything(),
++            },
++          ]),
++        });
++        const refused = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, { files });
++        expect(refused.status, JSON.stringify(refused.body)).toBe(500);
++        const activate = () =>
++          api.request(actors.owner, "POST", `${appPath}/activate`, {
++            version: fresh.activeVersion,
++            expectedVersion: old.activeVersion,
++          });
++        const blocked = yield* activate();
++        expect(blocked.status, JSON.stringify(blocked.body)).toBe(500);
++        const held = yield* readApp();
++        expect(held.activeVersion).toBe(old.activeVersion);
++        expect(held.requirements).toEqual(old.requirements);
+         const after = yield* links();
+         expect(after.status).toBe(200);
+         expect(after.body).toEqual(before.body);
+@@ -157,10 +193,54 @@
+               }),
+             ]),
+           });
+-          expect(
+-            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[index]}`))
+-              .status,
+-          ).toBe(200);
++        }
++        const unlinked = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${appPath}/accounts/app/subscriptions/${accounts[1]}`,
++        );
++        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++        const remaining = yield* links();
++        expect(remaining.status).toBe(200);
++        expect(remaining.body).toEqual(
++          expect.not.arrayContaining([expect.objectContaining({ requirement: "subscriptions" })]),
++        );
++        expect(remaining.body).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({
++              requirement: "pool",
++              account: expect.objectContaining({ id: accounts[0] }),
++            }),
++          ]),
++        );
++        const activated = yield* activate();
++        expect(activated.status, JSON.stringify(activated.body)).toBe(200);
++        const current = yield* readApp();
++        expect(current.activeVersion).toBe(fresh.activeVersion);
++        expect(current.requirements).toEqual(fresh.requirements);
++        expect(current.requirements.accounts.subscriptions).toBeUndefined();
++        expect(current.requirements.accounts.pool).toEqual(old.requirements.accounts.pool);
++        for (const lab of ["openai", "anthropic"]) {
++          const source = yield* fs
++            .readFileString(path.resolve(`../src/catalog/provider-apps/${lab}.json`))
++            .pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ files: Files }))),
++              ),
++            );
++          const providerApp = yield* deploy(`Canonical ${lab}`, source.files);
++          expect(current.requirements.accounts[lab]).toMatchObject({
++            provider: providerApp.requirements.accounts[lab]!.provider,
++            cardinality: "many",
++            contributed: true,
++          });
++        }
++        const finalLinks = yield* links();
++        expect(finalLinks.status).toBe(200);
++        expect(finalLinks.body).toEqual(remaining.body);
++        for (const account of accounts) {
++          const saved = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`);
++          expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+         }
+       }),
+     ),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8853,7 +8853,7 @@
+     fixtures: "actors",
+     legacyStorage: true,
+     file: "pool-seed-native-upgrade.spec.ts",
+-    title: "pool seed upgrades add canonical native slots and preserve existing account links",
++    title: "pool seed upgrades add canonical native slots only after retained links are removed",
+     targets: {
+       "self-host": scheduled,
+       local: na("Uses hosted organization account links."),
+diff --git a/e2e/fixtures/pool-seed-legacy.json b/e2e/fixtures/pool-seed-legacy.json
+new file mode 100644
+--- /dev/null
++++ b/e2e/fixtures/pool-seed-legacy.json
+@@ -0,0 +1,22 @@
++[
++  {
++    "path": "index.ts",
++    "content": "import {\n  defineApp,\n  boolean,\n  json,\n  mutation,\n  number,\n  object,\n  query,\n  type ConnectContext,\n  type QueryContext,\n  router,\n  string,\n} from \"apps\";\nimport { never } from \"apps/operations/approval\";\nimport {\n  type LoginFileAdded,\n  type PoolView,\n  type SignInStarted,\n  type SignInStatus,\n  type UsageSummary,\n} from \"./contract.ts\";\nimport { checkSubscription } from \"./account-observations.ts\";\nimport { providers } from \"./providers.ts\";\nimport { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from \"./sign-in.ts\";\nimport { requirements } from \"./requirements.ts\";\nimport { control, type Result } from \"./control.ts\";\nexport type { Result } from \"./control.ts\";\nimport { refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset } from \"./account-actions.ts\";\nimport type { Computer, PoolChoice } from \"./ui/computer-types.ts\";\n\ntype Context = QueryContext<typeof requirements>;\ntype Caller = Context | ConnectContext<typeof requirements>;\n\nexport const view = query(\n  { description: \"This pool's accounts with their limit windows, reading freshness and banked resets, and the providers it can connect. Set fresh to await revalidation instead of returning the retained view.\", input: object({ fresh: boolean().optional() }) },\n  async (ctx: Context, { fresh }): Promise<Result<PoolView>> => {\n    const result = await control<PoolView>(ctx, fresh ? \"/pool?fresh=true\" : \"/pool\");\n    if (!result.ok) return result;\n    const linked = new Set(ctx.app.accounts.subscriptions.map((account) => account.fields.ref));\n    const accounts = result.value.accounts.map((account) => ({ ...account, inAccounts: linked.has(account.id) }));\n    return { ok: true, value: { ...result.value, accounts } };\n  },\n);\n\nexport const usage = query(\n  {\n    description: \"Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model, per UTC day and per serving account. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, and whether each provider needs an account added or removed. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.\",\n    input: object({ days: number().optional() }),\n  },\n  async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),\n);\n\nexport const addLoginFile = mutation(\n  {\n    description: \"Connect a subscription from a login file the pool backend exported\",\n    approval: never(),\n    input: object({ file: json() }),\n  },\n  async (ctx: Context, { file }) => control<LoginFileAdded>(ctx, \"/login-files\", { method: \"POST\", body: file }),\n);\n\nexport const removeAccount = mutation(\n  { description: \"Remove an account from this pool\", approval: never(), input: object({ id: string({ minLength: 1 }) }) },\n  async (ctx: Context, { id }) => control<null>(ctx, `/accounts/${encodeURIComponent(id)}`, { method: \"DELETE\" }),\n);\n\nexport interface ComputerContext {\n  readonly href: string;\n  readonly computers: Computer[];\n  readonly pools?: PoolChoice[];\n  readonly undoPrompt: string;\n  /** Native app settings for a caller who can manage this pool. */\n  readonly shareHref?: string;\n  /** The host owns the pool's single saved-account list for every authorized caller. */\n  readonly accountsHref?: string;\n}\n\nexport const computerContext = query(\n  {\n    description: \"Your computers in every pool you use, the pools you can pick for each, and a short-lived setup `href`. If you can manage this pool, `shareHref` opens native app Settings for sharing, per-person usage and caps.\",\n    input: object({}),\n  },\n  async (ctx: Context) => control<ComputerContext>(ctx, \"/setup-context\"),\n);\n\n/** A control call that must succeed; the Connect dialog shows the pool's message when it doesn't. */\nfunction unwrap<T>(result: Result<T>): T {\n  if (!result.ok) throw new Error(result.message);\n  return result.value;\n}\n\n/** A step's answer: the pool refusing or failing ends the sign-in with its message. */\nfunction step<T>(result: Result<T>, read: (value: T) => ConnectState): ConnectState {\n  return result.ok ? read(result.value) : { state: \"failed\", message: result.message };\n}\ntype ConnectState =\n  | ReturnType<typeof signedIn>\n  | { state: \"connected\"; ref: string; accountInfo: AccountIdentity };\n\n/** Name a new subscription after the pool's own label for it, with its provider's logo. */\nconst identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>\n  withIdentity(state, () => control<PoolView>(ctx, \"/pool\"), providers);\n\nconst sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;\n\nexport default defineApp(requirements, {\n  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, resetAttempt, useReset }),\n  // The pool Worker refuses every step unless the caller owns the pool.\n  connect: {\n    subscriptions: {\n      start: async (ctx, { method }) => {\n        if (method === loginFileMethod) return prompt.loginFile;\n        return prompt.signIn(unwrap(await control<SignInStarted>(ctx, \"/sign-ins\", { method: \"POST\", body: { provider: method } })));\n      },\n      status: async (ctx, { method, session }) =>\n        method === loginFileMethod\n          ? { state: \"waiting\" as const }\n          : identified(ctx, step(await control<SignInStatus>(ctx, `/sign-ins/status${sessionPath(session)}`), signedIn)),\n      submit: async (ctx, { method, session, value: pasted }) => {\n        if (method !== loginFileMethod)\n          return identified(ctx, step(await control<SignInStatus>(ctx, \"/sign-ins/callback\", { method: \"POST\", body: { session, redirectUrl: pasted } }), signedIn));\n        let file: unknown;\n        try {\n          file = JSON.parse(pasted);\n        } catch {\n          return { state: \"failed\" as const, message: \"That isn't a login file. Paste the whole file's contents.\" };\n        }\n        return identified(ctx, step(await control<LoginFileAdded>(ctx, \"/login-files\", { method: \"POST\", body: file }), ({ accountId }) => ({\n          state: \"connected\",\n          ref: accountId,\n        })));\n      },\n      cancel: async (ctx, { method, session }) => {\n        // A sign-in that already ended has nothing to cancel.\n        if (method !== loginFileMethod) await control<null>(ctx, `/sign-ins${sessionPath(session)}`, { method: \"DELETE\" });\n      },\n      check: (ctx, { ref }) => checkSubscription(ctx, ref),\n      // Unlinking or deleting the account removes the subscription from the pool and its backend.\n      remove: async (ctx, { ref }) => {\n        const result = await control<null>(ctx, `/accounts/${encodeURIComponent(ref)}`, { method: \"DELETE\" });\n        if (!result.ok && result.error !== \"not_found\") throw new Error(result.message);\n      },\n    },\n  },\n});\n"
++  },
++  {
++    "path": "sign-in.ts",
++    "content": "import type { Account, SignInStarted, SignInStatus } from \"./contract.ts\";\n\nconst loopback = new Set([\"localhost\", \"127.0.0.1\", \"[::1]\"]);\n\n/** Whether a pasted address is the local page a provider's sign-in ended on. */\nexport function isLoopbackUrl(value: string): boolean {\n  try {\n    const url = new URL(value);\n    return (url.protocol === \"http:\" || url.protocol === \"https:\") && loopback.has(url.hostname);\n  } catch {\n    return false;\n  }\n}\n\n/** The local address a sign-in will end on, read from the sign-in link's own redirect. */\nexport function callbackOrigin(signInUrl: string): string | null {\n  try {\n    const redirect = new URL(signInUrl).searchParams.get(\"redirect_uri\");\n    if (!redirect || !isLoopbackUrl(redirect)) return null;\n    return new URL(redirect).origin;\n  } catch {\n    return null;\n  }\n}\n\n/** The Connect dialog's method for pasting a login file; backend provider ids are lowercase. */\nexport const loginFileMethod = \"loginFile\";\n\n/** What the Connect dialog shows for each sign-in the backend starts. */\nexport const prompt = {\n  signIn(started: SignInStarted) {\n    const origin = callbackOrigin(started.url);\n    return {\n      session: started.session,\n      url: started.url,\n      ...(started.userCode ? { code: started.userCode } : {}),\n      ...(started.flow === \"callback\"\n        ? {\n            paste: {\n              label: `The tab ends on a page that won't load, at a local address${origin ? ` starting with ${origin}` : \"\"}. That's expected. Copy the whole address and paste it here.`,\n              ...(origin ? { placeholder: `${origin}/\u2026` } : {}),\n            },\n          }\n        : {}),\n      expiresAt: Date.parse(started.expiresAt),\n    };\n  },\n  loginFile: {\n    session: loginFileMethod,\n    message: \"Paste a login file the pool backend exported. It connects that subscription without signing in again.\",\n    paste: { label: \"Login file contents\", placeholder: \"{ \u2026 }\" },\n  },\n};\n\n/** The dialog's view of a sign-in, with the pool account it added as the account's reference. */\nexport function signedIn(status: SignInStatus) {\n  if (status.status === \"waiting\") return { state: \"waiting\" as const };\n  if (status.status === \"failed\") return { state: \"failed\" as const, message: status.message };\n  if (status.accountId === null)\n    return {\n      state: \"failed\" as const,\n      message: \"The subscription connected, but the pool couldn't tell which account it was. It shows on the pool's page; remove it there and connect it again.\",\n    };\n  return { state: \"connected\" as const, ref: status.accountId };\n}\n\n/** The identity a connected subscription reports, the way a connected Gmail shows its address. */\nexport function identityOf(\n  account: Pick<Account, \"label\" | \"provider\">,\n  sites: readonly { readonly id: string; readonly site?: string }[],\n) {\n  const label = account.label.trim().slice(0, 255);\n  const site = sites.find((provider) => provider.id === account.provider)?.site;\n  return {\n    ...(label ? { displayName: label } : {}),\n    ...(/^[^\\s@]+@[^\\s@]+$/.test(label) ? { email: label } : {}),\n    // The same logo service the dashboard uses for provider icons.\n    ...(site ? { avatarUrl: `https://integrations.sh/logo/${site}?sz=64` } : {}),\n  };\n}\n\nexport type AccountIdentity = ReturnType<typeof identityOf>;\n\n/** Identity is optional, so its lookup gets a short slice of the connect step and never fails it. */\nexport const identityLookupMs = 3_000;\n\n/**\n * Add the account's identity to a connected sign-in. Any failure of the lookup, including a\n * malformed or late answer, keeps the connected result as it was.\n */\nexport async function withIdentity<S extends { readonly state: string; readonly ref?: string }>(\n  state: S,\n  lookup: () => Promise<{ readonly ok: boolean; readonly value?: { readonly accounts?: readonly Account[] } }>,\n  sites: readonly { readonly id: string; readonly site?: string }[],\n  timeoutMs = identityLookupMs,\n): Promise<S | (S & { accountInfo: AccountIdentity })> {\n  if (state.state !== \"connected\") return state;\n  const late = new Promise<S>((resolve) =>\n    AbortSignal.timeout(timeoutMs).addEventListener(\"abort\", () => resolve(state), { once: true }),\n  );\n  const found = Promise.resolve()\n    .then(lookup)\n    .then((view) => {\n      const account = view.ok ? view.value?.accounts?.find((candidate) => candidate.id === state.ref) : undefined;\n      return account === undefined ? state : { ...state, accountInfo: identityOf(account, sites) };\n    })\n    .catch(() => state);\n  return await Promise.race([found, late]);\n}\n"
++  },
++  {
++    "path": "providers.ts",
++    "content": "export const providers: readonly { readonly id: string; readonly name: string; readonly site?: string }[] = [{\"id\":\"claude\",\"name\":\"Claude\",\"site\":\"claude.ai\"},{\"id\":\"codex\",\"name\":\"ChatGPT\",\"site\":\"chatgpt.com\"},{\"id\":\"antigravity\",\"name\":\"Antigravity\",\"site\":\"antigravity.google\"},{\"id\":\"kimi\",\"name\":\"Kimi\",\"site\":\"kimi.com\"},{\"id\":\"xai\",\"name\":\"Grok\",\"site\":\"x.ai\"},{\"id\":\"devin\",\"name\":\"Devin\",\"site\":\"devin.ai\"},{\"id\":\"meta\",\"name\":\"Meta\",\"site\":\"meta.ai\"}];\n"
++  },
++  {
++    "path": "account-observations.ts",
++    "content": "import type { ConnectContext, QueryContext } from \"apps\";\nimport type { AccountObservationResponse, Account } from \"./contract.ts\";\nimport { control } from \"./control.ts\";\nimport { accountStatus, checkFailure } from \"./account-status.ts\";\nimport { subscriptionFailure } from \"./account-health.ts\";\nimport { providers } from \"./providers.ts\";\nimport type { requirements } from \"./requirements.ts\";\nimport { ProviderError } from \"apps\";\n\ntype Caller = QueryContext<typeof requirements> | ConnectContext<typeof requirements>;\n\n/** Owner reads include allowance. Existing member health checks keep their narrower route. */\nexport async function checkSubscription(ctx: Caller, ref: string) {\n  const path = `/accounts/${encodeURIComponent(ref)}`;\n  const observed = await control<AccountObservationResponse>(ctx, `${path}/observations`);\n  if (observed.ok) {\n    const failure = subscriptionFailure(observed.value.account);\n    if (failure) throw new ProviderError({ reason: failure });\n    return {\n      ...accountStatus(observed.value.account, providers),\n      ...(observed.value.observation === null ? {} : { observation: observed.value.observation }),\n    };\n  }\n  if (observed.error !== \"not_owner\") throw new ProviderError({ reason: checkFailure(observed.error) });\n  const checked = await control<Account>(ctx, `${path}/collect`, { method: \"POST\" });\n  if (!checked.ok) throw new ProviderError({ reason: checkFailure(checked.error) });\n  const failure = subscriptionFailure(checked.value);\n  if (failure) throw new ProviderError({ reason: failure });\n  return accountStatus(checked.value, providers);\n}\n"
++  },
++  {
++    "path": "account-status.ts",
++    "content": "// What the Accounts tab shows under a subscription: its plan, anything stopping the pool from using it,\n// and how much of each usage window is left. Read from the pool's own view, never from the provider.\n// Wording and window order match the pool's own screen.\nimport type { Account, ControlErrorCode, UsageWindow } from \"./contract.ts\";\nimport { identityOf } from \"./sign-in.ts\";\nimport { clamp, orderedWindows } from \"./ui/usage.ts\";\n\ntype Tone = \"neutral\" | \"good\" | \"warning\" | \"bad\";\n\n// The host's check pill already says a healthy account works.\nconst states: Record<Account[\"state\"], { readonly label: string; readonly tone: Tone } | null> = {\n  active: null,\n  disabled: { label: \"Paused\", tone: \"warning\" },\n  unavailable: { label: \"Unavailable\", tone: \"warning\" },\n  error: { label: \"Needs attention\", tone: \"bad\" },\n};\n\nconst text = (value: string, max: number) => value.trim().slice(0, max);\n\n/** The host accepts only a strict ISO instant; anything else is left out rather than failing the check. */\nfunction instant(value: string | null): string | undefined {\n  if (value === null) return undefined;\n  const time = Date.parse(value);\n  if (!Number.isFinite(time)) return undefined;\n  const iso = new Date(time).toISOString();\n  // Years past 9999 print with a sign and six digits, which the host refuses.\n  return /^\\d{4}-/.test(iso) ? iso : undefined;\n}\n\nfunction meter(window: UsageWindow) {\n  const resetsAt = instant(window.resetAt);\n  const remaining = window.remainingRatio;\n  return {\n    label: text(window.label, 64) || \"Usage\",\n    remaining: remaining === null || !Number.isFinite(remaining) ? null : clamp(remaining),\n    ...(resetsAt === undefined ? {} : { resetsAt }),\n  };\n}\n\nfunction resetText(account: Account, now: Date): string | null {\n  const resets = account.bankedResets;\n  if (!resets?.available) return null;\n  const expiry = resets.nextExpiresAt === null ? null : instant(resets.nextExpiresAt);\n  if (!expiry) return `${resets.available} banked reset${resets.available === 1 ? \"\" : \"s\"}`;\n  const days = Math.max(0, Math.ceil((Date.parse(expiry) - now.getTime()) / 86_400_000));\n  return `\u21bb ${resets.available} banked \u00b7 next expires in ${days} day${days === 1 ? \"\" : \"s\"}`;\n}\n\n/** The account check result for one pool account, within the host's display limits. */\nexport function accountStatus(account: Account, sites: readonly { readonly id: string; readonly site?: string }[], now = new Date()) {\n  const plan = account.plan === null ? \"\" : text(account.plan, 64);\n  // Like the pool screen, a note shows only when something is wrong.\n  const message = account.message === null || account.state === \"active\" ? \"\" : text(account.message, 128);\n  const windows = orderedWindows(account.windows).slice(0, 4);\n  const reset = resetText(account, now);\n  const state = states[account.state];\n  const resetMeter = windows.findIndex((window) => window.windowSeconds === 18_000);\n  const badges = [\n    ...(plan ? [{ label: plan, tone: \"neutral\" as const }] : []),\n    ...(state ? [state] : []),\n    ...(account.readingFailed ? [{ label: \"Usage reading failed\", tone: \"warning\" as const }] : []),\n    ...(reset && resetMeter < 0 ? [{ label: text(reset, 96), tone: \"neutral\" as const }] : []),\n  ].slice(0, 8);\n  const meters = windows.map((window, index) => ({\n    ...meter(window),\n    ...(reset && index === resetMeter ? { detail: text(reset, 256) } : {}),\n  }));\n  return {\n    accountInfo: identityOf(account, sites),\n    status: {\n      badges,\n      meters,\n      stats: message ? [{ label: \"Note\", value: message }] : [],\n    },\n  };\n}\n\n/** How a pool refusal reads to the host's account check. */\nexport function checkFailure(error: ControlErrorCode | \"missing\") {\n  switch (error) {\n    case \"not_found\":\n    case \"missing\":\n      return \"rejected\" as const;\n    case \"not_owner\":\n      return \"forbidden\" as const;\n    case \"busy\":\n      return \"rate_limited\" as const;\n    default:\n      return \"unavailable\" as const;\n  }\n}\n"
++  }
++]
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -31,7 +31,7 @@
+   ),
+   accounts: Schema.optionalKey(Schema.Array(AccountId).check(Schema.isMaxLength(500))),
+   sources: Schema.optionalKey(
+-      Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
++    Schema.Array(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))).check(
+       Schema.isMaxLength(500),
+     ),
+   ),
+@@ -154,6 +154,7 @@
+   next: Schema.NullOr(Schema.String),
+ });
+ export const LastSuccessAtInput = Schema.Struct({
++  session: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-fA-F-]{36}$/u))),
+   accounts: Schema.Array(AccountId).check(Schema.isMaxLength(500)),
+ });
+ export type LastSuccessAtInput = typeof LastSuccessAtInput.Type;
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+index c03bee3..e0a4c3f 100644
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -36,6 +36,7 @@ const NativePoolAccountRow = Schema.Struct({
+   owner: OwnerId,
+   requirementScope: Schema.NullOr(Schema.String),
+   requirementProvider: Schema.NullOr(ProviderId),
++  requirementProvisioned: Schema.Boolean,
+ });
+ 
+ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type) =>
+@@ -98,7 +99,10 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
+             from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider"
++            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
++          coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
++              @> '{"type":"secrets","provisioned":true}'::jsonb
++            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
+         from ${yield* usableAppLinks(sql, [pool])}
+           and not exists (select 1 from executor_account_acquisitions retiring
+             where retiring.account = a.id and retiring.removal is not null)
+@@ -109,7 +113,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+       const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
+       const accounts = yield* Effect.forEach(linked, (row) =>
+         Effect.gen(function* () {
+-          if (row.requirementScope !== "app" || row.requirementProvider !== row.provider)
++          // Only the provisioned control token is outside Home; a model slot may also be named pool.
++          if (
++            (row.requirement === "pool" && row.method === "token" && row.requirementProvisioned) ||
++            row.requirementScope !== "app" ||
++            row.requirementProvider !== row.provider
++          )
+             return undefined;
+           const reference = yield* homeReference(executor, row);
+           return {

@@ -51,8 +51,7 @@ jobs:
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # Temporary same-repository proof; remove after the measured PR run.
-          BOAT_JOBS: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/boat-suite-runtime') && 'production-ops,production-ops-migrations,production-ops-identity,host-managed-accounts,contributed-accounts,oauth-account-regressions,account-acquisition,pool-account-recovery,compiler-diagnostics' || vars.BASALT_CI_BOAT_JOBS }}
+          BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'batch/') || contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update') }}
         run: |
           if [ "$FULL_SUITE" = true ]; then
@@ -539,7 +538,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_POOL_SETUP: "1"
-        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues' --manual-cron --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud pool account recovery queues|^Cloud default reconciliation retains' --manual-cron --workers 1
       - name: Verify atomic pool setup with ordinary cron triggers
         timeout-minutes: 5
         working-directory: .upstream
@@ -1289,6 +1288,9 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
+      - name: Stage the pinned app release for provider fixtures
+        working-directory: .upstream
+        run: bun run e2e:prepare
       - name: Free runner disk before pool builds
         run: |
           echo "Runner disk before cleanup (bytes)"
@@ -1467,7 +1469,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts"
+          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted driver accounts|^saved token accounts retry creation|^native token creation keeps|^additive observation migrations|^protocol (17|18) refuses observations|^OpenAI and Anthropic apps connect reusable accounts|^Pools select reusable provider accounts|^Retained pool subscriptions keep|^Pools pick accounts saved on provider apps|^Pasted credentials are named in a dialog over the app after saving, default to the first free name, and keep the name when replaced"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream
