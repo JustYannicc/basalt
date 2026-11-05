@@ -2,7 +2,7 @@ diff --git a/e2e/support/google-race-cleanup.ts b/e2e/support/google-race-cleanu
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/google-race-cleanup.ts
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,126 @@
 +/** Persist cleanup progress before scope closure can time out and hide its request evidence. */
 +import { expect } from "@effect/vitest";
 +import { Clock, Effect, Option, Schema } from "effect";
@@ -67,10 +67,17 @@ new file mode 100644
 +          requests.set(operation, { method, status: null, durationMs: 0 });
 +          yield* save;
 +          const response = yield* api.request(session, method, path, data, headers).pipe(
-+            Effect.tapError((error) => {
-+              requestFailure = error.reason;
-+              return save;
-+            }),
++            Effect.tapError((error) =>
++              Effect.gen(function* () {
++                requestFailure = error.reason;
++                requests.set(operation, {
++                  method,
++                  status: error.status ?? null,
++                  durationMs: (yield* Clock.currentTimeMillis) - sentAt,
++                });
++                yield* save;
++              }),
++            ),
 +          );
 +          requests.set(operation, {
 +            method,

@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "The signed Google duplicate-registration fixture persists one bounded cleanup checkpoint before each public cleanup request and after each answer. It retains only operation names, HTTP statuses, timings and at most twenty webhook IDs with status and failure category, including the last successful list if a later request stalls. Cleanup keeps the existing public unlink, webhook removal, stopped-state assertions and deadlines; diagnostics claim no product fix."
+      constraint "The signed duplicate-registration fixture persists one bounded cleanup checkpoint before each public cleanup request and after each answer. It retains only operation names, HTTP statuses and timings from successful and failed answers and at most twenty webhook IDs with status and failure category, including the last successful list if a later request stalls. Cleanup keeps the existing public unlink, webhook removal, stopped-state assertions and deadlines; diagnostics claim no product fix."
     }
   }
 }
