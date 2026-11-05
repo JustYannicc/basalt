@@ -138,7 +138,6 @@ export interface Totals {
   home: Money[];
   homePriced: number;
   imported: Money[];
-  importedPriced: number;
   unpriced: number;
   /** A bucket in range was still filling when read. */
   partial: boolean;
@@ -155,7 +154,6 @@ export const emptyTotals = (): Totals => ({
   home: [],
   homePriced: 0,
   imported: [],
-  importedPriced: 0,
   unpriced: 0,
   partial: false,
 });
@@ -187,7 +185,6 @@ export function addBucket(totals: Totals, bucket: SeriesBucket | SeriesCounts) {
   addMoney(totals.home, bucket.cost.homeCharge);
   addMoney(totals.imported, bucket.cost.importedApiPrice);
   totals.homePriced += bucket.cost.homeCharge.priced;
-  totals.importedPriced += bucket.cost.importedApiPrice.priced;
   totals.unpriced += bucket.cost.unpricedRequests;
 }
 
@@ -214,7 +211,6 @@ export function addTotals(into: Totals, from: Totals) {
       unpriced: 0,
     });
   into.homePriced += from.homePriced;
-  into.importedPriced += from.importedPriced;
   into.unpriced += from.unpriced;
   into.partial ||= from.partial;
 }
