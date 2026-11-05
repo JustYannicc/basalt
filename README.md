@@ -47,6 +47,8 @@ Needs Node 24.3 or newer and [Bun](https://bun.sh).
     npm run check              # tests that need no credentials
     npm run typecheck
 
+Before pushing a committed candidate, run the [local fast CI gate](scripts/ci/README.md). Its guide covers the pinned toolchain, comparison base and heavy-slot requirements.
+
 ## Contributing
 
 Issues and pull requests are welcome. Fixes that belong in Executor go upstream first.
