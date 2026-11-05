@@ -1,9 +1,10 @@
 diff --git a/apps/hosted/server/src/implementation/account-identity-placement.ts b/apps/hosted/server/src/implementation/account-identity-placement.ts
 new file mode 100644
-index 0000000..e17be55
+index 0000000..4a7de75
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-identity-placement.ts
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,40 @@
++import { stringSet } from "fumadb-effect/sql";
 +import { Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
 +import { StorageError, type Account, type AccountId } from "@executor-js/sdk/core";
@@ -24,9 +25,11 @@ index 0000000..e17be55
 +      select a.account_id, a.organization_id, a.kind, a.personal_user_id, a.audience,
 +        coalesce((select json_agg(g.group_id order by g.group_id)
 +          from hosted_account_groups g where g.account_id = a.account_id), '[]'::json) as groups
-+      from hosted_account_access a where ${sql.in(
-+        "a.account_id",
++      from hosted_account_access a where ${stringSet(
++        sql,
++        sql("a.account_id"),
 +        accounts.map((account) => account.id),
++        "postgresql",
 +      )}`;
 +      return new Map(
 +        rows.map((row) => [
@@ -78,17 +81,32 @@ index a2593f7..7e216bf 100644
          Effect.gen(function* () {
            const rows =
 diff --git a/apps/hosted/testing/storage-fault-fixture.ts b/apps/hosted/testing/storage-fault-fixture.ts
-index 6742657..cb3fd58 100644
+index 6742657..5ccf1b5 100644
 --- a/apps/hosted/testing/storage-fault-fixture.ts
 +++ b/apps/hosted/testing/storage-fault-fixture.ts
-@@ -31,8 +31,38 @@ export const storageFaultFixture = Effect.sync(() => {
+@@ -6,6 +6,7 @@
+  * statement is replaced by one the database rejects, so the failure is a real SQL error from the
+  * driver. Production entry points never provide it.
+  */
++import { stringSetFixture } from "./string-set-fixture.ts";
+ import { Effect, Layer, Option, Schema, type Tracer } from "effect";
+ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import * as Statement from "effect/sql/Statement";
+@@ -31,8 +32,47 @@ export const storageFaultFixture = Effect.sync(() => {
    /** Armed until a read binding the ID inside every named span reaches it; then reported until the next arm. */
    let armed: typeof Arm.Type | undefined;
    let failed: ReadonlyArray<string> | undefined;
 +  let counted: readonly string[] = [];
 +  const counts = new Map<
 +    string,
-+    { name: string; statements: number; acquisition: number; identity: number; placement: number }
++    {
++      name: string;
++      statements: number;
++      acquisition: number;
++      identity: number;
++      placement: number;
++      maximumParameters: number;
++    }
 +  >();
    const transformer: Statement.Transformer = (statement, sql, _fiber, span) =>
      Effect.sync(() => {
@@ -97,7 +115,7 @@ index 6742657..cb3fd58 100644
 +        while (Option.isSome(current) && current.value._tag === "Span") {
 +          const parent = current.value;
 +          if (counted.includes(parent.name)) {
-+            const [text] = statement.compile();
++            const [text, parameters] = statement.compile();
 +            if (/^\s*select\b/iu.test(text)) {
 +              const count = counts.get(parent.spanId) ?? {
 +                name: parent.name,
@@ -105,8 +123,10 @@ index 6742657..cb3fd58 100644
 +                acquisition: 0,
 +                identity: 0,
 +                placement: 0,
++                maximumParameters: 0,
 +              };
 +              count.statements++;
++              count.maximumParameters = Math.max(count.maximumParameters, parameters.length);
 +              if (/executor_account_acquisitions/iu.test(text)) count.acquisition++;
 +              if (/executor_account_identities/iu.test(text)) count.identity++;
 +              if (/hosted_account_access/iu.test(text)) count.placement++;
@@ -120,10 +140,11 @@ index 6742657..cb3fd58 100644
        const fault = armed;
        if (fault === undefined) return statement;
        const [text, params] = statement.compile();
-@@ -44,6 +74,23 @@ export const storageFaultFixture = Effect.sync(() => {
+@@ -44,6 +84,24 @@ export const storageFaultFixture = Effect.sync(() => {
        return sql`select executor_test_storage_fault()`;
      });
    const routes = Layer.mergeAll(
++    stringSetFixture,
 +    HttpRouter.add(
 +      "POST",
 +      "/api/devtools/statement-count",
@@ -144,6 +165,60 @@ index 6742657..cb3fd58 100644
      HttpRouter.add(
        "POST",
        path,
+diff --git a/apps/hosted/testing/string-set-fixture.ts b/apps/hosted/testing/string-set-fixture.ts
+new file mode 100644
+index 0000000..f53552e
+--- /dev/null
++++ b/apps/hosted/testing/string-set-fixture.ts
+@@ -0,0 +1,48 @@
++/** Loopback test host only: drive the public adapter with a bind-limit-sized account set. */
++import { Effect, Schema } from "effect";
++import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { fumadb } from "fumadb-effect";
++import { schema, table, idColumn } from "fumadb-effect/schema";
++import { sqlAdapter, stringSet } from "fumadb-effect/sql";
++
++const shape = schema({
++  version: "1.0.0",
++  tables: {
++    accounts: table("executor_accounts", {
++      id: idColumn("id", Schema.String, { type: "varchar(255)" }),
++    }),
++  },
++});
++const orm = fumadb({ namespace: "set-boundary", schemas: [shape] })
++  .client(sqlAdapter({ provider: "postgresql" }))
++  .orm("1.0.0");
++export const stringSetFixture = HttpRouter.add(
++  "POST",
++  "/api/devtools/string-set-boundary",
++  Effect.gen(function* () {
++    const { values } = yield* HttpServerRequest.schemaBodyJson(
++      Schema.Struct({ values: Schema.Array(Schema.String) }),
++    );
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* orm.findMany("accounts", { where: (b) => b("id", "in", values) });
++    const direct = yield* sql<{ id: string }>`select id from executor_accounts
++      where ${stringSet(sql, sql("id"), values, "postgresql")}`;
++    const excluded = yield* orm.findMany("accounts", { where: (b) => b("id", "not in", values) });
++    const escaped = yield* Effect.forEach(
++      ["", "NULL", "a,b", "a\\b", 'a"b', "a\nb", "x'); SELECT 1; --"],
++      (value) =>
++        sql<{
++          found: boolean;
++        }>`select ${stringSet(sql, sql`${value}`, values, "postgresql")} as found`.pipe(
++          Effect.map((rows) => rows[0]?.found ?? false),
++        ),
++    );
++    return HttpServerResponse.jsonUnsafe({
++      escaped,
++      ids: rows.map(({ id }) => id),
++      direct: direct.map(({ id }) => id),
++      excluded: excluded.map(({ id }) => id),
++    });
++  }).pipe(Effect.withSpan("storage.stringSetBoundary"), Effect.orDie),
++);
 diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
 index bda20d0..2c64551 100644
 --- a/apps/hosted/web/src/contracts/account-observations.ts
@@ -398,10 +473,10 @@ index 01a865f..de37d00 100644
      file: "account-observation-row-polling.spec.ts",
 diff --git a/e2e/tests/account-health-query-budget.spec.ts b/e2e/tests/account-health-query-budget.spec.ts
 new file mode 100644
-index 0000000..6805aea
+index 0000000..2fadfc6
 --- /dev/null
 +++ b/e2e/tests/account-health-query-budget.spec.ts
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,260 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Layer, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -614,6 +689,49 @@ index 0000000..6805aea
 +            expect(operation.placement).toBeLessThanOrEqual(1);
 +          }
 +        }
++        for (const size of [65_536, 1]) {
++          const present = [...accounts].slice(0, size);
++          const values = [
++            ...present,
++            ...Array.from({ length: size - present.length }, (_, index) => `missing-${index}`),
++          ];
++          // Delimiters, quotes, backslashes and SQL-looking text remain values on every representation.
++          values.push(...present, "", "NULL", "a,b", "a\\b", 'a"b', "a\nb", "x'); SELECT 1; --");
++          expect(
++            (yield* api.request(actors.owner, "POST", "/api/devtools/statement-count", {
++              within: ["storage.stringSetBoundary"],
++            })).status,
++          ).toBe(200);
++          const response = yield* api.request(
++            actors.owner,
++            "POST",
++            "/api/devtools/string-set-boundary",
++            { values },
++          );
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const result = yield* body(
++            Schema.Struct({
++              escaped: Schema.Array(Schema.Boolean),
++              ids: Schema.Array(Schema.String),
++              direct: Schema.Array(Schema.String),
++              excluded: Schema.Array(Schema.String),
++            }),
++            response,
++          );
++          expect(result.escaped).toEqual(Array(7).fill(true));
++          expect(new Set(result.ids)).toEqual(new Set(present));
++          expect(new Set(result.direct)).toEqual(new Set(present));
++          expect(result.excluded.some((id) => present.includes(id))).toBe(false);
++          const counted = yield* body(
++            Schema.Struct({
++              operations: Schema.Array(
++                Schema.Struct({ statements: Schema.Number, maximumParameters: Schema.Number }),
++              ),
++            }),
++            yield* api.request(actors.owner, "GET", "/api/devtools/statement-count"),
++          );
++          expect(counted.operations).toEqual([{ statements: 10, maximumParameters: 2 }]);
++        }
 +        yield* api.request(actors.owner, "POST", "/api/devtools/statement-count", { within: [] });
 +      }),
 +    ),
@@ -740,6 +858,73 @@ index 9aa5327..d37107a 100644
 +    );
 +  }
  });
+diff --git a/packages/fumadb-effect/src/implementation/sql/index.ts b/packages/fumadb-effect/src/implementation/sql/index.ts
+index 901ad73..7b2d389 100644
+--- a/packages/fumadb-effect/src/implementation/sql/index.ts
++++ b/packages/fumadb-effect/src/implementation/sql/index.ts
+@@ -50,3 +50,5 @@ export const sqlAdapter = (config: SqlAdapterConfig): Adapter<SqlClient> => {
+     createMigrator: (context) => createSqlMigrator(context, resolved),
+   };
+ };
++
++export { stringSet } from "./string-set.ts";
+diff --git a/packages/fumadb-effect/src/implementation/sql/string-set.ts b/packages/fumadb-effect/src/implementation/sql/string-set.ts
+new file mode 100644
+index 0000000..b8601ff
+--- /dev/null
++++ b/packages/fumadb-effect/src/implementation/sql/string-set.ts
+@@ -0,0 +1,25 @@
++import type { SqlClient } from "effect/sql/SqlClient";
++import type { Statement } from "effect/sql";
++import type { Provider } from "../../contracts/provider.ts";
++
++/** A set occupies one parameter, including on drivers with a small bind-message limit. */
++export const stringSet = (
++  sql: SqlClient,
++  left: Statement.Fragment | Statement.Identifier,
++  input: readonly string[],
++  provider: Provider,
++): Statement.Fragment => {
++  const values = [...new Set(input)];
++  if (values.length === 0) return sql.literal("1=0");
++  if (provider === "postgresql" || provider === "cockroachdb") {
++    // Bind a quoted array literal as text, then let PostgreSQL type it. This also works on
++    // SqlClient implementations without a driver-specific array parameter constructor.
++    const array = `{${values.map((value) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(",")}}`;
++    return sql`${left} = ANY(CAST(${array} AS text[]))`;
++  }
++  const json = JSON.stringify(values);
++  if (provider === "sqlite") return sql`${left} IN (SELECT value FROM json_each(${json}))`;
++  if (provider === "mysql")
++    return sql`${left} IN (SELECT value FROM JSON_TABLE(${json}, '$[*]' COLUMNS (value TEXT PATH '$')) AS selected)`;
++  return sql`${left} IN (SELECT value FROM OPENJSON(${json}))`;
++};
+diff --git a/packages/fumadb-effect/src/implementation/sql/where.ts b/packages/fumadb-effect/src/implementation/sql/where.ts
+index b215373..3d201d0 100644
+--- a/packages/fumadb-effect/src/implementation/sql/where.ts
++++ b/packages/fumadb-effect/src/implementation/sql/where.ts
+@@ -6,6 +6,7 @@
+  * SQL text this module emits is structural (`AND`, `IS NULL`, `1=0`, the
+  * `ESCAPE` clause), never user input.
+  */
++import { stringSet } from "./string-set.ts";
+ import { Option, Result } from "effect";
+ import { Statement } from "effect/sql";
+ import type { SqlClient } from "effect/sql/SqlClient";
+@@ -162,6 +163,13 @@ const buildCompare = (
+       return Result.map(
+         Result.all(items.map((item) => serialize(item, column, provider))),
+         (values) => {
++          if (
++            (column.type === "string" || column.type.startsWith("varchar(")) &&
++            values.every((item): item is string => typeof item === "string")
++          ) {
++            const set = stringSet(sql, left, values, provider);
++            return operator === "in" ? set : sql`NOT (${set})`;
++          }
+           const list = sql`(${sql.csv(values.map((item) => valueOrNull(sql, item ?? null)))})`;
+           return operator === "in" ? sql`${left} IN ${list}` : sql`${left} NOT IN ${list}`;
+         },
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
 index ac800cf..c7c0572 100644
 --- a/packages/sdk/src/contracts/executor.ts
@@ -899,7 +1084,7 @@ index c53851f..c7887f2 100644
     * each account is linked to.
     */
 diff --git a/packages/sdk/src/implementation/account-identities.ts b/packages/sdk/src/implementation/account-identities.ts
-index 2f0d7cd..45de6c7 100644
+index 2f0d7cd..87f65e8 100644
 --- a/packages/sdk/src/implementation/account-identities.ts
 +++ b/packages/sdk/src/implementation/account-identities.ts
 @@ -58,6 +58,57 @@ export const accountIdentity = (
@@ -927,15 +1112,15 @@ index 2f0d7cd..45de6c7 100644
 +        : yield* lifecycle.accountIdentityPlacements(identified);
 +    const placed = identified.filter((account) => placements.get(account.id) != null);
 +    if (placed.length === 0) return new Map<StoredAccount["id"], AccountIdentity>();
++    const identityIds = [
++      ...new Set(
++        placed.flatMap((account) => (account.identityId === null ? [] : [account.identityId])),
++      ),
++    ];
 +    const rows = yield* query(() =>
 +      db.findMany("accountIdentities", {
 +        select: ["id", "owner", "placement", "issuer", "name", "label"],
-+        where: (b) =>
-+          b(
-+            "id",
-+            "in",
-+            placed.flatMap((account) => (account.identityId === null ? [] : [account.identityId])),
-+          ),
++        where: (b) => b("id", "in", identityIds),
 +      }),
 +    );
 +    const byId = new Map(rows.map((row) => [row.id, row]));

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-list-query-budget",
   "file": "0279-account-list-query-budget.patch",
-  "content_sha256": "b923c1e7c8658b574c68dac796e56625321a7839c8e20a723da50f32b3302a4c",
+  "content_sha256": "8743a15089495e8569811a7cbcea2607a9a5986ce55bb9d4179718dbb19d5960",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

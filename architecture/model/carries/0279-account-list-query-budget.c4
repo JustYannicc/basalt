@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountRuntime {
     metadata {
-      constraint "Account health lists read retained acquisition metadata in one batch; account lists batch identity and durable placement metadata without caching authorization. Mounted account reads share a bounded cadence that backs off unavailable or prolonged pending health."
+      constraint "Account health and identity lists bind each text ID set as one parameter and deduplicate identities; batched metadata preserves request-local owner and placement checks without caching authorization. Mounted account reads share a bounded cadence that backs off unavailable or prolonged pending health."
     }
   }
 }
