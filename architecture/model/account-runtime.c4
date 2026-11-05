@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    accountRuntime = part "Account runtime compatibility" {
+      description "A runner uses each immutable build's original account declarations. It projects only matching host-added family and identity defaults out of the invocation copy before the retained framework binds accounts. OAuth client policy, scopes, methods, credential schemas, hosts and placements keep their existing checks. Normalized identity and authenticated proof remain on the host. Completed credential-free declarations are bounded by immutable build ID for the host isolate lifetime. Runner capabilities and pending reads remain request-owned, so concurrent requests never await another request's promise."
+      metadata { code ".upstream/packages/sdk/src/implementation/app-account-projection.ts|.upstream/packages/sdk/src/implementation/app-runner.ts" }
+    }
+  }
+}
