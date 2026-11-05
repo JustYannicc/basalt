@@ -1,0 +1,157 @@
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -861,6 +861,7 @@
+       fixtures,
+       logActivity,
+       alternatePort === undefined ? undefined : reconfigure,
++      directory,
+     );
+     return {
+       emulators,
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -12,6 +12,7 @@
+ import { createServer } from "node:http";
+ import type { FixtureControl } from "../sdk/contracts.ts";
+ import { CloudLogWait, type cloudLogActivity } from "./cloud-log-activity.ts";
++import { retainFixtureCause } from "./fixture-diagnostics.ts";
+ 
+ const Change = Schema.Struct({
+   binding: Schema.Literals([
+@@ -33,7 +34,8 @@
+ export const cloudRuntimeControl = <A, E>(
+   fixtures: typeof FixtureControl.Type,
+   log: Effect.Success<typeof cloudLogActivity>,
+-  change?: (binding: typeof Change.Type.binding) => Effect.Effect<A, E>,
++  change: ((binding: typeof Change.Type.binding) => Effect.Effect<A, E>) | undefined,
++  directory: string,
+ ) =>
+   Effect.gen(function* () {
+     const http = yield* HttpClient.HttpClient;
+@@ -77,8 +79,12 @@
+         headers: response.headers,
+       });
+     }).pipe(
+-      Effect.catchCause(() =>
+-        HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++      Effect.catchCause((cause) =>
++        retainFixtureCause(directory, cause).pipe(
++          Effect.andThen(
++            HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++          ),
++        ),
+       ),
+     );
+     const services = yield* Layer.build(
+diff --git a/e2e/support/fixture-diagnostics.ts b/e2e/support/fixture-diagnostics.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/fixture-diagnostics.ts
+@@ -0,0 +1,64 @@
++/** Private runner evidence survives generic fixture HTTP errors and subprocess cleanup. */
++import { Cause, Effect, FileSystem, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { randomUUID } from "node:crypto";
++
++const diagnosticFiles = (directory: string, name: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const output = `${directory}/report/diagnostics`;
++    yield* fs.makeDirectory(output, { recursive: true, mode: 0o700 }).pipe(Effect.ignore);
++    const prefix = `${output}/${name}-${randomUUID()}`;
++    return {
++      write: (suffix: string, text: string, append = false) =>
++        fs
++          .writeFileString(`${prefix}${suffix}`, text, {
++            flag: append ? "a" : "w",
++            mode: 0o600,
++          })
++          .pipe(Effect.ignore),
++    };
++  });
++
++/** Drain both pipes together so a noisy failure cannot block its own exit. */
++export const fixtureProcessOutput = (directory: string, command: ChildProcess.Command) =>
++  Effect.gen(function* () {
++    const evidence = yield* diagnosticFiles(directory, "physical-provisioning");
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const child = yield* processes.spawn(command);
++    yield* evidence.write(".stdout.log", "");
++    yield* evidence.write(".stderr.log", "");
++    const [stdout, , exitCode] = yield* Effect.all(
++      [
++        child.stdout.pipe(
++          Stream.decodeText(),
++          Stream.tap((text) => evidence.write(".stdout.log", text, true)),
++          Stream.mkString,
++        ),
++        child.stderr.pipe(
++          Stream.decodeText(),
++          Stream.runForEach((text) =>
++            evidence.write(".stderr.log", text, true).pipe(
++              Effect.andThen(
++                Effect.sync(() => {
++                  process.stderr.write(text);
++                }),
++              ),
++            ),
++          ),
++        ),
++        child.exitCode.pipe(
++          Effect.tap((exitCode) => evidence.write(".json", `${JSON.stringify({ exitCode })}\n`)),
++        ),
++      ],
++      { concurrency: "unbounded" },
++    );
++    return { stdout, exitCode };
++  });
++
++/** The public control response stays generic; the runner keeps the complete nested cause. */
++export const retainFixtureCause = (directory: string, cause: Cause.Cause<unknown>) =>
++  Effect.gen(function* () {
++    const evidence = yield* diagnosticFiles(directory, "cloud-runtime-control");
++    yield* evidence.write(".json", `${JSON.stringify({ cause: Cause.pretty(cause) })}\n`);
++  });
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -12,6 +12,7 @@
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { startCloudPostgres } from "./cloud-postgres.ts";
+ import { freePort } from "./ports.ts";
++import { fixtureProcessOutput } from "./fixture-diagnostics.ts";
+ 
+ export const ProductionDatabaseState = Schema.Struct({
+   name: Schema.String,
+@@ -111,7 +112,8 @@
+     const provisioning = (pools = false) =>
+       Effect.scoped(
+         Effect.gen(function* () {
+-          const provisioningProcess = yield* processes.spawn(
++          const result = yield* fixtureProcessOutput(
++            input.directory,
+             ChildProcess.make(
+               "node",
+               [
+@@ -122,15 +124,13 @@
+               {
+                 env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+                 extendEnv: false,
+-                stderr: "inherit",
++                stdout: "pipe",
++                stderr: "pipe",
+               },
+             ),
+           );
+-          const completed = yield* provisioningProcess.stdout.pipe(
+-            Stream.decodeText(),
+-            Stream.mkString,
+-          );
+-          yield* checked(provisioningProcess.exitCode);
++          const completed = result.stdout;
++          yield* checked(Effect.succeed(result.exitCode));
+           yield* Schema.decodeUnknownEffect(
+             Schema.fromJsonString(
+               Schema.Struct({
