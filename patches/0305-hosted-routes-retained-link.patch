@@ -68,7 +68,7 @@ new file mode 100644
 +            organization: actor.organization,
 +            user: actor.user,
 +            app,
-+          });
++          }).pipe(Effect.mapError(() => new StorageError()));
 +          if (restored !== retained[0].account) return yield* new StorageError();
 +          return changed;
 +        }),
