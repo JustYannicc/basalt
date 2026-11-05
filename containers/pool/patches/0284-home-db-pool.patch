@@ -201,10 +201,10 @@ index 0000000..052a229
 +}
 diff --git a/internal/cluster/db_pool_postgres_test.go b/internal/cluster/db_pool_postgres_test.go
 new file mode 100644
-index 0000000..56ebf09
+index 0000000..353a858
 --- /dev/null
 +++ b/internal/cluster/db_pool_postgres_test.go
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,246 @@
 +package cluster
 +
 +import (
@@ -328,15 +328,14 @@ index 0000000..56ebf09
 +}
 +
 +func TestHomeDBPoolPostgresMixedWorkload(t *testing.T) {
-+	testHomeDBPoolMixedWorkload(t, func(ctx context.Context, repo *Repository) error {
++	testHomeDBPoolMixedWorkload(t, newHomeDBPoolRepository(t, 0), func(ctx context.Context, repo *Repository) error {
 +		_, errPurge := repo.PurgeExpiredSessionBindings(ctx, time.Now(), 10)
 +		return errPurge
 +	})
 +}
 +
-+func testHomeDBPoolMixedWorkload(t *testing.T, maintenance func(context.Context, *Repository) error) {
++func testHomeDBPoolMixedWorkload(t *testing.T, repo *Repository, maintenance func(context.Context, *Repository) error) {
 +	t.Helper()
-+	repo := newHomeDBPoolRepository(t, 0)
 +	coordinator := newSnapshotTestCoordinator(t, repo)
 +	home, _ := coordinator.HomeIncarnation()
 +	lifecycle, errLifecycle := repo.EnsureLifecycleConfig(t.Context(), DefaultHeartbeatTimeout())

@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home validates its per-process database connection budget before dialing. The supervisor allocates six open and six idle connections, with five-minute idle expiry and thirty-minute lifetime, on the direct transport with unchanged advisory locks. Config, liveness, election, polling, cleanup and log writes share the bounded pool without nested checkout; diagnostics expose process-local open, in-use, idle and wait counters. Server capacity must account separately for the controller, gateway and service clients."
+    }
+  }
+}

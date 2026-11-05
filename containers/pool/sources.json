@@ -36,7 +36,7 @@
         {
           "identity": "cliproxy-home-bounded-db-pool",
           "file": "0284-home-db-pool.patch",
-          "sha256": "2e064d6b2cae38942551ab376eba6cfed89c6458dddf0f5ce0287b8329cc6910",
+          "sha256": "2ae92de34d0cd52dd3f22bc26a18b32e5cbeda786e33cf073f79d7cc90bc22b0",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after pinned Home provides validated connection limits, idle and lifetime expiry, preserves direct transport and advisory locks, exposes pool wait counters, and passes bounded concurrent load with config apply and liveness plus maintenance and log writes without changing deadlines."
