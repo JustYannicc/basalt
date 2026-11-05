@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compact-row-test-budget",
+  "file": "0294-compact-row-test-budget.patch",
+  "content_sha256": "c73c50959f3be94eafba39ed77a43867a7e5461db5b027146875500400286f9d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
