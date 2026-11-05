@@ -56,8 +56,14 @@ test("Zendesk imports both declared security schemes without accepting an unmapp
       ...optionsFor(origin),
       fetch: async () => Response.json(document),
     });
-    assert.deepEqual(result.tools.map((tool) => tool.path).sort(), ["/operation-0", "/operation-1"]);
-    assert.deepEqual(result.skipped.map((tool) => tool.path), ["/operation-2"]);
+    assert.deepEqual(result.tools.map((tool) => tool.path).sort(), [
+      "/operation-0",
+      "/operation-1",
+    ]);
+    assert.deepEqual(
+      result.skipped.map((tool) => tool.path),
+      ["/operation-2"],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
