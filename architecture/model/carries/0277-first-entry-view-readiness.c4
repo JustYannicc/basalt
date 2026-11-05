@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "First entry to Accounts and Human in the loop preloads browser-only views in hosted route loaders, keeps one pending view until code is ready and mounts the resolved component without a nested lazy fallback. Each mount retains its component identity, failed downloads keep the existing retry view and server rendering never imports browser-only views. Retained-frame layout checks wait for modal pointer input before hit testing without changing the assertion or timeout."
+    }
+  }
+}
