@@ -52,9 +52,8 @@ function references(prepared: string) {
       )
         throw new Error("Invalid registered dependency reference");
       add(record.store);
-      return;
     }
-    // Older checkouts may have package links but no durable consumer registration.
+    // A legacy install can replace package links before updating its marker.
     const modules = join(root, "node_modules");
     if (!existsSync(modules)) return;
     if (lstatSync(modules).isSymbolicLink()) add(realpathSync(modules));
