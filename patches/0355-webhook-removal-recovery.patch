@@ -1,14 +1,15 @@
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -511,6 +511,7 @@
+@@ -507,7 +507,7 @@
+       options.hooks,
+     );
+     const webhookSources = makeWebhookSources(db, crypto, options.hooks, {
+-      webhooks: webhooks.webhooks,
++      webhooks: webhooks.managedWebhooks,
        liveDefinitions: webhooks.liveDefinitions,
        retarget: webhooks.retarget,
        createManaged: webhooks.createManaged,
-+      removeManaged: webhooks.removeManaged,
-       accountNeedingReconnect: tools.accountNeedingReconnect,
-     });
-     // App source defines schedules. Each activation removes saved settings for schedules the new
 diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
 --- a/packages/sdk/src/implementation/webhooks.ts
 +++ b/packages/sdk/src/implementation/webhooks.ts
@@ -141,16 +142,20 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
              }),
            );
            const current = yield* read(input);
-@@ -700,6 +737,8 @@
+@@ -696,6 +733,12 @@
+   };
+   return {
+     webhooks,
++    // Source passes cannot treat a stale status snapshot as permission to retry disabled cleanup.
++    managedWebhooks: {
++      list: webhooks.list,
++      reconcile: (input: typeof WebhookTarget.Type) => reconcile(input, false, false),
++      remove: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
++    },
+     /** Reconciliation creates and removes upstream registrations from the current definitions. */
      liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
      /** Create a source's managed subscription; see `create`. */
-     createManaged: (input: typeof ManagedWebhook.Type) => create(input, true),
-+    /** Source reconciliation cannot retry a registration held for manual cleanup. */
-+    removeManaged: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
-     /**
-      * Point a subscription at its source's current actor. Callbacks resolve accounts at each
-      * delivery, so the upstream registration is unchanged.
-@@ -746,7 +785,11 @@
+@@ -746,7 +789,11 @@
              return yield* new WebhookFailed({ reason: "input" });
            return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
              saved.setup === undefined
@@ -166,32 +171,15 @@ diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/impl
 diff --git a/packages/sdk/src/implementation/webhook-sources.ts b/packages/sdk/src/implementation/webhook-sources.ts
 --- a/packages/sdk/src/implementation/webhook-sources.ts
 +++ b/packages/sdk/src/implementation/webhook-sources.ts
-@@ -81,6 +81,7 @@
+@@ -75,7 +75,7 @@
+   crypto: Crypto.Crypto,
+   lifecycle: ResourceLifecycle | undefined,
+   resources: {
+-    readonly webhooks: ReturnType<typeof makeWebhooks>["webhooks"];
++    readonly webhooks: ReturnType<typeof makeWebhooks>["managedWebhooks"];
+     /** Evaluated now, never reused: reconciliation changes upstream registrations. */
+     readonly liveDefinitions: ReturnType<typeof makeWebhooks>["liveDefinitions"];
      readonly retarget: ReturnType<typeof makeWebhooks>["retarget"];
-     /** Creates a managed subscription beside a stopped one with the same key. */
-     readonly createManaged: ReturnType<typeof makeWebhooks>["createManaged"];
-+    readonly removeManaged: ReturnType<typeof makeWebhooks>["removeManaged"];
-     /** Stored-state check for an account whose sign-in must reconnect. */
-     readonly accountNeedingReconnect: ReturnType<typeof makeTools>["accountNeedingReconnect"];
-   },
-@@ -173,7 +174,7 @@
-               if (removing) {
-                 for (const hook of hooks)
-                   if (hook.status !== "stopped") {
--                    const stopped = yield* resources.webhooks.remove({
-+                    const stopped = yield* resources.removeManaged({
-                       app: app.id,
-                       subscription: hook.id,
-                     });
-@@ -263,7 +264,7 @@
-               // Old registrations retain the code and state required for their own cleanup.
-               for (const hook of hooks)
-                 if (hook.status !== "stopped" && !desired.has(hook.key)) {
--                  const stopped = yield* resources.webhooks.remove({
-+                  const stopped = yield* resources.removeManaged({
-                     app: app.id,
-                     subscription: hook.id,
-                   });
 diff --git a/e2e/support/webhook-registration.ts b/e2e/support/webhook-registration.ts
 --- a/e2e/support/webhook-registration.ts
 +++ b/e2e/support/webhook-registration.ts
