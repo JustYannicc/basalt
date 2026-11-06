@@ -239,7 +239,8 @@ diff --git a/apps/hosted/server/src/implementation/workflow-status.ts b/apps/hos
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/workflow-status.ts
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,74 @@
++import { isRequestRejection } from "@executor-js/telemetry/http";
 +import { Cause, Console, Effect, Layer, Option, Schema, SchemaAST } from "effect";
 +import {
 +  ObserveWorkflowStatus,
@@ -271,6 +272,7 @@ new file mode 100644
 +};
 +
 +const clientRejection = (error: unknown) => {
++  if (isRequestRejection(error)) return true;
 +  if (!(error instanceof Error) || !Schema.isSchema(error.constructor)) return false;
 +  const status = SchemaAST.resolveAt<unknown>("httpApiStatus")(error.constructor.ast);
 +  return typeof status === "number" && status >= 400 && status < 500;
@@ -353,7 +355,7 @@ diff --git a/e2e/tests/workflow-status-diagnostics.spec.ts b/e2e/tests/workflow-
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/workflow-status-diagnostics.spec.ts
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,184 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomBytes } from "node:crypto";
@@ -424,7 +426,9 @@ new file mode 100644
 +            batchTrace = trace(),
 +            deniedTrace = trace(),
 +            healthyTrace = trace(),
-+            barrier = trace();
++            barrier = trace(),
++            invalidTrace = trace(),
++            invalidBatchTrace = trace();
 +          const fault = { "x-executor-test-workflow-status-phase": phase };
 +          const direct = yield* api.request(actors.owner, "GET", url, undefined, {
 +            ...headers(directTrace),
@@ -454,6 +458,31 @@ new file mode 100644
 +            ...fault,
 +          });
 +          expect(denied.status).toBe(403);
++          const invalid = yield* api.request(
++            actors.owner,
++            "GET",
++            `${prefix}/apps/invalid/workflow-runs/${run.id}`,
++            undefined,
++            headers(invalidTrace),
++          );
++          expect(invalid.status).toBe(400);
++          const invalidBatch = yield* api.request(actors.owner, "POST", "/api/dashboard/batch", {
++            reads: [
++              {
++                id: 2,
++                group: "workflows",
++                endpoint: "get",
++                params: { organization: actors.organization.id, app: "invalid", run: run.id },
++                query: {},
++                traceparent: headers(invalidBatchTrace).traceparent,
++              },
++            ],
++          });
++          expect(invalidBatch.status).toBe(200);
++          expect(
++            Schema.decodeUnknownSync(Schema.Struct({ status: Schema.Number }))(invalidBatch.body)
++              .status,
++          ).toBe(400);
 +          const healthy = yield* api.request(
 +            actors.owner,
 +            "GET",
@@ -481,7 +510,9 @@ new file mode 100644
 +          }
 +          expect(
 +            records.some((record) =>
-+              [deniedTrace, healthyTrace].includes(String(record.annotations.trace_id)),
++              [deniedTrace, healthyTrace, invalidTrace, invalidBatchTrace].includes(
++                String(record.annotations.trace_id),
++              ),
 +            ),
 +          ).toBe(false);
 +          expect(direct.status, JSON.stringify(direct.body)).toBe(
