@@ -306,7 +306,7 @@ function Answers({
             ? "Reading…"
             : billed !== null
               ? `${usd(billed)} API price est.`
-              : "Estimate unavailable"
+              : "Unpriced"
         }
       >
         {sum && (
