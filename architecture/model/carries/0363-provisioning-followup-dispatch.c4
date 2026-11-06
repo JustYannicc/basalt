@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A native provisioning workflow dispatches lifecycle jobs committed by its completed provisioning step before waking authored schedules. Both handoffs use durable bounded steps, while the existing schedule-wake identity and retry policy remain unchanged. Request and cron dispatch share the atomic outbox lease and stable workflow identity; missed dispatches remain recoverable by the minute cron, and replay cannot rerun a succeeded provisioning job."
+    }
+  }
+}

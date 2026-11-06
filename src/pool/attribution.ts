@@ -1,3 +1,4 @@
+import { poolDependency } from "./dependency-failure.ts";
 import { PoolAccountRemovals } from "./account-removals.ts";
 import { type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
 import {
@@ -153,7 +154,10 @@ export class PoolControl implements ControlAttribution {
       const added: string[] = [];
       this.added = (ids) => added.push(...ids);
       if (!this.loaded) {
-        this.state = (await this.storage.get<AttributionState>(attributionStorageKey)) ?? {
+        this.state = (await poolDependency(
+          "storage",
+          this.storage.get<AttributionState>(attributionStorageKey),
+        )) ?? {
           version: 2,
           locks: {},
           sessions: {},
@@ -204,7 +208,7 @@ export class PoolControl implements ControlAttribution {
   }
   private async save(): Promise<void> {
     if (!this.dirty) return;
-    await this.storage.put(attributionStorageKey, this.state);
+    await poolDependency("storage", this.storage.put(attributionStorageKey, this.state));
     this.dirty = false;
   }
   private async arm(): Promise<void> {
@@ -221,9 +225,9 @@ export class PoolControl implements ControlAttribution {
     });
     if (deadlines.length) {
       const deadline = Math.max(now + 1_000, Math.min(...deadlines));
-      this.armedAlarm ??= await this.storage.getAlarm();
+      this.armedAlarm ??= await poolDependency("storage", this.storage.getAlarm());
       if (this.armedAlarm === null || this.armedAlarm <= now || deadline < this.armedAlarm) {
-        await this.storage.setAlarm(deadline);
+        await poolDependency("storage", this.storage.setAlarm(deadline));
         this.armedAlarm = deadline;
       }
     }

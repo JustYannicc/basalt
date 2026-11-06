@@ -1,0 +1,560 @@
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -507,7 +507,7 @@
+       options.hooks,
+     );
+     const webhookSources = makeWebhookSources(db, crypto, options.hooks, {
+-      webhooks: webhooks.webhooks,
++      webhooks: webhooks.managedWebhooks,
+       liveDefinitions: webhooks.liveDefinitions,
+       retarget: webhooks.retarget,
+       createManaged: webhooks.createManaged,
+diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+--- a/packages/sdk/src/implementation/webhooks.ts
++++ b/packages/sdk/src/implementation/webhooks.ts
+@@ -85,6 +85,10 @@
+ 
+ const refusedRemoval =
+   "Could not remove this registration: this instance is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
++const failedRemoval =
++  "Repeated attempts could not remove this registration. Reconnect its accounts or retry after the service recovers, or remove the webhook for this callback URL at the provider, then confirm.";
++// The first attempt and the existing 30s and 60s backoffs precede the next 120s wait.
++const removalFailureLimit = 3;
+ const selectedIds = (selected: SelectedAccounts) =>
+   Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
+ /**
+@@ -98,6 +102,7 @@
+   secret: Schema.String,
+   state: Schema.Json,
+   setup: Schema.optional(ManualWebhookDescriptor),
++  removalFailures: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+ });
+ 
+ /**
+@@ -297,7 +302,7 @@
+   const outsideTransaction = storage.reactivity.inTransaction.pipe(
+     Effect.flatMap((inside) => (inside ? Effect.fail(new RequestInvalid()) : Effect.void)),
+   );
+-  const reconcile = (input: typeof WebhookTarget.Type, remove = false) =>
++  const reconcile = (input: typeof WebhookTarget.Type, remove = false, retryDisabled = true) =>
+     Effect.gen(function* () {
+       yield* outsideTransaction;
+       const parsed = yield* Schema.decodeUnknownEffect(WebhookTarget)(input).pipe(
+@@ -310,12 +315,20 @@
+             const row = yield* read(parsed);
+             if (
+               row.status === "stopped" ||
+-              (!remove && ["active", "setup-required", "disabled"].includes(row.status))
++              (row.status === "disabled" && !retryDisabled) ||
++              (!remove && ["active", "setup-required"].includes(row.status))
+             )
+               return row;
++            const saved = yield* decrypt(row);
++            const retryingRemoval =
++              row.status === "disabled" &&
++              row.failure === "unregister" &&
++              saved.setup === undefined;
++            if (!remove && row.status === "disabled" && !retryingRemoval) return row;
+             // A disabled subscription waits for a person to confirm its removal at the provider.
+             const manual =
+-              remove && (row.status === "disabled" || (yield* decrypt(row)).setup !== undefined);
++              remove &&
++              (saved.setup !== undefined || (row.status === "disabled" && !retryingRemoval));
+             const now = yield* Clock.currentTimeMillis;
+             if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
+             yield* query(() =>
+@@ -324,7 +337,9 @@
+                 set: {
+                   revision: claim,
+                   leaseUntil: new Date(manual ? 0 : now + defaultWebhookLifecycleLimits.leaseMs),
+-                  ...(remove ? { status: manual ? "disabled" : "stopping" } : {}),
++                  ...(remove || retryingRemoval
++                    ? { status: manual ? "disabled" : "stopping" }
++                    : {}),
+                 },
+               }),
+             );
+@@ -337,11 +352,11 @@
+           Effect.gen(function* () {
+             if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
+             const stopping = row.status === "stopping";
++            const saved = yield* decrypt(row);
+             // The intent/lease commits before network I/O. A lost response leaves recoverable state.
+             // Removal the registration's actor can no longer perform disables the subscription.
+             let refused = false;
+             const work = Effect.gen(function* () {
+-              const saved = yield* decrypt(row);
+               const common = {
+                 name: row.name,
+                 config: saved.config,
+@@ -392,6 +407,22 @@
+               Effect.result,
+             );
+             const result = yield* work;
++            const failures = Math.min(removalFailureLimit, (saved.removalFailures ?? 0) + 1);
++            const failedState =
++              stopping && Result.isFailure(result)
++                ? yield* credentials
++                    .encrypt(
++                      row.id,
++                      Redacted.make({
++                        config: saved.config,
++                        secret: saved.secret,
++                        state: saved.state,
++                        ...(saved.setup === undefined ? {} : { setup: saved.setup }),
++                        removalFailures: failures,
++                      }),
++                    )
++                    .pipe(Effect.mapError(() => new StorageError()))
++                : undefined;
+             yield* transaction(db, () =>
+               Effect.gen(function* () {
+                 yield* query(() =>
+@@ -404,6 +435,12 @@
+                           ? "unregister"
+                           : "register"
+                         : null,
++                      ...(failedState === undefined
++                        ? {}
++                        : {
++                            encrypted: failedState,
++                            ...(failures === removalFailureLimit ? { status: "disabled" } : {}),
++                          }),
+                       ...(Result.isSuccess(result)
+                         ? refused
+                           ? { status: "disabled", failure: null }
+@@ -619,7 +656,7 @@
+           return id;
+         }),
+       );
+-      return yield* reconcile({ app: parsed.app, subscription: target });
++      return yield* reconcile({ app: parsed.app, subscription: target }, false, !managed);
+     }).pipe(Effect.withSpan("sdk.webhooks.create"));
+   const webhooks = {
+     get: (input: typeof WebhookTarget.Type) => read(input).pipe(Effect.flatMap(metadata)),
+@@ -633,7 +670,7 @@
+           yield* query(() =>
+             db.updateMany("webhooks", {
+               where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
+-              set: { status: "stopped", revision },
++              set: { status: "stopped", failure: null, revision },
+             }),
+           );
+           const current = yield* read(input);
+@@ -661,7 +698,7 @@
+       }),
+     create: (input: typeof CreateWebhook.Type) => create(input, false),
+     reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
+-    remove: (input: typeof WebhookTarget.Type) => reconcile(input, true),
++    remove: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
+     deliver: (input: typeof DeliverWebhook.Type) =>
+       Effect.gen(function* () {
+         yield* outsideTransaction;
+@@ -696,6 +733,12 @@
+   };
+   return {
+     webhooks,
++    // Source passes cannot treat a stale status snapshot as permission to retry disabled cleanup.
++    managedWebhooks: {
++      list: webhooks.list,
++      reconcile: (input: typeof WebhookTarget.Type) => reconcile(input, false, false),
++      remove: (input: typeof WebhookTarget.Type) => reconcile(input, true, false),
++    },
+     /** Reconciliation creates and removes upstream registrations from the current definitions. */
+     liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
+     /** Create a source's managed subscription; see `create`. */
+@@ -746,7 +789,11 @@
+             return yield* new WebhookFailed({ reason: "input" });
+           return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
+             saved.setup === undefined
+-              ? { step: "remove", subscription, instructions: refusedRemoval }
++              ? {
++                  step: "remove",
++                  subscription,
++                  instructions: row.failure === "unregister" ? failedRemoval : refusedRemoval,
++                }
+               : row.status === "setup-required"
+                 ? {
+                     step: "configure",
+diff --git a/packages/sdk/src/implementation/webhook-sources.ts b/packages/sdk/src/implementation/webhook-sources.ts
+--- a/packages/sdk/src/implementation/webhook-sources.ts
++++ b/packages/sdk/src/implementation/webhook-sources.ts
+@@ -75,7 +75,7 @@
+   crypto: Crypto.Crypto,
+   lifecycle: ResourceLifecycle | undefined,
+   resources: {
+-    readonly webhooks: ReturnType<typeof makeWebhooks>["webhooks"];
++    readonly webhooks: ReturnType<typeof makeWebhooks>["managedWebhooks"];
+     /** Evaluated now, never reused: reconciliation changes upstream registrations. */
+     readonly liveDefinitions: ReturnType<typeof makeWebhooks>["liveDefinitions"];
+     readonly retarget: ReturnType<typeof makeWebhooks>["retarget"];
+diff --git a/e2e/support/webhook-registration.ts b/e2e/support/webhook-registration.ts
+--- a/e2e/support/webhook-registration.ts
++++ b/e2e/support/webhook-registration.ts
+@@ -11,11 +11,13 @@
+ export const webhookRegistrationFixture = Effect.gen(function* () {
+   const received = yield* Deferred.make<void>(),
+     release = yield* Deferred.make<void>(),
+-    healthy = yield* Ref.make(false);
++    healthy = yield* Ref.make(false),
++    requests = yield* Ref.make(0);
+   const routes = HttpRouter.add(
+     "POST",
+     "/watch",
+     Effect.gen(function* () {
++      yield* Ref.update(requests, (count) => count + 1);
+       yield* Deferred.succeed(received, undefined);
+       if (!(yield* Ref.get(healthy))) yield* Deferred.await(release);
+       return HttpServerResponse.empty({ status: (yield* Ref.get(healthy)) ? 200 : 503 });
+@@ -34,5 +36,6 @@
+     requested: Deferred.await(received).pipe(Effect.timeout("30 seconds")),
+     fail: Deferred.succeed(release, undefined),
+     recover: Ref.set(healthy, true),
++    requests: Ref.get(requests),
+   };
+ });
+diff --git a/e2e/support/webhook-removal-fixture.ts b/e2e/support/webhook-removal-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/webhook-removal-fixture.ts
+@@ -0,0 +1,149 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { body } from "./api.ts";
++import { connectionsPath, requirementPath } from "./app-accounts.ts";
++import { appLinksFixture, keyProvider } from "./app-links.ts";
++import { Resource } from "./contracts.ts";
++import { oauthSetupIssuer } from "./oauth-setup-issuer.ts";
++import { webhookRegistrationFixture } from "./webhook-registration.ts";
++import {
++  settleWebhookSources,
++  settleWebhookSubscriptions,
++  sourcesAre,
++  webhookSubscriptions,
++} from "./webhook-sources.ts";
++
++export type RemovalFailure = "authored" | "provider" | "oauth" | "storage";
++const Authorization = Schema.Struct({ authorizationUrl: Schema.String });
++
++/** Valid registrations fail later at a real provider or retained credential boundary. */
++export const webhookRemovalFixture = (kind: RemovalFailure) =>
++  Effect.gen(function* () {
++    const provider = yield* webhookRegistrationFixture;
++    const issuer = yield* oauthSetupIssuer;
++    const http = yield* HttpClient.HttpClient;
++    yield* provider.fail;
++    yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
++    const declaration =
++      kind === "oauth"
++        ? `defineProvider({ name: "Removal service", auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } })`
++        : keyProvider("Removal service");
++    const unregister =
++      kind === "authored" || kind === "provider"
++        ? `const response = await ctx.fetch(${JSON.stringify(provider.url)}, { method: "POST" });
++        if (!response.ok) throw ${kind === "provider" ? 'new ProviderError({ reason: "unavailable", status: response.status, accountId: ctx.user.accounts.service.id })' : 'new Error("Synthetic removal failure")'};`
++        : "";
++    const source = `import { defineApp, defineProvider, secrets, object, string, oauth2, router, ProviderError } from "apps";
++const service = ${declaration};
++export default defineApp({ user: { accounts: { service } } }, { tools: router({}), webhooks: {
++  incoming: { account: { user: "service" }, config: object({}), state: object({}),
++    register: async () => ({}), unregister: async ctx => { ${unregister} },
++    handle: async () => new Response("ok") }
++} });`;
++    const f = yield* appLinksFixture([{ path: "index.ts", content: source }]);
++    const { api, actors, prefix, path } = f;
++    const connect = (account?: string) =>
++      Effect.gen(function* () {
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            connectionsPath(path, "user", "service"),
++            account === undefined ? {} : { account },
++          ),
++        );
++        if (kind !== "oauth") {
++          const saved = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/submit`,
++            { method: "key", label: "Synthetic removal account", fields: { token: "synthetic" } },
++          );
++          expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++          return (yield* body(Resource, saved)).id;
++        }
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/oauth/start`,
++          { method: "oauth", label: "Synthetic removal account" },
++        );
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const authorization = yield* body(Authorization, started);
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const consent = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++            expect(consent.status).toBe(302);
++            const location = consent.headers.location;
++            if (location === undefined)
++              return yield* Effect.die("Missing synthetic OAuth callback");
++            return location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++        return (yield* body(Resource, completed)).id;
++      });
++    const account = yield* connect();
++    yield* f.saved(actors.owner, account);
++    const unlink = api.request(
++      actors.owner,
++      "DELETE",
++      `${requirementPath(path, "user", "service")}/${account}`,
++    );
++    let broken = false;
++    const recover = Effect.gen(function* () {
++      yield* provider.recover;
++      yield* issuer.configure({ tokenError: null });
++      if (broken) {
++        expect(yield* connect(account)).toBe(account);
++        broken = false;
++      }
++    });
++    // Cleanup repairs the injected fault even when the regression assertion fails.
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* recover;
++        yield* unlink;
++        const hooks = yield* webhookSubscriptions(actors.owner, path);
++        for (const hook of hooks)
++          if (hook.status !== "stopped")
++            yield* api.request(
++              actors.owner,
++              hook.status === "disabled" ? "POST" : "DELETE",
++              `${path}/webhooks/${hook.id}${hook.status === "disabled" ? "/reconcile" : ""}`,
++            );
++        yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
++          hooks.every((hook) => hook.status === "stopped"),
++        );
++      }).pipe(Effect.orDie),
++    );
++    yield* settleWebhookSources(
++      actors.owner,
++      path,
++      sourcesAre({ [account]: { status: "ready", failure: null } }),
++    );
++    const hooks = yield* webhookSubscriptions(actors.owner, path);
++    expect(hooks).toHaveLength(1);
++    const hook = hooks[0]!;
++    expect(hook.status).toBe("active");
++    const fail = Effect.gen(function* () {
++      if (kind === "oauth") {
++        broken = true;
++        yield* issuer.configure({
++          tokenError: { status: 400, body: { error: "invalid_grant" } },
++        });
++      }
++      if (kind === "storage") {
++        broken = true;
++      }
++    });
++    return { ...f, account, hook, fail, recover, unlink, removalRequests: provider.requests };
++  });
+diff --git a/e2e/support/webhook-removal-case.ts b/e2e/support/webhook-removal-case.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/webhook-removal-case.ts
+@@ -0,0 +1,122 @@
++import { expect } from "@effect/vitest";
++import { Clock, Effect, Schedule, Schema } from "effect";
++import { body } from "./api.ts";
++import { Evidence, Telemetry } from "./evidence.ts";
++import type { webhookRemovalFixture, RemovalFailure } from "./webhook-removal-fixture.ts";
++import { settleWebhookSources, settleWebhookSubscriptions, sourcesAre } from "./webhook-sources.ts";
++
++const Subscription = Schema.Struct({
++  id: Schema.String,
++  status: Schema.String,
++  failure: Schema.NullOr(Schema.String),
++});
++export const removalRecovery = <A, E, R>(
++  kind: RemovalFailure,
++  f: Effect.Success<ReturnType<typeof webhookRemovalFixture>>,
++  beforeThird: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const { api, actors, prefix, app, path, account, hook } = f;
++    const evidence = yield* Evidence;
++    const telemetry = yield* Telemetry;
++    const endpoint = `${path}/webhooks/${hook.id}`;
++    const attempts: Array<typeof Subscription.Type> = [];
++    yield* f.fail;
++    for (const expected of ["stopping", "stopping", "disabled"]) {
++      // The count must survive a process restart rather than start a fresh retry budget.
++      if (attempts.length === 2) yield* beforeThird;
++      const response = yield* api.request(actors.owner, "DELETE", endpoint);
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const result = yield* body(Subscription, response);
++      attempts.push(result);
++      yield* evidence.json("webhook-removal-attempts.json", { kind, attempts });
++      expect(result).toMatchObject({ id: hook.id, status: expected, failure: "unregister" });
++    }
++    if (kind === "authored" || kind === "provider") {
++      // Durable cleanup also calls DELETE again; only an explicit reconcile may resume removal.
++      const held = yield* api.request(actors.owner, "DELETE", endpoint);
++      expect(held.status, JSON.stringify(held.body)).toBe(200);
++      expect(held.body).toMatchObject({ id: hook.id, status: "disabled", failure: "unregister" });
++      expect(yield* f.removalRequests).toBe(3);
++      // Re-saving the same source exercises managed creation with the disabled key.
++      const configured = yield* api.request(
++        actors.owner,
++        "PUT",
++        `${path}/webhook-sources/${account}/config`,
++        { config: {} },
++      );
++      expect(configured.status, JSON.stringify(configured.body)).toBe(200);
++      yield* settleWebhookSources(
++        actors.owner,
++        path,
++        sourcesAre({
++          [account]: { status: "failed", failure: "registration" },
++        }),
++      );
++      expect(yield* f.removalRequests).toBe(3);
++    }
++    // Unlinking cannot discard a registration the provider may still hold.
++    const unlinkStarted = yield* Clock.currentTimeMillis;
++    expect((yield* f.unlink).status).toBe(200);
++    if (kind === "authored" || kind === "provider") {
++      // Observe the source pass caused by this unlink before checking it sent no fourth request.
++      yield* telemetry
++        .search("sdk.webhooks.reconcileSource", {
++          "executor.app.id": app.id,
++          "executor.account.id": account,
++        })
++        .pipe(
++          Effect.repeat({
++            schedule: Schedule.spaced("100 millis"),
++            until: (result) =>
++              result.data.some(({ span }) => Date.parse(span.startTime) >= unlinkStarted),
++          }),
++        );
++      expect(yield* f.removalRequests).toBe(3);
++    }
++    const protectedAccount = yield* api.request(
++      actors.owner,
++      "DELETE",
++      `${prefix}/accounts/${account}`,
++    );
++    expect(protectedAccount.status, JSON.stringify(protectedAccount.body)).toBe(409);
++    expect(protectedAccount.body).toMatchObject({ _tag: "AccountWebhooksActive" });
++    const setup = yield* api.request(
++      actors.owner,
++      "GET",
++      `${prefix}/webhook-setup/${app.id}/${hook.id}`,
++    );
++    expect(setup.status, JSON.stringify(setup.body)).toBe(200);
++    expect(setup.body).toMatchObject({
++      step: "remove",
++      subscription: { id: hook.id, status: "disabled" },
++    });
++    if (kind === "authored") {
++      // A person confirms cleanup at the provider; confirmation releases the dependency.
++      const confirmed = yield* api.request(actors.owner, "POST", `${endpoint}/confirm-removal`);
++      expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
++      expect(confirmed.body).toMatchObject({ id: hook.id, status: "stopped", failure: null });
++    } else {
++      yield* f.recover;
++      const resumed = yield* api.request(actors.owner, "POST", `${endpoint}/reconcile`);
++      expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
++      expect(resumed.body).toMatchObject({ id: hook.id, status: "stopped", failure: null });
++    }
++    yield* f.recover;
++    yield* f.unlink;
++    yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
++      hooks.every((hook) => hook.status === "stopped"),
++    );
++    const releasedAccount = yield* api.request(
++      actors.owner,
++      "DELETE",
++      `${prefix}/accounts/${account}`,
++    );
++    expect(releasedAccount.status, JSON.stringify(releasedAccount.body)).toBe(200);
++    yield* evidence.json("webhook-removal-recovered.json", {
++      kind,
++      terminalAfter: attempts.length,
++      manualConfirmation: kind === "authored",
++      recoveredSubscription: hook.id,
++    });
++  });
+diff --git a/e2e/tests/webhook-removal-recovery.spec.ts b/e2e/tests/webhook-removal-recovery.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/webhook-removal-recovery.spec.ts
+@@ -0,0 +1,25 @@
++import { layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { webhookRemovalFixture } from "../support/webhook-removal-fixture.ts";
++import { removalRecovery } from "../support/webhook-removal-case.ts";
++import { scenarios } from "../test-plan.ts";
++
++const cases = [
++  ["authored", scenarios.webhookRemovalAuthored],
++  ["provider", scenarios.webhookRemovalProvider],
++  ["oauth", scenarios.webhookRemovalReconnect],
++] as const;
++
++layer(HostedLive, { excludeTestServices: true })("Webhook removal recovery", (it) => {
++  for (const [kind, plan] of cases)
++    it.effect(plan.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const f = yield* webhookRemovalFixture(kind);
++          yield* removalRecovery(kind, f, Effect.void);
++        }),
++      ),
++    );
++});
+diff --git a/e2e/tests/webhook-removal-storage.spec.ts b/e2e/tests/webhook-removal-storage.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/webhook-removal-storage.spec.ts
+@@ -0,0 +1,28 @@
++import { layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { webhookRemovalFixture } from "../support/webhook-removal-fixture.ts";
++import { removalRecovery } from "../support/webhook-removal-case.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Webhook removal storage recovery", (it) => {
++  it.effect(scenarios.webhookRemovalUnreadable.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* webhookRemovalFixture("storage");
++        yield* f.fail;
++        yield* legacyStorage([
++          {
++            sql: "update executor_accounts set encrypted_credentials=decode('123456','hex') where id=$1",
++            params: [f.account],
++          },
++        ]);
++        yield* serverControl("start");
++        yield* removalRecovery("storage", f, serverControl("restart"));
++      }),
++    ),
++  );
++});

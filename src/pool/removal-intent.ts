@@ -1,6 +1,7 @@
 import { homeReferences } from "./home-references.ts";
-import { object, readBody, text } from "./json.ts";
-import { openEnvelope } from "./token.ts";
+import { PoolDependencyFailure } from "./dependency-failure.ts";
+import { ControlFailure, object, readBody, text } from "./json.ts";
+import { openEnvelope, PoolSigningFailure } from "./token.ts";
 
 export const removalIntentPath = "/pool/v1/account-removal-intents";
 export const removalIntentPrefix = "sbrm1";
@@ -27,7 +28,13 @@ export async function handleRemovalIntent(
   try {
     const bytes = await readBody(request, 8192);
     if (bytes === undefined) return new Response(null, { status: 413 });
-    const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    let body: unknown;
+    try {
+      body = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return new Response(null, { status: 400 });
+    }
     const value =
       object(body) && typeof body.envelope === "string"
         ? await openEnvelope(
@@ -70,7 +77,13 @@ export async function handleRemovalIntent(
       value.at,
     );
     return new Response(null, { status: recorded ? 204 : 409 });
-  } catch {
+  } catch (error) {
+    if (
+      !(error instanceof PoolSigningFailure) &&
+      !(error instanceof PoolDependencyFailure) &&
+      !(error instanceof ControlFailure && error.status === 503)
+    )
+      throw error;
     return Response.json({ error: "removal_intent_unavailable" }, { status: 503 });
   }
 }

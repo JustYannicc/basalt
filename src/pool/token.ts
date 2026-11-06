@@ -42,10 +42,29 @@ function fromBase64url(value: string): Uint8Array<ArrayBuffer> | undefined {
   }
 }
 
+export class PoolSigningFailure extends Error {
+  readonly _tag = "PoolSigningFailure";
+  constructor(cause: unknown) {
+    super("Pool signing is unavailable", { cause });
+  }
+}
+
+async function cryptoOperation<A>(operation: Promise<A>): Promise<A> {
+  try {
+    return await operation;
+  } catch (cause) {
+    if (!(cause instanceof DOMException)) throw cause;
+    throw new PoolSigningFailure(cause);
+  }
+}
+
 function signingKey(secret: string, usage: "sign" | "verify") {
-  if (!isSigningKey(secret)) throw new Error("Pool signing key must be 32 bytes of hex");
+  if (!isSigningKey(secret))
+    throw new PoolSigningFailure(new Error("Pool signing key must be 32 bytes of hex"));
   const raw = Uint8Array.from(secret.match(/../g)!, (pair) => Number.parseInt(pair, 16));
-  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [usage]);
+  return cryptoOperation(
+    crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [usage]),
+  );
 }
 
 /** `prefix.payload.signature`, the payload being base64url JSON. Prefixes keep kinds apart. */
@@ -55,10 +74,8 @@ export async function signEnvelope(
   value: unknown,
 ): Promise<string> {
   const signed = `${prefix}.${base64url(encoder.encode(JSON.stringify(value)))}`;
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    await signingKey(secret, "sign"),
-    encoder.encode(signed),
+  const signature = await cryptoOperation(
+    crypto.subtle.sign("HMAC", await signingKey(secret, "sign"), encoder.encode(signed)),
   );
   return `${signed}.${base64url(new Uint8Array(signature))}`;
 }
@@ -75,11 +92,13 @@ export async function openEnvelope(
   const signature = fromBase64url(parts[2]!);
   const payload = fromBase64url(parts[1]!);
   if (!signature || !payload) return undefined;
-  const valid = await crypto.subtle.verify(
-    "HMAC",
-    await signingKey(secret, "verify"),
-    signature,
-    encoder.encode(`${prefix}.${parts[1]}`),
+  const valid = await cryptoOperation(
+    crypto.subtle.verify(
+      "HMAC",
+      await signingKey(secret, "verify"),
+      signature,
+      encoder.encode(`${prefix}.${parts[1]}`),
+    ),
   );
   if (!valid) return previousSecret ? openEnvelope(previousSecret, prefix, envelope) : undefined;
   try {

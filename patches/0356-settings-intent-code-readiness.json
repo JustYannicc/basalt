@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-settings-intent-code-readiness",
+  "file": "0356-settings-intent-code-readiness.patch",
+  "content_sha256": "2ee1fd57b91951cd8677def409e73f5edafb0d29d9c17bb22e02692fce3d017c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
