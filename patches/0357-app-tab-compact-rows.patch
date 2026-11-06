@@ -1,8 +1,8 @@
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ca8548a..8ef2444 100644
+index df7afa5..a44aec3 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9983,6 +9983,17 @@ export const scenarios = plan({
+@@ -10031,6 +10031,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account rows."),
      },
    },
@@ -156,7 +156,7 @@ index e16c564..ba38d58 100644
 +  );
  });
 diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
-index 757f1f8..1f85e44 100644
+index 757f1f8..9da7754 100644
 --- a/packages/ui/src/implementation/dashboard/account-actions.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
 @@ -1,7 +1,15 @@
@@ -233,15 +233,16 @@ index 757f1f8..1f85e44 100644
        </DropdownMenuTrigger>
        {/* Long labels, such as an identity's app name, wrap within a phone's width. */}
        <DropdownMenuContent align="end" collisionPadding={16} className="min-w-44 max-w-72">
-@@ -64,6 +81,66 @@ export function AccountActionsMenu({
+@@ -64,6 +81,67 @@ export function AccountActionsMenu({
    );
  }
  
 +/**
 + * The ⋯ for a row the host gives no menu of its own, such as a grouped identity or a host-provisioned
-+ * app account: the row's own actions (usage, Details, adding an app for the identity), and, with
-+ * `manage`, each grouped sign-in's own actions in a dialog. Like every row with a menu, its checks
-+ * and requested access open with Details. A row with no actions of its own gets no menu.
++ * app account: the row's own actions (usage, Details, checking every sign-in, adding an app for
++ * the identity), and, with `manage`, each grouped sign-in's own actions in a dialog. Like every
++ * row with a menu, its checks and requested access open with Details. A row with no actions of its
++ * own gets no menu.
 + */
 +export function AccountOwnActionsMenu({
 +  title,
@@ -301,7 +302,7 @@ index 757f1f8..1f85e44 100644
  export function AccountDialog({
    title,
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index 7666908..d21dcb2 100644
+index b5cfbe9..d328b7f 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -2,7 +2,15 @@ import type { AccountObservationRecord, App } from "@executor-js/sdk";
@@ -321,9 +322,9 @@ index 7666908..d21dcb2 100644
  import { HugeiconsIcon } from "@hugeicons/react";
  import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
  import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
-@@ -106,7 +114,9 @@ export function AccountObservations<E>({
+@@ -119,7 +127,9 @@ export function AccountObservations<E>({
    const blocked = view === undefined ? undefined : refreshBlocked(view, now, format);
-   const hasDetails = reported || health !== undefined;
+   const hasDetails = reported || health !== undefined || checks !== undefined;
    const setUsage = row?.setUsage;
 -  useEffect(() => {
 +  // Set before paint, like the menu's presence, so a row without a host menu never shows its
@@ -332,7 +333,7 @@ index 7666908..d21dcb2 100644
      if (setUsage === undefined) return;
      setUsage(
        hasDetails
-@@ -118,7 +128,10 @@ export function AccountObservations<E>({
+@@ -131,7 +141,10 @@ export function AccountObservations<E>({
          : undefined,
      );
    }, [setUsage, hasDetails, reported, pending, blocked]);
@@ -341,11 +342,11 @@ index 7666908..d21dcb2 100644
 +    () => (setUsage === undefined ? undefined : () => setUsage(undefined)),
 +    [setUsage],
 +  );
-   if (!reported && health === undefined && !AsyncResult.isFailure(result)) return null;
+   if (!reported && !hasDetails && !AsyncResult.isFailure(result)) return null;
    const fact = (detailsOnly: boolean) => (
      <UsageFact
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index 42551ec..d9d543f 100644
+index 1d94857..ad97140 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -17,11 +17,8 @@ import {
@@ -366,10 +367,10 @@ index 42551ec..d9d543f 100644
  import { useEffect, useRef, useState, type ReactNode } from "react";
 -import { AccountActionsMenu } from "./account-actions.tsx";
 +import { AccountOwnActionsMenu } from "./account-actions.tsx";
+ import type { AccountSignIn } from "./account-sign-in-checks.tsx";
  import { QueryResult, useQuery, useDashboard } from "./context.tsx";
  import { HugeiconsIcon } from "@hugeicons/react";
- import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
-@@ -54,8 +51,6 @@ import { accountMenuName } from "../../contracts/account-title.ts";
+@@ -55,8 +52,6 @@ import { accountMenuName } from "../../contracts/account-title.ts";
  import { RequestedAccess } from "./oauth-scopes.tsx";
  import { Button } from "../components/button.tsx";
  import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
@@ -378,7 +379,7 @@ index 42551ec..d9d543f 100644
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
  
-@@ -370,7 +365,7 @@ function AccountsList({
+@@ -382,7 +377,7 @@ function AccountsList({
                      {/* Renders only its dialog here; it offers itself from the row's one menu. */}
                      {account.identity !== undefined && identityActions?.(bindings, data)}
                      {bindings.length > 1 ? (
@@ -387,7 +388,7 @@ index 42551ec..d9d543f 100644
                          title={accountTitle(account, undefined, accountKindLabel(data, account))}
                          manage={
                            <OutsideAccountRow>
-@@ -402,7 +397,7 @@ function AccountsList({
+@@ -414,7 +409,7 @@ function AccountsList({
                          }
                        />
                      ) : accountActions === undefined ? (
@@ -396,15 +397,16 @@ index 42551ec..d9d543f 100644
                          title={accountTitle(account, undefined, accountKindLabel(data, account))}
                        />
                      ) : (
-@@ -463,57 +458,3 @@ function AccountsList({
+@@ -487,58 +482,3 @@ function AccountsList({
      </>
    );
  }
 -
 -/**
 - * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
-- * actions (usage, Details, adding an app for the identity), and each grouped sign-in's own actions
-- * in a dialog. Like every row with a menu, its checks and requested access open with Details.
+- * actions (usage, Details, checking every sign-in, adding an app for the identity), and each
+- * grouped sign-in's own actions in a dialog. Like every row with a menu, its checks and requested
+- * access open with Details.
 - */
 -function IdentityRowMenu({
 -  title,
@@ -455,20 +457,18 @@ index 42551ec..d9d543f 100644
 -  );
 -}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index e50fafe..2c6d6d4 100644
+index e50fafe..5298464 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -25,8 +25,10 @@ import {
-   type Query,
- } from "../../contracts/dashboard.ts";
- import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
-+import { accountMenuName } from "../../contracts/account-title.ts";
- import { AppProviderIcon, ProviderIcon } from "./common.tsx";
- import { AccountCheckResult } from "./account-health.tsx";
+@@ -44,6 +44,8 @@ import {
+   type AccountRowInput,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, appRowHealth } from "./account-row-health.tsx";
 +import { AccountOwnActionsMenu } from "./account-actions.tsx";
++import { accountMenuName } from "../../contracts/account-title.ts";
  import {
-   AccountRowCells,
-   AccountRowDescription,
+   AccountRequestsCell,
+   AccountTrafficDetails,
 @@ -128,6 +130,19 @@ const accountName = (account: AccountSummary, kind?: string) =>
  export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
    accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
