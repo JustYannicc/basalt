@@ -49,7 +49,8 @@ export const verifyRuntimeDatabaseBudget = (
             DATABASE_BUDGET_DEPLOYMENT: options.deployment.pipe(Output.map(() => "deployed")),
           },
           memo: false,
-          timeout: "3 minutes",
+          // The new readiness command reserves teardown time outside the 180-second startup budget.
+          timeout: "185 seconds",
         })
       : undefined;
     return yield* Command.Exec(id, {

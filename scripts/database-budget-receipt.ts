@@ -20,6 +20,7 @@ export interface BudgetReceipt {
   target?: Pick<RuntimeReady, "candidate" | "workerInput" | "imageHash">;
   operationStartedAt?: number;
   overallDeadlineMs?: number;
+  commandDeadlineMs?: number;
   outcome: BudgetOutcome;
   stage: BudgetStage;
   elapsedMs: number;

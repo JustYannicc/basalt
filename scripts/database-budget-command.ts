@@ -9,6 +9,8 @@ import {
   type BudgetReceipt,
 } from "./database-budget-receipt.ts";
 
+export const databaseVerificationCommandMs = 115_000;
+
 function list(value: string | undefined) {
   const parsed: unknown = JSON.parse(value ?? "null");
   if (
@@ -65,6 +67,7 @@ export async function runDatabaseBudgetCommand(
     target,
     operationStartedAt,
     overallDeadlineMs: databaseVerificationOverallMs,
+    commandDeadlineMs: args.includes("--ready") ? 180_000 : databaseVerificationCommandMs,
     elapsedMs: now() - operationStartedAt,
   });
   const mode = args.includes("--ready") ? "ready" : "verify";
@@ -89,7 +92,9 @@ export async function runDatabaseBudgetCommand(
     const remaining = overallDeadline - now();
     if (!Number.isFinite(remaining) || remaining <= 0)
       throw new Error("Overall verification bound expired");
-    const operation = timeout(mode === "ready" ? 180_000 : remaining);
+    const operation = timeout(
+      mode === "ready" ? 180_000 : Math.min(remaining, databaseVerificationCommandMs),
+    );
     const startup = mode === "ready" ? operation : AbortSignal.any([operation, timeout(180_000)]);
     if (worker) {
       const opening = open({
