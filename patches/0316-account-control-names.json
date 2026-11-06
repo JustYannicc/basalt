@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-control-names",
+  "file": "0316-account-control-names.patch",
+  "content_sha256": "ae8d8fb93b041cc753901a3dd7d026f19f6671341098dbf340275d25e347ee30",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
