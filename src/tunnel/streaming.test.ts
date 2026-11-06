@@ -62,6 +62,91 @@ test("provider close drains queued WebSocket output after withheld credit is gra
   socket.stop();
 });
 
+test("a socket error after provider close preserves output waiting for credit", async () => {
+  const peer = new Peer();
+  const output = new TunnelOutput();
+  const frames: TunnelServerFrame[] = [];
+  const failures: unknown[] = [];
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const socket = new TunnelWebSocket(
+    peer,
+    7,
+    output,
+    (frame) => frames.push(frame),
+    (failure) => failures.push(failure),
+    finish,
+  );
+  peer.message("retained-after-close");
+  peer.close();
+  peer.dispatchEvent(
+    Object.assign(new Event("error"), { error: new Error("Network connection lost.") }),
+  );
+  assert.deepEqual(failures, [], "A closed provider cannot invalidate already received output");
+  assert.equal(frames.length, 0);
+  output.grant(tunnelLimits.windowBytes);
+  await finished;
+  assert.equal(frames.length, 1);
+  const frame = frames[0];
+  assert.equal(frame?.type, "data");
+  if (frame?.type === "data")
+    assert.equal(Buffer.from(frame.bytes, "base64").toString(), "retained-after-close");
+  socket.stop();
+});
+
+test("a socket error before provider close reports unavailable with an unknown outcome", async (context) => {
+  context.mock.method(console, "warn", () => {});
+  const peer = new Peer();
+  const frames: TunnelServerFrame[] = [];
+  const operation = new TunnelOperation(
+    {
+      v: 1,
+      type: "open",
+      id: 7,
+      operation: {
+        service: "models",
+        method: "GET",
+        path: "/v1/responses",
+        transport: "websocket",
+      },
+      headers: {},
+    },
+    (frame) => frames.push(frame),
+    () => {},
+  );
+  const response = new Response(null);
+  Object.defineProperties(response, { status: { value: 101 }, webSocket: { value: peer } });
+  await operation.run(
+    new Request("https://router.example/native/v1/tunnel", {
+      headers: { authorization: "Bearer synthetic" },
+    }),
+    {
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      TOOLS_SERVICE: {
+        fetch: async () =>
+          Response.json({
+            id: "native:test",
+            userId: "test",
+            policy: { kind: "native", computer: "test", pool: "test", models: true },
+          }),
+      },
+      POOL_SERVICE: { fetch: async () => response },
+    },
+  );
+  peer.dispatchEvent(
+    Object.assign(new Event("error"), { error: new Error("Network connection lost.") }),
+  );
+  assert.deepEqual(frames.at(-1), {
+    v: 1,
+    type: "error",
+    id: 7,
+    code: "unavailable",
+    outcome: "unknown",
+  });
+});
+
 test("HTTP response chunking is independent of a large upstream read", async () => {
   const expected = new Uint8Array(200000).fill(137);
   const frames: TunnelServerFrame[] = [];
