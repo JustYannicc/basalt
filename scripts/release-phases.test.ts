@@ -200,7 +200,7 @@ test(
     const applicationResources = proof.resources.filter(
       (node) =>
         node.type === "Cloudflare.Worker" ||
-        node.type === "Cloudflare.ContainerApplication" ||
+        node.type === "Cloudflare.Container" ||
         ["Site", "PoolImagePublicationReceipt"].includes(node.id),
     );
     for (const id of [
