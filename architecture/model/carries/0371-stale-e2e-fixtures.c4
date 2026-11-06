@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Acceptance journeys intercept the public app-account creation request and retain its creation identity across a lost response. Query holds precede refresh and prove failure and retry, and loading assertions wait for an observable loading state. Display, menu and tool expectations follow their declared contracts. Only the controlled PostgreSQL startup-failure fixture normalizes ECONNRESET. Managed MCP signing keys cross the private redacted fixture channel, never run metadata or exported evidence. Existing authority, persistence, recovery assertions and deadlines remain intact."
+      constraint "Acceptance journeys intercept the public app-account creation request and retain its creation identity across a lost response. Query holds precede refresh and use the same undeclared-response failure inside or outside a batch before proving retry; loading assertions wait for an observable loading state. Display, menu and tool expectations follow their declared contracts. Only the controlled PostgreSQL startup-failure fixture normalizes ECONNRESET. Managed MCP signing keys survive the runtime-control wrapper and cross the private redacted fixture channel, never run metadata or exported evidence. Existing authority, persistence, recovery assertions and deadlines remain intact."
     }
   }
 }

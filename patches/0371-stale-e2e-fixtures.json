@@ -1,7 +1,7 @@
 {
   "identity": "executor-stale-e2e-fixtures",
   "file": "0371-stale-e2e-fixtures.patch",
-  "content_sha256": "27beb0030683887bb6b38033e3b72268f67901c1c6761717a5af9ef591790472",
+  "content_sha256": "b6648f5a5fb19f73f8ab311d7a0e218f6fa6068fe621a89e30add85e6359aded",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -66,6 +66,16 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      yield* fixtureRequest(fixtures, "/configure", {
        origin: input.origin,
        stage: "local",
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+--- a/e2e/support/cloud-runtime-control.ts
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -97,5 +97,5 @@
+     );
+     const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+     if (!("port" in server.address)) return yield* Effect.die("Cloud runtime control requires TCP");
+-    return { origin: `http://127.0.0.1:${server.address.port}`, token: fixtures.token };
++    return { ...fixtures, origin: `http://127.0.0.1:${server.address.port}` };
+   });
 diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
 --- a/e2e/tests/account-connection-query.spec.ts
 +++ b/e2e/tests/account-connection-query.spec.ts
@@ -236,7 +246,7 @@ diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spe
 +          [actors.organization.id, actors.organization.slug].map(
 +            (id) => `/api/organizations/${id}/apps/${app.id}/tools/index`,
 +          ),
-+          "fail",
++          "undeclared",
 +        );
          const replaced = yield* browser.use("Link Work in place of Personal", (page) =>
            Promise.all([
@@ -254,6 +264,15 @@ diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spe
          yield* browser.use("Open tools after replacing", (page) =>
            page
              .getByRole("navigation", { name: "App navigation" })
+@@ -222,7 +222,7 @@
+         ).toBe(0);
+         yield* held.release;
+         yield* browser.use("The new catalog's failure is visible", (page) =>
+-          page.getByRole("alert", { name: "Can’t reach the server", exact: true }).waitFor(),
++          page.getByRole("alert", { name: "Action unavailable", exact: true }).waitFor(),
+         );
+         yield* browser.use("Retry Work", (page) =>
+           page.getByRole("button", { name: "Try again", exact: true }).click(),
 diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-naming.spec.ts
 --- a/e2e/tests/local-account-naming.spec.ts
 +++ b/e2e/tests/local-account-naming.spec.ts
