@@ -1,0 +1,77 @@
+{
+  "scenarios": {
+    "workflowStatusNativeFailure": {
+      "fixtures": "actors",
+      "title": "Cloud workflow status native failures emit safe native diagnostics",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        }
+      }
+    },
+    "workflowStatusDecodeFailure": {
+      "fixtures": "actors",
+      "title": "Cloud workflow status decode failures emit safe native diagnostics",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        }
+      }
+    },
+    "workflowStatusResponseFailure": {
+      "fixtures": "actors",
+      "title": "Cloud workflow status response failures emit safe native diagnostics",
+      "targets": {
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        },
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "The native Cloud workflow boundary is exercised by managed Cloud."
+        }
+      }
+    }
+  },
+  "runs": {
+    "workflowStatusNativeFailure": ["declared:cloud"],
+    "workflowStatusDecodeFailure": ["declared:cloud"],
+    "workflowStatusResponseFailure": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/workflows.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflows.ts",
+    ".upstream/apps/hosted/server/src/implementation/middleware.ts",
+    ".upstream/apps/hosted/server/package.json",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/web/src/contracts/errors.ts",
+    ".upstream/apps/hosted/server/src/contracts/workflow-status.ts",
+    ".upstream/apps/hosted/server/src/implementation/workflow-status.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/workflow-status-faults.ts",
+    ".upstream/e2e/tests/workflow-status-diagnostics.spec.ts",
+    ".upstream/e2e/support/workflow-status-log-evidence.ts"
+  ]
+}
