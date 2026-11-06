@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-reset-singular",
+  "file": "0335-reset-singular.patch",
+  "content_sha256": "6ce642f553ef59ccb5435735a24a1e8e2149278a3cde9d37bb29398c2a8325c0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

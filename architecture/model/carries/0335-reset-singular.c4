@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An account's reported amounts read one of a known plural unit, such as banked resets, credits, requests or tokens, in the singular, so one banked reset reads as one reset in Details; any other unit keeps the spelling its provider reported."
+    }
+  }
+}
