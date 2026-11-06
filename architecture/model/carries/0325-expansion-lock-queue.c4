@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Expansion setup follows the captured SDK delete backend through queued writers to the held newly linked app. Forced cron isolates that synthetic source; the same delete identity, account-lock probe, public completion assertions and deadline remain authoritative. Reconnect keeps its direct backend observation."
+      constraint "Expansion setup follows the captured SDK delete backend through queued writers to the held newly linked app. Forced cron isolates that synthetic source; the same delete identity, account-lock probe, public completion assertions and deadline remain authoritative. Reconnect keeps its direct backend observation. Synthetic leases register cleanup before mutation, and a failed reset fails the scenario."
     }
   }
 }

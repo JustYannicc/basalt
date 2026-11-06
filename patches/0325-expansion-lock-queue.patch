@@ -29,6 +29,14 @@
 +        )
 +        .pipe(Effect.flatMap((response) => response.text)),
 +    );
++    yield* Effect.addFinalizer(() =>
++      locks
++        .run({
++          sql: "update executor_webhook_sources set lease = null, lease_until = now() where app = $1 and account = $2 and lease = 'contention-fixture'",
++          params: [app, account],
++        })
++        .pipe(Effect.orDie),
++    );
 +    yield* locks
 +      .run({
 +        sql: "update executor_webhook_sources set lease = 'contention-fixture', lease_until = now() + interval '5 minutes' where app = $1 and account = $2 and status = 'ready' returning id",
@@ -42,14 +50,6 @@
 +        Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
 +        Effect.orDie,
 +      );
-+    yield* Effect.addFinalizer(() =>
-+      locks
-+        .run({
-+          sql: "update executor_webhook_sources set lease = null, lease_until = now() where app = $1 and account = $2 and lease = 'contention-fixture'",
-+          params: [app, account],
-+        })
-+        .pipe(Effect.ignore),
-+    );
 +  });
  
  export const blocked = (
