@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-ui-ordered-reads",
+  "file": "0374-app-ui-ordered-reads.patch",
+  "content_sha256": "db1bb48da3143eb349b3a74108fbc6b118ad3cc9782f55e3d01b86733a4d9b04",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
