@@ -287,19 +287,21 @@ test("the fast lane checks all current omissions and the known compact row stays
       (record) => record.id === "listed-account-bindings.spec.ts#listedBindingCompactRow",
     )?.selected,
   );
+  const recipe = records.find((record) => record.id === "e2e/pool-recipe-checks.mjs")!;
+  assert.ok(recipe.selected);
   const errors = coverageErrors(records, []);
-  assert.ok(errors.some((error) => error.includes("e2e/pool-recipe-checks.mjs")));
+  assert.ok(errors.some((error) => error.includes("tool-call-batch.spec.ts#toolCallBatch")));
   const workflow = readWorkflow();
   assert.ok(
     workflow.jobs.fast!.steps!.some(
       (step) => step.run === "bun scripts/ci/check-e2e-coverage.ts" && step.if === undefined,
     ),
   );
-  workflow.jobs["contributed-account-recipes"]!.steps!.push({
-    run: "node e2e/pool-recipe-checks.mjs",
-  });
   assert.ok(
-    coverageErrors(realInventory(workflow), baseline()).some((error) =>
+    coverageErrors(records, [
+      ...baseline(),
+      { reason: "Stale #578 baseline", entries: { [recipe.id]: recipe.fingerprint } },
+    ]).some((error) =>
       error.includes("Remove stale E2E exception now selected by CI: e2e/pool-recipe-checks.mjs"),
     ),
   );

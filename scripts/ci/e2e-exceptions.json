@@ -871,16 +871,6 @@
     }
   },
   {
-    "reason": "Temporary #578 / #574: pool recipe acceptance and its exclusive helpers are broken on main. The owning fix must wire the runner and remove these exceptions; CI rejects any exception as soon as its identity is reachable.",
-    "entries": {
-      "e2e/pool-recipe-checks.mjs": "bfde0e06d79e6505498fac000f374814aea98662f131d07344666387987031ed",
-      "e2e/recipes/pool-check-failures.mjs": "59ccdcc6d01414bdad1e1738ae75be35791c27bc0c148a52b64f76250a298f14",
-      "e2e/recipes/pool-journeys.mjs": "66810ef85d9afc888ceed326cfa4f4a8a13471fe5fb93f356c5c62ac65fab8ab",
-      "e2e/recipes/pool-negative-controls.mjs": "e7c3583a02c4d31d79e1917d87ffa87c80e362a127205a95497902c47fb624c8",
-      "e2e/recipes/pool-scenario.mjs": "108ba25191160db960c4e29e57d9e8d77da2e8d54c765a3d60390ebf88e47aae"
-    }
-  },
-  {
     "reason": "The original Slack native Claude proof requires an authenticated external Claude client and runs manually via scripts/check-slack.ts. The isolated CI Slack health and fixture tests run separately. These manual helpers and their type declaration remain frozen.",
     "entries": {
       "e2e/slack/browser.mjs": "c6a7f9db85edd6a9a0f17e8fef7156cd94c76fff4fc404b5a9ddc0d8d403a770",
