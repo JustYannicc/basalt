@@ -1,0 +1,39 @@
+{
+  "scenarios": {
+    "settingsLoading": {
+      "fixtures": "actors",
+      "title": "Settings render on the server and keep their layout while members load in the browser",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Organization settings are hosted only."
+        }
+      }
+    }
+  },
+  "inherited": ["apiKeysLoading"],
+  "runs": {
+    "settingsLoading": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.organization.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.organization.tsx",
+    ".upstream/apps/hosted/web/src/contracts/organization-reference.ts",
+    ".upstream/apps/hosted/web/src/contracts/organization.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/dashboard-frame.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/organization-members.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/organization.tsx",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
+    ".upstream/packages/ui/src/contracts/refresh.ts"
+  ]
+}

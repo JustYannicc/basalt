@@ -50,6 +50,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home provides validated connection limits, idle and lifetime expiry, preserves direct transport and advisory locks, exposes pool wait counters, and passes bounded concurrent load with config apply and liveness plus maintenance and log writes without changing deadlines."
           }
+        },
+        {
+          "identity": "cliproxy-home-transaction-schema-owner",
+          "file": "0314-home-transaction-owner.patch",
+          "sha256": "d00e8a208e84abbf6a1caad538fcfdb6312abce98ac41e8161be1b6630b95f16",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home selects a configured stable schema owner inside each existing PostgreSQL DDL transaction, preserves owner identity and retained schema/privacy data through transaction pooling, resets the role on commit and rollback, and passes the real multi-process shared-budget and pooled liveness proofs."
+          }
         }
       ]
     },

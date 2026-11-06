@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "Previewing a saved identity's reuse plans the app requirements themselves, with the same comparison as a saved connection's plan, so opening an app's form for a new account saves nothing; the saved identity stays preselected and its plan still runs as the form opens. The requirement plan applies the checks creating each requirement's connection would: requirement access, a connectable provider, the caller's own destination and use of the saved account. Its placement is the one a new connection of the caller would get, each host stating that rule; a connection is created only to reuse or sign in. A provider whose site starts at its default origin reads that site's OAuth setup without a connection."
+    }
+  }
+}

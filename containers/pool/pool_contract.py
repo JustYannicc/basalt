@@ -100,17 +100,19 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
         raise
 
 
-def cluster_yaml(database_url: str) -> str:
+def cluster_yaml(database_url: str, schema_owner: str = "") -> str:
     # A JSON-quoted scalar is valid YAML and preserves URI query/credential bytes.
     parsed = urllib.parse.urlsplit(database_url)
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query = [(key, value) for key, value in query if key != "application_name"]
     query.append(("application_name", "basalt-home"))
     encoded_url = json.dumps(urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query))))
+    owner_yaml = f"  schema-owner: {json.dumps(schema_owner)}\n" if schema_owner else ""
     return (
         "pgsql:\n"
         f"  postgres_uri: {encoded_url}\n"
         "  max-open-conns: 6\n"
+        f"{owner_yaml}"
         "  max-idle-conns: 6\n"
         "  conn-max-idle-time: 5m\n"
         "  conn-max-lifetime: 30m\n"

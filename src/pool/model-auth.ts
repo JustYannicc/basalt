@@ -64,7 +64,6 @@ export async function hasActiveHomeApiKey(
     connectionString,
     connectionTimeoutMillis: connectionTimeoutMs,
     query_timeout: queryTimeoutMs,
-    statement_timeout: queryTimeoutMs,
   });
   // A request owns this connection; query/connect promises carry errors to the caller.
   client.on("error", () => {});
@@ -75,13 +74,22 @@ export async function hasActiveHomeApiKey(
     timer = setTimeout(() => {
       expired = true;
       // pg@8.16.3's graceful end can wait on a half-open connection.
-      try { client.connection.stream.destroy(); } catch { /* Still refuse the timed-out lookup. */ }
+      try {
+        client.connection.stream.destroy();
+      } catch {
+        /* Still refuse the timed-out lookup. */
+      }
       reject(new Error("Pool authentication deadline exceeded"));
     }, lookupTimeoutMs);
   });
   const query = async () => {
+    let transactionOpen = false;
     try {
       await client.connect();
+      await client.query("BEGIN TRANSACTION READ ONLY");
+      transactionOpen = true;
+      await client.query(`SET LOCAL statement_timeout = '${queryTimeoutMs}ms'`);
+      let active = false;
       for (const candidate of candidates) {
         if (expired) throw new Error("Pool authentication deadline exceeded");
         const result = await client.query<{ active: boolean }>(
@@ -91,9 +99,17 @@ export async function hasActiveHomeApiKey(
           ) AS active`,
           [candidate],
         );
-        if (result.rows[0]?.active === true) return true;
+        if (result.rows[0]?.active === true) {
+          active = true;
+          break;
+        }
       }
-      return false;
+      await client.query("COMMIT");
+      transactionOpen = false;
+      return active;
+    } catch (error) {
+      if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+      throw error;
     } finally {
       await client.end();
     }

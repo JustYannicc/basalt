@@ -5,17 +5,25 @@ import { retain } from "alchemy/RemovalPolicy";
 import { Effect, FileSystem } from "effect";
 import { fileURLToPath } from "node:url";
 
-/** Worker requests share Hyperdrive's pool; the container keeps its direct URL. */
+/** Hyperdrive and Home share the same PgBouncer backend budget. */
 export const poolWorkerDatabase = (origin: Output.Output<Planetscale.PostgresOrigin, never>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     // Reuse the tools service's retained trust root, including on a first deploy.
-    const authority = yield* Cloudflare.MtlsCertificate.MtlsCertificate("DatabaseCertificateAuthority", {
-      ca: true,
-      certificates: yield* fs.readFileString(fileURLToPath(new URL(
-        "../../.upstream/apps/hosted/cloud/certificates/isrg-root-x1.pem", import.meta.url,
-      ))),
-    }).pipe(retain());
+    const authority = yield* Cloudflare.MtlsCertificate.MtlsCertificate(
+      "DatabaseCertificateAuthority",
+      {
+        ca: true,
+        certificates: yield* fs.readFileString(
+          fileURLToPath(
+            new URL(
+              "../../.upstream/apps/hosted/cloud/certificates/isrg-root-x1.pem",
+              import.meta.url,
+            ),
+          ),
+        ),
+      },
+    ).pipe(retain());
     return yield* Cloudflare.Hyperdrive.Connection("PoolModelDatabaseConnection", {
       origin,
       caching: { disabled: true },

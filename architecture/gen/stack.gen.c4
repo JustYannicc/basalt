@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "0fbaa0ec17cc706ae8ea9e6aec374168dd027be85e082f4cbd0a81a728f1e758" }
+    metadata { bindings "d5589bca3033f5e88323e650850fea36976a3bad7d1bf27802902ee42ad79454" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -32,6 +32,23 @@ deployment {
       workflow resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb "Site" {
         app = instanceOf basalt.clientAssets {
           metadata { resource "resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb" }
+        }
+      }
+    }
+    zone group-45b8bdf99f033bc0 "Deployment" {
+      workflow resource-2ac42b2188e42a8df03abcbd9b2e0fa80e880a8ae814d9b936e1c8e84d16a72c "Tools Backend Budget" {
+        app = instanceOf basalt.deployment {
+          metadata { resource "resource-2ac42b2188e42a8df03abcbd9b2e0fa80e880a8ae814d9b936e1c8e84d16a72c" }
+        }
+      }
+      workflow resource-6353343c55aea63ac241ed1d8e072a289e25d38335d42586343b0bed9376240e "Runtime Database Budget" {
+        app = instanceOf basalt.deployment {
+          metadata { resource "resource-6353343c55aea63ac241ed1d8e072a289e25d38335d42586343b0bed9376240e" }
+        }
+      }
+      workflow resource-79431a83dd92b66180f973cac8de89449b6f0aab6fdbd18859a35b188f907ffa "Pool Backend Budget" {
+        app = instanceOf basalt.deployment {
+          metadata { resource "resource-79431a83dd92b66180f973cac8de89449b6f0aab6fdbd18859a35b188f907ffa" }
         }
       }
     }
@@ -335,6 +352,11 @@ views {
   deployment view deployment_group_9aae816a4d380e2d {
     title "Basalt/Deployment/Client assets"
     include deployed.group-9aae816a4d380e2d.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_45b8bdf99f033bc0 {
+    title "Basalt/Deployment/Deployment"
+    include deployed.group-45b8bdf99f033bc0.*
     autoLayout TopBottom
   }
   deployment view worker_resource_247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b {
