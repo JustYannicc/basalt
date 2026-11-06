@@ -1,0 +1,36 @@
+{
+  "scenarios": {
+    "accountDialogNaming": {
+      "fixtures": "actors",
+      "title": "an unnamed API key's menu, dialog description and kind name it as its row does, never as Default or a method key",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a loopback observation service."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted account rows."
+        }
+      }
+    }
+  },
+  "runs": {
+    "accountDialogNaming": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/packages/ui/src/contracts/account-title.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/method-labels.ts"
+  ]
+}

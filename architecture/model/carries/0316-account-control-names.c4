@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "An account's own controls name it as people read it. Its menu announces the name the person gave it, else its row title, so a generated label is never announced. A sign-in inside a grouped identity is named only by what is its own, its provider, kind and number, never by the identity or a value its check reported, so sibling sign-ins keep distinct names. Account dialogs describe what each does in a shared sentence per action, and show the sign-in method by its declared kind, else OAuth or the method's own label, never its method key."
+    }
+  }
+}
