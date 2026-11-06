@@ -61,6 +61,7 @@ test("public managed usage and cap routes require signed host authority and keep
       POOL_MANAGEMENT_KEY: "fixture",
       POOL_APP_SIGNING_KEY: signingKey,
       POOL_IMAGE_HASH: "fixture",
+      TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
     },
   );
   // Only the usage backend is synthetic; exercise the real Router, Worker and signed handler.

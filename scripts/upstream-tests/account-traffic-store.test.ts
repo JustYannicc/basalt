@@ -9,55 +9,81 @@ const { makeAccountTrafficStore, accountTrafficRetention } = (await import(
   new URL("packages/sdk/src/implementation/account-traffic-store.ts", upstream).href
 )) as typeof import("../../.upstream/packages/sdk/src/implementation/account-traffic-store.ts");
 
+const { migrateAccountTraffic } = (await import(
+  new URL("packages/sdk/src/implementation/storage-migrations.ts", upstream).href
+)) as typeof import("../../.upstream/packages/sdk/src/implementation/storage-migrations.ts");
+
 const hour = 3_600_000;
 // Real time: reads keep only the retention window before the clock.
 const now = Date.now();
 const run = <A>(body: Effect.Effect<A, unknown, SqlClient.SqlClient>) =>
-  Effect.runPromise(body.pipe(Effect.provide(pgliteLayer())) as Effect.Effect<A, unknown>);
+  Effect.runPromise(
+    migrateAccountTraffic.pipe(
+      Effect.andThen(body),
+      Effect.provide(pgliteLayer()),
+    ) as Effect.Effect<A, unknown>,
+  );
 
-test("counts each call per account and hour, with failures and the latest success", () =>
-  run(
-    Effect.gen(function* () {
-      const store = makeAccountTrafficStore(yield* SqlClient.SqlClient);
-      const [a, b] = ["acc_traffic_a", "acc_traffic_b"] as never[];
-      // The table creates itself on the first read, which then lists nothing.
-      assert.deepEqual(yield* store.read({ accounts: [a], from: now - 7 * 24 * hour }), []);
-      yield* store.record({ accounts: [a, b, a], at: now - 2 * hour, ok: true });
-      yield* store.record({ accounts: [a], at: now - 2 * hour + 60_000, ok: false });
-      yield* store.record({ accounts: [a], at: now, ok: true });
-      yield* store.record({ accounts: [b], at: now - 30_000, ok: false });
-      const read = yield* store.read({ accounts: [a, b], from: now - 7 * 24 * hour });
-      const byAccount = Object.fromEntries(read.map((entry) => [entry.account, entry]));
-      const start = (at: number) => Math.floor(at / hour) * hour;
-      assert.deepEqual(byAccount.acc_traffic_a, {
-        account: "acc_traffic_a",
+const start = (at: number) => Math.floor(at / hour) * hour;
+/** The hours `calls` fill, oldest first, bucketed by the time each call was recorded at. */
+const hours = (calls: readonly { readonly at: number; readonly ok: boolean }[]) =>
+  [...Map.groupBy(calls, (call) => start(call.at))]
+    .sort(([a], [b]) => a - b)
+    .map(([at, inHour]) => ({
+      at,
+      requests: inHour.length,
+      failed: inHour.filter((call) => !call.ok).length,
+    }));
+
+// The real clock, and clocks pinned just past and just before an hour boundary (in the previous
+// hour, inside retention), where calls seconds apart land in different hours.
+const thisHour = start(now);
+for (const [clock, at] of [
+  ["the current time", now],
+  ["ten seconds into an hour", thisHour - hour + 10_000],
+  ["ten seconds before an hour ends", thisHour - 10_000],
+] as const)
+  test(`counts each call per account and hour, with failures and the latest success, at ${clock}`, () =>
+    run(
+      Effect.gen(function* () {
+        const store = makeAccountTrafficStore(yield* SqlClient.SqlClient);
+        const [a, b] = ["acc_traffic_a", "acc_traffic_b"] as never[];
+        // A migrated table with nothing counted lists nothing.
+        assert.deepEqual(yield* store.read({ accounts: [a], from: at - 7 * 24 * hour }), []);
+        const early = { at: at - 2 * hour, ok: true };
+        const earlyFailure = { at: at - 2 * hour + 60_000, ok: false };
+        const latest = { at, ok: true };
+        const recentFailure = { at: at - 30_000, ok: false };
+        yield* store.record({ accounts: [a, b, a], ...early });
+        yield* store.record({ accounts: [a], ...earlyFailure });
+        yield* store.record({ accounts: [a], ...latest });
+        yield* store.record({ accounts: [b], ...recentFailure });
+        const read = yield* store.read({ accounts: [a, b], from: at - 7 * 24 * hour });
+        const byAccount = Object.fromEntries(read.map((entry) => [entry.account, entry]));
         // A call naming the same account twice counts once for it.
-        hours: [
-          { at: start(now - 2 * hour), requests: 2, failed: 1 },
-          { at: start(now), requests: 1, failed: 0 },
-        ],
-        lastSuccessAt: now,
-      });
-      // A failure never moves the latest success.
-      assert.deepEqual(byAccount.acc_traffic_b, {
-        account: "acc_traffic_b",
-        hours: [
-          { at: start(now - 2 * hour), requests: 1, failed: 0 },
-          { at: start(now), requests: 1, failed: 1 },
-        ],
-        lastSuccessAt: now - 2 * hour,
-      });
-      // Only the asked accounts, and only hours since `from`; the latest success still shows.
-      const recent = yield* store.read({ accounts: [a], from: now - 30 * 60_000 });
-      assert.deepEqual(recent, [
-        {
+        assert.deepEqual(byAccount.acc_traffic_a, {
           account: "acc_traffic_a",
-          hours: [{ at: start(now), requests: 1, failed: 0 }],
-          lastSuccessAt: now,
-        },
-      ]);
-    }),
-  ));
+          hours: hours([early, earlyFailure, latest]),
+          lastSuccessAt: at,
+        });
+        // A failure never moves the latest success.
+        assert.deepEqual(byAccount.acc_traffic_b, {
+          account: "acc_traffic_b",
+          hours: hours([early, recentFailure]),
+          lastSuccessAt: at - 2 * hour,
+        });
+        // Only the asked accounts, and only hours since `from`; the latest success still shows.
+        const from = at - 30 * 60_000;
+        const recent = yield* store.read({ accounts: [a], from });
+        assert.deepEqual(recent, [
+          {
+            account: "acc_traffic_a",
+            hours: hours([early, earlyFailure, latest]).filter((entry) => entry.at >= start(from)),
+            lastSuccessAt: at,
+          },
+        ]);
+      }),
+    ));
 
 test("an account with only failures has no latest success, and old hours are dropped", () =>
   run(
@@ -83,7 +109,7 @@ test("an account with only failures has no latest success, and old hours are dro
     }),
   ));
 
-test("concurrent first calls create the table once and lose no count", () =>
+test("concurrent calls lose no count", () =>
   run(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

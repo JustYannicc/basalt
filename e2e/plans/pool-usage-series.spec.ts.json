@@ -31,6 +31,10 @@
     ".upstream/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
     "apps/pool/**",
-    "src/pool/**"
+    "src/pool/**",
+    ".upstream/apps/hosted/server/src/implementation/app-ui-phase-timing.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-overview.ts",
+    ".upstream/e2e/support/app-phase-timings.ts"
   ]
 }

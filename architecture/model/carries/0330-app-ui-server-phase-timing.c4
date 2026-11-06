@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App-origin requests own an isolated bounded collector for fixed document, query and overview phase names and finite nonnegative durations. The Server-Timing phase fields work without sampled tracing or an exporter, append without replacing existing response timing or correlation fields, and contain no identifiers, URLs or request data. Repeated operations aggregate into a fixed field set capped at 60000 ms per field; nested phases are not additive wall time. Authorization, response bodies, statuses, cache policy and operation order remain authoritative. No speculative reads or warmups are introduced."
+    }
+  }
+}

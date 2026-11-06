@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/p
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
+import { parseClosedErrorClass } from "./guidance-failure.ts";
 
 type ConnectorsProofInput = {
   readonly root: string;
@@ -75,9 +76,10 @@ async function run(
         }
       }
       if (
-        /^CONNECTORS_PROOF_FAILURE phase=[a-z-]+ kind=[a-z-]+ at=(?:[a-z0-9-]+\.mjs:[0-9]+|unknown)$/.test(
+        /^CONNECTORS_PROOF_FAILURE phase=[a-z-]+ kind=[a-z-]+ at=(?:[a-z0-9-]+\.mjs:[0-9]+|unknown)(?: error=[A-Za-z]+ marker=[a-z-]+)?$/.test(
           line,
-        )
+        ) &&
+        (!line.includes(" error=") || parseClosedErrorClass(line) !== undefined)
       ) {
         console.error(line);
         reported = true;
@@ -160,6 +162,19 @@ export async function runConnectorsProof({
   const useHeavySlot = process.env.CONNECTORS_PROOF_DIRECT !== "1";
   const browser = chromium.executablePath();
   await access(browser);
+  await run(
+    "bun",
+    [
+      join(root, "scripts/connectors-tests/guidance-launch-proof.mjs"),
+      upstream,
+      directory,
+      browser,
+    ],
+    root,
+    join(directory, "guidance-launch.json"),
+    home,
+    useHeavySlot,
+  );
   const installation = join(directory, "provider");
   await mkdir(installation, { recursive: true, mode: 0o700 });
   // The emulator's whole dependency tree comes from the committed lockfile, so a third-party publish
@@ -188,6 +203,14 @@ export async function runConnectorsProof({
     [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs")],
     root,
     join(directory, "zendesk-tenant-runtime.json"),
+    home,
+    useHeavySlot,
+  );
+  await run(
+    "bun",
+    [join(root, "scripts/connectors-tests/zendesk-tenant-runtime.mjs"), "--guidance", browser],
+    root,
+    join(directory, "zendesk-company-guidance.json"),
     home,
     useHeavySlot,
   );

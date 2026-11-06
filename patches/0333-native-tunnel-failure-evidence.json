@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-tunnel-failure-evidence",
+  "file": "0333-native-tunnel-failure-evidence.patch",
+  "content_sha256": "4fdbdea5cde90a7b0649e171a58af8fc4cc79350e4f75906db937b13de195b88",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
