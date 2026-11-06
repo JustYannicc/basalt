@@ -1,15 +1,24 @@
 diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
 --- a/e2e/support/native-tunnel.ts
 +++ b/e2e/support/native-tunnel.ts
-@@ -9,6 +9,7 @@
+@@ -1,4 +1,5 @@
+ import { createServer } from "node:http";
++import type { Readable } from "node:stream";
+ import { expect } from "vitest";
+ import { build } from "esbuild";
+ import {
+@@ -7,8 +8,10 @@
+   Response as RuntimeResponse,
+   Request as RuntimeRequest,
    WebSocketPair,
++  type WorkerdStructuredLog,
  } from "miniflare";
  import { Effect, Path } from "effect";
 +import { Evidence } from "./evidence.ts";
  import { driver } from "./platform.ts";
  import { syntheticTunnelModel } from "./native-tunnel-model.ts";
  import type { nativePool } from "./native-pool.ts";
-@@ -21,6 +22,17 @@
+@@ -21,6 +24,17 @@
  export const nativeTunnel = (toolsOrigin: string, pool: Pool, offset = 0) =>
    Effect.gen(function* () {
      const path = yield* Path.Path;
@@ -27,15 +36,15 @@ diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
      const root = path.resolve("..");
      const bundle = yield* driver("bundle production tunnel worker", () =>
        build({
-@@ -97,6 +109,17 @@
+@@ -97,6 +111,17 @@
        Effect.sync(
          () =>
            new Miniflare({
-+            handleRuntimeStdio: (stdout, stderr) => {
++            handleRuntimeStdio: (stdout: Readable, stderr: Readable) => {
 +              stdout.pipe(process.stdout, { end: false });
 +              stderr.pipe(process.stderr, { end: false });
 +            },
-+            handleStructuredLogs: ({ message }) => {
++            handleStructuredLogs: ({ message }: WorkerdStructuredLog) => {
 +              const prefix = "NATIVE_TUNNEL_FAILURE ";
 +              if (message.startsWith(prefix)) {
 +                const value: unknown = JSON.parse(message.slice(prefix.length));
@@ -45,7 +54,7 @@ diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
              workers: [
                {
                  name: "router",
-@@ -113,7 +136,7 @@
+@@ -113,7 +138,7 @@
                        method: request.method,
                        headers: Object.fromEntries(request.headers),
                        body: request.body,
@@ -54,7 +63,7 @@ diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
                        redirect: "manual",
                        signal: request.signal,
                      }).then(
-@@ -156,12 +179,13 @@
+@@ -156,12 +181,13 @@
        ),
        (runtime) => {
          for (const release of holds) release();
