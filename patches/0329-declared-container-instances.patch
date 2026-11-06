@@ -1,0 +1,137 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -3,7 +3,7 @@
+ index 0000000..82bcbe6
+ --- /dev/null
+ +++ b/src/Cloudflare/Containers/ContainerConfiguration.ts
+-@@ -0,0 +1,57 @@
++@@ -0,0 +1,61 @@
+ +import { deepEqual } from "../../Diff.ts";
+ +import { normalizeNulls } from "../../Util/stable.ts";
+ +
+@@ -59,14 +59,18 @@
+ +  affinities: value.affinities,
+ +});
+ +
+-+export const equalApplicationSettings = (left: ApplicationSettings, right: ApplicationSettings) =>
+-+  deepEqual(comparableSettings(left), comparableSettings(right));
+++// An omitted count belongs to the runtime, not the deployment declaration.
+++export const equalApplicationSettings = (observed: ApplicationSettings, desired: ApplicationSettings) =>
+++  deepEqual(
+++    comparableSettings({ ...observed, instances: desired.instances === undefined ? undefined : observed.instances }),
+++    comparableSettings(desired),
+++  );
+ diff --git a/lib/Cloudflare/Containers/ContainerConfiguration.js b/lib/Cloudflare/Containers/ContainerConfiguration.js
+ new file mode 100644
+ index 0000000..6b67e16
+ --- /dev/null
+ +++ b/lib/Cloudflare/Containers/ContainerConfiguration.js
+-@@ -0,0 +1,43 @@
++@@ -0,0 +1,47 @@
+ +import { deepEqual } from "../../Diff.js";
+ +import { normalizeNulls } from "../../Util/stable.js";
+ +// Cloudflare expands named sizes into these resources on readback.
+@@ -109,7 +113,11 @@
+ +    constraints: value.constraints ?? {},
+ +    affinities: value.affinities,
+ +});
+-+export const equalApplicationSettings = (left, right) => deepEqual(comparableSettings(left), comparableSettings(right));
+++// An omitted count belongs to the runtime, not the deployment declaration.
+++export const equalApplicationSettings = (observed, desired) => deepEqual(
+++    comparableSettings({ ...observed, instances: desired.instances === undefined ? undefined : observed.instances }),
+++    comparableSettings(desired),
+++);
+ diff --git a/lib/Cloudflare/Workflows/Workflow.js b/lib/Cloudflare/Workflows/Workflow.js
+ index 73840af..9d455f5 100644
+ --- a/lib/Cloudflare/Workflows/Workflow.js
+@@ -4666,13 +4674,23 @@
+          );
+ -        if (existing.hash?.configuration === configurationHash) {
+ +        if (
+-+          existing.hash?.configuration === configurationHash &&
+-+          deepEqual(existing.configuration, configuration) && equalApplicationSettings(existing, { ...scaling, affinities: news.affinities })
+++          deepEqual(existing.configuration, configuration) &&
+++          equalApplicationSettings(existing, news)
+ +        ) {
+            yield* Effect.logInfo(
+              `Cloudflare Container update: ${existing.applicationName} has no effective changes`,
+            );
+-@@ -1112,7 +1111,19 @@ export const LiveContainerProvider = () =>
++@@ -1021,7 +1020,9 @@
++           Containers.updateContainerApplication({
++             accountId,
++             applicationId: existing.applicationId,
++             ...scaling,
+++            // Preserve live capacity unless the declaration explicitly owns it.
+++            instances: news.instances,
++             affinities: news.affinities,
++             configuration,
++           }),
++@@ -1112,7 +1113,19 @@ export const LiveContainerProvider = () =>
+            newBindings,
+            oldBindings,
+          }) {
+@@ -4693,7 +4711,7 @@
+              return undefined;
+            }
+            const { accountId } = yield* yield* CloudflareEnvironment;
+-@@ -1182,6 +1193,13 @@ export const LiveContainerProvider = () =>
++@@ -1182,6 +1195,13 @@ export const LiveContainerProvider = () =>
+              news,
+              makeContainerEnv(news, accountId, newBindings),
+            );
+@@ -4707,7 +4725,7 @@
+            if (imageHash !== output.hash?.image || !deepEqual(dev, output.dev)) {
+              return { action: "update" } as const;
+            }
+-@@ -1372,29 +1390,25 @@ export const LiveContainerProvider = () =>
++@@ -1372,29 +1392,25 @@ export const LiveContainerProvider = () =>
+                  });
+                }
+              }
+@@ -4816,13 +4834,23 @@
+          const configurationHash = yield* applicationConfigurationHash(scaling, news.affinities, configuration);
+ -        if (existing.hash?.configuration === configurationHash) {
+ +        if (
+-+          existing.hash?.configuration === configurationHash &&
+-+          deepEqual(existing.configuration, configuration) && equalApplicationSettings(existing, { ...scaling, affinities: news.affinities })
+++          deepEqual(existing.configuration, configuration) &&
+++          equalApplicationSettings(existing, news)
+ +        ) {
+              yield* Effect.logInfo(`Cloudflare Container update: ${existing.applicationName} has no effective changes`);
+              yield* session.note(`Container application ${existing.applicationName} is unchanged.`);
+              return {
+-@@ -719,7 +727,16 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -656,7 +664,9 @@
++         const application = yield* retryForContainerApplicationReadiness("update", existing.applicationId, Containers.updateContainerApplication({
++             accountId,
++             applicationId: existing.applicationId,
++             ...scaling,
+++            // Preserve live capacity unless the declaration explicitly owns it.
+++            instances: news.instances,
++             affinities: news.affinities,
++             configuration,
++         })).pipe(
++@@ -719,7 +729,16 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+      return ContainerPlatform.Provider.of({
+          stables: ["accountId", "applicationId"],
+          diff: Effect.fn(function* ({ id, olds = {}, news = {}, output, newBindings, oldBindings, }) {
+@@ -4840,7 +4868,7 @@
+                  return undefined;
+              }
+              const { accountId } = yield* yield* CloudflareEnvironment;
+-@@ -762,7 +779,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -762,7 +781,14 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+                  return { action: "replace" };
+              }
+              const { imageHash, dev } = yield* computeImage(id, news, makeContainerEnv(news, accountId, newBindings));
+@@ -4856,7 +4884,7 @@
+                  return { action: "update" };
+              }
+          }),
+-@@ -888,20 +912,25 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
++@@ -888,20 +914,25 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
+                          });
+                      }
+                  }
