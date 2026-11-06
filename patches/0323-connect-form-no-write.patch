@@ -1,0 +1,183 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 9da79d8..b58a50a 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -774,7 +774,13 @@ function AppConnectionFields({
+       site={pending?.target.site ?? account?.site}
+       app={checks ? app : undefined}
+       {...(account ? { account } : {})}
+-      setupQuery={atoms.oauthSetup}
++      // Only a reconnect or a site needs the connection's own setup, and reading it creates the
++      // connection. A new account reads its provider's setup, so opening the form writes nothing.
++      setupQuery={
++        account !== undefined || site !== undefined || form.provider.definition.site !== undefined
++          ? atoms.oauthSetup
++          : undefined
++      }
+       redirectUri={form.redirectUri}
+       initialMethod={form.method}
+       unavailable={unavailable}
+diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+index e6cd8e5..c98596c 100644
+--- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
++++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+@@ -36,7 +36,7 @@ import {
+ } from "../../contracts/account-connections.ts";
+ import { openConnectionOAuth } from "../account-connections.ts";
+ import { consentRetry, openOAuth } from "../oauth.ts";
+-import type { OAuthConsentRetry } from "../../contracts/oauth.ts";
++import { oauthSetupAtom, type OAuthConsentRetry } from "../../contracts/oauth.ts";
+ import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
+ 
+ type FieldsProps = AccountOAuthProps & {
+@@ -101,7 +101,13 @@ export function AppOAuthFields({
+     <Fields
+       {...props}
+       deferral={deferral}
+-      query={atoms.oauthSetup(props.method)}
++      // Only a reconnect or a site needs the connection's own setup, and reading it creates the
++      // connection. A new account reads its provider's setup, so opening the form writes nothing.
++      query={
++        reconnect || props.provider.definition.site !== undefined
++          ? atoms.oauthSetup(props.method)
++          : oauthSetupAtom({ provider: props.provider.id, method: props.method })
++      }
+       Failure={Failure}
+       start={(client) => {
+         if (
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index d9eb4ae..0a5f7eb 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6112,6 +6112,18 @@ export const scenarios = plan({
+       local: na("Hosted organization policy and setup UI."),
+     },
+   },
++  accountConnectNoWrite: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-connect-no-write.spec.ts",
++    title:
++      "opening an app's Connect new account form and closing it writes nothing and leaves no pending connection",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Counts the runner-owned product database."),
++      local: na("Exercises hosted app account forms."),
++    },
++  },
+   appAccountOAuth: {
+     fixtures: "actors",
+     file: "app-account-picker.spec.ts",
+diff --git a/e2e/tests/account-connect-no-write.spec.ts b/e2e/tests/account-connect-no-write.spec.ts
+new file mode 100644
+index 0000000..07301d3
+--- /dev/null
++++ b/e2e/tests/account-connect-no-write.spec.ts
+@@ -0,0 +1,107 @@
++/** Opening an app's Connect new account form writes nothing until the person starts sign-in. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Count = Schema.Struct({ count: Schema.Number });
++
++layer(HostedLive, { excludeTestServices: true })("Account connect writes", (it) => {
++  it.effect(scenarios.accountConnectNoWrite.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created: { app?: string } = {};
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            // The count below stops the product; the cleanup needs it running again.
++            yield* serverControl("start");
++            if (created.app)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`);
++          }).pipe(Effect.orDie),
++        );
++        // An OAuth provider with no site and no registered client: its form offers registration.
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Connect writes ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service = defineProvider({ name: "Connect writes fixture", auth: { oauth: oauth2({ authorizationUrl: "https://oauth.example.test/authorize", tokenUrl: "https://oauth.example.test/token", scopes: ["read"] }) } });
++export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = (yield* body(App, deployed)).id;
++        created.app = app;
++
++        yield* browser.login(actors.owner);
++        // Every write the page sends while the form opens and closes.
++        const writes: string[] = [];
++        yield* browser.use("Record the page's writes", (page) =>
++          page.route(/\/api\//, (route) => {
++            const method = route.request().method();
++            const path = new URL(route.request().url()).pathname;
++            // The page's own telemetry export is not product state.
++            if (method !== "GET" && method !== "HEAD" && !path.startsWith("/api/telemetry/"))
++              writes.push(`${method} ${path}`);
++            return route.continue();
++          }),
++        );
++        yield* browser.use("Open Connect new account", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${app}?view=accounts`)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            )
++            .then(() =>
++              page
++                .getByRole("dialog")
++                .getByRole("button", { name: "Register OAuth client", exact: true })
++                .waitFor(),
++            ),
++        );
++        yield* browser.use("Close the form without signing in", (page) =>
++          page.keyboard
++            .press("Escape")
++            .then(() => page.getByRole("dialog").waitFor({ state: "hidden" }))
++            // A full reload starts after any request the closing form sent, so the record is
++            // complete before it is read.
++            .then(() => page.reload())
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
++            ),
++        );
++        expect(writes, "Opening and closing the form sends no write").toEqual([]);
++
++        // Nothing is left behind: no connection names this app in the product's storage.
++        const [rows] = yield* legacyStorage([
++          {
++            sql: "select count(*)::int as count from executor_account_connections where target::text like $1",
++            params: [`%${app}%`],
++          },
++        ]);
++        expect(
++          (yield* Schema.decodeUnknownEffect(Schema.Array(Count))(rows ?? [])).map(
++            (row) => row.count,
++          ),
++          "No pending connection remains for the app",
++        ).toEqual([0]);
++      }),
++    ),
++  );
++});
