@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkDatabaseBackends } from "../verify-database-budget.ts";
 import { connect, localDatabaseUrl, runtimeUrl } from "./database-budget/postgres.ts";
+import { budgetFixture } from "./database-budget/fixture.ts";
 
 test(
   "the deployed verification reads real runtime backends and refuses excess sessions at its deadline",
@@ -53,21 +54,20 @@ test(
     timeout: 15_000,
   },
   async () => {
-    const direct = localDatabaseUrl(process.env.POOL_TEST_ADMIN_URL);
-    const pooled = localDatabaseUrl(process.env.POOL_TEST_POOLED_URL);
-    const admin = await connect(direct);
-    const role = `budget0348_runtime_${process.pid}`;
+    const fixture = await budgetFixture("verify");
+    const { admin, direct, pooled } = fixture;
+    // PgBouncer's CI auth file registers this shared fixture login.
+    const role = "budget_a";
     const monitor = `budget0348_monitor_${process.pid}`;
     const databases = [
-      `budget0348_a_${process.pid}`,
+      fixture.database,
       `budget0348_b_${process.pid}`,
       `budget0348_zero_${process.pid}`,
     ];
     const clients: Awaited<ReturnType<typeof connect>>[] = [];
     try {
-      await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD 'fixture-only'`);
       await admin.query(`CREATE ROLE ${monitor} LOGIN PASSWORD 'fixture-only'`);
-      for (const database of databases) await admin.query(`CREATE DATABASE ${database}`);
+      for (const database of databases.slice(1)) await admin.query(`CREATE DATABASE ${database}`);
       for (let index = 0; index < 3; index++)
         clients.push(await connect(runtimeUrl(direct, databases[0]!, role)));
       for (let index = 0; index < 3; index++) {
@@ -126,10 +126,10 @@ test(
         await client.query("ROLLBACK").catch(() => {});
         await client.end();
       }
-      for (const database of databases)
+      for (const database of databases.slice(1))
         await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-      for (const name of [role, monitor]) await admin.query(`DROP ROLE IF EXISTS ${name}`);
-      await admin.end();
+      await admin.query(`DROP ROLE IF EXISTS ${monitor}`);
+      await fixture.close();
     }
   },
 );
