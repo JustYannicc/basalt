@@ -1,0 +1,32 @@
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index eaf4324..ca1d37d 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -312,6 +312,8 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           (page) => block(page, "Spare").locator("[data-observation-details]").innerText(),
+         );
+         expect(spareExpiry.match(/Expires /g)?.length, spareExpiry).toBe(2);
++        // Each credit holds one reset and reads in the singular.
++        expect(spareExpiry.match(/\b1 reset\b/g)?.length, spareExpiry).toBe(2);
+         expect(studioCells.every((entry) => entry.count === null)).toBe(true);
+         // A connector without a usage reporter has no usage area or text.
+         expect(connectorCells).toEqual([]);
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 571acd3..203d483 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -63,9 +63,13 @@ export const amount = (value: number, unit: string, format: DisplayFormat, withU
+     );
+   const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
+   if (isPercent(unit)) return `${number}%`;
+-  return withUnit ? `${number} ${unit}` : number;
++  return withUnit ? `${number} ${value === 1 ? singular(unit) : unit}` : number;
+ };
+ 
++/** A reported plural unit read for exactly one, such as "resets" as "reset". */
++const singular = (unit: string) =>
++  unit.length > 1 && unit.endsWith("s") && !unit.endsWith("ss") ? unit.slice(0, -1) : unit;
++
+ const toneOf = (ratio: number): ObservationMeterState =>
+   ratio <= 0 ? "exhausted" : ratio >= 0.7 ? "good" : ratio >= 0.3 ? "warn" : "bad";
+ 

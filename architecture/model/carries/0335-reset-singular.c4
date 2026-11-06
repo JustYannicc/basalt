@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "A reported balance or measure amount names exactly one of a plural unit in the singular, so one banked credit reads as one reset in an account's Details; every other count keeps the reported unit, and units that are not plurals keep their spelling."
+    }
+  }
+}
