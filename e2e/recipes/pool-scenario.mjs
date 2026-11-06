@@ -1,3 +1,4 @@
+import { nativePoolAccount } from "./native-pool-account.mjs";
 import { workflowDeliverySource } from "./workflow-fields.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -6,7 +7,7 @@ import { Effect } from "effect";
 import { appsManifest, root, until } from "./harness.mjs";
 
 /** Normal public deployment, connections and approvals shared by the pool journeys. */
-export const poolRecipeScenario = (h, pool) =>
+export const poolRecipeScenario = (h, pool, initial) =>
   Effect.gen(function* () {
     const fixture = h.fixture;
     const deployAs = (role, name, files) =>
@@ -105,10 +106,21 @@ export default defineApp({}, { tools: router({ probe, send }) });`,
       Effect.gen(function* () {
         return yield* finish(app, yield* scan(app, role), role);
       });
+    const accounts = new Map(initial ? [[initial.reference, initial]] : []);
+    const account = (id) =>
+      Effect.gen(function* () {
+        if (!accounts.has(id)) accounts.set(id, yield* nativePoolAccount(h, pool, id));
+        return accounts.get(id);
+      });
+    const seed = (id, options) =>
+      Effect.gen(function* () {
+        yield* account(id);
+        fixture.seed(pool.id, id, options);
+      });
     const healthy = (app, id) =>
       Effect.gen(function* () {
         for (let count = 0; count < 2; count++) {
-          fixture.seed(pool.id, id);
+          yield* seed(id);
           yield* read(app);
         }
       });
@@ -124,5 +136,7 @@ export default defineApp({}, { tools: router({ probe, send }) });`,
       scan,
       read,
       healthy,
+      account,
+      seed,
     };
   });

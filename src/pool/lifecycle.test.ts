@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isPublicModelPath, PoolLifecycle, PoolRuntimeUnhealthy, poolLifecycle, poolPort, type RuntimeDriver, type RuntimeStorage } from "./lifecycle.ts";
+import {
+  isPublicModelPath,
+  PoolLifecycle,
+  PoolRuntimeUnhealthy,
+  poolLifecycle,
+  poolPort,
+  type RuntimeDriver,
+  type RuntimeStorage,
+} from "./lifecycle.ts";
 
 function fixture() {
   let time = 0;
@@ -12,22 +20,46 @@ function fixture() {
   const timeouts: number[] = [];
   const driver: RuntimeDriver = {
     running: () => running,
-    start: () => { running = true; starts += 1; },
-    stop: async () => { running = false; stops += 1; },
-    keepAlive: async (ms) => { timeouts.push(ms); },
+    start: () => {
+      running = true;
+      starts += 1;
+    },
+    stop: async () => {
+      running = false;
+      stops += 1;
+    },
+    keepAlive: async (ms) => {
+      timeouts.push(ms);
+    },
     status: async () => ({ boot_id: `boot-${starts}`, started_at: new Date(time).toISOString() }),
   };
   const storage: RuntimeStorage = {
     get: async <T>(key: string) => values.get(key) as T | undefined,
-    put: async (key, value) => { values.set(key, value); },
+    put: async (key, value) => {
+      values.set(key, value);
+    },
     getAlarm: async () => alarm,
-    setAlarm: async (next) => { alarm = next; },
+    setAlarm: async (next) => {
+      alarm = next;
+    },
   };
-  const clock = { now: () => time, sleep: async (ms: number) => { time += ms; } };
+  const clock = {
+    now: () => time,
+    sleep: async (ms: number) => {
+      time += ms;
+    },
+  };
   return {
-    driver, storage, clock, timeouts,
-    advance: (ms: number) => { time += ms; },
-    expireAlarm: () => { alarm = null; },
+    driver,
+    storage,
+    clock,
+    timeouts,
+    advance: (ms: number) => {
+      time += ms;
+    },
+    expireAlarm: () => {
+      alarm = null;
+    },
     state: () => ({ starts, stops, alarm }),
   };
 }
@@ -68,15 +100,23 @@ test("startup waits for readiness and schedules recovery when the process exits"
   const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
   assert.equal((await runtime.warm()).boot_id, "ready");
   assert.equal(f.clock.now(), 2_000);
-  f.driver.status = async () => { await f.driver.stop(); throw new Error("exited"); };
+  f.driver.status = async () => {
+    await f.driver.stop();
+    throw new Error("exited");
+  };
   await assert.rejects(runtime.warm(), /pool exited during startup/);
   assert.ok(f.state().alarm !== null);
 });
 
 test("an unready container has a bounded wait and leaves a recovery alarm", async () => {
   const f = fixture();
-  f.driver.status = async () => { throw new Error("not ready"); };
-  await assert.rejects(new PoolLifecycle(f.driver, f.storage, "release-a", f.clock).warm(), /startup budget/);
+  f.driver.status = async () => {
+    throw new Error("not ready");
+  };
+  await assert.rejects(
+    new PoolLifecycle(f.driver, f.storage, "release-a", f.clock).warm(),
+    /startup budget/,
+  );
   assert.equal(f.clock.now(), poolLifecycle.startupTimeoutMs);
   assert.equal(f.state().alarm, poolLifecycle.startupTimeoutMs + poolLifecycle.refreshMs);
 });
@@ -96,11 +136,21 @@ for (const evicted of [false, true]) {
       await assert.rejects(runtime.warm(), /startup budget/);
       const launching = f.state();
       ready = true;
-      const retry = evicted ? new PoolLifecycle(f.driver, f.storage, "release-new", f.clock) : runtime;
+      const retry = evicted
+        ? new PoolLifecycle(f.driver, f.storage, "release-new", f.clock)
+        : runtime;
       const status = await retry.warm();
       assert.equal(status.boot_id, `boot-${launching.starts}`);
-      assert.equal(f.state().starts, launching.starts, "retry must keep the boot already in progress");
-      assert.equal(f.state().stops, launching.stops, "readiness timeout must not trigger another destroy");
+      assert.equal(
+        f.state().starts,
+        launching.starts,
+        "retry must keep the boot already in progress",
+      );
+      assert.equal(
+        f.state().stops,
+        launching.stops,
+        "readiness timeout must not trigger another destroy",
+      );
     });
   }
 }
@@ -108,7 +158,9 @@ for (const evicted of [false, true]) {
 test("a revision write failure refuses launch and permits a later retry", async () => {
   const f = fixture();
   const put = f.storage.put;
-  f.storage.put = async () => { throw new Error("storage unavailable"); };
+  f.storage.put = async () => {
+    throw new Error("storage unavailable");
+  };
   const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
   await assert.rejects(runtime.warm(), /storage unavailable/);
   assert.deepEqual(f.state(), { starts: 0, stops: 0, alarm: poolLifecycle.refreshMs });
@@ -120,18 +172,28 @@ test("a failed destroy cannot relabel an old running boot as the new revision", 
   const f = fixture();
   await new PoolLifecycle(f.driver, f.storage, "release-old", f.clock).warm();
   const stop = f.driver.stop;
-  f.driver.stop = async () => { throw new Error("destroy failed"); };
-  await assert.rejects(new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm(), /destroy failed/);
+  f.driver.stop = async () => {
+    throw new Error("destroy failed");
+  };
+  await assert.rejects(
+    new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm(),
+    /destroy failed/,
+  );
   assert.equal(await f.storage.get("revision"), "release-old");
   f.driver.stop = stop;
-  assert.equal((await new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm()).boot_id, "boot-2");
+  assert.equal(
+    (await new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm()).boot_id,
+    "boot-2",
+  );
   assert.equal(f.state().stops, 1);
 });
 
 test("a launch failure before the process starts can be retried", async () => {
   const f = fixture();
   const start = f.driver.start;
-  f.driver.start = () => { throw new Error("launch failed"); };
+  f.driver.start = () => {
+    throw new Error("launch failed");
+  };
   const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
   await assert.rejects(runtime.warm(), /launch failed/);
   assert.equal(f.state().starts, 0);
@@ -152,7 +214,15 @@ test("management and model traffic use separate listeners with exact path bounda
 });
 
 test("public model gate excludes internal management while preserving its DO listener", () => {
-  for (const path of ["/v1", "/v1/", "/v1/models", "/v1/responses", "/messages", "/chat/completions", "/completions"]) {
+  for (const path of [
+    "/v1",
+    "/v1/",
+    "/v1/models",
+    "/v1/responses",
+    "/messages",
+    "/chat/completions",
+    "/completions",
+  ]) {
     assert.equal(isPublicModelPath(path), true, path);
   }
   for (const path of ["/v0/management", "/v8/management/config", "/__warm", "/v10", "/v1foo"]) {
@@ -167,8 +237,12 @@ for (const evicted of [false, true]) {
     const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
     await runtime.warm();
     const healthy = f.driver.status;
-    f.driver.status = async () => { throw new Error("plugin disabled"); };
-    const current = evicted ? new PoolLifecycle(f.driver, f.storage, "release-a", f.clock) : runtime;
+    f.driver.status = async () => {
+      throw new Error("plugin disabled");
+    };
+    const current = evicted
+      ? new PoolLifecycle(f.driver, f.storage, "release-a", f.clock)
+      : runtime;
     await assert.rejects(current.warm(), PoolRuntimeUnhealthy);
     assert.equal(f.clock.now(), 0, "a warm refusal must not enter the cold startup retry loop");
     f.driver.status = healthy;
@@ -194,9 +268,14 @@ test("a stopped runtime gets a new cold startup budget after serving traffic", a
 test("explicit recovery waits for the active warm and model calls share its one restart", async () => {
   const f = fixture();
   let release!: () => void;
-  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const status = f.driver.status;
-  f.driver.status = async () => { await barrier; return status(); };
+  f.driver.status = async () => {
+    await barrier;
+    return status();
+  };
   const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
   const warming = runtime.warm();
   const recovery = runtime.restart();
@@ -208,4 +287,25 @@ test("explicit recovery waits for the active warm and model calls share its one 
   assert.equal(recovered.boot_id, "boot-2");
   assert.equal(f.state().starts, 2);
   assert.equal(f.state().stops, 1);
+});
+
+test("deployment readiness adopts the desired revision and unchanged readiness keeps its boot", async () => {
+  const f = fixture();
+  const old = await new PoolLifecycle(f.driver, f.storage, "old", f.clock).deploymentReady();
+  let probes = 0;
+  const status = f.driver.status;
+  f.driver.status = async () => {
+    if (++probes <= 120) throw new Error("waiting for target boot");
+    return status();
+  };
+  const runtime = new PoolLifecycle(f.driver, f.storage, "target", f.clock);
+  const adopted = await runtime.deploymentReady();
+  assert.equal(adopted.readyAt, 120_000);
+  assert.equal(adopted.desiredRevisionMatch, true);
+  assert.notEqual(adopted.bootId, old.bootId);
+  assert.equal(
+    (await new PoolLifecycle(f.driver, f.storage, "target", f.clock).deploymentReady()).bootId,
+    adopted.bootId,
+  );
+  assert.deepEqual(f.state(), { starts: 2, stops: 1, alarm: 300_000 });
 });

@@ -153,6 +153,17 @@ jobs:
           echo "::error::The release report wrote no manual_required output, so neither release path can run"
           exit 1
 
+      - name: Retain database budget receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-budget
+          include-hidden-files: true
+          path: |
+            .local/database-budget/*.json
+            ${{ runner.temp }}/candidate/.local/database-budget/*.json
+          if-no-files-found: ignore
+
   # No one approves releases, so a database or Workflow-identity release goes straight to the manual path, which takes
   # the backup and runs the drain check before deploying. So does a commit a newer passing main commit contains, so the
   # newer one ships. This job alone may start workflows; it runs no candidate code.
