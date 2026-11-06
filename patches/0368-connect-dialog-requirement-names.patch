@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index f56db9b..494d4bb 100644
+index f56db9bd..494d4bbb 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -194,6 +194,8 @@ export function AppAccounts({
@@ -90,7 +90,7 @@ index f56db9b..494d4bb 100644
          notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
        />
 diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
-index 69ae42e..9b49b1d 100644
+index 69ae42e2..9b49b1d1 100644
 --- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
 @@ -50,22 +50,26 @@ export function ConnectionModal({
@@ -123,7 +123,7 @@ index 69ae42e..9b49b1d 100644
        </div>
      </div>
 diff --git a/apps/hosted/web/src/implementation/pages/import-login-file.tsx b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
-index 8090e5d..71e2388 100644
+index 8090e5de..dab91f87 100644
 --- a/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 +++ b/apps/hosted/web/src/implementation/pages/import-login-file.tsx
 @@ -49,10 +49,16 @@ export function ImportLoginFile({
@@ -136,8 +136,8 @@ index 8090e5d..71e2388 100644
  }: {
    readonly app: App;
 +  /**
-+   * The requirement's title on the app's Accounts tab. Where it differs from the service's name,
-+   * because another requirement shares the service, the dialog names it.
++   * The requirement's title on the app's Accounts tab, given only where another requirement in its
++   * scope shares the service; the dialog then names it.
 +   */
 +  readonly title?: string | undefined;
    readonly slot: string;
@@ -149,7 +149,7 @@ index 8090e5d..71e2388 100644
        <div className="grid gap-1.5">
 -        <DialogTitle>Import {requirement.definition.name} login file</DialogTitle>
 +        <DialogTitle>
-+          {title === undefined || title === requirement.definition.name
++          {title === undefined
 +            ? `Import ${requirement.definition.name} login file`
 +            : `Import login file for ${title}`}
 +        </DialogTitle>
@@ -157,7 +157,7 @@ index 8090e5d..71e2388 100644
            Use the login file your {requirement.definition.name} tool exported. It's saved as a new
            account here, and pools can pick it like any other.
 diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
-index 73a2efb..7432b7d 100644
+index 73a2efbd..7432b7dc 100644
 --- a/apps/local/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
 @@ -77,6 +77,8 @@ export function AppAccounts({
@@ -190,7 +190,7 @@ index 73a2efb..7432b7d 100644
              Connect an account for {app.name}.
            </DialogDescription>
 diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
-index 2c1623f..ee3bbd9 100644
+index 2c1623ff..ee3bbd98 100644
 --- a/e2e/support/account-choices.ts
 +++ b/e2e/support/account-choices.ts
 @@ -1,32 +1,65 @@
@@ -289,7 +289,7 @@ index 2c1623f..ee3bbd9 100644
  /** Link an account the caller could use by selecting its radio or checkbox. */
  export const chooseAccount = (root: Page | Locator, provider: string, label: string) => {
 diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
-index e61f27a..c16cb95 100644
+index e61f27a9..f37042d5 100644
 --- a/e2e/tests/app-account-links.spec.ts
 +++ b/e2e/tests/app-account-links.spec.ts
 @@ -25,7 +25,9 @@ import {
@@ -311,12 +311,15 @@ index e61f27a..c16cb95 100644
  /** What the `who` tool and the authored page report about the accounts a call ran with. */
  const Identity = Schema.Struct({
    context: Schema.Struct({ auth: Schema.Boolean }),
-@@ -192,7 +196,13 @@ const runTool = (page: Page) =>
+@@ -190,9 +194,15 @@ const runTool = (page: Page) =>
+ /**
+  * A requirement's linked account labels (its checked radios or checkboxes, in the order shown),
   * read once they are `expected`. A timeout falls through so the assertion reports the accounts
-  * actually checked.
+- * actually checked.
++ * actually checked. Pass `requirement`, the requirement's title, where another requirement shares
++ * its service.
   */
 -const linkedRows = (region: Locator, provider: string, expected: readonly string[]) =>
-+/** Pass `requirement`, the requirement's title, where another requirement shares its service. */
 +const linkedRows = (
 +  region: Locator,
 +  provider: string,
@@ -419,7 +422,7 @@ index e61f27a..c16cb95 100644
              ),
            ).toEqual([label]);
 diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
-index f9d1c75..236fe3c 100644
+index f9d1c755..236fe3c0 100644
 --- a/e2e/tests/app-account-picker.spec.ts
 +++ b/e2e/tests/app-account-picker.spec.ts
 @@ -19,7 +19,14 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
@@ -590,7 +593,7 @@ index f9d1c75..236fe3c 100644
          expect(
            yield* browser.use("Cancellation retained the app and organization", (page) =>
 diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
-index 58644cc..f1a1562 100644
+index 58644cc2..a10eb179 100644
 --- a/e2e/tests/app-account-sections.spec.ts
 +++ b/e2e/tests/app-account-sections.spec.ts
 @@ -1,6 +1,7 @@
@@ -611,8 +614,8 @@ index 58644cc..f1a1562 100644
  import { Browser } from "../support/browser.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
 -import { App } from "../support/contracts.ts";
--import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
 +import { App, Resource } from "../support/contracts.ts";
+ import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
  import { scenarios } from "../test-plan.ts";
  import { appsManifest } from "../support/apps-release.ts";
 -import { anyRowMenuName } from "../support/account-choices.ts";
@@ -624,7 +627,6 @@ index 58644cc..f1a1562 100644
 +  requirementChoiceName,
 +  rowMenuName,
 +} from "../support/account-choices.ts";
-+import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
  import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
  
 -// One service declared twice, as a catalog app keeps API tokens and sign-ins apart: both
@@ -755,6 +757,9 @@ index 58644cc..f1a1562 100644
 +        const controls = yield* browser.use("Read the controls", readControls);
          yield* browser.checkpoint(`Requirement sections at ${width}px`);
 -        expect(sections).toHaveLength(2);
+-        // Each section names what it is for, so neither reads as a copy of the other.
+-        expect(new Set(sections.map((section) => section.name)).size).toBe(2);
+-        expect(new Set(sections.map((section) => section.header)).size).toBe(2);
 +        // Each section's Connect dialog names its requirement.
 +        const dialogs: (string | null)[] = [];
 +        for (const section of sections) {
@@ -797,9 +802,7 @@ index 58644cc..f1a1562 100644
 +          );
 +        }
 +        expect(sections).toHaveLength(3);
-         // Each section names what it is for, so neither reads as a copy of the other.
--        expect(new Set(sections.map((section) => section.name)).size).toBe(2);
--        expect(new Set(sections.map((section) => section.header)).size).toBe(2);
++        // Each section names what it is for, so none reads as a copy of another.
 +        expect(new Set(sections.map((section) => section.name)).size).toBe(3);
 +        expect(new Set(sections.map((section) => section.header)).size).toBe(3);
          expect(new Set(sections.flatMap((section) => section.lists)).size).toBe(
@@ -832,7 +835,7 @@ index 58644cc..f1a1562 100644
      );
  
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
-index 623bd8a..f0d4875 100644
+index 623bd8a8..f0d48753 100644
 --- a/e2e/tests/contributed-app-accounts.spec.ts
 +++ b/e2e/tests/contributed-app-accounts.spec.ts
 @@ -9,9 +9,19 @@ import { contributedApp } from "../support/contributed-app.ts";
@@ -957,7 +960,7 @@ index 623bd8a..f0d4875 100644
                exact: true,
              })
 diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
-index ea4e985..103f8ad 100644
+index ea4e9858..103f8adb 100644
 --- a/e2e/tests/provisioned-link-boundary.spec.ts
 +++ b/e2e/tests/provisioned-link-boundary.spec.ts
 @@ -12,7 +12,7 @@ import { Api, body } from "../support/api.ts";
@@ -991,7 +994,7 @@ index ea4e985..103f8ad 100644
            ]).then(([response]) => response.status()),
          );
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index e20b063..f13a61b 100644
+index e20b0637..5417194a 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -136,8 +136,20 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
@@ -1035,8 +1038,8 @@ index e20b063..f13a61b 100644
    /**
     * Import an exported login file as a new account for the requirement, for the methods the host
 -   * lists as importable here. Hosts without an importer leave it out.
-+   * lists as importable here. `title` is the requirement's title, as for `connect`. Hosts without
-+   * an importer leave it out.
++   * lists as importable here. `title` is the requirement's title, given only where another
++   * requirement in its scope shares the service. Hosts without an importer leave it out.
     */
    readonly importLoginFile?:
 -    | ((slot: string, requirement: AccountRequirement, methods: readonly string[]) => void)
@@ -1159,7 +1162,7 @@ index e20b063..f13a61b 100644
                disabled={edit.connecting === true || !allowed}
 -              onClick={() => edit.importLoginFile?.(slot, requirement, connection.importMethods)}
 +              onClick={() =>
-+                edit.importLoginFile?.(slot, requirement, connection.importMethods, title)
++                edit.importLoginFile?.(slot, requirement, connection.importMethods, shared)
 +              }
 +              {...(shared === undefined ? {} : { "aria-label": `Import login file for ${shared}` })}
              >
