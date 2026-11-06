@@ -208,10 +208,10 @@ index 0000000000000000000000000000000000000000..7672798898edaa7d5899f4ba717e6056
 +  contributedSchemas.has(sql);
 diff --git a/apps/hosted/server/src/implementation/background-work.ts b/apps/hosted/server/src/implementation/background-work.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..72463f4580608495dc8170a9e1353b7edf3c776d
+index 0000000000000000000000000000000000000000..1b5b60eeefe7ebfb15d6a5587c718c7ca80d574b
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/background-work.ts
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,26 @@
 +import { Effect, FiberSet } from "effect";
 +import type { BackgroundWork } from "@executor-js/sdk/core";
 +
@@ -223,6 +223,7 @@ index 0000000000000000000000000000000000000000..72463f4580608495dc8170a9e1353b7e
 +    Effect.sync(() => {
 +      closing = true;
 +    }).pipe(
++      Effect.andThen(Effect.logDebug("Host background work is draining")),
 +      Effect.andThen(FiberSet.awaitEmpty(work)),
 +      Effect.timeoutOption("20 seconds"),
 +      Effect.asVoid,
@@ -238,28 +239,46 @@ index 0000000000000000000000000000000000000000..72463f4580608495dc8170a9e1353b7e
 +    )) satisfies BackgroundWork;
 +});
 diff --git a/apps/hosted/testing/self-host.ts b/apps/hosted/testing/self-host.ts
-index 63d2e5848885e198c4fcc0470443ca1a43107c0f..30789fd7c851c059344e14082afac74721a831e9 100644
+index 63d2e5848885e198c4fcc0470443ca1a43107c0f..0df8ea50cb2e5de5cfcd1288107c048f68260573 100644
 --- a/apps/hosted/testing/self-host.ts
 +++ b/apps/hosted/testing/self-host.ts
-@@ -54,6 +54,18 @@ const command = Command.make("test-self-host", {
+@@ -3,7 +3,7 @@ import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
+ import * as BunRuntime from "@effect/platform-bun/BunRuntime";
+ import * as BunServices from "@effect/platform-bun/BunServices";
+ import { localTelemetry } from "@executor-js/telemetry/local";
+-import { Config, ConfigProvider, Console, Effect, Layer, Option } from "effect";
++import { Config, ConfigProvider, Console, Effect, Layer, Option, References } from "effect";
+ import { CliError, Command, Flag } from "effect/cli";
+ import { HttpRouter } from "effect/http";
+ import * as Statement from "effect/sql/Statement";
+@@ -16,6 +16,11 @@ import { accessCheckFixture } from "./access-check-fixture.ts";
+ import { statementHoldFixture } from "./statement-hold-fixture.ts";
+ import { storageFaultFixture } from "./storage-fault-fixture.ts";
+ 
++let releaseAccounting = Effect.void;
++process.on("executor:test:accounting-release", () => {
++  Effect.runFork(releaseAccounting);
++});
++
+ /**
+  * Zero-config defaults; explicit settings win. The hostname is per checkout so browser
+  * cookies stay separate, the port is free for this run, and the self-host bootstrap keeps
+@@ -54,6 +59,7 @@ const command = Command.make("test-self-host", {
            const development = yield* developmentSignIn(target, organization);
            const statementHold = yield* statementHoldFixture;
            const product = yield* statementHold.provide(selfHostRoutes);
-+          const releaseHeldWrite = () => {
-+            Effect.runFork(statementHold.releaseOnShutdown);
-+          };
-+          yield* Effect.acquireRelease(
-+            Effect.sync(() => {
-+              process.on("SIGTERM", releaseHeldWrite);
-+            }),
-+            () =>
-+              Effect.sync(() => {
-+                process.removeListener("SIGTERM", releaseHeldWrite);
-+              }),
-+          );
++          releaseAccounting = statementHold.releaseOnShutdown;
            const routes = Layer.mergeAll(
              HttpRouter.add("GET", "/api/devtools", development.status),
              HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
+@@ -91,6 +97,7 @@ const command = Command.make("test-self-host", {
+ BunRuntime.runMain(
+   Command.run(command, { version: "0.0.0" }).pipe(
+     Effect.provide(BunServices.layer),
++    Effect.provideService(References.MinimumLogLevel, "Debug"),
+     Effect.catch((error) =>
+       CliError.isCliError(error)
+         ? Effect.fail(error)
 diff --git a/apps/hosted/testing/statement-hold-fixture.ts b/apps/hosted/testing/statement-hold-fixture.ts
 index 9d292361ae4361ef975b538e7c24387aa6ae667d..579ed9ba938fa43a2630737384b1e63ef787c7ee 100644
 --- a/apps/hosted/testing/statement-hold-fixture.ts
@@ -559,10 +578,77 @@ index 0000000000000000000000000000000000000000..189f1523d454d4dfb0e16d9957d8fe0c
 +      ),
 +    );
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 9e5ebc669a561b9441e5d07def831d9ae30e723b..546f674854c104a7f13ab72d0f0306c2504b6de6 100644
+index 9e5ebc669a561b9441e5d07def831d9ae30e723b..ba772266cba399953183b13fac67bc1e98683fca 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -635,6 +635,17 @@ export const startDevelopmentServer = (
+@@ -155,6 +155,7 @@ export const startManagedServer = (
+     let current: Scope.Closeable | undefined;
+     /** The running product process, for an abrupt kill that runs none of its shutdown. */
+     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
++    let backgroundClosing = yield* Deferred.make<void>();
+     /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
+     let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
+     const env = {
+@@ -244,6 +245,8 @@ export const startManagedServer = (
+       if (current !== undefined) return;
+       const scope = yield* Scope.make();
+       current = scope;
++      const draining = yield* Deferred.make<void>();
++      backgroundClosing = draining;
+       yield* Effect.gen(function* () {
+         // Self-host runs under Bun, which loads the runner's hooks as preloads. The local CLI owns
+         // the same hooks (see e2e-process.ts): a release executable runs no preload.
+@@ -344,6 +347,8 @@ export const startManagedServer = (
+               );
+               const clock = /^Executor test clock: (\d+)$/.exec(line);
+               if (clock !== null) confirmedOffset = Number(clock[1]);
++              if (line.includes("Host background work is draining"))
++                yield* Deferred.succeed(draining, undefined);
+               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
+                 origin = line.slice("Executor: ".length);
+                 // A scenario may need a named same-site dashboard for embedded app cookies.
+@@ -574,6 +579,40 @@ export const startManagedServer = (
+       HttpRouter.add("POST", "/stop", control("stop")),
+       HttpRouter.add("POST", "/restart", control("restart")),
+       HttpRouter.add("POST", "/kill", control("kill")),
++      // These two controls stay reachable while /stop waits for the product's graceful exit.
++      HttpRouter.add(
++        "POST",
++        "/accounting/closing",
++        Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
++            return HttpServerResponse.empty({ status: 401 });
++          yield* Deferred.await(backgroundClosing);
++          return HttpServerResponse.jsonUnsafe({ closing: true });
++        }),
++      ),
++      HttpRouter.add(
++        "POST",
++        "/accounting/release",
++        Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
++            return HttpServerResponse.empty({ status: 401 });
++          const child = running;
++          const sent =
++            child === undefined
++              ? Option.none<boolean>()
++              : yield* Stream.run(
++                  Stream.make(new TextEncoder().encode("accounting-release\n")),
++                  child.stdin,
++                ).pipe(
++                  Effect.as(true),
++                  Effect.orElseSucceed(() => false),
++                  Effect.timeoutOption("1 second"),
++                );
++          return HttpServerResponse.jsonUnsafe({ delivered: Option.getOrElse(sent, () => false) });
++        }),
++      ),
+     );
+     const services = yield* Layer.build(
+       Layer.fresh(
+@@ -635,6 +674,17 @@ export const startDevelopmentServer = (
      Effect.map(({ origin }) => origin),
    );
  
@@ -580,6 +666,40 @@ index 9e5ebc669a561b9441e5d07def831d9ae30e723b..546f674854c104a7f13ab72d0f0306c2
  /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
  export const startFreshSelfHost = (
    target: typeof Target.Service,
+diff --git a/e2e/support/server-control.ts b/e2e/support/server-control.ts
+index fc6fb9ff89dc00e60c222b384074b68776dc8a94..c2208536828192c7fc851e8c0e29eb0f509b0289 100644
+--- a/e2e/support/server-control.ts
++++ b/e2e/support/server-control.ts
+@@ -55,7 +55,16 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
+  * turn on an operator setting for its next start.
+  */
+ export const serverControl = (
+-  action: "start" | "stop" | "restart" | "kill" | "clock/advance" | "data-steps" | "environment",
++  action:
++    | "start"
++    | "stop"
++    | "restart"
++    | "kill"
++    | "clock/advance"
++    | "data-steps"
++    | "environment"
++    | "accounting/closing"
++    | "accounting/release",
+   expectedStatus: 200 | 500 = 200,
+   body?:
+     | { readonly milliseconds: number }
+diff --git a/e2e/support/wall-clock.mjs b/e2e/support/wall-clock.mjs
+index ea72a1b17f99ea641d5fe98c4b215622d320738d..e7753a1a2db4f85dc2fdebe611526c3f428fc2a4 100644
+--- a/e2e/support/wall-clock.mjs
++++ b/e2e/support/wall-clock.mjs
+@@ -23,6 +23,7 @@ if (process.env.EXECUTOR_TEST_CLOCK_CONTROL === "stdin") {
+     const lines = pending.split("\n");
+     pending = lines.pop() ?? "";
+     for (const line of lines) {
++      if (line === "accounting-release") process.emit("executor:test:accounting-release");
+       const match = /^clock (\d+)$/.exec(line);
+       if (match === null) continue;
+       offset = Math.max(offset, parse(match[1]));
 diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
 index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c005ecfcf 100644
 --- a/e2e/tests/account-targets.spec.ts
@@ -602,12 +722,12 @@ index d0c8a8a4f357b2c3916a51c47eed99b22db17601..718c5e339e22b73d991d08fe1339292c
          expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
 diff --git a/e2e/tests/account-tool-accounting.spec.ts b/e2e/tests/account-tool-accounting.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..eee5078c85a4d7cb50ce3726820900d5b5a3be9a
+index 0000000000000000000000000000000000000000..f8e1dc41f41aec97c6420b419b1f522db49e1329
 --- /dev/null
 +++ b/e2e/tests/account-tool-accounting.spec.ts
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,141 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Layer, Schema } from "effect";
++import { Effect, Fiber, Layer, Schema } from "effect";
 +import { Api, SessionClients, body } from "../support/api.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { Evidence, Telemetry } from "../support/evidence.ts";
@@ -723,9 +843,17 @@ index 0000000000000000000000000000000000000000..eee5078c85a4d7cb50ce3726820900d5
 +          held: true,
 +          completed: false,
 +        });
-+        // The test host releases the real held write on SIGTERM, while its background work drains.
-+        yield* serverControl("stop").pipe(Effect.provideService(Target, target));
-+        yield* serverControl("start").pipe(Effect.provideService(Target, target));
++        // Release only after the host reports its drain has started, through the runner's stdin
++        // control. The product listener may already be closing, so it cannot release this hold.
++        yield* Effect.gen(function* () {
++          const stopping = yield* serverControl("stop").pipe(Effect.forkScoped);
++          yield* serverControl("accounting/closing");
++          yield* serverControl("accounting/release");
++          yield* Fiber.join(stopping);
++        }).pipe(
++          Effect.ensuring(serverControl("start").pipe(Effect.orDie)),
++          Effect.provideService(Target, target),
++        );
 +        const after = yield* fixture.read;
 +        expect(after.requests).toBe(before.requests + 1);
 +        expect(after.failed).toBe(before.failed);
@@ -739,6 +867,48 @@ index 0000000000000000000000000000000000000000..eee5078c85a4d7cb50ce3726820900d5
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/account-tool-calls.spec.ts b/e2e/tests/account-tool-calls.spec.ts
+index 098f5dc2abd3441d0bfd72cc24879f4f31533c95..7f362f452831f5fee721abf77f8c76280c45b6e7 100644
+--- a/e2e/tests/account-tool-calls.spec.ts
++++ b/e2e/tests/account-tool-calls.spec.ts
+@@ -6,7 +6,8 @@ import { scenarios } from "../test-plan.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+ import { Browser } from "../support/browser.ts";
+-import { Evidence } from "../support/evidence.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { accountingCompleted } from "../support/account-tool-accounting.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App, Resource } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+@@ -51,6 +52,7 @@ layer(HostedLive, { excludeTestServices: true })("Account tool calls", (it) => {
+         const actors = yield* Actors;
+         const browser = yield* Browser;
+         const evidence = yield* Evidence;
++        const telemetry = yield* Telemetry;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const suffix = randomUUID().slice(0, 8);
+         const label = `Counted key ${suffix}`;
+@@ -111,6 +113,19 @@ layer(HostedLive, { excludeTestServices: true })("Account tool calls", (it) => {
+         // A refusal of the caller's own request is not the account's failure and counts nothing.
+         expect((yield* call("missing")).status).toBeGreaterThanOrEqual(400);
+ 
++        const calls = (yield* evidence.requests).filter(
++          (request) => request.path === `${prefix}/apps/${app}/tools/call`,
++        );
++        expect(calls).toHaveLength(4);
++        yield* Effect.forEach(
++          calls.slice(0, 3),
++          ({ traceId }) => accountingCompleted(telemetry, traceId),
++          {
++            concurrency: "unbounded",
++            discard: true,
++          },
++        );
++
+         const read = (actor: typeof actors.owner) =>
+           api.request(actor, "POST", `${prefix}/account-traffic`, { accounts: [account] });
+         const owned = yield* read(actors.owner);
 diff --git a/e2e/tests/cloud-account-tool-accounting.spec.ts b/e2e/tests/cloud-account-tool-accounting.spec.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb986f765e72877d8ee1a2ef268df3f50a5a3211

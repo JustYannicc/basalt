@@ -44,6 +44,8 @@
     ".upstream/e2e/support/managed-server.ts",
     ".upstream/packages/sdk/src/implementation/selection-account-store.ts",
     ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
-    ".upstream/packages/sdk/src/implementation/database.ts"
+    ".upstream/packages/sdk/src/implementation/database.ts",
+    ".upstream/e2e/support/server-control.ts",
+    ".upstream/e2e/support/wall-clock.mjs"
   ]
 }
