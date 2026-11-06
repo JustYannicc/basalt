@@ -1,6 +1,15 @@
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
+@@ -39,7 +39,7 @@
+ import { cloudLogActivity } from "./cloud-log-activity.ts";
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+-import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
++import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+ import {
 @@ -191,7 +191,11 @@
      if (databaseProxy !== undefined) yield* databaseProxy.select(databaseBackendPort);
      const databasePort = databaseProxy?.port ?? input.databasePort;
@@ -14,7 +23,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
      if (input.manualCron && nativePoolBackend)
        return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
      const apiListener = poolBackend ? yield* cloudListener : input.listener;
-@@ -374,9 +378,6 @@
+@@ -374,13 +378,10 @@
            }),
        // Fresh test installs use the encrypted native journal, as production does.
        EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
@@ -24,10 +33,23 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
        ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1" || poolBackend
+-        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
++        ? { POOL_APP_SIGNING_KEY: poolFixtureSigningKey }
+         : {}),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_BUILD_VERSION: input.commit,
 diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
 --- a/e2e/support/cloud-pool-gateway.ts
 +++ b/e2e/support/cloud-pool-gateway.ts
-@@ -19,6 +19,7 @@
+@@ -15,10 +15,15 @@
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer, request } from "node:http";
++import { poolWorkerRevision } from "../../apps/hosted/server/src/implementation/pool-worker-revision.ts";
++import { tokenKeyVersion } from "../../apps/hosted/server/src/implementation/pool-token.ts";
+ import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
++
++export const poolFixtureSigningKey = "ab".repeat(32);
  
  const access = "/pool/v1/access";
  const acquisition = "/pool/v1/account-acquisitions";
@@ -35,7 +57,7 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
  const catalog = "/native-provider-fixture/catalog";
  const Signed = Schema.Struct({
    action: Schema.String,
-@@ -26,6 +27,13 @@
+@@ -26,6 +31,13 @@
    reference: Schema.optionalKey(Schema.String),
    at: Schema.Number,
    expiresAt: Schema.Number,
@@ -49,7 +71,7 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
  });
  
  const ForwardingDiagnostic = Schema.Struct({
-@@ -63,7 +71,7 @@
+@@ -63,24 +75,35 @@
          );
          const [prefix, payload, signature, extra] = envelope.split(".");
          if (
@@ -58,7 +80,12 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
            payload === undefined ||
            signature === undefined ||
            extra !== undefined
-@@ -75,12 +83,23 @@
+         )
+           return HttpServerResponse.empty({ status: 401 });
+-        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++        const expected = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
+           .update(`${prefix}.${payload}`)
+           .digest();
          const supplied = Buffer.from(signature, "base64url");
          if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
            return HttpServerResponse.empty({ status: 401 });
@@ -86,7 +113,32 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
          const refused =
            process.env.BASALT_E2E_POOL_CLEANUP_REFUSED === "1" &&
            (input.action === "remove" ||
-@@ -144,6 +163,7 @@
+@@ -120,7 +143,24 @@
+         if (input.action === "check") return HttpServerResponse.jsonUnsafe({ result: {} });
+         return HttpServerResponse.jsonUnsafe(null);
+       });
++    const releaseRevision =
++      process.env.BASALT_E2E_POOL_RELEASE_MISMATCH === "1"
++        ? poolWorkerRevision.slice(0, -1) + (poolWorkerRevision.endsWith("0") ? "1" : "0")
++        : poolWorkerRevision;
++    const keyVersion = yield* Effect.promise(() => tokenKeyVersion(poolFixtureSigningKey));
+     const routes = Layer.mergeAll(
++      HttpRouter.add(
++        "GET",
++        "/pool/v1/release",
++        Effect.succeed(
++          HttpServerResponse.jsonUnsafe(
++            { revision: releaseRevision, keyVersion },
++            {
++              headers: { "Cache-Control": "no-store" },
++            },
++          ),
++        ),
++      ),
+       HttpRouter.add(
+         "POST",
+         "/native-provider-fixture/retirement-reference",
+@@ -144,6 +184,7 @@
        ),
        HttpRouter.add("POST", access, backend(access)),
        HttpRouter.add("POST", acquisition, backend(acquisition)),
@@ -98,7 +150,7 @@ diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener
 --- a/e2e/tests/cloud-app-listener.spec.ts
 +++ b/e2e/tests/cloud-app-listener.spec.ts
 @@ -1,10 +1,11 @@
-+import { createHmac } from "node:crypto";
++import { createHash, createHmac } from "node:crypto";
  import * as NodeServices from "@effect/platform-node/NodeServices";
  import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
  import { expect, layer } from "@effect/vitest";
@@ -110,10 +162,35 @@ diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener
  import { cloudAppListener } from "../support/cloud-app-listener.ts";
  import { appHttpBackend } from "../support/cloud-app-listener-fixtures.ts";
  import { freePort, holdPort, refusingPort } from "../support/ports.ts";
-@@ -123,6 +124,47 @@
+@@ -123,6 +124,72 @@
      );
    }
  
++  it.effect("pool backend reports generated release identity and its own signing key version", () =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const directory = yield* fs.makeTempDirectoryScoped();
++      const api = yield* cloudListener;
++      const gateway = yield* cloudPoolGateway(api.url.origin, directory, api.url);
++      const http = yield* HttpClient.HttpClient;
++      const response = yield* http.get(`${gateway.origin}/pool/v1/release`);
++      expect(response.status).toBe(200);
++      expect(response.headers["cache-control"]).toBe("no-store");
++      const text = yield* response.text;
++      const report = JSON.parse(text);
++      const generated = yield* fs.readFileString(
++        "apps/hosted/server/src/implementation/pool-worker-revision.ts",
++      );
++      expect(Object.keys(report).sort()).toEqual(["keyVersion", "revision"]);
++      expect(generated).toContain(JSON.stringify(report.revision));
++      expect(report.revision).toMatch(/^[0-9a-f]{64}$/);
++      expect(report.keyVersion).toBe(
++        createHash("sha256").update("ab".repeat(32)).digest("hex").slice(0, 16),
++      );
++      expect(text).not.toContain("ab".repeat(32));
++    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
++  );
++
 +  it.effect("pool backend verifies membership and audience callback envelopes", () =>
 +    Effect.gen(function* () {
 +      const fs = yield* FileSystem.FileSystem;
@@ -161,7 +238,7 @@ diff --git a/e2e/tests/cloud-app-listener.spec.ts b/e2e/tests/cloud-app-listener
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9157,6 +9157,26 @@
+@@ -9259,6 +9259,26 @@
        "self-host": scheduled,
        cloud: managedCloud,
        local: na("General owner policies belong to the hosted product."),
@@ -291,3 +368,33 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -75,6 +75,26 @@
+             allowed.has(specifier)
+           )
+             return;
++          // This external receiver reports the generated release identity and shared key digest.
++          if (
++            label === `support${path.sep}cloud-pool-gateway.ts` &&
++            ts.isImportDeclaration(node.parent) &&
++            node.parent.importClause?.name === undefined &&
++            node.parent.importClause?.namedBindings !== undefined &&
++            ts.isNamedImports(node.parent.importClause.namedBindings) &&
++            node.parent.importClause.namedBindings.elements.length === 1
++          ) {
++            const imported = node.parent.importClause.namedBindings.elements[0];
++            if (
++              imported?.propertyName === undefined &&
++              ((specifier ===
++                "../../apps/hosted/server/src/implementation/pool-worker-revision.ts" &&
++                imported?.name.text === "poolWorkerRevision") ||
++                (specifier === "../../apps/hosted/server/src/implementation/pool-token.ts" &&
++                  imported?.name.text === "tokenKeyVersion"))
++            )
++              return;
++          }
+           // The harness shares only the bounded infrastructure policy, never product implementations.
+           if (
+             label === `support${path.sep}emulators.ts` &&
