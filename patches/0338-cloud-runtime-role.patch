@@ -216,6 +216,59 @@ index 2c9c62e..6a36df1 100644
    });
  
  /**
+diff --git a/e2e/support/oauth-removal-gates.ts b/e2e/support/oauth-removal-gates.ts
+index 1387a55..ec8e3b3 100644
+--- a/e2e/support/oauth-removal-gates.ts
++++ b/e2e/support/oauth-removal-gates.ts
+@@ -1,5 +1,11 @@
+ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { cloudLocks } from "./cloud-locks.ts";
++import { cloudRuntimeDatabaseRole } from "./cloud-postgres.ts";
++
++/** Parameters the Worker's runtime login may set; production's runtime role may set none. */
++const parameterGrants = `select count(*)::int as count from pg_parameter_acl
++  where paracl::text like '%' || $1 || '=%'`;
+ 
+ /** The disposable wrapper supplies the SQL gates; no product endpoint or deployed hook exists. */
+ export const oauthRemovalBoundary = (step: "renewal" | "identification" | "delete", id: string) =>
+@@ -19,6 +25,36 @@ export const oauthRemovalBoundary = (step: "renewal" | "identification" | "delet
+         response.status === 204 ? Effect.void : Effect.die("Gate release refused"),
+       ),
+     );
++    if (step === "delete") {
++      // The SQL gate prefers the DELETE as the deadlock victim with a superuser-only setting, so the
++      // runtime login may set it only while this gate is armed; every other run keeps
++      // production's role exactly.
++      const database = yield* cloudLocks;
++      const grants = database
++        .run({ sql: parameterGrants, params: [cloudRuntimeDatabaseRole] })
++        .pipe(Effect.map((rows) => Number(rows[0]?.count)));
++      if ((yield* grants) !== 0)
++        return yield* Effect.die("The runtime login holds parameter grants outside the gate");
++      yield* Effect.acquireRelease(
++        database.run({
++          sql: `grant set on parameter deadlock_timeout to ${cloudRuntimeDatabaseRole}`,
++        }),
++        () =>
++          database
++            .run({
++              sql: `revoke set on parameter deadlock_timeout from ${cloudRuntimeDatabaseRole}`,
++            })
++            .pipe(
++              Effect.andThen(grants),
++              Effect.flatMap((count) =>
++                count === 0
++                  ? Effect.void
++                  : Effect.die("The runtime login kept a parameter grant after the gate"),
++              ),
++              Effect.orDie,
++            ),
++      );
++    }
+     const armed = yield* request("arm");
+     if (armed.status !== 204) return yield* Effect.die("Gate arm refused");
+     yield* Effect.addFinalizer(() => release.pipe(Effect.orDie));
 diff --git a/e2e/support/production-ops-credentials-proof.ts b/e2e/support/production-ops-credentials-proof.ts
 index e211857..db13d24 100644
 --- a/e2e/support/production-ops-credentials-proof.ts
@@ -287,3 +340,25 @@ index 38ec762..2974e93 100644
        'identity', (select id::text from production_ops_database_identity),
        'snapshotStartedAt', statement_timestamp(),
        'rowDigests', (select json_agg(json_build_object('idHash', md5(a.id), 'rowHash', md5(to_jsonb(a)::text),
+diff --git a/e2e/tests/telemetry-relay.spec.ts b/e2e/tests/telemetry-relay.spec.ts
+index 7864a36..f1db1f0 100644
+--- a/e2e/tests/telemetry-relay.spec.ts
++++ b/e2e/tests/telemetry-relay.spec.ts
+@@ -150,7 +150,16 @@ export default defineApp({}, async () => ({ tools: router({
+             return yield* read().pipe(
+               Effect.repeat({
+                 schedule: Schedule.spaced("100 millis"),
+-                until: (records) => records.some((record) => record.kind === "feedback"),
++                // Analytics batches flush on their own schedule, so wait for both completions too,
++                // not only the feedback record.
++                until: (records) => {
++                  const fresh = records.slice(beforeRelay.length);
++                  const completed = fresh
++                    .filter((record) => record.kind === "analytics")
++                    .flatMap((record) => Schema.decodeUnknownSync(RelayBatch)(record.body).events)
++                    .filter((event) => event.event === "tool_execution_completed").length;
++                  return fresh.some((record) => record.kind === "feedback") && completed >= 2;
++                },
+               }),
+               Effect.timeout("10 seconds"),
+             );
