@@ -97,7 +97,8 @@ test("an open file protects its generation and key beyond the recent-key bound",
 test("a registered worktree reference protects a key without a consumer registration", async (t) => {
   const { root, cache, key } = fixture(t);
   const held = key(1, "old");
-  for (let index = 2; index <= 5; index++) key(index);
+  const linked = key(2, "old");
+  for (let index = 3; index <= 6; index++) key(index);
   const repository = join(root, "source");
   mkdirSync(repository);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: repository, stdio: "pipe" });
@@ -120,11 +121,19 @@ test("a registered worktree reference protects a key without a consumer registra
       store: held.store.replace(cache, alias),
     }),
   );
+  mkdirSync(join(checkout, "node_modules/.bun"), { recursive: true });
+  symlinkSync(join(linked.store, "node_modules"), join(checkout, "node_modules/.bun/package"));
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(held.store), true);
+  assert.equal(
+    existsSync(linked.store),
+    true,
+    "actual package links survive a stale checkout marker",
+  );
   git("--git-dir", bare, "worktree", "remove", "--force", checkout);
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(held.entry), false);
+  assert.equal(existsSync(linked.entry), false);
 });
 
 test("failed open-handle observation skips collection rather than guessing", async (t) => {
