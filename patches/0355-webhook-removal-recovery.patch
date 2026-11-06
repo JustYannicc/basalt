@@ -218,7 +218,7 @@ diff --git a/e2e/support/webhook-removal-fixture.ts b/e2e/support/webhook-remova
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/webhook-removal-fixture.ts
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,149 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -336,7 +336,11 @@ new file mode 100644
 +        const hooks = yield* webhookSubscriptions(actors.owner, path);
 +        for (const hook of hooks)
 +          if (hook.status !== "stopped")
-+            yield* api.request(actors.owner, "DELETE", `${path}/webhooks/${hook.id}`);
++            yield* api.request(
++              actors.owner,
++              hook.status === "disabled" ? "POST" : "DELETE",
++              `${path}/webhooks/${hook.id}${hook.status === "disabled" ? "/reconcile" : ""}`,
++            );
 +        yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
 +          hooks.every((hook) => hook.status === "stopped"),
 +        );
