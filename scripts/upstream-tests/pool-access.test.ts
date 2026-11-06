@@ -312,8 +312,11 @@ test("no network without pools or for ordinary apps; a recorded pool requires a 
       yield* hook.appRemoving("app_ordinary");
       const missingKey = yield* Effect.result(noKey.appAccessChanged({ organization }));
       assert.equal(missingKey._tag, "Failure");
-      assert.equal(missingKey.failure._tag, "AccessDependencyUnavailable");
-      assert.equal(missingKey.failure.dependency, "pool receiver");
+      const failure = Schema.decodeUnknownSync(
+        Schema.Struct({ _tag: Schema.String, dependency: Schema.String }),
+      )(missingKey.failure);
+      assert.equal(failure._tag, "AccessDependencyUnavailable");
+      assert.equal(failure.dependency, "pool receiver");
       yield* sql`update organization set metadata = '{}'`;
       yield* noKey.appAccessChanged({ organization });
       yield* hook.appAccessChanged({ organization });

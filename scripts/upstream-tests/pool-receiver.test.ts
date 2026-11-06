@@ -20,7 +20,10 @@ test("local pool signing failure stays StorageError without sending to the recei
         ),
       );
       assert.equal(result._tag, "Failure");
-      assert.equal(result.failure._tag, "StorageError");
+      const failure = Schema.decodeUnknownSync(Schema.Struct({ _tag: Schema.String }))(
+        result.failure,
+      );
+      assert.equal(failure._tag, "StorageError");
       assert.equal(changes.length, 0);
     }),
   );
