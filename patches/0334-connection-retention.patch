@@ -1,0 +1,546 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 97fd42c..2544bf2 100644
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -28,6 +28,7 @@ export const BackgroundJob = Schema.Literals([
+   "workflow-reconcile",
+   "billing-reconcile",
+   "agent-grant-expiry",
++  "connection-retention",
+   "pool-migration-inventory",
+   "personal-data-reporting",
+ ]);
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+index 1d6582a..e262bcd 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+@@ -18,6 +18,8 @@ export const backupTables = new Set([
+   "executor_oauth_grants",
+   "executor_account_acquisitions",
+   "executor_account_connections",
++  "executor_oauth_attempts",
++  "hosted_connection_access",
+   "hosted_account_access",
+   "hosted_account_groups",
+   "hosted_account_observation_access",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index 7dca588..bf0a592 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -3,6 +3,7 @@ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-ident
+ import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { releasedRetirementV1 } from "./migrations/released-retirement-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
++import { accountConnectionRetentionV1 } from "./migrations/account-connection-retention-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+@@ -12,4 +13,5 @@ export const productionMigrations: Readonly<Record<string, ProductionMigration>>
+   [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+   [googleDuplicateBindingsV1.name]: googleDuplicateBindingsV1,
+   [atlassianAccountIdentityV1.name]: atlassianAccountIdentityV1,
++  [accountConnectionRetentionV1.name]: accountConnectionRetentionV1,
+ };
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
+new file mode 100644
+index 0000000..1b68a3b
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts
+@@ -0,0 +1,133 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { abandonedConnection } from "@executor-js/hosted-server/connection-retention";
++import type { Json, ProductionMigration } from "../contracts.ts";
++import { canonical } from "../crypto.ts";
++import { Entry, entry, readRows, refuse, whereKey } from "./duplicate-binding-rows.ts";
++
++/** One plan's bound; a larger backlog takes another reviewed plan with a later cutoff. */
++const batch = 200;
++const Request = Schema.Struct({
++  organization: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
++  // Fixes the reviewed set: time only adds connections past `now() - 24h`, never past the cutoff.
++  expiredBefore: Schema.String.check(
++    Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u),
++  ),
++});
++const Removal = Schema.Struct({
++  attempt: Schema.NullOr(Entry),
++  access: Schema.NullOr(Entry),
++  connection: Entry,
++});
++const Data = Schema.Struct({ removed: Schema.Array(Removal) });
++const decode = (input: Json) => Schema.decodeUnknownEffect(Request)(input);
++const one = (rows: readonly (typeof Entry.Type)[]) => (rows.length === 1 ? rows[0]! : null);
++
++const read = (input: Json) =>
++  Effect.gen(function* () {
++    const request = yield* decode(input),
++      sql = yield* SqlClient.SqlClient;
++    const settled =
++      yield* sql`select ${request.expiredBefore}::timestamptz <= now() - interval '24 hours' as settled`;
++    if (settled[0]?.settled !== true)
++      return yield* refuse("The cutoff must be at least 24 hours old");
++    const connections = yield* readRows(
++      "executor_account_connections",
++      `entry.owner = 'organization:' || $1 and ${abandonedConnection("entry")}
++        and entry.expires_at < $2::timestamptz`,
++      [request.organization, request.expiredBefore],
++    );
++    if (connections.length > batch)
++      return yield* refuse(`More than ${batch} connections; choose an earlier cutoff`);
++    const removed = [];
++    for (const connection of connections.sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
++      const id = String(connection.id);
++      let attempt = null;
++      if (typeof connection.oauth_attempt === "string") {
++        const sharing = yield* sql`select 1 from executor_account_connections
++          where oauth_attempt = ${connection.oauth_attempt} and id <> ${id} limit 1`;
++        if (sharing.length !== 0) return yield* refuse("A sign-in attempt is shared");
++        attempt = one(
++          (yield* readRows("executor_oauth_attempts", "id = $1", [connection.oauth_attempt])).map(
++            (row) => entry("executor_oauth_attempts", ["id"], row),
++          ),
++        );
++      }
++      const access = one(
++        (yield* readRows("hosted_connection_access", "connection_id = $1", [id])).map((row) =>
++          entry("hosted_connection_access", ["connection_id"], row),
++        ),
++      );
++      removed.push({
++        attempt,
++        access,
++        connection: entry("executor_account_connections", ["id"], connection),
++      });
++    }
++    return {
++      // Attempts and access rows go before the connection that names them.
++      changes: removed.flatMap((item) =>
++        [item.attempt, item.access, item.connection].flatMap((row) =>
++          row === null
++            ? []
++            : [
++                {
++                  table: row.table,
++                  key: row.key,
++                  action: "delete" as const,
++                  beforeSha256: row.sha256,
++                  afterSha256: null,
++                },
++              ],
++        ),
++      ),
++      data: { removed },
++    };
++  });
++
++const absent = (row: typeof Entry.Type | null) =>
++  row === null
++    ? Effect.succeed(true)
++    : Effect.gen(function* () {
++        const { predicate, params } = whereKey(row);
++        return (yield* readRows(row.table, predicate, params)).length === 0;
++      });
++
++/**
++ * Removes one organization's account connections that never produced an account and expired more
++ * than a day before the reviewed cutoff, with their sign-in attempts. Completed connections and
++ * every account stay.
++ */
++export const accountConnectionRetentionV1: ProductionMigration = {
++  name: "account-connection-retention-v1",
++  revision: "1",
++  tables: ["executor_account_connections", "executor_oauth_attempts", "hosted_connection_access"],
++  inspect: read,
++  apply: (input, plan) =>
++    Effect.gen(function* () {
++      const current = yield* read(input);
++      if (canonical(current) !== canonical(plan))
++        return yield* refuse("Connection retention plan changed");
++      const data = yield* Schema.decodeUnknownEffect(Data)(plan.data),
++        sql = yield* SqlClient.SqlClient;
++      for (const item of data.removed)
++        for (const row of [item.attempt, item.access, item.connection]) {
++          if (row === null) continue;
++          const { predicate, params } = whereKey(row);
++          yield* sql.unsafe(`delete from "${row.table}" where ${predicate}`, params);
++        }
++    }),
++  verify: (_input, plan) =>
++    Effect.gen(function* () {
++      const data = yield* Schema.decodeUnknownEffect(Data)(plan.data);
++      let connections = true,
++        attempts = true,
++        access = true;
++      for (const item of data.removed) {
++        connections &&= yield* absent(item.connection);
++        attempts &&= yield* absent(item.attempt);
++        access &&= yield* absent(item.access);
++      }
++      return { ok: connections && attempts && access, checks: { connections, attempts, access } };
++    }),
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+index baee04e..4456a53 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -55,6 +55,15 @@ const scopes: Readonly<Record<string, RowScope>> = {
+   executor_account_connections: id(
+     `${owner} and ${optional("source_account", account("source_account"))} and ${optional("reconnect_account", account("reconnect_account"))}`,
+   ),
++  // A sign-in attempt belongs to the connections that name it, all in the organization.
++  executor_oauth_attempts: id(`exists (select 1 from executor_account_connections c
++    where c.oauth_attempt = entry.id and c.owner = 'organization:' || $1)
++    and not exists (select 1 from executor_account_connections c
++    where c.oauth_attempt = entry.id and c.owner <> 'organization:' || $1)`),
++  hosted_connection_access: {
++    keys: ["connection_id"],
++    predicate: `${organization} and ${owned("executor_account_connections", "connection_id")}`,
++  },
+   hosted_account_access: {
+     keys: ["account_id"],
+     predicate: `${organization} and ${account("account_id")}`,
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 6e6c52e..424bad1 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -41,6 +41,10 @@ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+ import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import {
++  connectionRetentionEnabled,
++  retainConnections,
++} from "@executor-js/hosted-server/connection-retention";
+ import { SqlClient } from "effect/sql";
+ import {
+   OrganizationRemoval,
+@@ -448,6 +452,18 @@ export default Api.make(
+       Effect.scoped,
+       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+     );
++    // Off: no deployment binds its switch, so it removes nothing until a reviewed change does.
++    const connectionRetention = Effect.gen(function* () {
++      const sql = yield* Effect.flatten(GroupDatabase);
++      yield* retainConnections(yield* connectionRetentionEnabled).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      );
++    }).pipe(
++      Effect.provide(executor),
++      reportErrors,
++      Effect.scoped,
++      Effect.catch(() => Effect.logWarning("Account connection retention failed")),
++    );
+     const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
+       Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
+       Effect.provide(executor),
+@@ -479,7 +495,12 @@ export default Api.make(
+       "workflow-reconcile",
+       "app-domain-heartbeat",
+     );
+-    yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
++    yield* jobs.schedule(
++      "17 4 * * *",
++      "billing-reconcile",
++      "agent-grant-expiry",
++      "connection-retention",
++    );
+     yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
+     // Keep the production poll off the hour. Subject-level cycle times spread actual requests further.
+     const testReportingCron = yield* Config.String(
+@@ -511,6 +532,7 @@ export default Api.make(
+       "workflow-reconcile": workflowReconcile,
+       "billing-reconcile": billingReconcile,
+       "agent-grant-expiry": agentGrantExpiry,
++      "connection-retention": connectionRetention,
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+       "personal-data-reporting": personalDataReporting,
+       "account-health-rechecks": accountRechecks,
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index 16a8005..5c79ea3 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -55,6 +55,10 @@ import {
+ } from "@executor-js/sdk/core";
+ import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import {
++  connectionRetentionEnabled,
++  retainConnections,
++} from "@executor-js/hosted-server/connection-retention";
+ import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
+ import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
+ import { SqlClient } from "effect/sql";
+@@ -187,6 +191,14 @@ export const selfHostExecutorServices = <E, R>(
+           Effect.repeat(Schedule.spaced("1 day")),
+         ),
+       );
++      // Off unless the operator sets EXECUTOR_ACCOUNT_CONNECTION_RETENTION.
++      const retention = yield* connectionRetentionEnabled;
++      yield* Effect.forkScoped(
++        retainConnections(retention).pipe(
++          Effect.catch(() => Effect.logWarning("Account connection retention failed")),
++          Effect.repeat(Schedule.spaced("1 day")),
++        ),
++      );
+       yield* Effect.forkScoped(
+         executor[RepositoryHost].recover.pipe(
+           Effect.catch(() => Effect.logWarning("App repository recovery failed")),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index c152da2..19a8d47 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -6,6 +6,7 @@
+   "exports": {
+     "./pool-account-registry": "./src/implementation/pool-account-registry.ts",
+     "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
++    "./connection-retention": "./src/implementation/connection-retention.ts",
+     ".": "./src/index.ts",
+     "./api-keys": "./src/contracts/api-keys.ts",
+     "./provider-login-file": "./src/implementation/provider-login-file.ts",
+diff --git a/apps/hosted/server/src/implementation/connection-retention.ts b/apps/hosted/server/src/implementation/connection-retention.ts
+new file mode 100644
+index 0000000..ca81a72
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/connection-retention.ts
+@@ -0,0 +1,65 @@
++/**
++ * Abandoned account connections: a sign-in that never produced an account and expired more than a
++ * day ago. A pending connection expires after 30 minutes but nothing deletes it, so they pile up.
++ * The reviewed `account-connection-retention-v1` operation and the daily rule share this predicate.
++ */
++import { Config, Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++
++/**
++ * SQL over `executor_account_connections` aliased `alias`. "Produced an account" is any completed
++ * sign-in, exactly as the production `connections` inventory reports `produced_account`.
++ */
++export const abandonedConnection = (alias: string) =>
++  `coalesce(${alias}.state ->> 'status' = 'completed', false) = false
++    and ${alias}.expires_at < now() - interval '24 hours'`;
++
++/**
++ * Off unless a host sets it. No deployment binds it: turning the daily rule on is a reviewed change
++ * that follows the reviewed removal of the existing backlog.
++ */
++export const connectionRetentionEnabled = Config.Boolean(
++  "EXECUTOR_ACCOUNT_CONNECTION_RETENTION",
++).pipe(Config.withDefault(false));
++
++/** One run's bound; a larger backlog drains over later runs, oldest first. */
++export const connectionRetentionBatch = 500;
++
++const Candidates = Schema.Array(
++  Schema.Struct({ id: Schema.String, oauth_attempt: Schema.NullOr(Schema.String) }),
++);
++
++/**
++ * Delete up to one batch of abandoned connections, each sign-in attempt before its connection, as
++ * owner removal does. Access rows cascade with their connection; accounts are never touched.
++ * Returns the number of connections removed; `enabled: false` removes nothing.
++ */
++export const retainConnections = (enabled: boolean) =>
++  Effect.gen(function* () {
++    if (!enabled) return 0;
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        // Locked rows are a connection another writer holds; a later run takes them.
++        const rows = yield* sql
++          .unsafe(
++            `select c.id, c.oauth_attempt from executor_account_connections c
++            where ${abandonedConnection("c")} order by c.expires_at, c.id
++            limit ${connectionRetentionBatch} for update skip locked`,
++          )
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Candidates)));
++        if (rows.length === 0) return 0;
++        const ids = rows.map((row) => row.id);
++        const attempts = rows.flatMap((row) =>
++          row.oauth_attempt === null ? [] : [row.oauth_attempt],
++        );
++        // An attempt another connection still names stays with that connection.
++        if (attempts.length > 0)
++          yield* sql`delete from executor_oauth_attempts a where ${sql.in("a.id", attempts)}
++            and not exists (select 1 from executor_account_connections other
++              where other.oauth_attempt = a.id and not ${sql.in("other.id", ids)})`;
++        yield* sql`delete from executor_account_connections where ${sql.in("id", ids)}`;
++        return ids.length;
++      }),
++    );
++  });
+diff --git a/e2e/support/production-ops-connection-rows.ts b/e2e/support/production-ops-connection-rows.ts
+new file mode 100644
+index 0000000..a642463
+--- /dev/null
++++ b/e2e/support/production-ops-connection-rows.ts
+@@ -0,0 +1,84 @@
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { productionMigrationProof } from "./production-ops-migration-proof.ts";
++
++/**
++ * Connections in both proof organizations, each with its sign-in attempt and access row. Hours are
++ * since expiry; only the own organization's abandoned ones are older than the reviewed cutoff.
++ */
++export const productionOpsConnectionRows = Effect.gen(function* () {
++  const p = yield* productionMigrationProof;
++  const rows = [
++    { key: "pending", side: p.own, status: "pending", hours: 72 },
++    { key: "cancelled", side: p.own, status: "cancelled", hours: 48 },
++    { key: "completed", side: p.own, status: "completed", hours: 72 },
++    { key: "fresh", side: p.own, status: "pending", hours: 2 },
++    { key: "foreign", side: p.foreign, status: "pending", hours: 72 },
++  ].map((row) => ({ ...row, id: randomUUID() }));
++  const ids = rows.map((row) => row.id),
++    attempts = ids.map((id) => `attempt-${id}`);
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* p.database.run({
++        sql: "delete from executor_oauth_attempts where id in (select jsonb_array_elements_text($1::jsonb))",
++        params: [JSON.stringify(attempts)],
++      });
++      yield* p.database.run({
++        sql: "delete from executor_account_connections where id in (select jsonb_array_elements_text($1::jsonb))",
++        params: [JSON.stringify(ids)],
++      });
++    }).pipe(Effect.orDie),
++  );
++  for (const row of rows) {
++    const owner = `organization:${row.side.organization}`;
++    yield* p.database.run({
++      sql: `insert into executor_oauth_attempts (id, encrypted, expires_at, status)
++        values ($1, decode('00','hex'), now() - make_interval(hours => $2::int), 'pending')`,
++      params: [`attempt-${row.id}`, row.hours],
++    });
++    yield* p.database.run({
++      sql: `insert into executor_account_connections (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target)
++        select $1, $2::text, provider, null, $3::jsonb, 'fixture', $4, now() - make_interval(hours => $5::int) - interval '30 minutes',
++        now() - make_interval(hours => $5::int), jsonb_build_object('app', $6::text, 'requirement', 'service', 'name', 'Retention proof', 'owner', $2::text, 'scope', 'user')
++        from executor_accounts where id = $7`,
++      params: [
++        row.id,
++        owner,
++        JSON.stringify(
++          row.status === "completed"
++            ? { status: "completed", account: { id: row.side.account } }
++            : { status: row.status },
++        ),
++        `attempt-${row.id}`,
++        row.hours,
++        row.side.app,
++        row.side.account,
++      ],
++    });
++    yield* p.database.run({
++      sql: `insert into hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
++        select id, $2, $3, '{}'::jsonb, target from executor_account_connections where id = $1`,
++      params: [row.id, row.side.organization, row.side.user],
++    });
++  }
++  const id = Object.fromEntries(rows.map((row) => [row.key, row.id]));
++  const present = (table: string, column: string) =>
++    p.database
++      .run({
++        sql: `select ${column} as id from ${table} where ${column} in (select jsonb_array_elements_text($1::jsonb)) order by 1`,
++        params: [JSON.stringify(table === "executor_oauth_attempts" ? attempts : ids)],
++      })
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++        ),
++        Effect.map((found) => found.map((row) => row.id)),
++      );
++  return {
++    p,
++    id,
++    connections: present("executor_account_connections", "id"),
++    attempts: present("executor_oauth_attempts", "id"),
++    access: present("hosted_connection_access", "connection_id"),
++  };
++});
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+index cb462c0..2888f6d 100644
+--- a/e2e/tests/production-ops-migrations.spec.ts
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -12,6 +12,7 @@ import {
+   productionMigrationProof,
+ } from "../support/production-ops-migration-proof.ts";
+ import { productionOpsCredentialsProof } from "../support/production-ops-credentials-proof.ts";
++import { productionOpsConnectionRows } from "../support/production-ops-connection-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
+@@ -208,6 +209,72 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+     );
+   }
+ 
++  it.effect(scenarios.cloudProductionOpsConnectionRetention.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { p, id, connections, attempts, access } = yield* productionOpsConnectionRows;
++        const operation = {
++          ...p.operation("increment"),
++          selection: "account-connection-retention-v1",
++          request: {
++            organization: p.own.organization,
++            expiredBefore: new Date(Date.now() - 25 * 3_600_000).toISOString(),
++          },
++        };
++        const before = { connections: yield* connections, attempts: yield* attempts };
++        const dry = yield* p.dryRun(operation);
++        const plan = Schema.decodeUnknownSync(
++          Schema.Struct({
++            plan: Schema.Struct({
++              changes: Schema.Array(
++                Schema.Struct({
++                  table: Schema.String,
++                  key: Schema.Record(Schema.String, Schema.String),
++                }),
++              ),
++            }),
++          }),
++        )(p.decrypt(dry.artifact));
++        const removed = [id.pending!, id.cancelled!].sort();
++        expect(
++          plan.plan.changes.map((change) => [change.table, Object.values(change.key)[0]]),
++        ).toEqual(
++          removed.flatMap((connection) => [
++            ["executor_oauth_attempts", `attempt-${connection}`],
++            ["hosted_connection_access", connection],
++            ["executor_account_connections", connection],
++          ]),
++        );
++        // A reviewed connection that changed refuses without removing anything.
++        const revise = (revision: string) =>
++          p.database.run({
++            sql: "update executor_account_connections set revision = $2 where id = $1",
++            params: [id.cancelled!, revision],
++          });
++        yield* revise("changed");
++        expect((yield* p.request(p.apply(operation, dry))).status).toBe(409);
++        expect(yield* connections).toEqual(before.connections);
++        yield* revise("fixture");
++        const applied = yield* p.request(p.apply(operation, dry));
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(yield* body(Applied, applied)).toMatchObject({
++          repeated: false,
++          verification: { ok: true },
++        });
++        const kept = before.connections.filter((connection) => !removed.includes(connection));
++        expect(yield* connections).toEqual(kept);
++        expect(yield* access).toEqual(kept);
++        expect(yield* attempts).toEqual(
++          before.attempts.filter((attempt) => !removed.some((r) => attempt === `attempt-${r}`)),
++        );
++        const replay = yield* p.request(p.apply(operation, dry));
++        expect(replay.status).toBe(200);
++        expect((yield* body(Applied, replay)).repeated).toBe(true);
++      }),
++    ),
++  );
++
+   it.effect(scenarios.cloudProductionOpsReferences.title, (context) =>
+     withHostedCase(
+       context,

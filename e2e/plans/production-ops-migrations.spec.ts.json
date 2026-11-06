@@ -113,6 +113,25 @@
           "reason": "Local does not host production operations."
         }
       }
+    },
+    "cloudProductionOpsConnectionRetention": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud production operations remove abandoned account connections through a reviewed plan",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Production operations use the Cloud runtime database and deploy secrets."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host production operations."
+        }
+      }
     }
   },
   "runs": {
@@ -121,7 +140,8 @@
     "cloudProductionOpsStableKeys": ["production-ops:migrations"],
     "cloudProductionOpsHostIdentity": ["production-ops:identity-host"],
     "cloudProductionOpsDatabaseIdentity": ["production-ops:identity-database"],
-    "cloudProductionOpsReferences": ["production-ops:migrations"]
+    "cloudProductionOpsReferences": ["production-ops:migrations"],
+    "cloudProductionOpsConnectionRetention": ["production-ops:migrations"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/implementation/migrations.ts",
@@ -135,6 +155,8 @@
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/http.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/account-connection-retention-v1.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/duplicate-binding-rows.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts",
@@ -142,6 +164,7 @@
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts",
     ".upstream/apps/hosted/cloud/src/main.ts",
-    ".upstream/apps/hosted/cloud/src/mcp-server.ts"
+    ".upstream/apps/hosted/cloud/src/mcp-server.ts",
+    ".upstream/apps/hosted/server/src/implementation/connection-retention.ts"
   ]
 }

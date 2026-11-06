@@ -185,6 +185,30 @@ history. Deployment only registers the operation. Apply still needs GO for the
 exact plan. Retirement deletes the selected redundant bindings and their own
 grants locally, preserves verified replacements, and never revokes Google consent.
 
+## Remove abandoned account connections
+
+Use `account-connection-retention-v1` with
+`{"organization":"<organization-id>","expiredBefore":"<UTC timestamp, e.g. 2026-11-05T00:00:00Z>"}`.
+It selects that organization's connections that never produced an account and
+expired before the cutoff: the `connections` inventory rows with
+`produced_account: false`. The cutoff must be at least 24 hours old, so a
+connection that can still complete is never selected, and the reviewed set stays
+fixed while time passes. A plan holds at most 200 connections; for a larger
+backlog, choose an earlier cutoff first, then repeat with later ones.
+
+Back up with `action=backup` and the migration name first. The backup holds
+complete connection, sign-in attempt and connection access rows. The dry run
+lists each selected connection with its sign-in attempt and access row, by exact
+ID and row checksum. A sign-in attempt that another connection also names refuses.
+Apply, with GO for that exact plan, removes each attempt and access row before
+its connection. It refuses if any reviewed row changed or the selection differs.
+Completed connections and every account stay.
+
+The same rule can run daily on its own. It is off unless the server's
+`EXECUTOR_ACCOUNT_CONNECTION_RETENTION` is `true`, and no deployment sets it.
+When on, it removes up to 500 such connections a day across all organizations,
+each older than a day past its expiry, sign-in attempts first.
+
 ## Apply the reviewed plan
 
 `released-interactive-retirement-v1` repairs one exact completed connection whose
