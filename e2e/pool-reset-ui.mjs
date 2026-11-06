@@ -176,8 +176,16 @@ const program = Effect.gen(function* () {
     ),
   );
   const consumes = () => h.fixture.resets.calls.filter((call) => call.action === "consume");
+  // The reading the reset control compares against: the report that carries the banked resets.
   const latestReading = (view) =>
-    Math.max(0, ...view.reports.map((report) => Date.parse(report.result?.observedAt ?? "") || 0));
+    Math.max(
+      0,
+      ...view.reports
+        .filter((report) =>
+          report.result?.observation.balances.some((balance) => balance.unit === "resets"),
+        )
+        .map((report) => Date.parse(report.result.observedAt) || 0),
+    );
   // A confirmed reset keeps the count disabled until a reading newer than the reset arrives, also
   // across a reload. A step that spends again starts from that fresh reading: the provider reads
   // usage again, the refresh interval is made due, and the account row's own Refresh fetches it.
@@ -185,7 +193,7 @@ const program = Effect.gen(function* () {
     Effect.gen(function* () {
       const before = latestReading(yield* h.request("GET", `${account}/observations`));
       h.fixture.refreshReading(id);
-      yield* h.observationsDue(saved.account.id);
+      yield* h.makeObservationsDue(saved.account.id);
       yield* h.request("POST", `${account}/observations/refresh`);
       yield* until(
         h.request("GET", `${account}/observations`),
@@ -279,8 +287,8 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => shot("reset-confirmed"));
 
-  // A definite refusal shows its reason and spends nothing.
   yield* freshReading();
+  // A definite refusal shows its reason and spends nothing.
   h.fixture.resets.mode(id, "refused");
   yield* page(() =>
     load()
@@ -351,8 +359,8 @@ const program = Effect.gen(function* () {
   checked("the replay keeps the dropped request's ID", consumes().at(-1).requestId, dropped);
   checked("the dropped request spent one credit", h.fixture.resets.remaining(id), 3);
 
-  // A lost answer is unknown; a reload restores the same request, and Retry replays it exactly.
   yield* freshReading();
+  // A lost answer is unknown; a reload restores the same request, and Retry replays it exactly.
   h.fixture.resets.mode(id, "unknown");
   const held = h.fixture.resets.hold();
   yield* page(() =>
@@ -408,8 +416,8 @@ const program = Effect.gen(function* () {
   checked("the retry reuses the credit ID", replay.creditId, lost.creditId);
   checked("the replay spent no second credit", h.fixture.resets.remaining(id), 2);
 
-  // Past the server's retry window, the retained unknown blocks a new spend and offers no retry.
   yield* freshReading();
+  // Past the server's retry window, the retained unknown blocks a new spend and offers no retry.
   yield* page(() =>
     load()
       .then(() => control.click())

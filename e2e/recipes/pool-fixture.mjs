@@ -299,7 +299,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     restart() {
       control = new PoolControl(storage, dependencies);
     },
-    /** The provider reads this account's usage again now, as its queued refresh does; credits stay. */
+    /** The provider reads this account's usage again now, as its queued refresh does, credits included. */
     refreshReading(id) {
       const reading = readings.get(id);
       const observed = new Date(now()).toISOString();
