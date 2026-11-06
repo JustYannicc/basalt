@@ -1,0 +1,1105 @@
+diff --git a/apps/docs/content/connect-an-account.mdx b/apps/docs/content/connect-an-account.mdx
+index 2b91421..998c9fe 100644
+--- a/apps/docs/content/connect-an-account.mdx
++++ b/apps/docs/content/connect-an-account.mdx
+@@ -56,10 +56,12 @@ Completing a connection saves the account and links it to this app. There is
+ no separate step. Browser sign-in returns to the app's Accounts tab;
+ cancelling or failing sign-in offers a direct way back to the app.
+ 
+-The Accounts tab has two sections. **Your accounts** ("Linked for you") holds
+-the accounts you linked for your own calls. **App accounts** ("Linked for
+-everyone") holds the accounts the app uses for every caller and its background
+-work; it appears only when the app requires accounts of its own.
++The Accounts tab has two sections. **Your accounts** is where you pick the
++accounts the app uses for your own calls. **App accounts** is where you pick the
++accounts the app uses for every caller and its background work; it appears only
++when the app requires accounts of its own. Both list accounts you could link as
++well as the linked ones: a checked radio button or checkbox marks a linked
++account.
+ 
+ Each requirement lists every saved account of its provider you can use. A
+ single-account requirement shows a radio button per account: selecting one
+diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
+index 1f73efe..0b861fb 100644
+--- a/e2e/support/account-choices.ts
++++ b/e2e/support/account-choices.ts
+@@ -1,10 +1,16 @@
+ /**
+  * The app Accounts tab's choices for one requirement: a list named `<Provider> accounts` with
+  * every account the caller could link, each with a radio (plain requirement) or a checkbox
+- * (many()) that is checked while the account is linked.
++ * (many()) named `Use <label> for this app` that is checked while the account is linked.
+  */
+ import type { Locator, Page } from "playwright";
+ 
++/** The accessible name of the radio or checkbox that links the account titled `label`. */
++export const choiceName = (label: string) => `Use ${label} for this app`;
++
++/** The account title inside a control name from `choiceName`. */
++export const choiceLabel = (name: string) => /^Use (.*) for this app$/.exec(name)?.[1] ?? name;
++
+ /** One requirement's list of choices, named after its provider. */
+ export const accountChoices = (
+   root: Page | Locator,
+@@ -16,8 +22,8 @@ export const accountChoices = (
+ export const linkedChoice = (root: Page | Locator, provider: string, label: string) => {
+   const list = accountChoices(root, provider);
+   return list
+-    .getByRole("radio", { name: label, exact: true, checked: true })
+-    .or(list.getByRole("checkbox", { name: label, exact: true, checked: true }));
++    .getByRole("radio", { name: choiceName(label), exact: true, checked: true })
++    .or(list.getByRole("checkbox", { name: choiceName(label), exact: true, checked: true }));
+ };
+ 
+ /** The controls of every linked account in one requirement's choices. */
+@@ -30,15 +36,15 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
+ 
+ /** The labels of the linked accounts in one requirement's choices, in the order shown. */
+ export const linkedLabels = (root: Page | Locator, provider: string) =>
+-  linkedChoices(root, provider).evaluateAll((controls) =>
+-    controls.map((control) => control.getAttribute("aria-label") ?? ""),
+-  );
++  linkedChoices(root, provider)
++    .evaluateAll((controls) => controls.map((control) => control.getAttribute("aria-label") ?? ""))
++    .then((names) => names.map(choiceLabel));
+ 
+ /** Link an account the caller could use by selecting its radio or checkbox. */
+ export const chooseAccount = (root: Page | Locator, provider: string, label: string) => {
+   const list = accountChoices(root, provider);
+   return list
+-    .getByRole("radio", { name: label, exact: true })
+-    .or(list.getByRole("checkbox", { name: label, exact: true }))
++    .getByRole("radio", { name: choiceName(label), exact: true })
++    .or(list.getByRole("checkbox", { name: choiceName(label), exact: true }))
+     .click();
+ };
+diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
+index 756ad35..2e218b6 100644
+--- a/e2e/tests/account-connection-query.spec.ts
++++ b/e2e/tests/account-connection-query.spec.ts
+@@ -15,7 +15,12 @@ import {
+ } from "../support/name-account.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { linkedAccountIds } from "../support/app-accounts.ts";
+-import { accountChoices, linkedChoice, linkedLabels } from "../support/account-choices.ts";
++import {
++  accountChoices,
++  choiceName,
++  linkedChoice,
++  linkedLabels,
++} from "../support/account-choices.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ 
+@@ -214,7 +219,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+         yield* browser.use("The new account appears on the same app", (page) =>
+           accountChoices(page, "Connection fixture", { includeHidden: true })
+             .getByRole("radio", {
+-              name: "Default",
++              name: choiceName("Default"),
+               exact: true,
+               checked: true,
+               includeHidden: true,
+diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
+index 10053e7..0af79e4 100644
+--- a/e2e/tests/app-account-links.spec.ts
++++ b/e2e/tests/app-account-links.spec.ts
+@@ -20,7 +20,13 @@ import {
+   linkedAccountIds,
+   unlinkAccount,
+ } from "../support/app-accounts.ts";
+-import { accountChoices, chooseAccount, linkedLabels } from "../support/account-choices.ts";
++import {
++  accountChoices,
++  choiceLabel,
++  choiceName,
++  chooseAccount,
++  linkedLabels,
++} from "../support/account-choices.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App, Resource } from "../support/contracts.ts";
+ import { nameConnectedAccount } from "../support/name-account.ts";
+@@ -200,7 +206,7 @@ const linkedRows = (region: Locator, provider: string, expected: readonly string
+           );
+           return JSON.stringify(shown) === JSON.stringify(args.expected);
+         },
+-        { root, list: `${provider} accounts`, expected: [...expected] },
++        { root, list: `${provider} accounts`, expected: expected.map(choiceName) },
+         { timeout: 10_000 },
+       ),
+     )
+@@ -218,7 +224,8 @@ const choiceStates = (region: Locator, provider: string) =>
+         control.getAttribute("aria-label") ?? "",
+         control.getAttribute("aria-checked") ?? "",
+       ]),
+-    );
++    )
++    .then((controls) => controls.map(([name = "", checked]) => [choiceLabel(name), checked]));
+ 
+ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+   it.effect(scenarios.accountLinking.title, (context) =>
+@@ -421,7 +428,7 @@ export default defineApp({user: { accounts:{service} }},{tools: router({ who })}
+         // The member's saved accounts are offered once the requirement's choices load.
+         yield* browser.use("The member's other saved account is offered", () =>
+           accountChoices(mailbox, "Mailbox")
+-            .getByRole("radio", { name: "Work mailbox", exact: true })
++            .getByRole("radio", { name: choiceName("Work mailbox"), exact: true })
+             .waitFor(),
+         );
+         expect(
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index ab55068..41c440f 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -19,6 +19,7 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { enterClientDetails } from "../support/oauth-client-entry.ts";
++import { choiceLabel, choiceName } from "../support/account-choices.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
+   it.effect(scenarios.appAccountPicker.title, (context) =>
+@@ -117,6 +118,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+             const name = slot === "calendar" ? "Calendar fixture" : "Account fixture";
+             const role = slot === "mailboxes" ? "checkbox" : "radio";
+             const selector = `section[aria-label="${name}"] [role="${role}"]`;
++            const named = expected.map(([label, checked]) => [choiceName(label), checked] as const);
+             const read = (args: {
+               readonly selector: string;
+               readonly expected: ReadonlyArray<readonly [string, boolean]>;
+@@ -129,7 +131,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+               ) === JSON.stringify(args.expected);
+             // A timeout falls through so the assertion reports the controls actually shown.
+             return page
+-              .waitForFunction(read, { selector, expected: [...expected] }, { timeout: 10_000 })
++              .waitForFunction(read, { selector, expected: named }, { timeout: 10_000 })
+               .catch((error: unknown) => {
+                 if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
+               })
+@@ -137,10 +139,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 page
+                   .locator(selector)
+                   .evaluateAll((controls) =>
+-                    controls.map((control) => [
+-                      control.getAttribute("aria-label"),
+-                      control.getAttribute("aria-checked") === "true",
+-                    ]),
++                    controls.map(
++                      (control) =>
++                        [
++                          control.getAttribute("aria-label") ?? "",
++                          control.getAttribute("aria-checked") === "true",
++                        ] as const,
++                    ),
++                  )
++                  .then((controls) =>
++                    controls.map(([label, checked]) => [choiceLabel(label), checked]),
+                   ),
+               );
+           });
+@@ -281,12 +289,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         // A failed link keeps the current links and can be retried in place.
+         const linkFailure = yield* holdLink("PUT", "mailboxes", third);
+         yield* browser.use("Check the third mailbox", () =>
+-          mailboxes.getByRole("checkbox", { name: "Third account", exact: true }).click(),
++          mailboxes
++            .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++            .click(),
+         );
+         yield* linkFailure.requested;
+         expect(
+           yield* browser.use("The checkbox is disabled while linking", () =>
+-            mailboxes.getByRole("checkbox", { name: "Third account", exact: true }).isDisabled(),
++            mailboxes
++              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .isDisabled(),
+           ),
+         ).toBe(true);
+         yield* linkFailure.release;
+@@ -307,7 +319,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 response.request().method() === "PUT" &&
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${third}`),
+             ),
+-            mailboxes.getByRole("checkbox", { name: "Third account", exact: true }).click(),
++            mailboxes
++              .getByRole("checkbox", { name: choiceName("Third account"), exact: true })
++              .click(),
+           ]).then(([response]) => response.status()),
+         );
+         expect(linked).toBe(200);
+@@ -371,7 +385,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         // A failed unlink keeps the account linked.
+         const unlinkFailure = yield* holdLink("DELETE", "mailboxes", second);
+         yield* browser.use("Clear the second mailbox", () =>
+-          mailboxes.getByRole("checkbox", { name: "Second account", exact: true }).click(),
++          mailboxes
++            .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++            .click(),
+         );
+         yield* unlinkFailure.requested;
+         yield* unlinkFailure.release;
+@@ -406,7 +422,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 response.request().method() === "DELETE" &&
+                 new URL(response.url()).pathname.endsWith(`/mailboxes/${second}`),
+             ),
+-            mailboxes.getByRole("checkbox", { name: "Second account", exact: true }).click(),
++            mailboxes
++              .getByRole("checkbox", { name: choiceName("Second account"), exact: true })
++              .click(),
+           ]).then(([response]) => response.status()),
+         );
+         expect(unlinked).toBe(200);
+@@ -503,7 +521,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         ]);
+         yield* browser.checkpoint("New account connected and linked");
+         yield* browser.use("Clear the new mailbox", () =>
+-          mailboxes.getByRole("checkbox", { name: "Fourth account", exact: true }).click(),
++          mailboxes
++            .getByRole("checkbox", { name: choiceName("Fourth account"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Unlinking its last use offers deletion", () =>
+           unused.waitFor({ state: "visible" }),
+@@ -568,7 +588,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                 response.request().method() === "PUT" &&
+                 new URL(response.url()).pathname.endsWith(`/calendar/${workCalendar}`),
+             ),
+-            calendar.getByRole("radio", { name: "Work calendar", exact: true }).click(),
++            calendar.getByRole("radio", { name: choiceName("Work calendar"), exact: true }).click(),
+           ]).then(([response]) => response.status()),
+         );
+         expect(replaced).toBe(200);
+diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
+index 27109ab..0b29f0c 100644
+--- a/e2e/tests/app-accounts-tab.spec.ts
++++ b/e2e/tests/app-accounts-tab.spec.ts
+@@ -10,7 +10,7 @@ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+ import { randomUUID } from "node:crypto";
+-import type { Page } from "playwright";
++import type { Locator, Page } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body, type Session } from "../support/api.ts";
+ import {
+@@ -29,6 +29,7 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
+ import { settleWebhookSources } from "../support/webhook-sources.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ /**
+  * Datadog is the app's own account; Mail each member's, where many() needs none linked. The `who`
+@@ -45,10 +46,13 @@ export default defineApp(requirements, async () => ({
+   tools: router({ who, report }),
+   schedules: { report: appInterval({ minutes: 1 }, report, {}) },
+ }));`;
++/** Datadog is the app's own account and Mail each member's, so the tab shows both sections. */
+ const firstEntrySource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
+-const datadog = defineProvider({ name: "Datadog", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++const key = secrets({ label: "Key", fields: object({ token: string() }) });
++const datadog = defineProvider({ name: "Datadog", auth: { key } });
++const mail = defineProvider({ name: "Mail", auth: { key } });
+ const who = query({ input: object({}) }, async () => "ready");
+-export default defineApp({ app: { accounts: { datadog } } }, async () => ({ tools: router({ who }) }));`;
++export default defineApp({ app: { accounts: { datadog } }, user: { accounts: { mail: mail.many() } } }, async () => ({ tools: router({ who }) }));`;
+ const Failure = Schema.Struct({ _tag: Schema.String });
+ const Settings = Schema.Array(
+   Schema.Struct({
+@@ -268,7 +272,17 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+           const browser = yield* Browser;
+           const evidence = yield* Evidence;
+           const fixture = yield* sharedApp("First-entry controls", firstEntrySource);
++          // Each section also lists a saved account that is not linked: the spare Datadog account
++          // the linked one replaced, and a Mail account unlinked after connecting it.
++          yield* fixture.connect("datadog", "Synthetic spare account");
+           yield* fixture.connect("datadog", "Synthetic linked account");
++          const mail = yield* fixture.connect("mail", "Synthetic mail account", "user");
++          const unlinked = yield* fixture.api.request(
++            fixture.actors.owner,
++            "DELETE",
++            `${requirementPath(fixture.path, "user", "mail")}/${encodeURIComponent(mail)}`,
++          );
++          expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+           yield* browser.login(fixture.actors.owner);
+           yield* browser.use("Set viewport", (page) =>
+             page.setViewportSize({ width, height: 960 }),
+@@ -302,9 +316,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+           const held = yield* readAccountsTab("Read the held tab", false);
+           yield* chunk.release;
+           yield* browser.use("The tab shows its accounts", (page) =>
+-            appSection(page)
+-              .getByRole("radio", { name: "Synthetic linked account", exact: true })
+-              .waitFor(),
++            appSection(page).getByRole("radio", { checked: true }).waitFor(),
+           );
+           const entered = yield* readAccountsTab("Read the first entry", true);
+ 
+@@ -332,11 +344,61 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+           yield* recordAccountsTab("Record the revisit");
+           yield* browser.use("Revisit Accounts", (page) => appTab(page, "Accounts").click());
+           yield* browser.use("The revisit shows its accounts", (page) =>
+-            appSection(page)
+-              .getByRole("radio", { name: "Synthetic linked account", exact: true })
+-              .waitFor(),
++            appSection(page).getByRole("radio", { checked: true }).waitFor(),
+           );
+           const revisit = yield* readAccountsTab("Read the revisit", true);
++
++          // Rows list accounts that are not linked too, so each section's line says what it is
++          // for, never that its accounts are linked, and each control says what selecting it does.
++          yield* browser.use("Both sections list their unlinked accounts", (page) =>
++            Promise.all([
++              datadogSection(page).getByRole("radio", { checked: false }).waitFor(),
++              mailSection(page).getByRole("checkbox", { checked: false }).waitFor(),
++            ]),
++          );
++          yield* evidence.attach(
++            `app-accounts-sections-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture both sections", (page) =>
++              page.screenshot({ fullPage: true }),
++            ),
++          );
++          const controls = (section: Locator) =>
++            section
++              .locator('[role="radio"], [role="checkbox"]')
++              .evaluateAll((elements) =>
++                elements.map((element) => [
++                  element.getAttribute("aria-label"),
++                  element.getAttribute("aria-checked"),
++                ]),
++              );
++          const sections = yield* browser.use("Read both sections", (page) =>
++            Promise.all([
++              appSection(page).locator("h2 + p").innerText(),
++              yourSection(page).locator("h2 + p").innerText(),
++              appSection(page).innerText(),
++              yourSection(page).innerText(),
++              controls(datadogSection(page)),
++              controls(mailSection(page)),
++              page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++            ]),
++          );
++          const [appLine, yourLine, appText, yourText, datadogControls, mailControls, fits] =
++            sections;
++          expect(appLine).toBe("Pick which accounts this app uses for everyone");
++          expect(yourLine).toBe("Pick which accounts this app uses for you");
++          expect(appText, "the App accounts section never calls its rows linked").not.toMatch(
++            /\bLinked\b/,
++          );
++          expect(yourText, "Your accounts never calls an unlinked row linked").not.toMatch(
++            /\bLinked\b/,
++          );
++          expect(datadogControls).toEqual([
++            [choiceName("Synthetic linked account"), "true"],
++            [choiceName("Synthetic spare account"), "false"],
++          ]);
++          expect(mailControls).toEqual([[choiceName("Synthetic mail account"), "false"]]);
++          expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
+           yield* evidence.json("app-accounts-first-entry.json", {
+             width,
+             held,
+@@ -394,17 +456,23 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+ 
+         yield* browser.login(actors.owner);
+         yield* browser.use("Open the app's accounts", (page) => page.goto(`${url}?view=accounts`));
+-        yield* browser.use("The App accounts section is linked for everyone", (page) =>
+-          appSection(page).getByText("Linked for everyone", { exact: true }).waitFor(),
++        yield* browser.use(
++          "The App accounts section picks the accounts used for everyone",
++          (page) =>
++            appSection(page)
++              .getByText("Pick which accounts this app uses for everyone", { exact: true })
++              .waitFor(),
+         );
+-        yield* browser.use("Your accounts are linked for you", (page) =>
+-          yourSection(page).getByText("Linked for you", { exact: true }).waitFor(),
++        yield* browser.use("Your accounts picks the accounts used for you", (page) =>
++          yourSection(page)
++            .getByText("Pick which accounts this app uses for you", { exact: true })
++            .waitFor(),
+         );
+         // The plain requirement lists every Datadog account the owner can use as radios, the
+         // linked one selected, then the connect row.
+         yield* browser.use("Backup Datadog is the selected radio", (page) =>
+           datadogSection(page)
+-            .getByRole("radio", { name: "Backup Datadog", checked: true, exact: true })
++            .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(
+@@ -427,8 +495,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+           ),
+         ).toEqual([
+           [
+-            ["Backup Datadog", "true"],
+-            ["Team Datadog", "false"],
++            [choiceName("Backup Datadog"), "true"],
++            [choiceName("Team Datadog"), "false"],
+           ],
+           1,
+           0,
+@@ -447,8 +515,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+               ),
+           ),
+         ).toEqual([
+-          ["Home mail", "true"],
+-          ["Work mail", "true"],
++          [choiceName("Home mail"), "true"],
++          [choiceName("Work mail"), "true"],
+         ]);
+         yield* browser.checkpoint("Manager's Accounts tab");
+         const screenshot = yield* browser.use("Capture the manager's accounts", (page) =>
+@@ -458,17 +526,19 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+ 
+         // Selecting Team Datadog links it for everyone, replacing Backup Datadog.
+         yield* browser.use("Select Team Datadog", (page) =>
+-          datadogSection(page).getByRole("radio", { name: "Team Datadog", exact: true }).click(),
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Team Datadog is selected", (page) =>
+           datadogSection(page)
+-            .getByRole("radio", { name: "Team Datadog", checked: true, exact: true })
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(
+           yield* browser.use("Backup Datadog is no longer selected", (page) =>
+             datadogSection(page)
+-              .getByRole("radio", { name: "Backup Datadog", exact: true })
++              .getByRole("radio", { name: choiceName("Backup Datadog"), exact: true })
+               .getAttribute("aria-checked"),
+           ),
+         ).toBe("false");
+@@ -480,7 +550,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+         // Clearing a checkbox unlinks that account from the many() requirement; checking it again
+         // links it back.
+         yield* browser.use("Clear Home mail", (page) =>
+-          mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
++          mailSection(page)
++            .getByRole("checkbox", { name: choiceName("Home mail"), exact: true })
++            .click(),
+         );
+         // No app uses Home mail now; keeping it leaves it saved.
+         yield* browser.use("Keep the unused mail account", (page) =>
+@@ -491,16 +563,18 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+         );
+         yield* browser.use("Home mail is cleared", (page) =>
+           mailSection(page)
+-            .getByRole("checkbox", { name: "Home mail", checked: false, exact: true })
++            .getByRole("checkbox", { name: choiceName("Home mail"), checked: false, exact: true })
+             .waitFor(),
+         );
+         expect(yield* links("user")).toEqual([["mail", work]]);
+         yield* browser.use("Check Home mail again", (page) =>
+-          mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
++          mailSection(page)
++            .getByRole("checkbox", { name: choiceName("Home mail"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Home mail is checked", (page) =>
+           mailSection(page)
+-            .getByRole("checkbox", { name: "Home mail", checked: true, exact: true })
++            .getByRole("checkbox", { name: choiceName("Home mail"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(yield* links("user")).toEqual([
+@@ -569,7 +643,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+         yield* browser.use("Team Datadog is shown selected and disabled", (page) =>
+           datadogSection(page)
+             .getByRole("radio", {
+-              name: "Team Datadog",
++              name: choiceName("Team Datadog"),
+               checked: true,
+               disabled: true,
+               exact: true,
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 7420f1c..035a5e3 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -9,6 +9,7 @@ import { contributedApp } from "../support/contributed-app.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const ordinaryNote = "Only people who can edit this app can change these accounts.";
+ 
+@@ -49,7 +50,11 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         // Rows stay disabled until the requirement's choices arrive.
+         yield* browser.use("My contribution becomes changeable", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("checkbox", { name: "My service account", disabled: false, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("My service account"),
++              disabled: false,
++              exact: true,
++            })
+             .waitFor(),
+         );
+         expect(
+@@ -58,10 +63,13 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+             const ordinary = requirementSection(page, "ordinary");
+             return Promise.all([
+               contributed
+-                .getByRole("checkbox", { name: "My service account", exact: true })
++                .getByRole("checkbox", { name: choiceName("My service account"), exact: true })
+                 .isEnabled(),
+               contributed
+-                .getByRole("checkbox", { name: "Another member's account", exact: true })
++                .getByRole("checkbox", {
++                  name: choiceName("Another member's account"),
++                  exact: true,
++                })
+                 .isDisabled(),
+               contributed
+                 .getByRole("button", { name: "Manage Another member's account", exact: true })
+@@ -127,7 +135,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         yield* browser.use("The new contribution appears linked", (page) =>
+           requirementSection(page, "contributed")
+             .getByRole("checkbox", {
+-              name: "Connected from the Accounts tab",
++              name: choiceName("Connected from the Accounts tab"),
+               checked: true,
+               disabled: false,
+               exact: true,
+@@ -159,7 +167,11 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         );
+         yield* browser.use("My account remains as an unlinked choice", (page) =>
+           requirementSection(page, "contributed")
+-            .getByRole("checkbox", { name: "My service account", checked: false, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("My service account"),
++              checked: false,
++              exact: true,
++            })
+             .waitFor(),
+         );
+         expect((yield* f.readLinks()).map((link) => link.account.id)).not.toContain(own);
+@@ -171,7 +183,11 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+         // The checkbox unlinks it, so an enabled one is the editor's removal control.
+         yield* browser.use("Editors may remove another member's contribution", (page) =>
+           page
+-            .getByRole("checkbox", { name: "My service account", disabled: false, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("My service account"),
++              disabled: false,
++              exact: true,
++            })
+             .waitFor(),
+         );
+       }),
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+index 60b793c..885f7ba 100644
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -22,6 +22,7 @@ import { saveAndDeploy } from "../support/app-authoring.ts";
+ import { managementApp } from "../support/management-app.ts";
+ import { openThroughBrowser } from "../support/in-app-navigation.ts";
+ import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
++import { choiceName } from "../support/account-choices.ts";
+ const App = Schema.Struct({
+   id: Schema.String,
+   name: Schema.String,
+@@ -111,7 +112,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+           );
+           expect(
+             yield* browser.use("The managed key is not offered as a sign-in", (page) =>
+-              page.getByRole("radio", { name: account.label, exact: true }).count(),
++              page.getByRole("radio", { name: choiceName(account.label), exact: true }).count(),
+             ),
+           ).toBe(0);
+           yield* browser.use("Return to the app list", (page) =>
+@@ -231,9 +232,10 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+                 page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+               );
+               const automaticChoice = (page: Page) =>
+-                page
+-                  .getByRole("region", { name: "Executor", exact: true })
+-                  .getByRole("radio", { name: "Set up automatically", exact: true });
++                page.getByRole("region", { name: "Executor", exact: true }).getByRole("radio", {
++                  name: "Use the account set up automatically for this app",
++                  exact: true,
++                });
+               yield* browser.use("The unlinked key is offered as Set up automatically", (page) =>
+                 automaticChoice(page).waitFor(),
+               );
+diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+index 93ad71c..8a8313e 100644
+--- a/e2e/tests/grouped-accounts.spec.ts
++++ b/e2e/tests/grouped-accounts.spec.ts
+@@ -10,6 +10,7 @@ import { holdQuery } from "../support/query-transition.ts";
+ import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const fixture = `import {defineApp,defineProvider,secrets,query,object,string, router} from "apps";
+ const service=defineProvider({name:"Grouped fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
+@@ -195,7 +196,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
+             ),
+             accountsRegion
+               .getByRole("radiogroup", { name: "Grouped fixture account", exact: true })
+-              .getByRole("radio", { name: "Work", exact: true })
++              .getByRole("radio", { name: choiceName("Work"), exact: true })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+@@ -273,7 +274,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
+           yield* browser.use("Unlink Work from Accounts", (page) =>
+             page
+               .getByRole("list", { name: "Grouped fixture accounts", exact: true })
+-              .getByRole("radio", { name: "Work", exact: true, checked: false })
++              .getByRole("radio", { name: choiceName("Work"), exact: true, checked: false })
+               .waitFor(),
+           );
+         });
+diff --git a/e2e/tests/interactive-account-dialog.spec.ts b/e2e/tests/interactive-account-dialog.spec.ts
+index a6c8e88..f95c7fd 100644
+--- a/e2e/tests/interactive-account-dialog.spec.ts
++++ b/e2e/tests/interactive-account-dialog.spec.ts
+@@ -21,6 +21,7 @@ import {
+   interactiveBackendKey,
+ } from "../support/interactive-account-backend.ts";
+ import { scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const Links = Schema.Array(
+   Schema.Struct({ requirement: Schema.String, account: Schema.Struct({ label: Schema.String }) }),
+@@ -148,7 +149,11 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         yield* keepName;
+         yield* browser.use("The device account is linked for everyone", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic device account", checked: true, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("Synthetic device account"),
++              checked: true,
++              exact: true,
++            })
+             .waitFor(signedIn),
+         );
+ 
+@@ -170,7 +175,11 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         yield* keepName;
+         yield* browser.use("The pasted account is linked too", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic pasted account", checked: true, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("Synthetic pasted account"),
++              checked: true,
++              exact: true,
++            })
+             .waitFor(signedIn),
+         );
+         yield* evidence.attach(
+@@ -184,7 +193,7 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         // Clearing an app-bound account asks first, since it deletes the account.
+         yield* browser.use("Clear the device account", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic device account", exact: true })
++            .getByRole("checkbox", { name: choiceName("Synthetic device account"), exact: true })
+             .click(),
+         );
+         yield* evidence.attach(
+@@ -207,7 +216,7 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         );
+         yield* browser.use("The device account is gone", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic device account", exact: true })
++            .getByRole("checkbox", { name: choiceName("Synthetic device account"), exact: true })
+             .waitFor({ state: "detached" }),
+         );
+         // Unlinking deleted it: the account no longer exists for its owner.
+@@ -250,7 +259,7 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         );
+         yield* browser.use("Only the backend account is left", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic pasted account", exact: true })
++            .getByRole("checkbox", { name: choiceName("Synthetic pasted account"), exact: true })
+             .waitFor({ state: "detached" }),
+         );
+ 
+@@ -280,7 +289,11 @@ layer(HostedLive, { excludeTestServices: true })("Interactive account dialog", (
+         yield* keepName;
+         yield* browser.use("The new device account is linked", (page) =>
+           acquiredSection(page)
+-            .getByRole("checkbox", { name: "Synthetic device account", checked: true, exact: true })
++            .getByRole("checkbox", {
++              name: choiceName("Synthetic device account"),
++              checked: true,
++              exact: true,
++            })
+             .waitFor(signedIn),
+         );
+         const calls = yield* backend.calls;
+diff --git a/e2e/tests/local-account-choice.spec.ts b/e2e/tests/local-account-choice.spec.ts
+index 37d0e21..edec0c0 100644
+--- a/e2e/tests/local-account-choice.spec.ts
++++ b/e2e/tests/local-account-choice.spec.ts
+@@ -18,6 +18,8 @@ import { appsManifest } from "../support/apps-release.ts";
+ import { connectLocalAccount } from "../support/app-accounts.ts";
+ import {
+   accountChoices,
++  choiceLabel,
++  choiceName,
+   chooseAccount,
+   linkedChoice,
+   linkedLabels,
+@@ -56,7 +58,8 @@ const mailChoices = (page: Page) =>
+         control.getAttribute("aria-label") ?? "",
+         control.getAttribute("aria-checked") ?? "",
+       ]),
+-    );
++    )
++    .then((controls) => controls.map(([name = "", checked]) => [choiceLabel(name), checked]));
+ const Failure = Schema.Struct({ _tag: Schema.String });
+ 
+ /** Deploy a mail app and remove it, and the accounts the scenario saved, at the end. */
+@@ -157,7 +160,7 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
+         yield* openAccounts(one.id);
+         yield* browser.use("The saved Work mail is offered", (page) =>
+           accountChoices(mailRegion(page), "Mail")
+-            .getByRole("radio", { name: "Work mail", exact: true })
++            .getByRole("radio", { name: choiceName("Work mail"), exact: true })
+             .waitFor(),
+         );
+         expect(
+@@ -179,7 +182,7 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
+         yield* linkExisting("Work mail");
+         yield* browser.use("Personal mail is no longer selected", (page) =>
+           accountChoices(mailRegion(page), "Mail")
+-            .getByRole("radio", { name: "Personal mail", exact: true, checked: false })
++            .getByRole("radio", { name: choiceName("Personal mail"), exact: true, checked: false })
+             .waitFor(),
+         );
+         expect(yield* browser.use("Read the linked accounts", linkedMail)).toEqual(["Work mail"]);
+@@ -222,7 +225,11 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
+         );
+         yield* browser.use("Personal mail is no longer checked", (page) =>
+           accountChoices(mailRegion(page), "Mail")
+-            .getByRole("checkbox", { name: "Personal mail", exact: true, checked: false })
++            .getByRole("checkbox", {
++              name: choiceName("Personal mail"),
++              exact: true,
++              checked: false,
++            })
+             .waitFor(),
+         );
+         expect(yield* browser.use("Read the linked accounts", linkedMail)).toEqual(["Work mail"]);
+diff --git a/e2e/tests/local-app-accounts-tab.spec.ts b/e2e/tests/local-app-accounts-tab.spec.ts
+index 46f97d1..155ac2a 100644
+--- a/e2e/tests/local-app-accounts-tab.spec.ts
++++ b/e2e/tests/local-app-accounts-tab.spec.ts
+@@ -20,6 +20,7 @@ import {
+   pairLocalBrowser,
+ } from "../support/local-links.ts";
+ import { scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ /** Datadog is the app's own account and Mail the caller's; `report` runs on the app schedule. */
+ const source = `import { defineApp, defineProvider, secrets, query, mutation, appInterval, object, string, router, type QueryContext } from "apps";
+@@ -113,13 +114,15 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+         );
+         yield* browser.use("Backup Datadog is the selected radio", (page) =>
+           datadogSection(page)
+-            .getByRole("radio", { name: "Backup Datadog", checked: true, exact: true })
++            .getByRole("radio", { name: choiceName("Backup Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(
+           yield* browser.use("Read the Accounts tab's controls", (page) =>
+             Promise.all([
+-              appSection(page).getByText("Linked for everyone", { exact: true }).count(),
++              appSection(page)
++                .getByText("Pick which accounts this app uses for everyone", { exact: true })
++                .count(),
+               datadogSection(page)
+                 .getByRole("radio")
+                 .evaluateAll((elements) =>
+@@ -143,12 +146,12 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+         ).toEqual([
+           1,
+           [
+-            ["Backup Datadog", "true"],
+-            ["Team Datadog", "false"],
++            [choiceName("Backup Datadog"), "true"],
++            [choiceName("Team Datadog"), "false"],
+           ],
+           [
+-            ["Home mail", "true"],
+-            ["Work mail", "true"],
++            [choiceName("Home mail"), "true"],
++            [choiceName("Work mail"), "true"],
+           ],
+           2,
+           0,
+@@ -160,11 +163,13 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+ 
+         // Selecting Team Datadog links it for every call, replacing Backup Datadog.
+         yield* browser.use("Select Team Datadog", (page) =>
+-          datadogSection(page).getByRole("radio", { name: "Team Datadog", exact: true }).click(),
++          datadogSection(page)
++            .getByRole("radio", { name: choiceName("Team Datadog"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Team Datadog is selected", (page) =>
+           datadogSection(page)
+-            .getByRole("radio", { name: "Team Datadog", checked: true, exact: true })
++            .getByRole("radio", { name: choiceName("Team Datadog"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["datadog", team]]);
+@@ -172,7 +177,9 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+         // Clearing a checkbox unlinks the account; no app uses it now, and keeping it leaves it
+         // saved. Checking it again links it back.
+         yield* browser.use("Clear Home mail", (page) =>
+-          mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
++          mailSection(page)
++            .getByRole("checkbox", { name: choiceName("Home mail"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Keep the unused mail account", (page) =>
+           page
+@@ -182,16 +189,18 @@ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
+         );
+         yield* browser.use("Home mail is cleared", (page) =>
+           mailSection(page)
+-            .getByRole("checkbox", { name: "Home mail", checked: false, exact: true })
++            .getByRole("checkbox", { name: choiceName("Home mail"), checked: false, exact: true })
+             .waitFor(),
+         );
+         expect(yield* localAccountLinks(agent, app.id, "user")).toEqual([["mail", work]]);
+         yield* browser.use("Check Home mail again", (page) =>
+-          mailSection(page).getByRole("checkbox", { name: "Home mail", exact: true }).click(),
++          mailSection(page)
++            .getByRole("checkbox", { name: choiceName("Home mail"), exact: true })
++            .click(),
+         );
+         yield* browser.use("Home mail is checked", (page) =>
+           mailSection(page)
+-            .getByRole("checkbox", { name: "Home mail", checked: true, exact: true })
++            .getByRole("checkbox", { name: choiceName("Home mail"), checked: true, exact: true })
+             .waitFor(),
+         );
+         expect(yield* localAccountLinks(agent, app.id, "user")).toEqual([
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+index 87ea0d5..5f2f55c 100644
+--- a/e2e/tests/product-brand.spec.ts
++++ b/e2e/tests/product-brand.spec.ts
+@@ -8,6 +8,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { McpClient } from "../support/mcp-client.ts";
+ import { Target } from "../support/platform.ts";
+ import { productBrand, scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const ResourceMetadata = Schema.Struct({ resource_name: Schema.String });
+ const executorName = /executor/i;
+@@ -204,7 +205,10 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+         expect(
+           yield* browser.use("The managed key is not offered as a sign-in", (page) =>
+             page
+-              .getByRole("radio", { name: `Your ${productBrand.name} access`, exact: true })
++              .getByRole("radio", {
++                name: choiceName(`Your ${productBrand.name} access`),
++                exact: true,
++              })
+               .count(),
+           ),
+         ).toBe(0);
+diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
+index 031bfe3..f549762 100644
+--- a/e2e/tests/provisioned-link-boundary.spec.ts
++++ b/e2e/tests/provisioned-link-boundary.spec.ts
+@@ -12,6 +12,7 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { scenarios } from "../test-plan.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const App = Schema.Struct({
+   id: Schema.String,
+@@ -116,7 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+         );
+         expect(
+           yield* browser.use("The host account is absent from the mixed-provider picker", (page) =>
+-            page.getByRole("radio", { name: "Host account", exact: true }).count(),
++            page.getByRole("radio", { name: choiceName("Host account"), exact: true }).count(),
+           ),
+         ).toBe(0);
+         const status = yield* browser.use("Try the ordinary account radio", (page) =>
+@@ -130,7 +131,7 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+             ),
+             page
+               .getByRole("region", { name: "Host access", exact: true })
+-              .getByRole("radio", { name: "Ordinary account", exact: true })
++              .getByRole("radio", { name: choiceName("Ordinary account"), exact: true })
+               .click(),
+           ]).then(([response]) => response.status()),
+         );
+diff --git a/e2e/tests/resource-sharing.spec.ts b/e2e/tests/resource-sharing.spec.ts
+index 72557bc..fd52097 100644
+--- a/e2e/tests/resource-sharing.spec.ts
++++ b/e2e/tests/resource-sharing.spec.ts
+@@ -11,6 +11,7 @@ import { App, Resource } from "../support/contracts.ts";
+ import { nameConnectedAccount } from "../support/name-account.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { choiceName } from "../support/account-choices.ts";
+ 
+ const Access = Schema.Struct({ revision: Schema.String });
+ const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
+@@ -179,7 +180,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
+           yield* browser.use("See the connected account linked", (page) =>
+             page
+               .getByRole("list", { name: "Sharing fixture accounts", exact: true })
+-              .getByRole("checkbox", { name: label, exact: true, checked: true })
++              .getByRole("checkbox", { name: choiceName(label), exact: true, checked: true })
+               .waitFor(),
+           );
+           for (const id of yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`))
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e50fafe..965b5af 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -124,6 +124,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+ const accountName = (account: AccountSummary, kind?: string) =>
+   accountTitle(account, account.providerName || "Unnamed account", kind);
+ 
++/** A row's radio or checkbox says what selecting it does; its checked state says whether it did. */
++const linkControlName = (name: string) => `Use ${name} for this app`;
++
+ /** The account's kind as its requirement declares it, which also names an unnamed account. */
+ export const kindIn = (requirement: AccountRequirement, account: AccountSummary) =>
+   accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+@@ -574,11 +577,11 @@ export interface ScopeAccounts<E> {
+ }
+ 
+ /**
+- * The app's account requirements in two sections with the same layout: "App accounts", linked for
+- * everyone who uses the app and its background work, and "Your accounts", linked for the caller.
+- * Each requirement lists every account the caller could use: a radio for a plain requirement,
+- * checkboxes for a many() requirement, and "Connect new account" last. Selecting an account links
+- * it, which replaces a plain requirement's account; clearing a checkbox unlinks it.
++ * The app's account requirements in two sections with the same layout: "App accounts", used for
++ * everyone who uses the app and its background work, and "Your accounts", used for the caller.
++ * Each requirement lists every account the caller could use, linked or not: a radio for a plain
++ * requirement, checkboxes for a many() requirement, and "Connect new account" last. Selecting an
++ * account links it, which replaces a plain requirement's account; clearing a checkbox unlinks it.
+  */
+ export function AppAccounts<E>({
+   app,
+@@ -648,7 +651,7 @@ export function AppAccounts<E>({
+           app={app}
+           scope="app"
+           title="App accounts"
+-          description="Linked for everyone"
++          audience="for everyone"
+           requirements={appRequirements}
+           data={appAccounts}
+           accounts={accounts}
+@@ -663,7 +666,7 @@ export function AppAccounts<E>({
+           app={app}
+           scope="user"
+           title="Your accounts"
+-          description="Linked for you"
++          audience="for you"
+           requirements={userRequirements}
+           data={yourAccounts}
+           accounts={accounts}
+@@ -688,14 +691,19 @@ interface ScopeProps<E> {
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }
+ 
++/**
++ * One section. Its rows list accounts that are not linked too, so its line says what the section
++ * is for, never that its accounts are linked.
++ */
+ function LinkScope<E>({
+   title,
+-  description,
++  audience,
+   requirements,
+   ...props
+ }: ScopeProps<E> & {
+   readonly title: string;
+-  readonly description: string;
++  /** Whom the section's accounts serve, such as "for you". */
++  readonly audience: string;
+   readonly requirements: readonly RequirementEntry[];
+ }) {
+   const { data, methods, accounts, connections } = props;
+@@ -719,7 +727,11 @@ function LinkScope<E>({
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+       <div>
+         <h2 className="text-sm font-medium">{title}</h2>
+-        <p className="text-xs text-muted-foreground">{description}</p>
++        <p className="text-xs text-muted-foreground">
++          {readOnly
++            ? `Accounts this app uses ${audience}`
++            : `Pick which accounts this app uses ${audience}`}
++        </p>
+       </div>
+       {readOnly && data.readOnly !== undefined && (
+         <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+@@ -1035,13 +1047,13 @@ function ReadOnlyChoices<E>({
+             {plain ? (
+               <RadioGroup.Item
+                 value={account.id}
+-                aria-label={accountName(account, kind)}
++                aria-label={linkControlName(accountName(account, kind))}
+                 className={radioClass}
+               >
+                 <RadioGroup.Indicator className={radioDot} />
+               </RadioGroup.Item>
+             ) : (
+-              <Checkbox checked disabled aria-label={accountName(account, kind)} />
++              <Checkbox checked disabled aria-label={linkControlName(accountName(account, kind))} />
+             )}
+             <AccountRowIdentity
+               account={account}
+@@ -1412,6 +1424,8 @@ function ChoiceRow<E>({
+   const id = useId();
+   const kind = accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
+   const name = accountName(account, kind);
++  // The default credential's title is "Set up automatically", which reads badly after "Use".
++  const control = linkControlName(automatic ? "the account set up automatically" : name);
+   const row = appAccountRow(app, account, data.accountRow);
+   const traffic = data.accountTraffic?.(account);
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+@@ -1460,7 +1474,7 @@ function ChoiceRow<E>({
+             <RadioGroup.Item
+               id={id}
+               value={account.id}
+-              aria-label={name}
++              aria-label={control}
+               disabled={!ready || pending || hostProvisioned || unusable}
+               className={radioClass}
+               onClick={() => {
+@@ -1475,7 +1489,7 @@ function ChoiceRow<E>({
+             <Checkbox
+               id={id}
+               checked={linked}
+-              aria-label={name}
++              aria-label={control}
+               disabled={!ready || pending || hostProvisioned || fixed || unusable}
+               onCheckedChange={(checked) =>
+                 checked !== true && appBound ? setConfirming(true) : void change(checked === true)
+diff --git a/plans/app-and-user-accounts.md b/plans/app-and-user-accounts.md
+index c584e35..618552d 100644
+--- a/plans/app-and-user-accounts.md
++++ b/plans/app-and-user-accounts.md
+@@ -166,8 +166,9 @@ without `linked_by`, `subject` null or `local`, and no access policy.
+ MCP `$accounts` and discovery describe user requirements only.
+ 
+ UI: one discovery cache per app page, refreshed after the caller's own link,
+-unlink or connect. The Accounts tab has "App accounts" ("Linked for everyone")
+-and "Your accounts" ("Linked for you"), built from the same component: each
++unlink or connect. The Accounts tab has "App accounts" ("Pick which accounts
++this app uses for everyone") and "Your accounts" ("Pick which accounts this app
++uses for you"), built from the same component: each
+ requirement lists the accounts the caller could use, a radio for a plain
+ requirement and checkboxes for `.many()`, with "Connect new account" last.
+ People who cannot edit the app see the app section greyed out and read-only.
