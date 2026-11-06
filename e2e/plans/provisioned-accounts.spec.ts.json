@@ -17,10 +17,31 @@
           "reason": "Exercises the hosted Accounts tab."
         }
       }
+    },
+    "provisionedCompactRow": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "A host-provisioned row on an app's Accounts tab gets the row's one ⋯; its details open from the menu's Details",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a retained host-provisioned credential fixture in an isolated database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the hosted Accounts tab."
+        }
+      }
     }
   },
   "runs": {
     "provisionedAccounts": [
+      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
+    ],
+    "provisionedCompactRow": [
       "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
     ]
   },
@@ -51,6 +72,7 @@
     ".upstream/apps/local/server/src/implementation/app-accounts.ts",
     ".upstream/apps/local/server/src/implementation/dashboard.ts",
     ".upstream/apps/local/web/src/contracts/errors.ts",
+    ".upstream/e2e/tests/provisioned-accounts.spec.ts",
     ".upstream/packages/apps/protocols/17.json",
     ".upstream/packages/apps/src/contracts/account-status.ts",
     ".upstream/packages/apps/src/contracts/app.ts",
@@ -88,6 +110,7 @@
     ".upstream/packages/sdk/src/implementation/interactive-accounts.ts",
     ".upstream/packages/sdk/src/implementation/interactive-check.ts",
     ".upstream/packages/ui/src/contracts/dashboard.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-actions.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-form.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-health.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-status.tsx",

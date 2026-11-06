@@ -1,0 +1,506 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index ca8548a..cb3e2c3 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -10280,6 +10280,18 @@ export const scenarios = plan({
+       local: na("Exercises the hosted Accounts tab."),
+     },
+   },
++  provisionedCompactRow: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "provisioned-accounts.spec.ts",
++    title:
++      "A host-provisioned row on an app's Accounts tab gets the row's one ⋯; its details open from the menu's Details",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a retained host-provisioned credential fixture in an isolated database."),
++      local: na("Exercises the hosted Accounts tab."),
++    },
++  },
+   interactiveAccounts: {
+     fixtures: "actors",
+     file: "interactive-accounts.spec.ts",
+diff --git a/e2e/tests/provisioned-accounts.spec.ts b/e2e/tests/provisioned-accounts.spec.ts
+index 9ca2c42..5ff8282 100644
+--- a/e2e/tests/provisioned-accounts.spec.ts
++++ b/e2e/tests/provisioned-accounts.spec.ts
+@@ -1,6 +1,7 @@
+ /** Retained host credentials survive adopting a provisioned declaration; browser and HTTP cannot replace them. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -11,6 +12,8 @@ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { provisionedSource as source } from "../support/provisioned-source.ts";
++import { observationBackend } from "../support/account-observation-fixture.ts";
++import { openRowMenu } from "../support/account-rows.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const App = Schema.Struct({
+@@ -20,6 +23,26 @@ const App = Schema.Struct({
+   }),
+ });
+ 
++/** `provisionedSource`'s provider with a sign-in check against `origin`, which rejects its key. */
++const checkedSource = (
++  provisioned: boolean,
++  origin: string,
++) => `import { ProviderError, defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const access = defineProvider({
++  name: "Host access",
++  auth: { key: secrets({ label: "Host access", ${provisioned ? "provisioned: true," : ""} fields: object({ token: string() }) }) },
++  health: async (context) => {
++    const response = await context.fetch(${JSON.stringify(origin + "/health")}, {
++      signal: context.signal, headers: { authorization: "Bearer " + context.account.fields.token },
++    });
++    if (!response.ok) throw new ProviderError({ reason: response.status === 401 ? "unauthorized" : "unavailable", status: response.status });
++    return await response.json();
++  },
++});
++export default defineApp({ user: { accounts: { service: access } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++
+ layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) => {
+   it.effect(scenarios.provisionedAccounts.title, (context) =>
+     withHostedCase(
+@@ -145,4 +168,152 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) =>
+       }),
+     ),
+   );
++  it.effect(scenarios.provisionedCompactRow.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          checks = yield* observationBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Host access row fixture",
++          files: [{ path: "index.ts", content: checkedSource(false, checks.origin) }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        let account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          serverControl("start").pipe(
++            Effect.andThen(
++              Effect.gen(function* () {
++                yield* api.request(actors.owner, "DELETE", path);
++                if (account !== undefined)
++                  yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++              }),
++            ),
++            Effect.orDie,
++          ),
++        );
++        const pending = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${path}/accounts/user/service/connections`, {}),
++        );
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${pending.id}/submit`,
++          { method: "key", label: "Host account", fields: { token: "fixture-host-key" } },
++        );
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        account = (yield* body(Resource, saved)).id;
++        // The description is one of the row's own Details, so the row has actions without a host menu.
++        const described = yield* api.request(
++          actors.owner,
++          "PATCH",
++          `${prefix}/accounts/${account}`,
++          {
++            description: "Rotated by the host every week.",
++          },
++        );
++        expect(described.status, JSON.stringify(described.body)).toBe(200);
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [{ path: "index.ts", content: checkedSource(true, checks.origin) }, appsManifest],
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        const current = yield* body(Schema.Struct({ app: App }), updated);
++        // Retained as in the scenario above: host provisioning has no HTTP credential write.
++        yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET provider = $1 WHERE id = $2",
++            params: [current.app.requirements.accounts.service.provider, account],
++          },
++        ]);
++        yield* serverControl("start");
++        // The check rejects the key, so the host credential shows as a row to repair.
++        const checked = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/accounts/${account}/health`,
++        );
++        expect(checked.status, JSON.stringify(checked.body)).toBe(200);
++
++        const tab = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
++        const row = (page: Page) =>
++          page
++            .getByRole("region", { name: "Host access", exact: true })
++            .locator("li")
++            .filter({ has: page.locator("[data-account-provisioned]") });
++        yield* browser.login(actors.owner);
++        // Both widths are read and captured before judging either, so a failure keeps both images.
++        const readings = yield* Effect.forEach([1280, 390], (width) =>
++          Effect.gen(function* () {
++            const collapsed = yield* browser.use(`Read the host row at ${width}px`, (page) =>
++              page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.goto(tab))
++                .then(() => row(page).locator("[data-account-name]").waitFor())
++                .then(() =>
++                  Promise.all([
++                    row(page)
++                      .getByRole("button", { name: /^Manage / })
++                      .count(),
++                    row(page)
++                      .getByRole("button", { name: /^Check now$|^Details$/ })
++                      .count(),
++                    row(page).locator("[data-account-health]").count(),
++                    row(page).locator(".requested-access").count(),
++                    row(page).locator("[data-account-description]").count(),
++                    page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                  ]),
++                ),
++            );
++            yield* evidence.attach(
++              `provisioned-compact-app-tab-${width}.png`,
++              "image/png",
++              yield* browser.use("Capture the app's Accounts tab", (page) =>
++                page.screenshot({ fullPage: true }),
++              ),
++            );
++            return [width, collapsed] as const;
++          }),
++        );
++        for (const [width, collapsed] of readings) {
++          const [menus, inline, health, access, description, fits] = collapsed;
++          expect(menus, "the host row has one ⋯ menu").toBe(1);
++          expect(
++            { inline, health, access, description },
++            "Check now, Details, checks, requested access and the description wait behind the menu",
++          ).toEqual({ inline: 0, health: 0, access: 0, description: 0 });
++          expect(fits, `no horizontal scroll at ${width}px`).toBe(true);
++          const opened = yield* browser.use(`Open the host row's Details at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(tab))
++              .then(() =>
++                openRowMenu(page, row(page), "Host account").then((menu) =>
++                  menu
++                    .getByRole("menuitem")
++                    .allInnerTexts()
++                    .then((items) =>
++                      menu
++                        .getByRole("menuitem", { name: "Details", exact: true })
++                        .click()
++                        .then(() => row(page).locator("[data-account-description]").innerText())
++                        .then((text) => [items, text] as const),
++                    ),
++                ),
++              ),
++          );
++          expect(opened, "Details show the row's own details").toEqual([
++            ["Details"],
++            "Rotated by the host every week.",
++          ]);
++        }
++      }),
++    ),
++  );
+ });
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index 757f1f8..fb0843e 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -1,7 +1,7 @@
+ import { EmptyState } from "./empty-state.tsx";
+ import type { Account, App } from "@executor-js/sdk";
+ import { Exit, type Cause } from "effect";
+-import { Children, useState, type ComponentType, type ReactNode } from "react";
++import { Children, useRef, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+ import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
+@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../compon
+ import {
+   DropdownMenu,
+   DropdownMenuContent,
++  DropdownMenuItem,
+   DropdownMenuTrigger,
+ } from "../components/dropdown-menu.tsx";
+ import {
+@@ -23,7 +24,13 @@ import {
+ import { ProviderIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+-import { AccountRowMenuItems, AccountRowMenuPresence } from "./account-row.tsx";
++import {
++  AccountRowMenuItems,
++  AccountRowMenuPresence,
++  accountRowHasActions,
++  menuTrigger,
++  useAccountRow,
++} from "./account-row.tsx";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
+ import { accountMenuName } from "../../contracts/account-title.ts";
+@@ -64,6 +71,64 @@ export function AccountActionsMenu({
+   );
+ }
+ 
++/**
++ * The ⋯ for a row the host gives no menu of its own, such as a grouped identity or a host-provisioned
++ * app account: the row's own actions (usage, Details, adding an app for the identity), and, with
++ * `manage`, each grouped sign-in's own actions in a dialog. Like every row with a menu, its checks
++ * and requested access open with Details. A row with no actions of its own gets no menu.
++ */
++export function AccountOwnActionsMenu({
++  title,
++  name,
++  manage,
++}: {
++  readonly title: string;
++  /** What the menu's button announces; by default the row's title (`accountMenuName`). */
++  readonly name?: string | undefined;
++  readonly manage?: ReactNode;
++}) {
++  const row = useAccountRow();
++  const [managing, setManaging] = useState(false);
++  const returnFocus = useRef<HTMLElement | null>(null);
++  if (manage === undefined && (row === undefined || !accountRowHasActions(row))) return null;
++  return (
++    <>
++      <AccountActionsMenu account={{ label: title }} name={name}>
++        {manage !== undefined && (
++          <DropdownMenuItem
++            onSelect={(event) => {
++              returnFocus.current = menuTrigger(event.target);
++              setManaging(true);
++            }}
++          >
++            Manage apps
++          </DropdownMenuItem>
++        )}
++      </AccountActionsMenu>
++      {manage !== undefined && (
++        <Dialog open={managing} onOpenChange={setManaging}>
++          <DialogContent
++            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
++            onCloseAutoFocus={(event) => {
++              const target = returnFocus.current;
++              returnFocus.current = null;
++              if (target?.isConnected !== true) return;
++              event.preventDefault();
++              target.focus({ preventScroll: true });
++            }}
++          >
++            <DialogTitle>Manage apps</DialogTitle>
++            <DialogDescription>
++              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
++            </DialogDescription>
++            {manage}
++          </DialogContent>
++        </Dialog>
++      )}
++    </>
++  );
++}
++
+ /** One modal shell for every row action, titled for the action and identified by the account. */
+ export function AccountDialog({
+   title,
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index 42551ec..d9d543f 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -17,11 +17,8 @@ import {
+   accountRowGroup,
+   type AccountRowInput,
+   accountRowGrid,
+-  accountRowHasActions,
+   accountRowType,
+   accountRowsContainer,
+-  menuTrigger,
+-  useAccountRow,
+ } from "./account-row.tsx";
+ import { AccountHealthCell, accountRowHealth } from "./account-row-health.tsx";
+ import {
+@@ -34,7 +31,7 @@ import { observationClock } from "./account-observation-format.ts";
+ import { useAtomValue } from "@effect/atom-react";
+ import { cn } from "../lib/utils.ts";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+-import { AccountActionsMenu } from "./account-actions.tsx";
++import { AccountOwnActionsMenu } from "./account-actions.tsx";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+@@ -54,8 +51,6 @@ import { accountMenuName } from "../../contracts/account-title.ts";
+ import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
+-import { DropdownMenuItem } from "../components/dropdown-menu.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+@@ -370,7 +365,7 @@ function AccountsList({
+                     {/* Renders only its dialog here; it offers itself from the row's one menu. */}
+                     {account.identity !== undefined && identityActions?.(bindings, data)}
+                     {bindings.length > 1 ? (
+-                      <IdentityRowMenu
++                      <AccountOwnActionsMenu
+                         title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                         manage={
+                           <OutsideAccountRow>
+@@ -402,7 +397,7 @@ function AccountsList({
+                         }
+                       />
+                     ) : accountActions === undefined ? (
+-                      <IdentityRowMenu
++                      <AccountOwnActionsMenu
+                         title={accountTitle(account, undefined, accountKindLabel(data, account))}
+                       />
+                     ) : (
+@@ -463,57 +458,3 @@ function AccountsList({
+     </>
+   );
+ }
+-
+-/**
+- * The ⋯ for a row the host gives no menu of its own, such as a grouped identity: the row's own
+- * actions (usage, Details, adding an app for the identity), and each grouped sign-in's own actions
+- * in a dialog. Like every row with a menu, its checks and requested access open with Details.
+- */
+-function IdentityRowMenu({
+-  title,
+-  manage,
+-}: {
+-  readonly title: string;
+-  readonly manage?: ReactNode;
+-}) {
+-  const row = useAccountRow();
+-  const [managing, setManaging] = useState(false);
+-  const returnFocus = useRef<HTMLElement | null>(null);
+-  if (manage === undefined && (row === undefined || !accountRowHasActions(row))) return null;
+-  return (
+-    <>
+-      <AccountActionsMenu account={{ label: title }}>
+-        {manage !== undefined && (
+-          <DropdownMenuItem
+-            onSelect={(event) => {
+-              returnFocus.current = menuTrigger(event.target);
+-              setManaging(true);
+-            }}
+-          >
+-            Manage apps
+-          </DropdownMenuItem>
+-        )}
+-      </AccountActionsMenu>
+-      {manage !== undefined && (
+-        <Dialog open={managing} onOpenChange={setManaging}>
+-          <DialogContent
+-            className="max-h-[85dvh] min-w-0 overflow-y-auto sm:max-w-[480px]"
+-            onCloseAutoFocus={(event) => {
+-              const target = returnFocus.current;
+-              returnFocus.current = null;
+-              if (target?.isConnected !== true) return;
+-              event.preventDefault();
+-              target.focus({ preventScroll: true });
+-            }}
+-          >
+-            <DialogTitle>Manage apps</DialogTitle>
+-            <DialogDescription>
+-              Each saved sign-in for {title} has its own actions. Removing one leaves the others.
+-            </DialogDescription>
+-            {manage}
+-          </DialogContent>
+-        </Dialog>
+-      )}
+-    </>
+-  );
+-}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index e50fafe..049b3a6 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -25,8 +25,10 @@ import {
+   type Query,
+ } from "../../contracts/dashboard.ts";
+ import { accountMethodKindLabel, accountTitle } from "../../contracts/account-identities.ts";
++import { accountMenuName } from "../../contracts/account-title.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+ import { AccountCheckResult } from "./account-health.tsx";
++import { AccountOwnActionsMenu } from "./account-actions.tsx";
+ import {
+   AccountRowCells,
+   AccountRowDescription,
+@@ -131,7 +133,7 @@ export const kindIn = (requirement: AccountRequirement, account: AccountSummary)
+ /**
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.
+  * Unlinking stops using the account for the requirement; the saved account and its other links
+- * stay.
++ * stay. With neither, the row keeps only its own actions (`AccountOwnActionsMenu`).
+  */
+ export function LinkedAccountMenu<A, E>({
+   label,
+@@ -152,7 +154,8 @@ export function LinkedAccountMenu<A, E>({
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const [pending, setPending] = useState(false);
+   const [confirming, setConfirming] = useState(false);
+-  if (children === undefined && unlink === undefined) return null;
++  if (children === undefined && unlink === undefined)
++    return <AccountOwnActionsMenu title={label} name={label} />;
+   return (
+     <>
+       <AccountRowMenuPresence />
+@@ -1063,7 +1066,12 @@ function ReadOnlyChoices<E>({
+               users={<AddedBy credit={addedBy(data, slot, requirement, account.id)} />}
+             />
+             <AccountRowMenu>
+-              {provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)}
++              {(provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)) || (
++                <AccountOwnActionsMenu
++                  title={accountName(account, kind)}
++                  name={accountMenuName(account, kind)}
++                />
++              )}
+             </AccountRowMenu>
+             <div className={bandClass}>
+               <AccountStatusNotes app={app} account={account} />
+@@ -1399,7 +1407,7 @@ function ChoiceRow<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   const { account, linked } = choice;
+-  // The caller's default credential links like any choice, with no menu that could name it.
++  // The caller's default credential links like any choice, with no host menu that could name it.
+   const automatic = choice.automatic === true;
+   const link = edit.link(slot, account.id);
+   const unlink = edit.unlink(slot, account.id);
+@@ -1515,9 +1523,11 @@ function ChoiceRow<E>({
+                 <Spinner className="size-3 text-muted-foreground" />
+               </AccountRowMenuMark>
+             )}
+-            {hostProvisioned || automatic
++            {(hostProvisioned || automatic
+               ? undefined
+-              : data.accountMenu?.(account, slot, requirement, linked)}
++              : data.accountMenu?.(account, slot, requirement, linked)) || (
++              <AccountOwnActionsMenu title={name} name={accountMenuName(account, kind)} />
++            )}
+           </AccountRowMenu>
+           <div className={bandClass}>
+             {blockedReason !== undefined && (

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "An app's account row the host gives no menu of its own, a host-provisioned or automatic one included, still gets the row's one menu when it has actions of its own, so its checks, Check now and requested access open only with Details there as on the Accounts list."
+    }
+  }
+}
