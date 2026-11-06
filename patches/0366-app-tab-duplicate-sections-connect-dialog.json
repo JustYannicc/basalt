@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-tab-duplicate-sections-connect-dialog",
   "file": "0366-app-tab-duplicate-sections-connect-dialog.patch",
-  "content_sha256": "74a0e3804b147b57f26058087c955d6a16daec29cddf85d755b946668109dc31",
+  "content_sha256": "a63dfe656a71a9ccce775ec96e4ac664e789588f5899bad254c4aa6335492ae6",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

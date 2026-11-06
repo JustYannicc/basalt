@@ -1,8 +1,61 @@
+diff --git a/e2e/support/app-account-sections.ts b/e2e/support/app-account-sections.ts
+new file mode 100644
+index 0000000..72c7969
+--- /dev/null
++++ b/e2e/support/app-account-sections.ts
+@@ -0,0 +1,47 @@
++/** Shared pieces of the app Accounts tab section and Connect dialog scenarios, hosted and local. */
++import type { Page } from "playwright";
++
++/** An app whose check rejects every key, so saving one needs "Continue anyway". */
++export const rejectingSource = `
++import { ProviderError, defineApp, defineProvider, object, router, secrets, string } from "apps";
++const service = defineProvider({
++  name: "Rejecting fixture",
++  auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) },
++  async health() {
++    throw new ProviderError({ reason: "unauthorized", status: 403 });
++  },
++});
++export default defineApp({ user: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));
++`;
++
++/**
++ * Every dialog, overlay and focus guard left once the dialogs have had five seconds to close,
++ * whether the page takes pointer input, and whether focus is on a control of the page itself.
++ */
++export const dialogLeftovers = (page: Page) =>
++  page
++    .waitForFunction(
++      () =>
++        document.querySelectorAll(
++          '[role="dialog"], [role="alertdialog"], [data-slot="dialog-overlay"]',
++        ).length === 0,
++      undefined,
++      { timeout: 5_000 },
++    )
++    .catch(() => undefined)
++    .then(() =>
++      page.evaluate(() => {
++        const focused = document.activeElement;
++        return {
++          dialogs: document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length,
++          overlays: document.querySelectorAll('[data-slot="dialog-overlay"]').length,
++          focusGuards: document.querySelectorAll("[data-radix-focus-guard]").length,
++          bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
++          focusOnPage:
++            focused instanceof HTMLElement &&
++            focused !== document.body &&
++            focused.isConnected &&
++            focused.closest('[role="dialog"], [role="alertdialog"]') === null,
++        };
++      }),
++    );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6e23132..4cccf77 100644
+index 6e23132..d35c4e3 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8937,6 +8937,37 @@ export const scenarios = plan({
+@@ -8937,6 +8937,47 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -34,18 +87,66 @@ index 6e23132..4cccf77 100644
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("The hosted Connect dialog is the same on cloud; self-host proves it."),
-+      local: na("The local dashboard keeps its own Connect dialog."),
++      local: na("Paired local dashboard; proven by localAppAccountContinueAnywayCloses."),
++    },
++  },
++  localAppAccountContinueAnywayCloses: {
++    file: "local-app-account-sections.spec.ts",
++    title:
++      "Local Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
++    targets: {
++      local: scheduled,
++      "self-host": na("Paired local dashboard; hosted has appAccountContinueAnywayCloses."),
++      cloud: na("Paired local dashboard; hosted has appAccountContinueAnywayCloses."),
 +    },
 +  },
    hostedAppAccountsManagerBrowser: {
      fixtures: "actors",
      file: "app-accounts-tab.spec.ts",
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index 0c8aa47..f9d1c75 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -97,14 +97,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         expect(
+           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${third}`)).status,
+         ).toBe(200);
+-        // Both account fixtures have the same display name, so use their stable requirement order.
++        // Both requirements use one service, so each section's title adds its requirement.
++        const sectionName = (slot: "primary" | "mailboxes" | "calendar") =>
++          slot === "calendar"
++            ? "Calendar fixture"
++            : slot === "primary"
++              ? "Account fixture · Primary"
++              : "Account fixture · Mailboxes";
+         const region = (slot: "primary" | "mailboxes") =>
+           browser.use(`Find the ${slot} accounts`, (page) =>
+-            Promise.resolve(
+-              page
+-                .getByRole("region", { name: "Account fixture", exact: true })
+-                .nth(slot === "primary" ? 0 : 1),
+-            ),
++            Promise.resolve(page.getByRole("region", { name: sectionName(slot), exact: true })),
+           );
+         const primary = yield* region("primary"),
+           mailboxes = yield* region("mailboxes");
+@@ -115,9 +117,8 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           expected: ReadonlyArray<readonly [string, boolean]>,
+         ) =>
+           browser.use(step, (page) => {
+-            const name = slot === "calendar" ? "Calendar fixture" : "Account fixture";
+             const role = slot === "mailboxes" ? "checkbox" : "radio";
+-            const selector = `section[aria-label="${name}"] [role="${role}"]`;
++            const selector = `section[aria-label="${sectionName(slot)}"] [role="${role}"]`;
+             const named = expected.map(([label, checked]) => [choiceName(label), checked] as const);
+             const read = (args: {
+               readonly selector: string;
 diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
 new file mode 100644
-index 0000000..48f6639
+index 0000000..58644cc
 --- /dev/null
 +++ b/e2e/tests/app-account-sections.spec.ts
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,200 @@
 +/**
 + * An app's Accounts tab gives each account requirement one section that reads as its own, and the
 + * Connect dialog closes cleanly after saving a key its check rejected.
@@ -62,6 +163,8 @@ index 0000000..48f6639
 +import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
 +import { scenarios } from "../test-plan.ts";
 +import { appsManifest } from "../support/apps-release.ts";
++import { anyRowMenuName } from "../support/account-choices.ts";
++import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
 +
 +// One service declared twice, as a catalog app keeps API tokens and sign-ins apart: both
 +// requirements carry the service's name and link many accounts for the caller.
@@ -70,19 +173,6 @@ index 0000000..48f6639
 +const tokens = defineProvider({ name: "Deploy fixture", auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) } });
 +const signIn = defineProvider({ name: "Deploy fixture", auth: { oauth: oauth2({ authorizationUrl: "https://oauth.example.test/authorize", tokenUrl: "https://oauth.example.test/token", scopes: ["read"] }) } });
 +export default defineApp({ user: { accounts: { tokens: tokens.many(), signIn: signIn.many() } } }, async () => ({ tools: router({}) }));
-+`;
-+
-+// The check rejects every key, so saving one needs "Continue anyway".
-+const rejecting = `
-+import { ProviderError, defineApp, defineProvider, object, router, secrets, string } from "apps";
-+const service = defineProvider({
-+  name: "Rejecting fixture",
-+  auth: { apiKey: secrets({ label: "Access token", fields: object({ token: string() }) }) },
-+  async health() {
-+    throw new ProviderError({ reason: "unauthorized", status: 403 });
-+  },
-+});
-+export default defineApp({ user: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));
 +`;
 +
 +/** Each requirement section in Your accounts: its accessible name and what its header reads. */
@@ -99,24 +189,6 @@ index 0000000..48f6639
 +        ),
 +      })),
 +    );
-+
-+/** Every open dialog, overlay and focus trap left in the page. */
-+const leftovers = (page: Page) =>
-+  page.evaluate(() => {
-+    const focused = document.activeElement;
-+    return {
-+      dialogs: document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length,
-+      overlays: document.querySelectorAll('[data-slot="dialog-overlay"]').length,
-+      focusGuards: document.querySelectorAll("[data-radix-focus-guard]").length,
-+      bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
-+      // Focus sits on a control of the page itself, not on the document or a removed dialog.
-+      focusOnPage:
-+        focused instanceof HTMLElement &&
-+        focused !== document.body &&
-+        focused.isConnected &&
-+        focused.closest('[role="dialog"], [role="alertdialog"]') === null,
-+    };
-+  });
 +
 +layer(HostedLive, { excludeTestServices: true })("App account sections", (it) => {
 +  const deploy = (name: string, content: string) =>
@@ -186,7 +258,7 @@ index 0000000..48f6639
 +      Effect.gen(function* () {
 +        const actors = yield* Actors;
 +        const browser = yield* Browser;
-+        const app = yield* deploy("Rejecting", rejecting);
++        const app = yield* deploy("Rejecting", rejectingSource);
 +        yield* browser.login(actors.owner);
 +        yield* browser.use("A 1280px screen", (page) =>
 +          page.setViewportSize({ width: 1280, height: 900 }),
@@ -250,19 +322,7 @@ index 0000000..48f6639
 +          nameConnectedAccount(page, "Rejected key"),
 +        );
 +        // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
-+        const left = yield* browser.use("Nothing of the dialog is left", (page) =>
-+          page
-+            .waitForFunction(
-+              () =>
-+                document.querySelectorAll(
-+                  '[role="dialog"], [role="alertdialog"], [data-slot="dialog-overlay"]',
-+                ).length === 0,
-+              undefined,
-+              { timeout: 5_000 },
-+            )
-+            .catch(() => undefined)
-+            .then(() => leftovers(page)),
-+        );
++        const left = yield* browser.use("Nothing of the dialog is left", dialogLeftovers);
 +        yield* browser.checkpoint("After Continue anyway");
 +        expect(left).toEqual({
 +          dialogs: 0,
@@ -274,7 +334,7 @@ index 0000000..48f6639
 +        // The very next click opens the new row's menu without Escape first.
 +        yield* browser.use("Open the new row's menu", (page) =>
 +          page
-+            .getByRole("button", { name: /^Manage Rejected key/ })
++            .getByRole("button", { name: anyRowMenuName("Rejected key") })
 +            .click({ timeout: 5_000 })
 +            .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
 +        );
@@ -288,29 +348,181 @@ index 0000000..48f6639
 +  );
 +});
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
-index 13c08c4..d64af82 100644
+index 13c08c4..9f10090 100644
 --- a/e2e/tests/contributed-app-accounts.spec.ts
 +++ b/e2e/tests/contributed-app-accounts.spec.ts
-@@ -14,13 +14,14 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
+@@ -14,14 +14,15 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
  const ordinaryNote = "Only people who can edit this app can change these accounts.";
  
  /**
 - * Both app requirements use the same provider, so their sections share its name. A member sees
 - * the permission note only on the requirement they cannot change.
-+ * Both app requirements use the same provider, so each section's title adds what tells it apart
-+ * after the provider's name. A member sees the permission note only on the requirement they
-+ * cannot change.
++ * Both app requirements use the same provider, so each section's title adds its requirement after
++ * the provider's name. A member sees the permission note only on the requirement they cannot
++ * change.
   */
  const requirementSection = (page: Page, kind: "contributed" | "ordinary") =>
-   page
-     .getByRole("region", { name: "App accounts", exact: true })
+-  page
+-    .getByRole("region", { name: "App accounts", exact: true })
 -    .getByRole("region", { name: "Contributed service", exact: true })
-+    .getByRole("region", { name: /^Contributed service · / })
-     .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
+-    .filter(kind === "ordinary" ? { hasText: ordinaryNote } : { hasNotText: ordinaryNote });
++  page.getByRole("region", { name: "App accounts", exact: true }).getByRole("region", {
++    name: kind === "ordinary" ? "Contributed service · Ordinary" : "Contributed service · Shared",
++    exact: true,
++  });
  
  layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it) => {
+   it.effect(scenarios.contributedAppAccountsBrowser.title, (context) =>
+diff --git a/e2e/tests/local-app-account-sections.spec.ts b/e2e/tests/local-app-account-sections.spec.ts
+new file mode 100644
+index 0000000..b9bcb7f
+--- /dev/null
++++ b/e2e/tests/local-app-account-sections.spec.ts
+@@ -0,0 +1,127 @@
++/** Local's Connect dialog closes cleanly after saving a key its check rejected. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { anyRowMenuName } from "../support/account-choices.ts";
++import { dialogLeftovers, rejectingSource } from "../support/app-account-sections.ts";
++import { Browser } from "../support/browser.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { localAccountLinks, localAgent, pairLocalBrowser } from "../support/local-links.ts";
++import { accountNamePrompt, nameConnectedAccount } from "../support/name-account.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Deployed = Schema.Struct({ app: Schema.Struct({ id: Schema.String }) });
++
++layer(TestLive, { excludeTestServices: true })("Local app account sections", (it) => {
++  it.effect(scenarios.localAppAccountContinueAnywayCloses.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          browser = yield* Browser;
++        const { agent } = yield* localAgent;
++        const { app } = yield* body(
++          Deployed,
++          yield* api.request(agent, "POST", "/v1/apps/deploy", {
++            owner: "local",
++            name: `Rejecting ${randomUUID().slice(0, 8)}`,
++            files: [{ path: "index.ts", content: rejectingSource }, appsManifest],
++          }),
++        );
++        const owned = [`/v1/apps/${app.id}`];
++        // The app goes first: an account an app still uses cannot be deleted.
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(owned, (path) => api.request(agent, "DELETE", path)).pipe(Effect.orDie),
++        );
++        yield* pairLocalBrowser(agent);
++        yield* browser.use("A 1280px screen", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        yield* browser.use("Open the app's accounts", (page) =>
++          page.goto(`/apps/${app.id}?view=accounts`),
++        );
++        yield* browser.use("Connect a new account", (page) =>
++          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++        );
++        const connect = yield* browser.use("The Connect dialog opens", (page) => {
++          const dialog = page.getByRole("dialog", {
++            name: "Connect Rejecting fixture",
++            exact: true,
++          });
++          return dialog.waitFor({ state: "visible" }).then(() => dialog);
++        });
++        yield* browser.use("Validate a key the check rejects", () =>
++          connect
++            .getByLabel("Token", { exact: true })
++            .fill("synthetic-rejected-token")
++            .then(() =>
++              connect.getByRole("button", { name: "Validate Access token", exact: true }).click(),
++            )
++            .then(() =>
++              connect
++                .locator('[data-credential-check="credentials_rejected"]')
++                .waitFor({ state: "visible" }),
++            ),
++        );
++        yield* browser.checkpoint("The check rejected the key");
++        yield* browser.use("Continue anyway", () =>
++          connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
++        );
++        // The prompt takes the Connect dialog's place, which unmounts rather than staying behind
++        // it, hidden, until the prompt closes.
++        const behindPrompt = yield* browser.use(
++          "The Connect dialog unmounts behind the prompt",
++          (page) =>
++            accountNamePrompt(page)
++              .then(() =>
++                page
++                  .waitForFunction(
++                    () => document.querySelectorAll('[data-slot="dialog-content"]').length === 1,
++                    undefined,
++                    { timeout: 3_000 },
++                  )
++                  .catch(() => undefined),
++              )
++              .then(() =>
++                page.evaluate(() =>
++                  Array.from(document.querySelectorAll('[data-slot="dialog-content"]'), (dialog) =>
++                    dialog.getAttribute("data-state"),
++                  ),
++                ),
++              ),
++        );
++        yield* browser.checkpoint("The name prompt replaces the Connect dialog");
++        expect(behindPrompt).toEqual(["open"]);
++        yield* browser.use("Name the saved account", (page) =>
++          nameConnectedAccount(page, "Rejected key"),
++        );
++        for (const [, account] of yield* localAccountLinks(agent, app.id))
++          owned.push(`/v1/accounts/${account}`);
++        // The Connect dialog is gone with its overlay and focus scope, and focus is on the page.
++        const left = yield* browser.use("Nothing of the dialog is left", dialogLeftovers);
++        yield* browser.checkpoint("After Continue anyway");
++        expect(left).toEqual({
++          dialogs: 0,
++          overlays: 0,
++          focusGuards: 0,
++          bodyPointerEvents: "auto",
++          focusOnPage: true,
++        });
++        // The very next click opens the new row's menu without Escape first.
++        yield* browser.use("Open the new row's menu", (page) =>
++          page
++            .getByRole("button", { name: anyRowMenuName("Rejected key") })
++            .click({ timeout: 5_000 })
++            .then(() => page.getByRole("menu").waitFor({ state: "visible", timeout: 5_000 })),
++        );
++        yield* browser.checkpoint("The row menu opens");
++        yield* browser.use("A 390px screen", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* browser.checkpoint("The row menu on a phone");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
+index f549762..ea4e985 100644
+--- a/e2e/tests/provisioned-link-boundary.spec.ts
++++ b/e2e/tests/provisioned-link-boundary.spec.ts
+@@ -129,8 +129,9 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
+                   `/accounts/user/service/${fixture.ordinary}`,
+                 ),
+             ),
++            // Both requirements use one service, so each section's title adds its requirement.
+             page
+-              .getByRole("region", { name: "Host access", exact: true })
++              .getByRole("region", { name: "Host access · Service", exact: true })
+               .getByRole("radio", { name: choiceName("Ordinary account"), exact: true })
+               .click(),
+           ]).then(([response]) => response.status()),
 diff --git a/packages/ui/src/implementation/components/dialog.tsx b/packages/ui/src/implementation/components/dialog.tsx
-index 7519ddc..f68b102 100644
+index 7519ddc..a8ccdc5 100644
 --- a/packages/ui/src/implementation/components/dialog.tsx
 +++ b/packages/ui/src/implementation/components/dialog.tsx
 @@ -61,10 +61,56 @@ const focusFirstField = (event: Event) => {
@@ -324,8 +536,8 @@ index 7519ddc..f68b102 100644
 +
 +/**
 + * Where a dialog opening now returns focus: the element that has focus, then, when it opens over
-+ * or in place of another dialog, wherever that dialog returns focus. A prompt that replaces the
-+ * dialog it was opened from so returns to what opened that dialog.
++ * or in place of another dialog, wherever that dialog returns focus. So a prompt that replaces the
++ * dialog it was opened from returns focus to what opened that dialog.
 + */
 +const openerTargets = (): readonly Element[] => {
 +  const active = document.activeElement;
@@ -417,59 +629,18 @@ index 7519ddc..f68b102 100644
          {showCloseButton && (
            <DialogPrimitive.Close asChild>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 9fedea6..858ea14 100644
+index 64279f6..e20b063 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -86,7 +86,7 @@ import {
-   DialogTitle,
+@@ -83,6 +83,7 @@ import {
  } from "../components/dialog.tsx";
  import { cn } from "../lib/utils.ts";
--import { methodLabels } from "./method-labels.ts";
-+import { methodLabels, methodVariant } from "./method-labels.ts";
+ import { methodLabels } from "./method-labels.ts";
++import { requirementTitles } from "./requirement-titles.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { useToast } from "../components/toast.tsx";
  import { ProviderDestination } from "./provider-accounts.tsx";
-@@ -465,6 +465,39 @@ const methodStates = (
-   }));
- };
- 
-+/**
-+ * Each requirement's title in one scope: its service's name, and where two requirements would read
-+ * the same, such as one service declared once for keys and once for sign-ins, what each is for:
-+ * its sign-in methods, or else its own name.
-+ */
-+const requirementTitles = (requirements: readonly RequirementEntry[]) => {
-+  const name = (requirement: AccountRequirement) => requirement.definition.name.trim();
-+  const reading = ([, requirement]: RequirementEntry) =>
-+    `${name(requirement)}\0${requirement.cardinality}`;
-+  const methods = ([, requirement]: RequirementEntry) =>
-+    [...methodLabels(requirement.definition.name, requirementMethods(requirement)).values()]
-+      .map((label) => (label === `Sign in with ${requirement.definition.name}` ? "Sign in" : label))
-+      .join(", ");
-+  const titles = new Map<string, string>();
-+  for (const entry of requirements) {
-+    const [slot, requirement] = entry;
-+    if (name(requirement) === "") continue;
-+    const alike = requirements.filter((other) => reading(other) === reading(entry));
-+    const own = methods(entry);
-+    const qualifier =
-+      alike.length === 1
-+        ? undefined
-+        : own !== "" && alike.every((other) => other === entry || methods(other) !== own)
-+          ? own
-+          : methodVariant(slot);
-+    titles.set(
-+      slot,
-+      qualifier === undefined ? name(requirement) : `${name(requirement)} · ${qualifier}`,
-+    );
-+  }
-+  return titles;
-+};
-+
- /** The host can connect none of the requirement's methods now. */
- const noMethodOpen = (
-   methods: RequirementMethods | undefined,
-@@ -753,6 +786,7 @@ function LinkScope<E>({
+@@ -749,6 +750,7 @@ function LinkScope<E>({
        !accounts.some((account) => account.provider === requirement.provider),
    );
    const open = shown.filter((entry) => !closed.includes(entry));
@@ -477,7 +648,7 @@ index 9fedea6..858ea14 100644
    const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
      <RowSection.Provider value={title}>
-@@ -775,6 +809,7 @@ function LinkScope<E>({
+@@ -771,6 +773,7 @@ function LinkScope<E>({
                {...props}
                slot={slot}
                requirement={requirement}
@@ -485,7 +656,7 @@ index 9fedea6..858ea14 100644
                linked={data.links.flatMap((link) =>
                  link.requirement === slot ? [link.account] : [],
                )}
-@@ -782,7 +817,12 @@ function LinkScope<E>({
+@@ -778,7 +781,12 @@ function LinkScope<E>({
              />
            ))}
            {closed.length > 0 && (
@@ -499,7 +670,7 @@ index 9fedea6..858ea14 100644
            )}
          </div>
        </section>
-@@ -794,10 +834,12 @@ function LinkScope<E>({
+@@ -790,10 +798,12 @@ function LinkScope<E>({
  function UnavailableRequirements({
    app,
    requirements,
@@ -512,7 +683,7 @@ index 9fedea6..858ea14 100644
    readonly methods: RequirementMethods | undefined;
  }) {
    return (
-@@ -819,7 +861,7 @@ function UnavailableRequirements({
+@@ -815,7 +825,7 @@ function UnavailableRequirements({
              className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3.5 py-3 text-[13px] [&_.provider-icon]:row-span-2 [&_.provider-icon]:size-7"
            >
              <AppProviderIcon app={app} provider={requirement.definition} />
@@ -521,7 +692,7 @@ index 9fedea6..858ea14 100644
              <ul className="grid gap-0.75 text-xs text-muted-foreground">
                {methodStates(methods, slot, requirement).map((state) => (
                  <li key={state.name}>
-@@ -852,12 +894,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+@@ -848,12 +858,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
  function RequirementView<E>({
    slot,
    requirement,
@@ -537,7 +708,7 @@ index 9fedea6..858ea14 100644
    /** The requirement's linked accounts, oldest first. */
    readonly linked: readonly AccountSummary[];
    /** Why this requirement is read-only when others in its scope are not. */
-@@ -866,7 +911,6 @@ function RequirementView<E>({
+@@ -862,7 +875,6 @@ function RequirementView<E>({
    const { data } = props;
    const edit = editingFor(data, requirement);
    const managed = provisionedOnly(requirement);
@@ -545,7 +716,7 @@ index 9fedea6..858ea14 100644
    const native = props.methods?.native(slot);
    const kept = retained(connectionOf(props.connections, slot), data, requirement);
    const states = methodStates(props.methods, slot, requirement);
-@@ -885,15 +929,15 @@ function RequirementView<E>({
+@@ -881,15 +893,15 @@ function RequirementView<E>({
            .join(" · ") || undefined;
    return (
      <section
@@ -564,7 +735,7 @@ index 9fedea6..858ea14 100644
                {kept && (
                  <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
                    Retained
-@@ -946,6 +990,7 @@ function RequirementView<E>({
+@@ -942,6 +954,7 @@ function RequirementView<E>({
              }
              slot={slot}
              requirement={requirement}
@@ -572,7 +743,7 @@ index 9fedea6..858ea14 100644
              linked={linked}
            />
          ) : (
-@@ -954,6 +999,7 @@ function RequirementView<E>({
+@@ -950,6 +963,7 @@ function RequirementView<E>({
              edit={edit}
              slot={slot}
              requirement={requirement}
@@ -580,7 +751,7 @@ index 9fedea6..858ea14 100644
              linked={linked}
            />
          )}
-@@ -1038,11 +1084,13 @@ function ReadOnlyChoices<E>({
+@@ -1034,11 +1048,13 @@ function ReadOnlyChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -594,7 +765,7 @@ index 9fedea6..858ea14 100644
    readonly linked: readonly AccountSummary[];
  }) {
    const section = useContext(RowSection);
-@@ -1138,9 +1186,7 @@ function ReadOnlyChoices<E>({
+@@ -1134,9 +1150,7 @@ function ReadOnlyChoices<E>({
    });
    const list = (
      <ul
@@ -605,7 +776,7 @@ index 9fedea6..858ea14 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1150,7 +1196,7 @@ function ReadOnlyChoices<E>({
+@@ -1146,7 +1160,7 @@ function ReadOnlyChoices<E>({
      <RadioGroup.Root
        value={linked.at(-1)?.id ?? ""}
        disabled
@@ -614,7 +785,7 @@ index 9fedea6..858ea14 100644
      >
        {list}
      </RadioGroup.Root>
-@@ -1199,6 +1245,7 @@ function EditableChoices<E>({
+@@ -1195,6 +1209,7 @@ function EditableChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -622,7 +793,7 @@ index 9fedea6..858ea14 100644
    linked,
    data,
    edit,
-@@ -1210,6 +1257,7 @@ function EditableChoices<E>({
+@@ -1206,6 +1221,7 @@ function EditableChoices<E>({
    readonly edit: LinkEditing<E>;
    readonly slot: string;
    readonly requirement: AccountRequirement;
@@ -630,7 +801,7 @@ index 9fedea6..858ea14 100644
    readonly linked: readonly AccountSummary[];
  }) {
    const brand = useProductBrand();
-@@ -1319,9 +1367,7 @@ function EditableChoices<E>({
+@@ -1315,9 +1331,7 @@ function EditableChoices<E>({
      : [];
    const list = (
      <ul
@@ -641,7 +812,7 @@ index 9fedea6..858ea14 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1341,7 +1387,7 @@ function EditableChoices<E>({
+@@ -1337,7 +1351,7 @@ function EditableChoices<E>({
          (plain ? (
            <RadioGroup.Root
              value={choices.find((choice) => choice.linked)?.account.id ?? ""}
@@ -650,6 +821,64 @@ index 9fedea6..858ea14 100644
            >
              {list}
            </RadioGroup.Root>
+diff --git a/packages/ui/src/implementation/dashboard/requirement-titles.ts b/packages/ui/src/implementation/dashboard/requirement-titles.ts
+new file mode 100644
+index 0000000..7b7eb61
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/requirement-titles.ts
+@@ -0,0 +1,52 @@
++/**
++ * The titles of one scope's account requirements on an app's Accounts tab, so no two sections read
++ * the same when an app declares one service more than once.
++ */
++import type { AccountRequirement } from "@executor-js/sdk";
++import { requirementMethods } from "../../contracts/app-accounts.ts";
++import { methodLabels, methodVariant } from "./method-labels.ts";
++
++type RequirementEntry = readonly [string, AccountRequirement];
++
++/** The requirement's sign-in methods as its connect form names them, without repeating the service. */
++const methodsFor = (requirement: AccountRequirement) => {
++  const signIn = `Sign in with ${requirement.definition.name}`;
++  return [...methodLabels(requirement.definition.name, requirementMethods(requirement)).values()]
++    .map((label) =>
++      label === signIn || label.startsWith(`${signIn} `)
++        ? `Sign in${label.slice(signIn.length)}`
++        : label,
++    )
++    .join(", ");
++};
++
++/**
++ * Each requirement's title by slot: its service's name, and where several requirements share that
++ * name, what each is for: its sign-in methods, else its slot in words, else its slot as declared.
++ * Every title in the scope is distinct. A requirement whose service has no name gets no title.
++ */
++export const requirementTitles = (
++  requirements: readonly RequirementEntry[],
++): ReadonlyMap<string, string> => {
++  const named = requirements.flatMap(([slot, requirement]) => {
++    const name = requirement.definition.name.trim();
++    return name === "" ? [] : [{ slot, name, methods: methodsFor(requirement) }];
++  });
++  const titled = named.map((entry) => {
++    const alike = named.filter((other) => other.name === entry.name);
++    if (alike.length === 1) return { slot: entry.slot, title: entry.name };
++    const qualifier =
++      entry.methods !== "" &&
++      alike.every((other) => other === entry || other.methods !== entry.methods)
++        ? entry.methods
++        : methodVariant(entry.slot);
++    return { slot: entry.slot, title: `${entry.name} · ${qualifier}` };
++  });
++  // Variants can still meet, such as `apiKey` and `api_key`; the declared slot settles them.
++  return new Map(
++    titled.map(({ slot, title }) => [
++      slot,
++      titled.filter((other) => other.title === title).length > 1 ? `${title} [${slot}]` : title,
++    ]),
++  );
++};
 diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
 index 96b2155..58edff1 100644
 --- a/packages/ui/src/implementation/styles/dashboard.css
