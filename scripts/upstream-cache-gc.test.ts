@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -245,4 +246,21 @@ test("live key locks and install attempts protect keys until their owners releas
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(locked.entry), false);
   assert.equal(existsSync(pending.entry), false);
+});
+
+test("legacy sibling attempts retain their parent key's live PID-only lock", async (t) => {
+  const { key } = fixture(t);
+  const legacy = key(1, "old");
+  rmSync(join(legacy.entry, "store-format.json"));
+  const attempt = `${legacy.entry}.attempt-${randomUUID()}`;
+  mkdirSync(attempt);
+  writeFileSync(join(attempt, "package.json"), "{}");
+  symlinkSync(JSON.stringify({ pid: process.pid, id: "legacy-fixture" }), `${legacy.entry}.lock`);
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(attempt), true, "format-2 input copying holds the parent key lock");
+  assert.equal(existsSync(legacy.store), true);
+  rmSync(`${legacy.entry}.lock`);
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(attempt), false);
+  assert.equal(existsSync(legacy.entry), false);
 });
