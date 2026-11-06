@@ -153,10 +153,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -208,6 +208,7 @@
-       "Wait for this app’s workflows to finish or terminate them before deleting it.",
-     AccountWorkflowsActive: () =>
-       "Wait for this account’s workflows to finish or terminate them before deleting it.",
+@@ -211,3 +211,4 @@
 +    WorkflowStatusUnavailable: ({ message }) => message,
      WorkflowFailure: (error) => `Workflow request failed (${error.reason}).`,
      AppWebhooksActive: () => "Remove this app’s webhook subscriptions before deleting it.",
@@ -164,10 +161,7 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9993,6 +9993,36 @@
-       local: na("The hosted Google Routes proxy is Cloud-only."),
-     },
-   },
+@@ -9996,3 +9996,33 @@
 +  workflowStatusNativeFailure: {
 +    fixtures: "actors",
 +    file: "workflow-status-diagnostics.spec.ts",
