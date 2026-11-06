@@ -301,9 +301,9 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +    },
 +  },
 +
-   savedAccountProjection: {
+   cachedProviderPolicyDesktop: {
      fixtures: "actors",
-     legacyStorage: true,
+     file: "cached-provider-policy.spec.ts",
 diff --git a/e2e/tests/first-entry-reveal.spec.ts b/e2e/tests/first-entry-reveal.spec.ts
 new file mode 100644
 --- /dev/null
