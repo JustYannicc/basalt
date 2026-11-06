@@ -30,7 +30,7 @@ function fixture(directory: string) {
     export async function getPlatformProxy() {
       if (process.env.FIXTURE_CASE === "opening") return new Promise(() => {});
       let server, origin;
-      if (["unready", "unreachable"].includes(process.env.FIXTURE_CASE)) {
+      if (["unready", "unreachable", "close-after-failure"].includes(process.env.FIXTURE_CASE)) {
         server = createServer((_request, response) => response.writeHead(503).end());
         await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
         origin = "http://127.0.0.1:" + server.address().port;
@@ -42,7 +42,7 @@ function fixture(directory: string) {
       return {
         env: { POOL_OPERATIONS: { async fetch() {
           if (process.env.FIXTURE_CASE === "readiness") return new Promise(() => {});
-          if (process.env.FIXTURE_CASE === "unready")
+          if (["unready", "close-after-failure"].includes(process.env.FIXTURE_CASE))
             return globalThis.fetch(origin);
           if (process.env.FIXTURE_CASE === "unreachable")
             return globalThis.fetch(origin);
@@ -56,7 +56,7 @@ function fixture(directory: string) {
             server.closeAllConnections();
             await new Promise(resolve => server.close(resolve));
           }
-          if (process.env.FIXTURE_CASE === "close") {
+          if (["close", "close-after-failure"].includes(process.env.FIXTURE_CASE)) {
             setInterval(() => {}, 10000);
             return new Promise(() => {});
           }
@@ -110,7 +110,8 @@ for (const [scenario, mode, outcome] of [
   ["readiness", "ready", "abort"],
   ["body", "ready", "abort"],
   ["connect", "verify", "abort"],
-  ["close", "ready", "converged"],
+  ["close", "ready", "teardown-error"],
+  ["close-after-failure", "ready", "readiness-error"],
   ["success", "ready", "converged"],
   ["success", "verify", "converged"],
 ] as const) {
@@ -159,6 +160,8 @@ for (const [scenario, mode, outcome] of [
       assert.doesNotMatch(result.stderr, /unsettled top-level await/);
       const output = JSON.parse(outcome === "converged" ? result.stdout : result.stderr);
       assert.equal(output.outcome, outcome);
+      if (scenario === "close") assert.equal(output.stage, "teardown");
+      if (scenario === "close-after-failure") assert.equal(output.stage, "readiness");
       assert.equal(output.commandDeadlineMs, mode === "ready" ? 180000 : 115000);
       assert.deepEqual(output.target, target);
       const retained = JSON.parse(readFileSync(path, "utf8"));

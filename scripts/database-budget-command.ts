@@ -86,6 +86,7 @@ export async function runDatabaseBudgetCommand(
     elapsedMs: now() - operationStartedAt,
   });
   const mode = args.includes("--ready") ? "ready" : "verify";
+  let failure: DatabaseBudgetFailure | undefined;
   try {
     const command = timeout(mode === "ready" ? 180_000 : databaseVerificationCommandMs);
     const worker = source.DATABASE_BUDGET_WORKER;
@@ -159,7 +160,6 @@ export async function runDatabaseBudgetCommand(
         },
       });
     }
-    return contextual(receipt);
   } catch (error) {
     if (error instanceof DatabaseBudgetFailure) receipt = error.receipt;
     else
@@ -171,12 +171,24 @@ export async function runDatabaseBudgetCommand(
     receipt = contextual(receipt);
     // The CLI still emits the failure receipt if the destination cannot be written.
     await withinDeadline(save(path, receipt), 1000).catch(() => {});
-    throw new DatabaseBudgetFailure(receipt);
+    failure = new DatabaseBudgetFailure(receipt);
   } finally {
     try {
-      if (readiness) await withinDeadline(readiness.close(), 1000).catch(() => {});
+      if (readiness) {
+        try {
+          await withinDeadline(readiness.close(), 1000);
+        } catch {
+          if (!failure) {
+            receipt = contextual({ ...receipt, outcome: "teardown-error", stage: "teardown" });
+            await withinDeadline(save(path, receipt), 1000).catch(() => {});
+            failure = new DatabaseBudgetFailure(receipt);
+          }
+        }
+      }
     } finally {
       for (const deadline of deadlines) deadline.dispose();
     }
   }
+  if (failure) throw failure;
+  return contextual(receipt);
 }
