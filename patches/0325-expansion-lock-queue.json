@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-expansion-lock-queue",
+  "file": "0325-expansion-lock-queue.patch",
+  "content_sha256": "bad9a95ad2b670a128b7b921f696abe11b72d6d044a14f2547d84e419c37e0d4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

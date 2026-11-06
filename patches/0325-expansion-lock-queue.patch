@@ -1,0 +1,211 @@
+--- a/e2e/support/account-delete-contention.ts
++++ b/e2e/support/account-delete-contention.ts
+@@ -1,14 +1,52 @@
+ /** Observe only the scenario's held rows and verify a deleted synthetic account independently. */
+ import { expect } from "@effect/vitest";
+ import { Effect, Fiber, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
+ import { refused } from "./app-links.ts";
+ import { cloudLocks } from "./cloud-locks.ts";
+ import { Evidence } from "./evidence.ts";
+-import type { Response } from "./platform.ts";
++import { Target, type Response } from "./platform.ts";
+ 
+ export const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
+ export const Backends = Schema.Array(Schema.Struct({ pid: Schema.Number, query: Schema.String }));
+ export class PendingDelete extends Schema.TaggedError<PendingDelete>()("PendingDelete", {}) {}
++
++/** Keep automatic cron off the old source while the scenario forces the new source's writer. */
++export const holdSourceReconciliation = (app: string, account: string) =>
++  Effect.gen(function* () {
++    const locks = yield* cloudLocks;
++    yield* Effect.addFinalizer(() => Effect.ignore(locks.release));
++    const target = yield* Target;
++    const http = yield* HttpClient.HttpClient;
++    yield* Effect.scoped(
++      http
++        .get(
++          `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++        )
++        .pipe(Effect.flatMap((response) => response.text)),
++    );
++    yield* locks
++      .run({
++        sql: "update executor_webhook_sources set lease = 'contention-fixture', lease_until = now() + interval '5 minutes' where app = $1 and account = $2 and status = 'ready' returning id",
++        params: [app, account],
++      })
++      .pipe(
++        Effect.filterOrFail(
++          (rows) => rows.length === 1,
++          () => new PendingDelete(),
++        ),
++        Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
++        Effect.orDie,
++      );
++    yield* Effect.addFinalizer(() =>
++      locks
++        .run({
++          sql: "update executor_webhook_sources set lease = null, lease_until = now() where app = $1 and account = $2 and lease = 'contention-fixture'",
++          params: [app, account],
++        })
++        .pipe(Effect.ignore),
++    );
++  });
+ 
+ export const blocked = (
+   locks: Effect.Success<typeof cloudLocks>,
+@@ -22,6 +60,32 @@
+       where pg_blocking_pids(pid) && string_to_array($1, ',')::integer[] and query ilike $2
+       and ($3::integer is null or pid = $3)`,
+       params: [blockers.join(","), statement, expectedPid ?? null],
++    })
++    .pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++      Effect.filterOrFail(
++        (rows) => rows.length === 1,
++        () => new PendingDelete(),
++      ),
++      Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
++      Effect.orDie,
++    );
++
++/** Queued writers can hide the held app from PostgreSQL's immediate blockers. */
++export const blockedThrough = (
++  locks: Effect.Success<typeof cloudLocks>,
++  waiter: number,
++  blocker: number,
++  statement: string,
++) =>
++  locks
++    .run({
++      sql: `with recursive blocking(pid) as (
++        select unnest(pg_blocking_pids($1::integer))
++        union select unnest(pg_blocking_pids(blocking.pid)) from blocking
++      ) select pid, query from pg_stat_activity where pid = $1 and query ilike $3
++      and exists (select 1 from blocking where pid = $2)`,
++      params: [waiter, blocker, statement],
+     })
+     .pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
+@@ -79,25 +143,7 @@
+         })
+         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
+     );
+-    // Automatic app writers may queue between this fixture and the route precheck.
+-    yield* membership
+-      .run({
+-        sql: `with recursive blocking(pid) as (
+-        select unnest(pg_blocking_pids($1::integer))
+-        union select unnest(pg_blocking_pids(blocking.pid)) from blocking
+-      ) select pid, query from pg_stat_activity where pid = $1 and query ilike '%executor_apps%'
+-      and exists (select 1 from blocking where pid = $2)`,
+-        params: [appBackend!.pid, precheck!.pid],
+-      })
+-      .pipe(
+-        Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
+-        Effect.filterOrFail(
+-          (rows) => rows.length === 1,
+-          () => new PendingDelete(),
+-        ),
+-        Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
+-        Effect.orDie,
+-      );
++    yield* blockedThrough(membership, appBackend!.pid, precheck!.pid, "%executor_apps%");
+     yield* membership.release;
+     const [holder] = yield* Fiber.join(holding);
+     // The SDK transaction may use another pooled backend after the route precheck commits.
+--- a/e2e/tests/contributed-account-delete-lock-set.spec.ts
++++ b/e2e/tests/contributed-account-delete-lock-set.spec.ts
+@@ -7,8 +7,10 @@
+   Backends,
+   PendingDelete,
+   blocked,
++  blockedThrough,
+   deletedAccount,
+   holdSdkApp,
++  holdSourceReconciliation,
+ } from "../support/account-delete-contention.ts";
+ import { connectionsPath } from "../support/app-accounts.ts";
+ import { body } from "../support/api.ts";
+@@ -34,6 +36,7 @@
+           kind: "shared",
+           audience: { kind: "everyone" },
+         });
++        yield* holdSourceReconciliation(f.app.id, account);
+         const deletion = yield* holdSdkApp(
+           {
+             organization: actors.organization.id,
+@@ -54,13 +57,53 @@
+             params: [otherApp],
+           })
+           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
++        // Force a real writer ahead of deletion on the newly linked app.
++        const queuedExpansion = yield* added.run({
++          sql: "update executor_webhook_sources set status = 'pending', lease = null where app = $1 and account = $2 returning id",
++          params: [otherApp, account],
++        });
++        expect(queuedExpansion).toHaveLength(1);
++        const expansionTarget = yield* Target;
++        const expansionHttp = yield* HttpClient.HttpClient;
++        const expansionCron = yield* Effect.forkChild(
++          Effect.scoped(
++            expansionHttp
++              .get(
++                `${expansionTarget.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++              )
++              .pipe(Effect.flatMap((response) => response.text)),
++          ),
++        );
++        const expansionWriters = yield* added
++          .run({
++            sql: "select pid, query from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)) and query ilike 'UPDATE%executor_apps%'",
++            params: [holder!.pid],
++          })
++          .pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++            Effect.filterOrFail(
++              (rows) => rows.length > 0,
++              () => new PendingDelete(),
++            ),
++            Effect.retry({
++              while: Schema.is(PendingDelete),
++              schedule: Schedule.spaced("100 millis"),
++            }),
++            Effect.orDie,
++          );
++        yield* (yield* Evidence).json("expanded-delete-writers.json", {
++          deleting: deletion.deleting,
++          holder,
++          expansionWriters,
++        });
+         yield* deletion.app.release;
+-        const [expanded] = yield* blocked(
++        const [expanded] = yield* blockedThrough(
+           added,
+-          [holder!.pid],
+-          "%executor_apps%",
+           deletion.deleting.pid,
+-        );
++          holder!.pid,
++          "%select id from executor_apps%for no key update%",
++        );
++        expect(expanded!.pid).toBe(deletion.deleting.pid);
+         // The expansion retry must release its account lock before waiting for the new app.
+         const accountLock = yield* added.probe({
+           sql: "select id from executor_accounts where id = $1 for update nowait",
+@@ -69,6 +112,7 @@
+         expect(accountLock).toEqual([{ code: null }]);
+         yield* added.release;
+         const removed = yield* Fiber.join(deletion.request);
++        yield* Fiber.join(expansionCron);
+         yield* ok(removed);
+         expect(yield* f.readLinks()).toEqual([]);
+         const otherLinks = yield* api.request(actors.member, "GET", `${otherPath}/accounts/app`);
+@@ -111,6 +155,7 @@
+         );
+         const [first, second] = [f.app.id, otherApp].sort();
+         const firstPath = first === f.app.id ? f.path : otherPath;
++        yield* holdSourceReconciliation(first!, account);
+         const pending = yield* body(
+           Resource,
+           yield* api.request(actors.member, "POST", connectionsPath(firstPath, "app", "shared"), {
