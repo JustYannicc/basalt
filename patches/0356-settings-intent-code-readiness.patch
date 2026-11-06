@@ -1,0 +1,26 @@
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -308,9 +308,19 @@
+             "Keyboard focus",
+             Effect.gen(function* () {
+               yield* browser.use("Focus Settings", (page) =>
+-                link(page)
+-                  .focus()
+-                  .then(() => page.clock.runFor(100)),
++                Promise.all([
++                  // Members can answer before the lazy route code, especially without invitations.
++                  page
++                    .waitForResponse((response) =>
++                      /\/assets\/org\._organizationSlug\.organization-[^/]+\.js$/.test(
++                        new URL(response.url()).pathname,
++                      ),
++                    )
++                    .then((response) => response.finished()),
++                  link(page)
++                    .focus()
++                    .then(() => page.clock.runFor(100)),
++                ]).then(() => undefined),
+               );
+               yield* answers("The focus reads answer");
+               yield* settle("The focus answer settles");
