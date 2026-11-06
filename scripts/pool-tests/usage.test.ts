@@ -48,7 +48,7 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): P
   } while (Date.now() < deadline);
   assert.fail("Timed out waiting for synthetic Home records or cap totals");
 }
-function total(records: Record[]): UsageSlice {
+function billedUsage(records: Record[]): UsageSlice {
   const result = {
     requests: records.length,
     tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 },
@@ -76,17 +76,22 @@ function total(records: Record[]): UsageSlice {
           ];
     for (const [index, key] of ["input", "cacheRead", "cacheWrite", "output", "total"].entries())
       result.tokens[key as keyof UsageSlice["tokens"]] += values[index]!;
-    // Home's billing record is the oracle, including its zero or null for the discovery requests.
+    // Home billing is the legacy ledger's credit oracle, including zero or null discovery charges.
     result.cost += row.billing.amount ?? 0;
     if (row.billing.amount === null || row.billing.matched_price_rule === "default:zero")
       result.unpriced++;
   }
-  // The summary rounds cost to millionths of a dollar.
+  // The legacy ledger rounds its billing amount to six decimal places.
   return { ...result, cost: Math.round(result.cost * 1e6) / 1e6 };
+}
+// This fixture supplies no official USD price reader. Home credit charges cannot price its models.
+function unpricedUsage(records: Record[]): UsageSlice {
+  const { requests, tokens } = billedUsage(records);
+  return { requests, tokens, cost: 0, unpriced: requests };
 }
 function models(result: Pick<UsageSummary, "total" | "models">, records: Record[]) {
   const { requests, tokens, cost, unpriced } = result.total;
-  assert.deepEqual({ requests, tokens, cost, unpriced }, total(records));
+  assert.deepEqual({ requests, tokens, cost, unpriced }, unpricedUsage(records));
   const modelIds = [
     ...new Set(records.map((row) => JSON.stringify([row.provider, row.model]))),
   ].sort();
@@ -97,7 +102,7 @@ function models(result: Pick<UsageSummary, "total" | "models">, records: Record[
       return {
         provider,
         model,
-        ...total(records.filter((row) => row.provider === provider && row.model === model)),
+        ...unpricedUsage(records.filter((row) => row.provider === provider && row.model === model)),
       };
     }),
   );
@@ -121,7 +126,7 @@ function slices(result: Pick<UsageSummary, "total" | "models" | "days">, records
       },
       own,
     );
-    assert.deepEqual(total(own), {
+    assert.deepEqual(unpricedUsage(own), {
       requests: result.days[index]!.requests,
       tokens: result.days[index]!.tokens,
       cost: result.days[index]!.cost,
@@ -130,7 +135,11 @@ function slices(result: Pick<UsageSummary, "total" | "models" | "days">, records
   }
 }
 
-function accounts(result: UsageSummary, records: Record[]) {
+function accounts(
+  result: UsageSummary,
+  records: Record[],
+  expected: (records: Record[]) => UsageSlice,
+) {
   const ids = [
     ...new Set(
       records.map((row) => row.credential.credential_id).filter((id): id is string => !!id),
@@ -140,7 +149,7 @@ function accounts(result: UsageSummary, records: Record[]) {
     result.accounts,
     ids.map((account) => ({
       account,
-      ...total(records.filter((row) => row.credential.credential_id === account)),
+      ...expected(records.filter((row) => row.credential.credential_id === account)),
     })),
     "account slices match Home credential ids and only the caller's permitted records",
   );
@@ -265,10 +274,10 @@ test(
         ] as const) {
           assert.ok(own.some((row) => row.model === model && row.billing.amount === price));
         }
-        assert.ok(total(own).tokens.total > 0);
+        assert.ok(billedUsage(own).tokens.total > 0);
       }
       console.log(
-        "PASS 1: four person/pool users, ten Home records, two manually priced synthetic models",
+        "PASS 1: four person/pool users, ten Home records, two synthetic models with Home credit charges",
       );
       const usage = new PoolUsage({
         storage: new MemoryStorage(),
@@ -295,7 +304,7 @@ test(
       assert.equal(poolSummary.scope, "pool");
       assert.equal(poolSummary.cap, null);
       slices(poolSummary, shared);
-      accounts(poolSummary, shared);
+      accounts(poolSummary, shared, unpricedUsage);
       assert.deepEqual(
         poolSummary.members!.map((row) => row.member),
         [owner, a, b],
@@ -306,7 +315,7 @@ test(
         const member = poolSummary.members!.find((row) => row.member === person)!;
         const { member: _member, cap: _cap, models: _models, days: _days, ...amount } = member;
         slices({ total: amount, models: member.models, days: member.days }, own);
-        assert.deepEqual(amount, total(own));
+        assert.deepEqual(amount, unpricedUsage(own));
         assert.equal(member.cap, null);
         if (person === owner) continue;
         const result = await summary(person);
@@ -315,7 +324,7 @@ test(
         assert.equal(Object.hasOwn(result, "members"), false);
         assert.equal(Object.hasOwn(result, "accountsNeeded"), false);
         slices(result, own);
-        accounts(result, own);
+        accounts(result, own, unpricedUsage);
       }
       const ownPool = await summary(a, "pool-b");
       assert.equal(ownPool.scope, "pool");
@@ -326,9 +335,10 @@ test(
       accounts(
         ownPool,
         rows.filter((row) => row.client.api_key_id === keys[3]!.keyId),
+        unpricedUsage,
       );
       console.log(
-        "PASS 2: totals, tokens, cost, models and days match Home by key; members and second pool stay isolated",
+        "PASS 2: totals, tokens, models and days match Home by key; USD stays unpriced without official prices; members and second pool stay isolated",
       );
       await usage.setCap("pool-a", owner, a, 0.01);
       const cap = (await until(
@@ -450,7 +460,7 @@ test(
       assert.equal(removed.length, 2);
       await new UsageLedger(storage, client).sync(landedSync);
       const result = await ledger.summary("pool-a", options);
-      accounts(result, removed);
+      accounts(result, removed, billedUsage);
       assert.equal(result.total.requests, 2);
       assert.equal(result.total.unpriced, 1);
       assert.equal(result.total.cost, 0);
