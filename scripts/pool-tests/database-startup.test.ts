@@ -88,8 +88,11 @@ CREATE ROLE denied_owner_login LOGIN PASSWORD 'fixture-only';
 GRANT basalt_pool_owner TO budget_a WITH INHERIT TRUE, SET TRUE;
 CREATE DATABASE standalone OWNER fixture_root;
 CREATE DATABASE pooled OWNER basalt_pool_owner;
+CREATE DATABASE direct_stable_owner OWNER basalt_pool_owner;
 CREATE DATABASE missing_owner OWNER fixture_root;
+CREATE DATABASE pooled_missing_owner OWNER basalt_pool_owner;
 CREATE DATABASE denied_owner OWNER basalt_pool_owner;
+CREATE DATABASE direct_denied_owner OWNER basalt_pool_owner;
 `,
         );
         docker(
@@ -154,6 +157,14 @@ pidfile=/tmp/startup-pgbouncer.pid
             ready: true,
           },
           {
+            name: "direct stable owner",
+            user: "budget_a",
+            port: 5432,
+            database: "direct_stable_owner",
+            owner: "basalt_pool_owner",
+            ready: true,
+          },
+          {
             name: "missing configured owner",
             user: "fixture_root",
             port: 5432,
@@ -162,10 +173,26 @@ pidfile=/tmp/startup-pgbouncer.pid
             ready: false,
           },
           {
+            name: "pooled missing configured owner",
+            user: "budget_a",
+            port: 6432,
+            database: "pooled_missing_owner",
+            owner: "missing_fixture_owner",
+            ready: false,
+          },
+          {
             name: "denied configured owner",
             user: "denied_owner_login",
             port: 6432,
             database: "denied_owner",
+            owner: "basalt_pool_owner",
+            ready: false,
+          },
+          {
+            name: "direct denied configured owner",
+            user: "denied_owner_login",
+            port: 5432,
+            database: "direct_denied_owner",
             owner: "basalt_pool_owner",
             ready: false,
           },
