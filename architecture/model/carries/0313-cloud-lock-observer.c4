@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Cloud contention fixtures follow the known fixture backend to its precheck through queued app writers, identify the SDK delete by its request trace, then check direct delete and reconnect backend PIDs. Forced cron queues only a synthetic app webhook source; product locking, assertions and deadlines stay unchanged."
+    }
+  }
+}

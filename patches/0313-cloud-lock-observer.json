@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-lock-observer",
+  "file": "0313-cloud-lock-observer.patch",
+  "content_sha256": "d9487db5beae68be380955e36e6250652a63e0bffb599a6f52f6819bc2b25ae3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,0 +1,163 @@
+--- a/e2e/support/account-delete-contention.ts
++++ b/e2e/support/account-delete-contention.ts
+@@ -13,12 +13,14 @@
+   locks: Effect.Success<typeof cloudLocks>,
+   blockers: readonly number[],
+   statement: string,
++  expectedPid?: number,
+ ) =>
+   locks
+     .run({
+       sql: `select pid, query from pg_stat_activity
+-      where pg_blocking_pids(pid) && string_to_array($1, ',')::integer[] and query ilike $2`,
+-      params: [blockers.join(","), statement],
++      where pg_blocking_pids(pid) && string_to_array($1, ',')::integer[] and query ilike $2
++      and ($3::integer is null or pid = $3)`,
++      params: [blockers.join(","), statement, expectedPid ?? null],
+     })
+     .pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
+@@ -64,6 +66,9 @@
+       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
+     const request = yield* Effect.forkChild(remove);
+     const [precheck] = yield* blocked(membership, [member!.pid], "%from member%for share%");
++    const [appBackend] = yield* app
++      .hold({ sql: "select pg_backend_pid() as pid" })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
+     const holding = yield* Effect.forkChild(
+       app
+         .hold({
+@@ -72,9 +77,34 @@
+         })
+         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie),
+     );
+-    yield* blocked(membership, [precheck!.pid], "%executor_apps%");
++    // Automatic app writers may queue between this fixture and the route precheck.
++    yield* membership
++      .run({
++        sql: `with recursive blocking(pid) as (
++        select unnest(pg_blocking_pids($1::integer))
++        union select unnest(pg_blocking_pids(blocking.pid)) from blocking
++      ) select pid, query from pg_stat_activity where pid = $1 and query ilike '%executor_apps%'
++      and exists (select 1 from blocking where pid = $2)`,
++        params: [appBackend!.pid, precheck!.pid],
++      })
++      .pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++        Effect.filterOrFail(
++          (rows) => rows.length === 1,
++          () => new PendingDelete(),
++        ),
++        Effect.retry({ while: Schema.is(PendingDelete), schedule: Schedule.spaced("100 millis") }),
++        Effect.orDie,
++      );
+     yield* membership.release;
+     const [holder] = yield* Fiber.join(holding);
+-    const [deleting] = yield* blocked(membership, [holder!.pid], "%executor_apps%");
++    // The SDK transaction may use another pooled backend after the route precheck commits.
++    const trace = precheck!.query.match(/traceparent='00-([a-f0-9]{32})-/)?.[1];
++    if (trace === undefined) return yield* Effect.die("Delete precheck omitted its request trace");
++    const [deleting] = yield* blocked(
++      membership,
++      [holder!.pid],
++      `%executor_apps%traceparent='00-${trace}-%`,
++    );
+     return { request, app, observer: membership, deleting: deleting!, holder: holder! };
+   });
+--- a/e2e/tests/contributed-account-delete-lock-set.spec.ts
++++ b/e2e/tests/contributed-account-delete-lock-set.spec.ts
+@@ -1,8 +1,11 @@
+ /** Rebuild the lock set when concurrent public writers change it or hold an account first. */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Fiber, Schema } from "effect";
++import { Effect, Fiber, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
+ import {
+   Holder,
++  Backends,
++  PendingDelete,
+   blocked,
+   deletedAccount,
+   holdSdkApp,
+@@ -15,7 +18,7 @@
+ import { contributedApp, contributedSource } from "../support/contributed-app.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { Evidence } from "../support/evidence.ts";
+-import { RuntimeLive } from "../support/platform.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ layer(RuntimeLive, { excludeTestServices: true })("Contributed account delete lock set", (it) => {
+@@ -52,7 +55,12 @@
+           })
+           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Holder)), Effect.orDie);
+         yield* deletion.app.release;
+-        const [expanded] = yield* blocked(added, [holder!.pid], "%executor_apps%");
++        const [expanded] = yield* blocked(
++          added,
++          [holder!.pid],
++          "%executor_apps%",
++          deletion.deleting.pid,
++        );
+         // The expansion retry must release its account lock before waiting for the new app.
+         const accountLock = yield* added.probe({
+           sql: "select id from executor_accounts where id = $1 for update nowait",
+@@ -137,15 +145,58 @@
+         );
+         // Reconnect owns the account. Deletion owns the first app and waits on the second.
+         yield* completing.release;
++        const queued = yield* completing.run({
++          sql: `update executor_webhook_sources set status = 'pending', lease = null
++          where app = $1 and account = $2 returning id`,
++          params: [second!, account],
++        });
++        expect(queued).toHaveLength(1);
++        const target = yield* Target;
++        const http = yield* HttpClient.HttpClient;
++        const scheduled = yield* Effect.forkChild(
++          Effect.scoped(
++            http
++              .get(
++                `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++              )
++              .pipe(Effect.flatMap((response) => response.text)),
++          ),
++        );
++        // The normal scheduler must overlap the reconnect, rather than relying on a minute boundary.
++        const competing = yield* completing
++          .run({
++            sql: `select pid, query from pg_stat_activity where pid <> $1
++          and $2::integer = any(pg_blocking_pids(pid)) and query ilike '%executor_apps%'`,
++            params: [saving!.pid, deletion.deleting.pid],
++          })
++          .pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Backends)),
++            Effect.filterOrFail(
++              (rows) => rows.length > 0,
++              () => new PendingDelete(),
++            ),
++            Effect.retry({
++              while: Schema.is(PendingDelete),
++              schedule: Schedule.spaced("100 millis"),
++            }),
++            Effect.orDie,
++          );
++        yield* (yield* Evidence).json("competing-reconnect-waiters.json", {
++          saving,
++          deleting: deletion.deleting,
++          competing,
++        });
+         const [waitingReconnect] = yield* blocked(
+           completing,
+           [deletion.deleting.pid],
+           "%executor_apps%",
++          saving!.pid,
+         );
+         expect(waitingReconnect!.pid).toBe(saving!.pid);
+         yield* deletion.app.release;
+         const reconnected = yield* Fiber.join(reconnect);
+         const removed = yield* Fiber.join(deletion.request);
++        yield* Fiber.join(scheduled);
+         yield* ok(reconnected);
+         yield* ok(removed);
+         yield* deletedAccount(
