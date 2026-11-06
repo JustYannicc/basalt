@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-title-kind",
+  "file": "0302-account-title-kind.patch",
+  "content_sha256": "66603045ecece840ac722ace051706caa52d427cfac3b74313edf32bc0a183c3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
