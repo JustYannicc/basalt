@@ -5186,7 +5186,7 @@
       "methods": {
         "oauth": {
           "kind": "deferred",
-          "message": "Signalbox has not verified one-click Zendesk sign-in across companies yet. You can connect with an OAuth app from your own Zendesk account."
+          "message": "The global client supports any company. Without it, connect with the tenant public client <subdomain>_zendesk. A Zendesk admin must register this host's callback on that client once."
         }
       }
     },
