@@ -65,10 +65,17 @@ try {
         saved.reference,
       );
       yield* h.request("DELETE", saved.remove);
+      const gone = yield* h.raw("owner", "GET", saved.remove);
+      checked("deleted saved credentials retain the privacy response", gone.status, 403);
+      checked(
+        "deleted saved credentials expose no metadata",
+        gone.body._tag,
+        "OrganizationForbidden",
+      );
       checked(
         "saved credential deletion succeeds after unlink",
-        (yield* h.raw("owner", "GET", saved.remove)).status,
-        404,
+        h.fixture.hasCredential(saved.reference),
+        false,
       );
       const deleted = yield* nativePoolAccount(h, pool, "synthetic-intent-b");
       yield* h.request("DELETE", deleted.remove);

@@ -413,6 +413,9 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     completeCollectionAt(id, at, complete) {
       collections.set(id, { at, complete });
     },
+    hasCredential(id) {
+      return files.has(id);
+    },
     disappear(id) {
       files.delete(id);
       readings.delete(id);

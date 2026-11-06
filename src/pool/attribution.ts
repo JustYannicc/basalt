@@ -268,10 +268,19 @@ export class PoolControl implements ControlAttribution {
     actor: string,
     operation: string,
     issuedAt: number,
-  ): Promise<void> {
-    await this.run(() =>
-      this.removals.recordMany(pool, references, actor, new Date(this.now()), operation, issuedAt),
-    );
+  ): Promise<boolean> {
+    return (
+      await this.run(() =>
+        this.removals.recordMany(
+          pool,
+          references,
+          actor,
+          new Date(this.now()),
+          operation,
+          issuedAt,
+        ),
+      )
+    ).value;
   }
   async invalidateViews(pool?: string): Promise<void> {
     this.client.invalidateGroups();

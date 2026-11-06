@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PoolAccountRemovals } from "./account-removals.ts";
-import { handleRemovalIntent, removalIntentPrefix } from "./removal-intent.ts";
+import { handleRemovalIntent, removalIntentPath, removalIntentPrefix } from "./removal-intent.ts";
 import { signEnvelope } from "./token.ts";
 const key = "ab".repeat(32);
 const now = Date.UTC(2026, 10, 6);
-const request = async (value: object = {}, signingKey = key) =>
+const request = async (value: object = {}, signingKey = key, prefix = removalIntentPrefix) =>
   new Request("https://pool.test/pool/v1/account-removal-intents", {
     method: "POST",
     body: JSON.stringify({
-      envelope: await signEnvelope(signingKey, removalIntentPrefix, {
+      envelope: await signEnvelope(signingKey, prefix, {
+        audience: removalIntentPath,
         pool: "pool",
         actor: "person",
         reference: "account",
@@ -27,14 +28,17 @@ function fixture() {
       return structuredClone(stored.get(name)) as T | undefined;
     },
     async put(name, value) {
+      writes++;
       stored.set(name, structuredClone(value));
     },
   });
+  let writes = 0;
   let clock = now;
   let selected: string[] = [];
   let failed = false;
   return {
     history,
+    writes: () => writes,
     advance() {
       clock++;
     },
@@ -57,7 +61,7 @@ function fixture() {
       }),
   };
 }
-test("signed native removal records the authenticated actor once without exposing replay state", async () => {
+test("a replayed native removal is refused without rewriting the authenticated receipt", async () => {
   const f = fixture();
   assert.equal((await f.run(await request())).status, 204);
   const first = await f.history.read("pool");
@@ -66,7 +70,8 @@ test("signed native removal records the authenticated actor once without exposin
     items: [{ account: "account", actor: "person", at: new Date(now).toISOString() }],
   });
   f.advance();
-  assert.equal((await f.run(await request())).status, 204);
+  assert.equal((await f.run(await request())).status, 409);
+  assert.equal(f.writes(), 1);
   assert.deepEqual(await f.history.read("pool"), first);
 });
 test("a pool token, absent person, acquisition owner and expired assertion cannot mint removal intent", async () => {
@@ -96,10 +101,28 @@ test("a pool token, absent person, acquisition owner and expired assertion canno
 test("a retained selection or failed membership acknowledgement cannot claim a removal", async () => {
   const f = fixture();
   f.selected(["account"]);
-  assert.equal((await f.run(await request())).status, 204);
+  assert.equal((await f.run(await request())).status, 409);
   assert.deepEqual((await f.history.read("pool")).items, []);
   f.selected([]);
   f.fail();
   assert.equal((await f.run(await request())).status, 503);
   assert.deepEqual((await f.history.read("pool")).items, []);
 });
+
+for (const [name, value, signingKey, prefix] of [
+  ["bad signature", {}, "cd".repeat(32), removalIntentPrefix],
+  ["expired assertion", { expiresAt: now }, key, removalIntentPrefix],
+  [
+    "wrong endpoint audience",
+    { audience: "/pool/v1/account-acquisitions" },
+    key,
+    removalIntentPrefix,
+  ],
+  ["wrong signing purpose", {}, key, "sba1"],
+] as const)
+  test(`${name} is refused without writing a receipt`, async () => {
+    const f = fixture();
+    assert.equal((await f.run(await request(value, signingKey, prefix))).status, 401);
+    assert.equal(f.writes(), 0);
+    assert.deepEqual((await f.history.read("pool")).items, []);
+  });

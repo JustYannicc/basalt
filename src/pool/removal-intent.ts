@@ -19,7 +19,7 @@ export async function handleRemovalIntent(
       actor: string,
       operation: string,
       issuedAt: number,
-    ): Promise<void>;
+    ): Promise<boolean>;
     now?: () => number;
   },
 ): Promise<Response> {
@@ -40,6 +40,7 @@ export async function handleRemovalIntent(
     const now = input.now?.() ?? Date.now();
     if (
       !object(value) ||
+      value.audience !== removalIntentPath ||
       !text(value.pool) ||
       !text(value.actor) ||
       !text(value.reference) ||
@@ -59,15 +60,16 @@ export async function handleRemovalIntent(
     const references = homeReferences(String(value.reference));
     await input.refresh(String(value.pool));
     const selected = new Set(await input.selected(String(value.pool)));
-    if (!references.some((reference) => selected.has(reference)))
-      await input.record(
-        String(value.pool),
-        references,
-        String(value.actor),
-        String(value.operation),
-        value.at,
-      );
-    return new Response(null, { status: 204 });
+    if (references.some((reference) => selected.has(reference)))
+      return new Response(null, { status: 409 });
+    const recorded = await input.record(
+      String(value.pool),
+      references,
+      String(value.actor),
+      String(value.operation),
+      value.at,
+    );
+    return new Response(null, { status: recorded ? 204 : 409 });
   } catch {
     return Response.json({ error: "removal_intent_unavailable" }, { status: 503 });
   }

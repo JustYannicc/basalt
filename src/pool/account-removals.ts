@@ -18,7 +18,7 @@ export class PoolAccountRemovals {
   }
 
   async record(pool: string, account: string, actor: string, at: Date): Promise<void> {
-    return this.recordMany(pool, [account], actor, at);
+    await this.recordMany(pool, [account], actor, at);
   }
 
   async recordMany(
@@ -28,19 +28,19 @@ export class PoolAccountRemovals {
     at: Date,
     operation?: string,
     issuedAt?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const previous = (await this.storage.get<Saved>(key(pool))) ?? { since: null, items: [] };
-    if (operation !== undefined && previous.operations?.includes(operation)) return;
+    if (operation !== undefined && previous.operations?.includes(operation)) return false;
     // An evicted operation cannot refresh a receipt or cross the history's truncation watermark.
     if (issuedAt !== undefined) {
-      if (previous.since !== null && issuedAt <= Date.parse(previous.since)) return;
+      if (previous.since !== null && issuedAt <= Date.parse(previous.since)) return false;
       accounts = accounts.filter(
         (account) =>
           !previous.items.some(
             (item) => item.account === account && Date.parse(item.at) >= issuedAt,
           ),
       );
-      if (!accounts.length) return;
+      if (!accounts.length) return false;
     }
     const items = [
       ...previous.items.filter((item) => !accounts.includes(item.account)),
@@ -60,5 +60,6 @@ export class PoolAccountRemovals {
         ? (previous.operations ?? [])
         : [...(previous.operations ?? []), operation].slice(-100);
     await this.storage.put(key(pool), { since, items, operations });
+    return true;
   }
 }

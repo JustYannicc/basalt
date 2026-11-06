@@ -126,10 +126,9 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
        Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
      ),
 diff --git a/apps/hosted/server/src/implementation/pool-removal-intent.ts b/apps/hosted/server/src/implementation/pool-removal-intent.ts
-new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-removal-intent.ts
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,100 @@
 +import { AppId, AccountAcquisitionHost, type AccountId, StorageError } from "@executor-js/sdk/core";
 +import { Clock, Config, Context, Effect, Option, Redacted, Schema } from "effect";
 +import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
@@ -209,6 +208,7 @@ new file mode 100644
 +        const at = yield* Clock.currentTimeMillis;
 +        const envelope = yield* Effect.tryPromise(() =>
 +          signEnvelope(Redacted.value(key), "sbrm1", {
++            audience: "/pool/v1/account-removal-intents",
 +            pool,
 +            reference,
 +            actor,
