@@ -16,6 +16,7 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
+import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
@@ -345,6 +346,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    try {
+      await requireActivePoolOrganization(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        tools: this.env.TOOLS_SERVICE,
+      });
+    } catch (error) {
+      return failureResponse(error);
+    }
     if (pathname === runtimeRecoveryPath)
       return handleRuntimeRecovery(
         request,
