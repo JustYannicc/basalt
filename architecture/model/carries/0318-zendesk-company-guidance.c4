@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Company OAuth choices expose their reviewed registration instructions and public client identifier whether preflight accepts or refuses the callback. The shared web and MCP App form displays the selected method's exact callback and client ID as copyable values before authorization. Zendesk names its Admin Center registration path and read/write public-client requirement. Hosted and pasted localhost callbacks remain distinct; availability, grants and custom-client guidance retain their existing behavior. Generated MCP renderer assets must match the carried form."
+      constraint "Company OAuth choices expose their reviewed registration instructions and public client identifier whether preflight accepts or refuses the callback. Transient provider failures never imply that registration must change. The shared web and MCP App form displays the selected method's exact callback and client ID as copyable values before authorization. Zendesk names its Admin Center registration path and read/write public-client requirement. Hosted and pasted localhost callbacks remain distinct; availability, grants and custom-client guidance retain their existing behavior. Generated MCP renderer assets must match the carried form."
     }
   }
 }

@@ -19,7 +19,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
 -            ...(!available &&
 -            failure === undefined &&
 -            selected.client.setupInstructions !== undefined
-+            ...(selected.client.setupInstructions !== undefined
++            ...(failure === undefined && selected.client.setupInstructions !== undefined
                ? {
 +                  clientId: selected.client.clientId,
                    setupInstructions: selected.client.setupInstructions

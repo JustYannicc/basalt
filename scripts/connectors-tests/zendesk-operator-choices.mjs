@@ -217,13 +217,26 @@ export function proveOperatorChoices({
     );
 
     if (global) {
-      fixtures.setAuthorizationStatus(site.id, 503);
-      const available = checked(
-        yield* request(actor, "GET", `${other}/oauth/oauth/setup`),
-        200,
-        "A public-client outage must not hide a configured Marketplace client",
-      );
-      assert.equal(available.firstParty.label, "Synthetic global Zendesk");
+      for (const status of [429, 503]) {
+        fixtures.setAuthorizationStatus(site.id, status);
+        const available = checked(
+          yield* request(actor, "GET", `${other}/oauth/oauth/setup`),
+          200,
+          "A public-client outage must not hide a configured Marketplace client",
+        );
+        assert.equal(available.firstParty.label, "Synthetic global Zendesk");
+        const company = available.operatorClients.filter((choice) => choice.id !== "zendesk-proof");
+        assert.equal(company.length, 2);
+        for (const choice of company) {
+          assert.equal(choice.available, false);
+          assert.equal(
+            choice.setupInstructions,
+            undefined,
+            `A ${status} preflight failure must not suggest registering a different callback`,
+          );
+          assert.equal(choice.clientId, undefined);
+        }
+      }
       fixtures.setAuthorizationStatus(site.id, undefined);
     } else {
       fixtures.setTenantCallback(site.id, "https://unregistered.example.test/callback");
