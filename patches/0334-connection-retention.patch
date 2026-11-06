@@ -36,7 +36,7 @@ index 1d6582a..e262bcd 100644
    "hosted_account_groups",
    "hosted_account_observation_access",
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
-index f068a96..0b0684d 100644
+index c09c2e8..1e1b122 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
 @@ -1,5 +1,6 @@
@@ -367,7 +367,7 @@ index baee04e..4456a53 100644
      keys: ["account_id"],
      predicate: `${organization} and ${account("account_id")}`,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 6e6c52e..dcc3a62 100644
+index f62b73b..794b1b6 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -41,6 +41,10 @@ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
@@ -381,7 +381,7 @@ index 6e6c52e..dcc3a62 100644
  import { SqlClient } from "effect/sql";
  import {
    OrganizationRemoval,
-@@ -448,6 +452,18 @@ export default Api.make(
+@@ -452,6 +456,18 @@ export default Api.make(
        Effect.scoped,
        Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
      );
@@ -400,7 +400,7 @@ index 6e6c52e..dcc3a62 100644
      const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
        Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
        Effect.provide(executor),
-@@ -479,7 +495,12 @@ export default Api.make(
+@@ -483,7 +499,12 @@ export default Api.make(
        "workflow-reconcile",
        "app-domain-heartbeat",
      );
@@ -414,7 +414,7 @@ index 6e6c52e..dcc3a62 100644
      yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
      // Keep the production poll off the hour. Subject-level cycle times spread actual requests further.
      const testReportingCron = yield* Config.String(
-@@ -511,6 +532,7 @@ export default Api.make(
+@@ -515,6 +536,7 @@ export default Api.make(
        "workflow-reconcile": workflowReconcile,
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
@@ -454,7 +454,7 @@ index 16a8005..45e7c1c 100644
          executor[RepositoryHost].recover.pipe(
            Effect.catch(() => Effect.logWarning("App repository recovery failed")),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index c152da2..19a8d47 100644
+index 0158c02..320bf03 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -6,6 +6,7 @@
@@ -635,7 +635,7 @@ index 0000000..c8e6649
 +  };
 +});
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index cb462c0..c112fce 100644
+index cb462c0..dcfca6b 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -12,6 +12,7 @@ import {
@@ -646,7 +646,7 @@ index cb462c0..c112fce 100644
  import { scenarios } from "../test-plan.ts";
  
  layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
-@@ -208,6 +209,72 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -208,6 +209,85 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
      );
    }
  
@@ -655,16 +655,29 @@ index cb462c0..c112fce 100644
 +      context,
 +      Effect.gen(function* () {
 +        const { p, id, connections, attempts, access } = yield* productionOpsConnectionRows;
++        // The retention request is its own shape, so this proof sends it without the scope-proof
++        // operation helpers.
 +        const operation = {
-+          ...p.operation("increment"),
++          action: "dry-run",
 +          selection: "account-connection-retention-v1",
++          recipient: p.recipient,
 +          request: {
 +            organization: p.own.organization,
 +            expiredBefore: new Date(Date.now() - 25 * 3_600_000).toISOString(),
 +          },
 +        };
++        const apply = (dry: typeof DryRun.Type) => ({
++          ...operation,
++          action: "apply",
++          artifact: dry.artifact,
++          planSha256: dry.artifact.sha256,
++          backupSha256: dry.backupSha256,
++          go: `GO ${dry.artifact.sha256}`,
++        });
 +        const before = { connections: yield* connections, attempts: yield* attempts };
-+        const dry = yield* p.dryRun(operation);
++        const dryResponse = yield* p.request(operation);
++        expect(dryResponse.status, JSON.stringify(dryResponse.body)).toBe(200);
++        const dry = yield* body(DryRun, dryResponse);
 +        const plan = yield* Schema.decodeUnknownEffect(
 +          Schema.Struct({
 +            plan: Schema.Struct({
@@ -677,7 +690,7 @@ index cb462c0..c112fce 100644
 +            }),
 +          }),
 +        )(p.decrypt(dry.artifact));
-+        const removed = [id.pending, id.cancelled].sort();
++        const removed: ReadonlyArray<string> = [id.pending, id.cancelled].sort();
 +        expect(
 +          plan.plan.changes.map((change) => [change.table, Object.values(change.key)[0]]),
 +        ).toEqual(
@@ -694,10 +707,10 @@ index cb462c0..c112fce 100644
 +            params: [id.cancelled, revision],
 +          });
 +        yield* revise("changed");
-+        expect((yield* p.request(p.apply(operation, dry))).status).toBe(409);
++        expect((yield* p.request(apply(dry))).status).toBe(409);
 +        expect(yield* connections).toEqual(before.connections);
 +        yield* revise("fixture");
-+        const applied = yield* p.request(p.apply(operation, dry));
++        const applied = yield* p.request(apply(dry));
 +        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
 +        expect(yield* body(Applied, applied)).toMatchObject({
 +          repeated: false,
@@ -709,7 +722,7 @@ index cb462c0..c112fce 100644
 +        expect(yield* attempts).toEqual(
 +          before.attempts.filter((attempt) => !removed.some((r) => attempt === `attempt-${r}`)),
 +        );
-+        const replay = yield* p.request(p.apply(operation, dry));
++        const replay = yield* p.request(apply(dry));
 +        expect(replay.status).toBe(200);
 +        expect((yield* body(Applied, replay)).repeated).toBe(true);
 +      }),
