@@ -70,7 +70,8 @@
     ".upstream/apps/hosted/server/src/contracts/groups.ts",
     ".upstream/apps/hosted/cloud/src/implementation/access-hooks.ts",
     ".upstream/packages/sdk/src/contracts/interactive-accounts.ts",
-    ".upstream/e2e/tests/pool-receiver-membership.spec.ts"
+    ".upstream/e2e/tests/pool-receiver-membership.spec.ts",
+    ".upstream/e2e/tests/pool-app-removal.spec.ts"
   ],
   "fixture": "pool-setup"
 }

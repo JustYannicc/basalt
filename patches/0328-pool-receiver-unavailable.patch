@@ -970,7 +970,29 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
    StorageError,
    StorageHost,
    type Account,
-@@ -876,7 +877,9 @@
+@@ -804,11 +805,19 @@
+           yield* removeServiceInstall(sql, app);
+           yield* (accessLifecycle.appAccountLinksChanged?.({ apps: [app] }) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
+-            Effect.mapError(() => new AppRemovalUnavailable({ app })),
++            Effect.mapError((error) =>
++              error._tag === "AccessDependencyUnavailable"
++                ? error
++                : new AppRemovalUnavailable({ app }),
++            ),
+           );
+           yield* (accessLifecycle.appRemoving?.(app) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
+-            Effect.mapError(() => new AppRemovalUnavailable({ app })),
++            Effect.mapError((error) =>
++              error._tag === "AccessDependencyUnavailable"
++                ? error
++                : new AppRemovalUnavailable({ app }),
++            ),
+           );
+           yield* sql`delete from hosted_app_account_links where app = ${app}`;
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+@@ -876,7 +885,9 @@
              }),
            ).pipe(
              Effect.mapError((error) =>
@@ -988,19 +1010,21 @@ diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contr
    | Schema.SchemaError;
  const errorMessage = Match.type<HostedError>().pipe(
    Match.tagsExhaustive({
-+    AccessDependencyUnavailable: ({ message }) => message,
++    AccessDependencyUnavailable: ({ message, recovery }) => `${message} ${recovery.action}`,
      AccountDeviceOffline: ({ message }) => message,
      AccountExecutionUnavailable: ({ message }) => message,
      ToolPolicyConflict: ({ message }) => message,
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
-@@ -40,6 +40,8 @@
+@@ -40,6 +40,10 @@
      : message("Could not reach Executor", "Check that the local server is running, then retry.");
  const errorMessage = Match.type<DashboardError>().pipe(
    Match.tagsExhaustive({
-+    AccessDependencyUnavailable: ({ message: description }) =>
-+      message("Access synchronization unavailable", description),
++    AccessDependencyUnavailable: ({ message: description, recovery }) =>
++      message("Access synchronization unavailable", `${description} ${recovery.action}`),
++    AppRemovalUnavailable: ({ message: description }) =>
++      message("App could not be deleted", description),
      AccountDeviceOffline: (error) =>
        message(error.title, `${error.description} ${error.recovery.action}`),
      AccountExecutionUnavailable: (error) =>
@@ -1649,3 +1673,69 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/pool-app-removal.spec.ts b/e2e/tests/pool-app-removal.spec.ts
+--- a/e2e/tests/pool-app-removal.spec.ts
++++ b/e2e/tests/pool-app-removal.spec.ts
+@@ -7,3 +7,4 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { RuntimeLive, Target } from "../support/platform.ts";
+ import { scenarios } from "../test-plan.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
+@@ -54,6 +55,41 @@
+         const accounts = yield* choices();
+         expect(accounts.accounts.length).toBeGreaterThan(0);
+         expect(accounts.accounts.some((entry) => entry.linked)).toBe(true);
++        // A local projection error is distinct from a failed receiver acknowledgement.
++        const locks = yield* cloudLocks;
++        const originalMetadata = yield* locks
++          .run({
++            sql: "select metadata from organization where id = $1",
++            params: [actors.organization.id],
++          })
++          .pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(
++                Schema.Tuple([Schema.Struct({ metadata: Schema.String })]),
++              ),
++            ),
++            Effect.map(([row]) => row.metadata),
++          );
++        const clearStorageFault = locks.run({
++          sql: "update organization set metadata = $1 where id = $2",
++          params: [originalMetadata, actors.organization.id],
++        });
++        yield* Effect.addFinalizer(() => clearStorageFault);
++        yield* locks.run({
++          sql: `update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}', '[]'::jsonb)::text where id = $1`,
++          params: [actors.organization.id],
++        });
++        const storageRefused = yield* api.request(actors.owner, "DELETE", path);
++        yield* clearStorageFault;
++        expect(storageRefused.status, JSON.stringify(storageRefused.body)).toBe(503);
++        expect(storageRefused.body).toMatchObject({ _tag: "AppRemovalUnavailable", app: app.id });
++        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
++        expect(yield* choices()).toEqual(accounts);
++        yield* evidence.json("pool-delete-storage-refused.json", {
++          status: storageRefused.status,
++          body: storageRefused.body,
++          accountsPreserved: true,
++        });
+         yield* refuse(true);
+         const refused = yield* api.request(actors.owner, "DELETE", path);
+         yield* evidence.json("pool-delete-refused.json", {
+@@ -82,7 +118,14 @@
+           ),
+         ).toBe(true);
+         expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+-        expect(refused.body).toMatchObject({ _tag: "AppRemovalUnavailable", app: app.id });
++        expect(refused.body).toMatchObject({
++          _tag: "AccessDependencyUnavailable",
++          dependency: "pool receiver",
++          recovery: {
++            action: "Restore the pool receiver, then retry the operation.",
++          },
++        });
++        expect(JSON.stringify(refused.body)).toContain("pool receiver");
+         expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
+         expect(yield* choices()).toEqual(accounts);
+         yield* refuse(false);
