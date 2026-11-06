@@ -1,5 +1,5 @@
 /** Trusted query fragments for current API prices and request-level percentiles. */
-export function priceQuery(personScoped = false) {
+export function priceQuery(personScoped = false, retained = false) {
   return `WITH visible_refs AS (
       SELECT h.history_ref AS account, min(a.offering) AS offering
       FROM jsonb_to_recordset($3::jsonb) AS a(account text, offering text, history text[])
@@ -7,8 +7,8 @@ export function priceQuery(personScoped = false) {
       WHERE a.account IS NOT NULL
       GROUP BY h.history_ref
     ), selected AS (
-      SELECT CASE WHEN r.person=ANY($6::character(64)[]) THEN r.person::text ELSE NULL END AS person,
-        r.source,r.provider,r.model,r.timestamp_exact,r.failed,r.total_tokens,r.token_quality,r.api_type,
+      SELECT ${retained ? "r.person::text" : "CASE WHEN r.person=ANY($6::character(64)[]) THEN r.person::text ELSE NULL END"} AS person,
+        r.attribution,r.account,r.app_id,r.requirement,r.source,r.provider,r.model,r.timestamp_exact,r.failed,r.total_tokens,r.token_quality,r.api_type,
         r.input_tokens,r.output_tokens,r.cache_read_tokens,r.cache_write_tokens,r.service_tier,
         CASE WHEN r.token_quality='complete' OR r.token_quality='legacy' AND r.api_type IN ('responses','responses-compact')
           THEN r.input_tokens::numeric
@@ -19,8 +19,11 @@ export function priceQuery(personScoped = false) {
           WHEN r.account IS NULL THEN 'unknown'
           WHEN refs.offering IN ('subscription','metered_api') THEN refs.offering ELSE 'unknown' END AS offering
       FROM basalt_model_requests r LEFT JOIN visible_refs refs ON refs.account=r.account::text
-      WHERE r.pool=$1 AND r.source=ANY($2::character(64)[]) AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5
-        AND (r.account IS NULL OR refs.account IS NOT NULL)
+      WHERE r.pool=$1 AND r.source=ANY($2::character(64)[])
+        AND r.timestamp >= $4::text::timestamptz - interval '1 microsecond'
+        AND r.timestamp < $5::text::timestamptz + interval '1 microsecond'
+        AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5
+        ${retained ? "" : "AND (r.account IS NULL OR refs.account IS NOT NULL)"}
         ${personScoped ? "AND r.person = ANY($9::character(64)[]) AND r.attribution IS DISTINCT FROM 'import-owner'" : ""}
     ), priced AS (
       SELECT s.*,p.price_version,p.price_as_of,
