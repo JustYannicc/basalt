@@ -35,3 +35,10 @@ export async function historySchemaFixture(db: HistoryDatabase, schema: string) 
   );
   await db.query(`CREATE SCHEMA ${schema} AUTHORIZATION basalt_pool_owner`);
 }
+
+/** The in-memory database has the same provisioned owner as the real Postgres fixtures. */
+export async function historyMemoryOwnerFixture(db: HistoryDatabase) {
+  await db.query("CREATE ROLE basalt_pool_owner NOLOGIN");
+  await db.query("ALTER SCHEMA public OWNER TO basalt_pool_owner");
+  await db.query("SET ROLE basalt_pool_owner");
+}
