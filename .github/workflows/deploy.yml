@@ -113,6 +113,7 @@ jobs:
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run prepare:upstream
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
@@ -142,6 +143,7 @@ jobs:
         run: env -u GITHUB_SHA node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_CANDIDATE_SHA" --report .local/production-report.json --mode automatic
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
       - name: Refuse to hand off while the latest production deployment is unresolved
         if: steps.report.outputs.manual_required == 'true' && steps.report.outputs.deployable != 'true'
         run: |
@@ -162,6 +164,18 @@ jobs:
           path: |
             .local/database-budget/*.json
             ${{ runner.temp }}/candidate/.local/database-budget/*.json
+          if-no-files-found: ignore
+
+      - name: Retain release barrier receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-barrier
+          include-hidden-files: true
+          path: |
+            .local/release-barrier/*.json
+            ${{ runner.temp }}/candidate/.local/release-barrier/*.json
+            ${{ runner.temp }}/rollback-source/.local/release-barrier/*.json
           if-no-files-found: ignore
 
   # No one approves releases, so a database or Workflow-identity release goes straight to the manual path, which takes

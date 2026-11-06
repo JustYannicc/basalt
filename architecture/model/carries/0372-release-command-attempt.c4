@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Per-attempt release identity belongs only to release Commands and must never pass through Worker Config interception. PoolOperations uses a stable independent deployment signing key, preserving previous-version rollback without a silent force override."
+    }
+  }
+}
