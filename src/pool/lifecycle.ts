@@ -75,10 +75,16 @@ export class PoolLifecycle {
 
   async deploymentReady() {
     const status = await this.warm();
-    if (await this.storage.get<string>("revision") !== this.revision
-      || await this.storage.get<string>("ready-revision") !== this.revision)
+    if (
+      (await this.storage.get<string>("revision")) !== this.revision ||
+      (await this.storage.get<string>("ready-revision")) !== this.revision
+    )
       throw new Error("Pool desired revision is not ready");
-    return { bootId: status.boot_id, desiredRevisionMatch: true as const, readyAt: this.clock.now() };
+    return {
+      bootId: status.boot_id,
+      desiredRevisionMatch: true as const,
+      readyAt: this.clock.now(),
+    };
   }
 
   restart(): Promise<PoolStatus> {
