@@ -19,10 +19,7 @@
     }
   },
   "runs": {
-    "accountObservationRows": [
-      "account-acquisition:account-usage-rows-and-cells",
-      "host-managed-accounts:host-managed-visibility-and-existing-account-behavior"
-    ]
+    "accountObservationRows": ["account-acquisition:account-usage-rows-and-cells"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/contracts/account-observations.ts",

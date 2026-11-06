@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Cloud contention setup follows the captured fixture backend to its route precheck through queued app writers, identifies the SDK delete by its lock statement and request trace, and then checks direct known backend PIDs. Forced cron starts after reconnect is waiting and queues only a synthetic app webhook source; product locking, assertions and deadlines stay unchanged."
+    }
+  }
+}
