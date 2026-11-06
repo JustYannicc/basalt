@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The OAuth reconnect/delete fixture observes the exact delete request through PostgreSQL's transitive blocker graph and forces an intervening app writer, preserving the grant removal and revocation assertions within the existing deadline."
+    }
+  }
+}

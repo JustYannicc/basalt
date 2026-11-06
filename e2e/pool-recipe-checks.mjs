@@ -1,3 +1,4 @@
+import { nativePoolAccount } from "./recipes/native-pool-account.mjs";
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -20,7 +21,7 @@ const checked = (name, actual, expected) => {
   checks.push(name);
 };
 const program = Effect.gen(function* () {
-  const h = yield* poolCloudHarness(directory);
+  const h = yield* poolCloudHarness(directory, { resets: true });
   const identity = yield* h.request("GET", "/api/auth/get-session");
   const pool = yield* h.request("GET", `${h.prefix}/apps`).pipe(
     Effect.flatMap((apps) => {
@@ -42,6 +43,7 @@ const program = Effect.gen(function* () {
     links.some((link) => link.requirement === "pool"),
     true,
   );
+  const initial = yield* nativePoolAccount(h, pool, "synthetic-account-a");
   h.fixture.seed(pool.id, "synthetic-account-a");
   const view = yield* h.call(pool.id, "view");
   checked("native onboarding provisions the real pool app", view.ok, true);
@@ -51,7 +53,7 @@ const program = Effect.gen(function* () {
     view.value.accounts[0]?.id,
     "synthetic-account-a",
   );
-  const scenario = yield* verifyPoolJourneys(h, pool, checked);
+  const scenario = yield* verifyPoolJourneys(h, pool, checked, initial);
   const negativeControls = yield* verifyPoolNegativeControls(h, pool, scenario, checked);
   const repeatedChecks = yield* verifyPoolCheckFailures(h, pool, scenario, checked);
   return {

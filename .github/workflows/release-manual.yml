@@ -177,3 +177,13 @@ jobs:
         run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
         env:
           RELEASE_HEAD: ${{ needs.backup.outputs.head }}
+      - name: Retain database budget receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-budget
+          include-hidden-files: true
+          path: |
+            .local/database-budget/*.json
+            ${{ runner.temp }}/candidate/.local/database-budget/*.json
+          if-no-files-found: ignore

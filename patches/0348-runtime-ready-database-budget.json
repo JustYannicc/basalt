@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-runtime-ready-database-budget",
+  "file": "0348-runtime-ready-database-budget.patch",
+  "content_sha256": "ae75896934b2cdc991de7ee51c91330d9d83bb4e832bb1a68ffd01530e4db03b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

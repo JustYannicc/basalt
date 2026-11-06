@@ -4,11 +4,12 @@ import { until } from "./harness.mjs";
 /** Distinct source attempts must span the real thirty-minute threshold before native action. */
 export const verifyPoolCheckFailures = (h, pool, scenario, checked) =>
   Effect.gen(function* () {
-    const { fixture, channel, copy, checkpoint, scan, read } = scenario;
+    const { fixture, channel, copy, checkpoint, scan, read, seed } = scenario;
     const app = yield* copy("owner", channel);
     fixture.disappear("synthetic-account-f");
     const id = "synthetic-account-g";
     const first = Date.now() - 29 * 60000 - 54000;
+    yield* scenario.account(id);
     const failed = (attemptedAt, error = "UPSTREAM_AUTH_REJECTED") =>
       fixture.seed(pool.id, id, {
         status: "failed",
@@ -86,7 +87,7 @@ export const verifyPoolCheckFailures = (h, pool, scenario, checked) =>
       fixture.sends.length,
       before + 1,
     );
-    fixture.seed(pool.id, id, { remaining: 0.15 });
+    yield* seed(id, { remaining: 0.15 });
     yield* read(app);
     checked(
       "successful native checks recover at fifteen percent without a quota episode",
