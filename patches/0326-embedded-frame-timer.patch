@@ -1,0 +1,66 @@
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -12,4 +12,5 @@
+ import { waitForAppUrl } from "../support/app-pages.ts";
+ import { saveAndDeploy } from "../support/app-authoring.ts";
++import { observeFrameDeadline, waitForFrameDeadline } from "../support/frame-deadline.ts";
+ import { batchPath, batchedReads } from "../support/read-batches.ts";
+ import { Target } from "../support/platform.ts";
+@@ -609,4 +610,12 @@
+         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
+         const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
++        const failingLocation = yield* browser.use("Hold the failing app's location", (page) =>
++          holdLocation(page, actors.organization.id, failing.app.id),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Release the failing location hold", () => failingLocation.release())
++            .pipe(Effect.orDie),
++        );
+         yield* browser.use("Open the failing frame", (page) =>
+           page.goto(`${failingDetail}?view=app`),
+@@ -615,4 +624,9 @@
+           page.getByRole("status", { name: "Loading app" }).waitFor(),
+         );
++        yield* browser.use("Observe the frame loading timer", (page) =>
++          failingLocation.requested.then(() => observeFrameDeadline(page, failing.url)),
++        );
++        yield* browser.use("Release the failing app's location", () => failingLocation.release());
++        yield* browser.use("The frame loading timer is armed", waitForFrameDeadline);
+         yield* browser.use("Reach the loading deadline", (page) => page.clock.runFor(30001));
+         yield* browser.use("The failed frame offers recovery", (page) =>
+diff --git a/e2e/support/frame-deadline.ts b/e2e/support/frame-deadline.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/frame-deadline.ts
+@@ -0,0 +1,29 @@
++import type { Page } from "playwright";
++
++/** Observe the real browser timer after the held location has supplied the frame's URL. */
++export const observeFrameDeadline = (page: Page, url: string) =>
++  page.evaluate((url) => {
++    const original = window.setTimeout;
++    const armed = new Promise<void>((resolve) => {
++      Reflect.set(window, "setTimeout", (...args: Parameters<Window["setTimeout"]>) => {
++        const timer = Reflect.apply(original, window, args);
++        if (
++          args[1] === 30000 &&
++          [...document.querySelectorAll("iframe")].some((frame) => frame.src === url)
++        ) {
++          Reflect.set(window, "setTimeout", original);
++          resolve();
++        }
++        return timer;
++      });
++    });
++    Reflect.set(window, "__frameLoadingDeadline", armed);
++  }, url);
++
++export const waitForFrameDeadline = (page: Page) =>
++  page.evaluate(() => {
++    const armed = Reflect.get(window, "__frameLoadingDeadline");
++    if (!(armed instanceof Promise))
++      throw new Error("The frame deadline observer is not installed");
++    return armed;
++  });
