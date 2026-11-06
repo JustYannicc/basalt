@@ -115,6 +115,27 @@ test("pipeline failures cannot be hidden by a successful final command", () => {
   assert.deepEqual(result, { status: 1, failed: "pipeline" });
 });
 
+test("local artifact uploads are explicit skips while their producer and later checks still run", () => {
+  const value = document();
+  const upload = {
+    name: "Upload failure proof",
+    uses: "actions/upload-artifact@v4",
+    if: "always()",
+    with: { path: ".generated/failure-proof" },
+  };
+  const plan = fastPlan(
+    {
+      ...value,
+      jobs: { fast: { steps: [...value.jobs.fast.steps, upload, { run: "echo later" }] } },
+    },
+    context,
+  );
+  assert.deepEqual(plan.skipped, [
+    { name: upload.name, reason: "artifact upload requires GitHub Actions" },
+  ]);
+  assert.equal(plan.steps.at(-1)!.command, "echo later");
+});
+
 test("new workflow semantics fail until the local runner understands them", () => {
   for (const step of [
     { run: "true", if: "false" },

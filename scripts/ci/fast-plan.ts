@@ -55,6 +55,12 @@ export function fastPlan(document: unknown, context: FastContext) {
   for (const step of fast.steps) {
     if (!object(step) || step["continue-on-error"] !== undefined || step.shell !== undefined)
       throw new Error("Unsupported fast step execution settings");
+    if (step.uses === "actions/upload-artifact@v4" && step.if === "always()") {
+      if (typeof step.name !== "string" || !object(step.with) || typeof step.with.path !== "string")
+        throw new Error("Fast artifact uploads need a name and path");
+      skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
+      continue;
+    }
     if (
       step.if !== undefined &&
       step.if !== "needs.select.outputs.full_suite == 'true'" &&
