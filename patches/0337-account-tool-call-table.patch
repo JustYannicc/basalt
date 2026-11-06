@@ -1,0 +1,270 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index f068a96..c09c2e8 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -71,6 +71,13 @@ export const inventoryQueries = {
+     min(c.created_at)::text as first_created_at, max(c.created_at)::text as last_created_at
+     from executor_account_connections c where c.owner = 'organization:' || $1
+     group by 1, 2, 3, 4 order by 3, 4, 1, 2 limit 2001`,
++  // Each of the organization's accounts with the tool calls counted for it in the retained hours.
++  // The storage migration creates the counts table; without it this selection fails.
++  "tool-call-traffic": `select a.id as account, a.provider, count(t.hour)::int as hours,
++    coalesce(sum(t.requests), 0)::int as requests, coalesce(sum(t.failed), 0)::int as failed,
++    max(t.hour)::text as last_hour, max(t.last_success)::text as last_success
++    from executor_accounts a left join executor_account_tool_calls t on t.account = a.id
++    where a.owner = 'organization:' || $1 group by a.id, a.provider order by a.id limit 2001`,
+ } as const;
+ 
+ export const inventory = (selection: string, organization: string) =>
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index dc53fe9..772b84a 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9866,7 +9866,7 @@ export const scenarios = plan({
+       "tool calls count toward the account they used on the Accounts list and its app's tab, and a member reads no counts for an account they cannot inspect",
+     targets: {
+       "self-host": scheduled,
+-      cloud: na("The counts are the SDK's own storage on every host; self-host proves the path."),
++      cloud: scheduled,
+       local: na("Exercises hosted account rows."),
+     },
+   },
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index b288f8b..3bc3d58 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -71,6 +71,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+           "receipts",
+           "connections",
+           "connections-summary",
++          "tool-call-traffic",
+         ] as const) {
+           const response = yield* request(read(selection));
+           expect(response.status).toBe(200);
+@@ -234,6 +235,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+             receipts: ["plan_sha256", wanted.receipt],
+             connections: ["id", wanted.connection],
+             "connections-summary": ["app", wanted.app],
++            "tool-call-traffic": ["account", wanted.account],
+           } as const;
+           for (const [selection, match] of Object.entries(expected)) {
+             const response = yield* request(read(selection, wanted.organization));
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+index 24ab26d..1f2736a 100644
+--- a/packages/sdk/src/implementation/account-traffic-store.ts
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -1,11 +1,11 @@
+ /**
+  * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
+  * show requests, failures and the latest success. Derived data no reactive reader watches: the
+- * table creates itself the first time a write finds it missing instead of taking a schema version,
+- * and every write is best-effort for its caller.
++ * storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
++ * every write is best-effort for its caller. A write that fails logs its SQLSTATE.
+  */
+ import { Clock, Effect, Schema } from "effect";
+-import type { SqlClient } from "effect/sql";
++import { SqlClient } from "effect/sql";
+ import type { AccountTrafficRecord } from "../contracts/account-traffic.ts";
+ import { AccountId, StorageError } from "../contracts/shared.ts";
+ 
+@@ -22,32 +22,43 @@ const Hour = Schema.Struct({
+ const Last = Schema.Struct({ account: AccountId, at: Schema.NullOr(Schema.Number) });
+ const Opened = Schema.Struct({ opened: Schema.Boolean });
+ 
+-/** Postgres and PGlite report an undefined table as SQLSTATE 42P01, wrapped by the SQL client. */
+-const missingTable = (error: unknown) => {
++/** SQLSTATE classes, so a Node error code such as `EPIPE` is not read as one. */
++const sqlStateCode = /^(?:[0-5][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/;
++
++/** The SQLSTATE a database error carries, wrapped by the SQL client; Postgres and PGlite alike. */
++const sqlState = (error: unknown) => {
+   let at: unknown = error;
+   for (let depth = 0; depth < 5 && typeof at === "object" && at !== null; depth += 1) {
+-    if ("code" in at && at.code === "42P01") return true;
++    if ("code" in at && typeof at.code === "string" && sqlStateCode.test(at.code)) return at.code;
+     at = "cause" in at ? at.cause : undefined;
+   }
+-  return false;
++  return undefined;
++};
++
++/**
++ * A count that could not be saved: logs and the current span carry its failure kind and, for a
++ * storage failure, its SQLSTATE, never an account or a call.
++ */
++export const accountTrafficNotCounted = (
++  failure: "storage" | "timeout" | "unexpected",
++  state?: string,
++) => {
++  const annotations = {
++    "executor.account_traffic.failure": failure,
++    "executor.account_traffic.sqlstate": state ?? "none",
++  };
++  return Effect.annotateCurrentSpan(annotations).pipe(
++    Effect.andThen(
++      Effect.logWarning("Account tool calls were not counted").pipe(
++        Effect.annotateLogs(annotations),
++      ),
++    ),
++  );
+ };
+ 
+ export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
+   const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+     effect.pipe(Effect.mapError(() => new StorageError()));
+-  // Only after a write found the table missing, serialized so concurrent first writes cannot race
+-  // on the catalog. Postgres and PGlite alike.
+-  const create = Effect.gen(function* () {
+-    yield* sql`select pg_advisory_xact_lock(hashtext('executor-account-tool-calls'))`;
+-    yield* sql`create table if not exists executor_account_tool_calls (
+-      account text not null,
+-      hour timestamptz not null,
+-      requests integer not null default 0,
+-      failed integer not null default 0,
+-      last_success timestamptz,
+-      primary key (account, hour)
+-    )`;
+-  }).pipe(sql.withTransaction);
+   const upsert = (account: AccountId, start: Date, failed: number, success: Date | null) => {
+     const statement = sql`insert into executor_account_tool_calls ${sql.insert({
+       account,
+@@ -62,7 +73,6 @@ export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
+       last_success = greatest(executor_account_tool_calls.last_success, excluded.last_success)
+     returning (xmax = 0) as opened`;
+     return statement.pipe(
+-      Effect.catchIf(missingTable, () => create.pipe(Effect.andThen(statement))),
+       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Opened))),
+       Effect.map((rows) => rows[0]?.opened === true),
+     );
+@@ -88,7 +98,12 @@ export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
+               yield* sql`delete from executor_account_tool_calls
+                 where ${sql.in("account", fresh)}
+                 and hour < ${new Date(input.at - accountTrafficRetention)}`;
+-          }).pipe(safe),
++          }).pipe(
++            Effect.tapError((error) =>
++              accountTrafficNotCounted("storage", sqlState(error) ?? "unknown"),
++            ),
++            safe,
++          ),
+     read: (input: { readonly accounts: readonly AccountId[]; readonly from: number }) =>
+       input.accounts.length === 0
+         ? Effect.succeed<readonly AccountTrafficRecord[]>([])
+@@ -120,10 +135,6 @@ export const makeAccountTrafficStore = (sql: SqlClient.SqlClient) => {
+                 .map(({ at, requests, failed }) => ({ at, requests, failed })),
+               lastSuccessAt: entry.at,
+             }));
+-          }).pipe(
+-            // Nothing has been counted before the first write creates the table.
+-            Effect.catchIf(missingTable, () => Effect.succeed<readonly AccountTrafficRecord[]>([])),
+-            safe,
+-          ),
++          }).pipe(safe),
+   };
+ };
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index bb6a55a..359c4fb 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -6,6 +6,7 @@ import { accountObservations } from "./account-observation-schema.ts";
+ /** Current baseline and the upgrades required by existing version 4 databases. */
+ import { fumadb } from "fumadb-effect";
+ import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
+ import { generateMigrationFromSchema } from "fumadb-effect/migration";
+ import { schema, type AnySchema, type CustomMigrationFn } from "fumadb-effect/schema";
+ import {
+@@ -831,3 +832,19 @@ export const executorDatabase = fumadb({
+   namespace: "executor",
+   schemas: storageSchemas,
+ });
++
++/**
++ * The derived table counting the tool calls each account served, outside the versioned schema.
++ * Every storage upgrade creates it, so the runtime, whose role may create no table, only writes.
++ */
++export const migrateAccountTraffic = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists executor_account_tool_calls (
++    account text not null,
++    hour timestamptz not null,
++    requests integer not null default 0,
++    failed integer not null default 0,
++    last_success timestamptz,
++    primary key (account, hour)
++  )`;
++});
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index deb0856..030613b 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -8,6 +8,7 @@ import { makeExecutorRuntimeStorage } from "./storage-runtime.ts";
+ import {
+   currentIndexes,
+   executorDatabase,
++  migrateAccountTraffic,
+   storageSchemas,
+   trailingStorageIndexVersions,
+ } from "./storage-migrations.ts";
+@@ -29,7 +30,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+       Effect.provideService(SqlClient.SqlClient, sql),
+       Effect.mapError((cause) => storageMigrationFailed(cause)),
+     );
+-    const upgrade = (stopAt: ReadonlySet<string>) =>
++    const versionedUpgrade = (stopAt: ReadonlySet<string>) =>
+       Effect.gen(function* () {
+         yield* checkMigration;
+         const migrator = yield* client.createMigrator;
+@@ -56,7 +57,12 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+             yield* (yield* migrator.up()).execute;
+           }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, entry.version)));
+         }
+-      }).pipe(
++      });
++    // The derived counts table follows every upgrade, in the same transaction, so the runtime
++    // only ever writes to it.
++    const upgrade = (stopAt: ReadonlySet<string>) =>
++      versionedUpgrade(stopAt).pipe(
++        Effect.andThen(migrateAccountTraffic),
+         sql.withTransaction,
+         Effect.provideService(SqlClient.SqlClient, sql),
+         Effect.mapError((cause) => storageMigrationFailed(cause)),
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 41f8a6c..716cca4 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -54,6 +54,7 @@ import {
+   type ResourceLifecycle,
+ } from "../contracts/executor.ts";
+ import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
++import { accountTrafficNotCounted } from "./account-traffic-store.ts";
+ import {
+   Cursor,
+   ToolName,
+@@ -814,7 +815,8 @@ export const makeTools = (
+    * ran for it. A completed call succeeded unless its result was a tool error. It failed when the
+    * app's code failed or its service refused the account. A refusal of the caller's own request,
+    * such as invalid input, a blocked tool or approval, and an interruption count nothing.
+-   * Best-effort and bounded: counting never changes the call's result and never holds it long.
++   * Best-effort and bounded: counting never changes the call's result and never holds it long,
++   * and a count that could not be saved is logged with its failure kind and SQLSTATE.
+    */
+   const countCall =
+     (state: InvocationSnapshot, entered: () => boolean) =>
+@@ -843,7 +845,14 @@ export const makeTools = (
+           ),
+           Effect.interruptible,
+           Effect.timeout("2 seconds"),
+-          Effect.catchCause(() => Effect.void),
++          // Never the call's result, but never silent: the store reports a storage failure itself,
++          // and an interrupted count, like an interrupted call, counts nothing.
++          Effect.catchCause((cause) => {
++            const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++            return Cause.hasInterruptsOnly(cause) || error instanceof StorageError
++              ? Effect.void
++              : accountTrafficNotCounted(Cause.isTimeoutError(error) ? "timeout" : "unexpected");
++          }),
+         );
+       });
+   /** Renew an account the service refused without repeating what it refused; undefined when none was. */

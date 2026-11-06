@@ -1,29 +1,22 @@
 import { fileURLToPath } from "node:url";
 import { connectorWarnings, deployEnvironment } from "./environment.ts";
 import { appHosting } from "../brand.ts";
-import { alchemyArgs } from "./alchemy.ts";
-import { run } from "./process.ts";
+import { deployInPhases } from "./release-phases/deploy.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true") {
   throw new Error("Production deployment runs only in GitHub Actions");
 }
 const environment = deployEnvironment();
-if (!environment.SENTRY_DSN) console.warn("SENTRY_DSN is unset; feedback, error reporting and trace export are disabled.");
-if (!environment.POSTHOG_PROJECT_KEY) console.warn("POSTHOG_PROJECT_KEY is unset; product analytics are disabled.");
-if (environment.SENTRY_DSN && !environment.SENTRY_OTLP_ENDPOINT) console.warn("SENTRY_OTLP_ENDPOINT is unset; trace export is disabled.");
+if (!environment.SENTRY_DSN)
+  console.warn("SENTRY_DSN is unset; feedback, error reporting and trace export are disabled.");
+if (!environment.POSTHOG_PROJECT_KEY)
+  console.warn("POSTHOG_PROJECT_KEY is unset; product analytics are disabled.");
+if (environment.SENTRY_DSN && !environment.SENTRY_OTLP_ENDPOINT)
+  console.warn("SENTRY_OTLP_ENDPOINT is unset; trace export is disabled.");
 for (const warning of connectorWarnings(environment)) console.warn(warning);
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
-if (appHosting.enabled && appHosting.scheme === "nested") {
-  run(
-    "bun",
-    alchemyArgs("deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"),
-    cloud,
-    environment,
-  );
-}
-run(
-  "bun",
-  alchemyArgs("deploy", "../../../../alchemy.run.ts", "--stage", environment.ALCHEMY_STAGE!, "--yes"),
+await deployInPhases({
   cloud,
   environment,
-);
+  sharedFoundation: appHosting.enabled && appHosting.scheme === "nested",
+});

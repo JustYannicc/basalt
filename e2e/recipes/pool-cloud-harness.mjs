@@ -23,25 +23,17 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
   const assetDirectory = join(upstream, "apps/hosted/cloud/.generated/pool-app");
   const sourcePath = join(upstream, "apps/hosted/server/src/implementation/pool-app-source.ts");
   const source = await readFile(sourcePath);
-  const accessHookPath = join(
-    upstream,
-    "apps/hosted/server/src/implementation/pool-access-hook.ts",
-  );
-  const accessHook = await readFile(accessHookPath);
   const assets = await Promise.all(
     (await readdir(assetDirectory)).map(async (name) => [
       name,
       await readFile(join(assetDirectory, name)),
     ]),
   );
-  const resetPaths = resetOptions
-    ? [
-        "apps/hosted/cloud/src/infrastructure/executor.ts",
-        "apps/hosted/cloud/src/infrastructure/product-services.ts",
-      ]
-    : [];
-  const resetSources = await Promise.all(
-    resetPaths.map(async (path) => [path, await readFile(join(upstream, path))]),
+  const receiverSources = await Promise.all(
+    [
+      ["apps/hosted/cloud/src/infrastructure/executor.ts", "poolSigningKey"],
+      ["apps/hosted/cloud/src/infrastructure/product-services.ts", "poolKey"],
+    ].map(async ([path, key]) => ({ path, key, bytes: await readFile(join(upstream, path)) })),
   );
   const signingKey = randomBytes(32).toString("hex");
   const catalog = resetOptions
@@ -59,19 +51,26 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
     process.env.PATH = previous.path;
     if (previous.setup === undefined) delete process.env.BASALT_E2E_POOL_SETUP;
     else process.env.BASALT_E2E_POOL_SETUP = previous.setup;
-    await fixture.stop();
-    await rm(assetDirectory, { recursive: true, force: true });
-    await mkdir(assetDirectory, { recursive: true });
-    for (const [name, bytes] of assets) await writeFile(join(assetDirectory, name), bytes);
-    await writeFile(sourcePath, source);
-    await writeFile(accessHookPath, accessHook);
-    for (const [path, bytes] of resetSources) await writeFile(join(upstream, path), bytes);
-    await rm(join(directory, "bin"), { recursive: true, force: true });
+    try {
+      await fixture.stop();
+      await rm(assetDirectory, { recursive: true, force: true });
+      await mkdir(assetDirectory, { recursive: true });
+      for (const [name, bytes] of assets) await writeFile(join(assetDirectory, name), bytes);
+      await writeFile(sourcePath, source);
+      await rm(join(directory, "bin"), { recursive: true, force: true });
+    } finally {
+      await Promise.all(
+        receiverSources.map(({ path, bytes }) => writeFile(join(upstream, path), bytes)),
+      );
+    }
   };
   try {
-    for (const [path, bytes] of resetSources) {
+    // The emulated Cloud has no outer router; inject its receiver at the normal composition root.
+    for (const { path, key, bytes } of receiverSources) {
       const declaration = "const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;";
-      assert.equal(bytes.toString().split(declaration).length, 2);
+      const wiring = `const accessLifecycle = poolAccessLifecycle(${key}, poolOrigin);`;
+      assert.equal(bytes.toString().split(declaration).length, 2, `${path}: one pool origin`);
+      assert.equal(bytes.toString().split(wiring).length, 2, `${path}: one pool access hook`);
       await writeFile(
         join(upstream, path),
         bytes
@@ -79,15 +78,6 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
           .replace(declaration, `const poolOrigin = ${JSON.stringify(fixture.origin)};`),
       );
     }
-    // The emulated Cloud has no outer Basalt router. Localize only that external receiver address.
-    const destination = "new URL(accessPath, origin).href";
-    assert.equal(accessHook.toString().split(destination).length, 2);
-    await writeFile(
-      accessHookPath,
-      accessHook
-        .toString()
-        .replace(destination, `new URL(accessPath, ${JSON.stringify(fixture.origin)}).href`),
-    );
     const files = bundlePoolApp(root, upstream).map((file) =>
       file.path === "deployment.ts"
         ? {

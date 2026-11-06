@@ -8,8 +8,7 @@
           "status": "scheduled"
         },
         "cloud": {
-          "status": "not-applicable",
-          "reason": "The counts are the SDK's own storage on every host; self-host proves the path."
+          "status": "scheduled"
         },
         "local": {
           "status": "not-applicable",
@@ -19,7 +18,10 @@
     }
   },
   "runs": {
-    "accountToolCalls": ["declared:self-host"]
+    "accountToolCalls": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/server/package.json",
@@ -36,6 +38,7 @@
     ".upstream/packages/sdk/src/implementation/account-traffic-store.ts",
     ".upstream/packages/sdk/src/implementation/create.ts",
     ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/storage.ts",
     ".upstream/packages/sdk/src/implementation/tools.ts",
     ".upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx"
   ]

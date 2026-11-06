@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "The deployment budget accepts nullable values in the provider parameter catalog on initial read and final readback. Only exact string matches for the required transaction-pool settings establish completion; a missing or null required value cannot pass readback."
+    }
+  }
+}

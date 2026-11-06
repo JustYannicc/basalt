@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Production admits a release only when a fresh primary HTTP connection gauge plus the configured seven-client envelope fits max_connections minus configured reserved slots and the observed ceiling matches the approved configuration. The filtered database-only apply consumes budget.hash before migrations and the migration hash before pool provisioning. Its unique attempt identity memoizes those commands across the full application apply, so database failure cannot apply runtime adapters, shells, container rollouts or publication receipts. Committed database changes survive later application failures and must remain compatible with the preceding runtime adapters."
+    }
+  }
+}

@@ -150,7 +150,8 @@ test("signed organization cleanup fails on a plain API and completes through the
           assert.ok(withoutGateway);
           const failure = yield* Effect.result(withoutGateway(f.organization));
           assert.equal(failure._tag, "Failure");
-          assert.equal(failure.failure._tag, "StorageError");
+          assert.equal(failure.failure._tag, "AccessDependencyUnavailable");
+          assert.equal(failure.failure.dependency, "pool receiver");
           const gateway = yield* cloudPoolGateway(origin, directory, new URL(origin));
           const withGateway = poolAccessLifecycle(key, gateway.href).organizationRemoving;
           assert.ok(withGateway);
