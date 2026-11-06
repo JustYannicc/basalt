@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "For a same-document navigation from another tab of the same hosted app to Accounts, the route loader preloads the browser-only client and the view renders that loaded component without a nested null fallback or post-chunk Suspense retry. While loading, the route may retain the previous tab without a pending mark. Direct-document Accounts hydration uses the account loading state and may still suspend. Retained revisits reuse the loaded client and preserve account state. Other app tabs start no account workflow reads, health checks, pollers or writes merely to load their own route. The client remains excluded from server rendering and failed imports keep the existing retry path."
+      constraint "For a same-document navigation from another tab of the same hosted app to Accounts, the route loader preloads the browser-only client and the view renders that loaded component without a nested null fallback or post-chunk Suspense retry. While loading, the route may retain the previous tab without a pending mark. A direct Accounts document renders nothing from this view on the server or during hydration, so its server HTML carries no Accounts loading state once the page's reads settle; after hydration the view may suspend and show the Accounts loading state while its browser-only client loads. Retained revisits reuse the loaded client and preserve account state. Other app tabs start no account workflow reads, health checks, pollers or writes merely to load their own route. The client remains excluded from server rendering and failed imports keep the existing retry path."
     }
   }
 }

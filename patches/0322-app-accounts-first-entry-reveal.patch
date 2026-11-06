@@ -53,7 +53,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/ho
  import type {
    AppAccounts as AccountsClient,
    AppConnectionDialogContent as DialogClient,
-@@ -11,17 +13,36 @@
+@@ -11,18 +13,37 @@
    import.meta.env.SSR
      ? Promise.reject(new Error("Account workflows render only in a browser"))
      : import("./app-accounts-client.tsx");
@@ -69,17 +69,16 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/ho
  export function AppAccounts(props: Parameters<typeof AccountsClient>[0]) {
    const hydrated = useHydrated();
 +  const Accounts = usePreloadedView(loadAccounts);
++  // Server HTML and hydration render nothing: the tab's reads have settled by then, and a loading
++  // state there would announce a read that is not pending. Only the browser waits for this code.
    return hydrated ? (
 -    <Suspense fallback={null}>
 +    <Suspense fallback={<Loading app={props.app} />}>
 +      {/* oxlint-disable-next-line react/static-components -- usePreloadedView returns one component per mount and loader */}
        <Accounts {...props} />
      </Suspense>
--  ) : null;
-+  ) : (
-+    <Loading app={props.app} />
-+  );
-+}
+   ) : null;
+ }
 +/**
 + * The page's own Accounts loading state, which pads itself as the tab's whole content. The page
 + * already pads this tab, so the margin cancels that padding and the state sits where it would.
@@ -90,9 +89,10 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/ho
 +      <AppAccountsLoading app={app} />
 +    </div>
 +  );
- }
++}
  export function AppConnectionDialogContent(props: Parameters<typeof DialogClient>[0]) {
    const hydrated = useHydrated();
+   return hydrated ? (
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
