@@ -81,6 +81,7 @@ test("a failed readiness child retains both streams, its exit code and the contr
         const fixture = yield* productionOpsDatabaseFixture({
           container: "synthetic-no-docker-execution",
           databasePassword: "fixture-only",
+          runtimePassword: "fixture-only",
           directory,
           dockerEnv: {
             PATH: process.env.PATH ?? "",
