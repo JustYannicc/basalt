@@ -1,6 +1,6 @@
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
-import { PoolDependencyFailure, poolDependency } from "./dependency-failure.ts";
+import { installNativePolicy } from "./native-policy-install.ts";
 import { handleRemovalIntent, removalIntentPath } from "./removal-intent.ts";
 import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
@@ -52,11 +52,10 @@ import {
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { NativeMemberships } from "./membership.ts";
-import { membershipPath, policyPrefix } from "./membership-contract.ts";
+import { membershipPath } from "./membership-contract.ts";
 import { readNativeMembership } from "./membership-read.ts";
 import { HomeMembership } from "./home-membership.ts";
 import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
-import { signEnvelope } from "./token.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
@@ -239,42 +238,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       invalidateView: (pool) => this.control.invalidateViews(pool),
       reconcile: (pool, accounts) => membership.reconcile(pool, accounts),
       install: async (policy) => {
-        const projection = await signEnvelope(env.POOL_APP_SIGNING_KEY, policyPrefix, policy);
         const container = ctx.container;
         if (!container) return unavailable();
-        const response = await poolDependency(
-          "membership",
-          container.getTcpPort(8318).fetch("http://pool/native-policy", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${env.POOL_MANAGEMENT_KEY}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ projection }),
-            signal: AbortSignal.timeout(2_000),
-          }),
+        await installNativePolicy(
+          container,
+          {
+            signingKey: env.POOL_APP_SIGNING_KEY,
+            managementKey: env.POOL_MANAGEMENT_KEY,
+          },
+          policy,
         );
-        if (!response.ok) {
-          await response.body?.cancel();
-          return unavailable();
-        }
-        const body = await poolDependency("membership", response.text());
-        let acknowledgement: unknown;
-        try {
-          acknowledgement = JSON.parse(body);
-        } catch (cause) {
-          if (!(cause instanceof SyntaxError)) throw cause;
-          throw new PoolDependencyFailure("membership", cause);
-        }
-        if (
-          typeof acknowledgement !== "object" ||
-          acknowledgement === null ||
-          !("installed" in acknowledgement) ||
-          acknowledgement.installed !== true ||
-          !("revision" in acknowledgement) ||
-          acknowledgement.revision !== policy.revision
-        )
-          return unavailable();
       },
       abort: (pool) => {
         this.modelStreams.abortPool(pool);

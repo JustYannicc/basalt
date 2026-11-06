@@ -33,7 +33,7 @@ export async function readNativeMembership(
     }),
   );
   if (!response.ok) {
-    await response.body?.cancel();
+    if (response.body) await poolDependency("membership", response.body.cancel());
     return unavailable();
   }
   const body = await poolDependency("membership", response.text());

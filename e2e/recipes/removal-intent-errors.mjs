@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { PoolAccountRemovals } from "../../src/pool/account-removals.ts";
+import { readNativeMembership } from "../../src/pool/membership-read.ts";
+import { installNativePolicy } from "../../src/pool/native-policy-install.ts";
+import { HomeClient } from "../../src/pool/control.ts";
+import { HomeMembership } from "../../src/pool/home-membership.ts";
 import { HomeTransportFailure } from "../../src/pool/json.ts";
 import {
   handleRemovalIntent,
@@ -44,6 +48,59 @@ export async function removalIntentErrors(checked) {
             if (failure === "membership") throw new HomeTransportFailure("transport");
             if (failure === "timeout") throw new HomeTransportFailure("timeout");
             if (failure === "defect") throw new TypeError("synthetic programming defect");
+            const rejected = () =>
+              new Response(
+                new ReadableStream({
+                  cancel: async () => {
+                    throw Error("synthetic cancellation failure");
+                  },
+                }),
+                { status: 503 },
+              );
+            if (failure === "membership-cancellation")
+              await readNativeMembership(
+                { fetch: async () => rejected() },
+                key,
+                "pool",
+                "organization",
+                now,
+              );
+            if (failure === "policy-cancellation")
+              await installNativePolicy(
+                { getTcpPort: () => ({ fetch: async () => rejected() }) },
+                { signingKey: key, managementKey: "synthetic-management-key" },
+                {
+                  pool: "pool",
+                  organization: "organization",
+                  revision: 1,
+                  expiresAt: now + 15_000,
+                  accounts: [],
+                  dirty: false,
+                },
+              );
+            if (failure === "home-cancellation" || failure === "home-create-cancellation") {
+              const client = new HomeClient(async (path, init) => {
+                const route = new URL(path, "http://synthetic-home.test").pathname.replace(
+                  "/v8/management",
+                  "",
+                );
+                if (init?.method === "DELETE" || init?.method === "POST") return rejected();
+                if (route === "/channel-groups")
+                  return Response.json({
+                    channel_groups:
+                      failure === "home-cancellation"
+                        ? [{ id: 1, channel_name: "signalbox-pool-pool" }]
+                        : [],
+                  });
+                return Response.json({
+                  channel_group_details: [{ id: 2, channel_group_id: 1, auth_id: "account" }],
+                });
+              });
+              await new HomeMembership(client).reconcile(
+                "pool",
+                failure === "home-cancellation" ? [] : ["remaining"],
+              );
+            }
           },
           selected: async () => [],
           record: (...args) =>
@@ -84,6 +141,10 @@ export async function removalIntentErrors(checked) {
       ["signing configuration", JSON.stringify({ envelope }), "configuration", 503],
       ["membership transport", JSON.stringify({ envelope }), "membership", 503],
       ["membership timeout", JSON.stringify({ envelope }), "timeout", 503],
+      ["membership cancellation", JSON.stringify({ envelope }), "membership-cancellation", 503],
+      ["policy cancellation", JSON.stringify({ envelope }), "policy-cancellation", 503],
+      ["Home removal cancellation", JSON.stringify({ envelope }), "home-cancellation", 503],
+      ["Home creation cancellation", JSON.stringify({ envelope }), "home-create-cancellation", 503],
       ["receipt storage read", JSON.stringify({ envelope }), "storage-read", 503],
       ["receipt storage write", JSON.stringify({ envelope }), "storage-write", 503],
       ["unexpected defect", JSON.stringify({ envelope }), "defect", 500],
