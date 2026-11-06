@@ -87,10 +87,7 @@
     }
   },
   "runs": {
-    "accountObservationRowPolling": [
-      "account-acquisition:account-usage-rows-and-cells",
-      "host-managed-accounts-pool:retained-pool-accounts-and-usage-behavior"
-    ],
+    "accountObservationRowPolling": ["account-acquisition:account-usage-rows-and-cells"],
     "accountObservationOutagePollingPending": ["account-acquisition:account-usage-rows-and-cells"],
     "accountObservationOutagePollingUnavailable": [
       "account-acquisition:account-usage-rows-and-cells"
