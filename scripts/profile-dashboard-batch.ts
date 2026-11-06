@@ -28,15 +28,22 @@ interface Profile {
 }
 
 const apply = (reverse: boolean) => {
+  const source = readFileSync(patch, "utf8");
+  const edge = "+  batchAuthentication.layer,\n );\n";
+  if (source.split(edge).length !== 2)
+    throw new Error("Expected one dashboard batch middleware switch anchor");
+  // Later middleware stays active in both samples; only batch authentication is switched.
+  const switchPatch = source.replace(edge, "+  batchAuthentication.layer,\n");
   const result = spawnSync(
     "git",
     [
       "apply",
+      "--recount",
+      "--unidiff-zero",
       ...(reverse ? ["--reverse"] : []),
       "--include=apps/hosted/server/src/implementation/*",
-      patch,
     ],
-    { cwd: upstream, stdio: "inherit" },
+    { cwd: upstream, input: switchPatch, stdio: ["pipe", "inherit", "inherit"] },
   );
   if (result.status !== 0) throw new Error("Could not switch the dashboard batch implementation");
 };
