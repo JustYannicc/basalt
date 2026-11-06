@@ -804,6 +804,10 @@ jobs:
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
         run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
+      # One isolated proof (about 1m40s with its Cloud setup), so it keeps its own budget.
+      - name: Verify abandoned connection removal through a reviewed plan
+        timeout-minutes: 3
+        run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:connection-retention)" node scripts/production-ops/prove-scope.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
