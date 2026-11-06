@@ -282,7 +282,6 @@
     "cloud.spec.ts": "08bcab2c7704ab8f05601d4d0c22dd966fa3e54d",
     "device-login.spec.ts": "2e5aaf1aebbacc758eff5ff211e3fcb6374641fb",
     "app-ui-failures.spec.ts": "68dae83ea26ba8a449ba1c74b5be977b2cbff40d",
-    "local-account-naming.spec.ts": "6fcd81996caa493d8a1306518707479eb5b2e71f",
     "mcp-events-grants.spec.ts": "c504adfe50cb15cc83009f135f8012cd545ec8c9",
     "malformed-resource-links.spec.ts": "ae46e14181aa739abd37f6cbb5388d4be09e7157",
     "cloud-mcp-session-timing.spec.ts": "fef0c45b8cc31a70a3e4a4313d23995f44d895fc",
