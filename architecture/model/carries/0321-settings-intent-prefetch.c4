@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Intent on the organization Settings link (hover, keyboard focus or touch) reads that organization's members, and its invitations only for the owner or admin role its access check verified, through bounded destination intent reads, held only until they answer, at most ten seconds; repeated intent joins the waiting hold. An organization the tab has not verified, or a signed-out tab, reads nothing on intent. Intent never reads billing, organization removal or health, and makes no mutation. A link that is never followed leaves no poll, focus or visibility read. Following it shows the retained members on the first frame and refreshes in place, and a failed refresh keeps the shown rows. Server rendering never starts intent reads."
+    }
+  }
+}

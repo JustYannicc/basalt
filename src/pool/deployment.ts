@@ -3,6 +3,7 @@ import * as Output from "alchemy/Output";
 import * as Command from "alchemy/Command";
 import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
+import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
@@ -40,7 +41,7 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
-      POOL_DATABASE_URL: database.directUrl,
+      POOL_DATABASE_URL: database.runtimeUrl,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       TOOLS_SERVICE: yield* Api,
@@ -59,6 +60,12 @@ export const poolWorker = Effect.gen(function* () {
         }),
       ),
     },
+  });
+  yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
+    adminUrl: database.adminUrl,
+    runtimeLogin: database.runtimeRole,
+    databases: ["basalt_pool"],
+    deployment: worker.hash,
   });
   const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
     Config.withDefault(""),

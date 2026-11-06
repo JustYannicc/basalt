@@ -1,3 +1,4 @@
+import { pricedSummary } from "./model-history/priced-summary.ts";
 import { publishAccountObservations } from "./account-observation-publish.ts";
 import { appUsage } from "./model-history/app-usage.ts";
 import { AppModels } from "./app-models.ts";
@@ -175,6 +176,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       audience: (pool) => this.computers.audience(pool),
       defer: (work) => ctx.waitUntil(work),
       collection: this.control.collection,
+      officialSummary: (input) =>
+        withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+          pricedSummary(db, input, (targets) => this.overviewPrices.read(targets)),
+        ),
       appUsage: (input) =>
         env.POOL_MODEL_HISTORY_ENABLED !== "true"
           ? Promise.resolve(undefined)
@@ -268,7 +273,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const database = new URL(env.POOL_DATABASE_URL);
     this.importRemoval = new ImportRemoval({
       read: (selection) =>
-        withHistoryDatabase(env.POOL_DATABASE_URL, (db) => removalSnapshot(db, selection)),
+        withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+          removalSnapshot(db, selection),
+        ),
       ready: () => this.managementReady(),
       home: (path, init) => this.mirrorHome.response(path, init),
       storage: ctx.storage,
@@ -520,7 +527,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
     const path = new URL(request.url).pathname;
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
     if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
-      return handleModelHistoryOperation(request, this.env.POOL_DATABASE_URL);
+      return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;

@@ -1,0 +1,228 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+new file mode 100644
+index 0000000..e24cdea
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -0,0 +1,91 @@
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import { Config, Effect, Redacted, Schedule, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { databasePoolParameters } from "../src/infrastructure/database-pool-policy.ts";
++
++class PoolBudgetFailed extends Schema.TaggedError<PoolBudgetFailed>()("PoolBudgetFailed", {
++  message: Schema.String,
++}) {}
++const Parameters = Schema.Array(
++  Schema.Struct({ namespace: Schema.String, name: Schema.String, value: Schema.String }),
++);
++const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
++const Changes = Schema.Struct({ data: Schema.Array(Change) });
++
++export const configureDatabasePoolBudget = Effect.gen(function* () {
++  const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
++  const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
++  const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
++  const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
++  const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
++  if (branch !== "main" && !/^test-[a-z0-9-]+$/.test(branch))
++    return yield* new PoolBudgetFailed({
++      message: "The database budget requires main or an isolated test branch",
++    });
++  const client = yield* HttpClient.HttpClient;
++  const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
++  const send = (request: HttpClientRequest.HttpClientRequest) =>
++    Effect.gen(function* () {
++      const response = yield* client.execute(
++        HttpClientRequest.setHeader(
++          request,
++          "authorization",
++          `${Redacted.value(id)}:${Redacted.value(token)}`,
++        ),
++      );
++      if (response.status !== 200)
++        return yield* new PoolBudgetFailed({ message: `PlanetScale returned ${response.status}` });
++      return yield* response.json;
++    }).pipe(
++      Effect.catchTag("HttpClientError", () =>
++        Effect.fail(new PoolBudgetFailed({ message: "PlanetScale request failed" })),
++      ),
++    );
++  const parameters = () =>
++    send(HttpClientRequest.get(`${base}/parameters`)).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Parameters)),
++    );
++  const matches = (rows: typeof Parameters.Type) =>
++    Object.entries(databasePoolParameters).every(([name, value]) =>
++      rows.some((row) => row.namespace === "pgbouncer" && row.name === name && row.value === value),
++    );
++  const current = yield* parameters();
++  if (
++    !current.some(
++      (row) =>
++        row.namespace === "pgbouncer" && row.name === "pool_mode" && row.value === "transaction",
++    )
++  )
++    return yield* new PoolBudgetFailed({
++      message: "The database budget requires transaction pooling",
++    });
++  if (matches(current)) return;
++  const change = yield* send(
++    yield* HttpClientRequest.patch(`${base}/changes`).pipe(
++      HttpClientRequest.bodyJson({ parameters: { pgbouncer: databasePoolParameters } }),
++    ),
++  ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
++  // PlanetScale reloads the managed pooler. Warm server retirement is verified after deployment.
++  yield* send(HttpClientRequest.get(`${base}/changes`)).pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
++    Effect.flatMap(({ data }) => {
++      const state = data.find((entry) => entry.id === change.id)?.state;
++      return state === "completed"
++        ? Effect.void
++        : Effect.fail(
++            new PoolBudgetFailed({ message: `PgBouncer change is ${state ?? "missing"}` }),
++          );
++    }),
++    Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
++  );
++  if (!matches(yield* parameters()))
++    return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
++});
++
++if (import.meta.main)
++  NodeRuntime.runMain(
++    configureDatabasePoolBudget.pipe(
++      Effect.timeout("6 minutes"),
++      Effect.provide(FetchHttpClient.layer),
++    ),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+new file mode 100644
+index 0000000..e3f0cc1
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts
+@@ -0,0 +1,11 @@
++import * as Command from "alchemy/Command";
++import type { Input } from "alchemy/Input";
++
++/** Runtime URLs depend on this receipt, rather than resource declaration order. */
++export const databasePoolBudget = (id: string, database: Input<string>, branch: Input<string>) =>
++  Command.Exec(id, {
++    command: "node scripts/database-pool-budget.ts",
++    env: { POOL_BUDGET_DATABASE: database, POOL_BUDGET_BRANCH: branch },
++    memo: false,
++    timeout: "7 minutes",
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+new file mode 100644
+index 0000000..fa0b7b0
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+@@ -0,0 +1,11 @@
++/** One local transaction pooler fronts both logical databases; limits span every runtime login. */
++export const databaseBackendBudget = 5;
++export const retirement = { lifetimeSeconds: 60, idleSeconds: 15, verificationMs: 90_000 } as const;
++export const databasePoolParameters = {
++  default_pool_size: String(databaseBackendBudget),
++  max_db_connections: String(databaseBackendBudget),
++  min_pool_size: "0",
++  reserve_pool_size: "0",
++  server_lifetime: String(retirement.lifetimeSeconds),
++  server_idle_timeout: String(retirement.idleSeconds),
++} as const;
+diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/cloud/src/infrastructure/database.ts
+index 65dbbd1..6c5545d 100644
+--- a/apps/hosted/cloud/src/infrastructure/database.ts
++++ b/apps/hosted/cloud/src/infrastructure/database.ts
+@@ -23,6 +23,7 @@ import {
+   type Scope,
+   Tracer,
+ } from "effect";
++import { databasePoolBudget } from "./database-pool-budget.ts";
+ import { developmentDatabase } from "./development.ts";
+ import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
+ import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
+@@ -220,6 +221,7 @@ const productionDatabase = Effect.gen(function* () {
+     database,
+     inheritedRoles: ["postgres"],
+   }).pipe(retain());
++  const budget = yield* databasePoolBudget("RuntimeDatabaseBudget", settings.name, "main");
+   const migrations = yield* Command.Exec("Migrations", {
+     command: "node src/migrate.ts",
+     env: {
+@@ -234,7 +236,7 @@ const productionDatabase = Effect.gen(function* () {
+     timeout: "7 minutes",
+   });
+   // Every database consumer waits for the migration, including an existing Worker update.
+-  const migrated = Output.all(role.pooledOrigin, migrations.hash).pipe(
++  const migrated = Output.all(role.pooledOrigin, migrations.hash, budget.hash).pipe(
+     Output.map(([origin]) => origin),
+   );
+   return runtimeDatabase(
+diff --git a/apps/hosted/cloud/src/infrastructure/preview-database.ts b/apps/hosted/cloud/src/infrastructure/preview-database.ts
+index b95924c..b8426c7 100644
+--- a/apps/hosted/cloud/src/infrastructure/preview-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/preview-database.ts
+@@ -3,6 +3,8 @@ import * as Neon from "alchemy/Neon";
+ import * as Planetscale from "alchemy/Planetscale";
+ import * as Command from "alchemy/Command";
+ import * as Output from "alchemy/Output";
++import { databasePoolBudget } from "./database-pool-budget.ts";
++import { databaseBackendBudget } from "./database-pool-policy.ts";
+ import { Random } from "alchemy";
+ import { Config, Effect, Option, Redacted } from "effect";
+ import { testStage, type TestStage } from "./stage.ts";
+@@ -29,12 +31,12 @@ type PreviewConnection = {
+ };
+ 
+ /**
+- * PgBouncer server connections for a PlanetScale preview's runtime role. The branch allows 25
++ * PgBouncer server connections shared by all runtime roles in a PlanetScale preview's database. The branch allows 25
+  * connections, three reserved for superusers; PgBouncer's default of 20 left none for the
+  * migration login on the next deploy. Hyperdrive connects through the same PgBouncer, so this
+  * caps the runtime role's backends whatever Hyperdrive and the Durable Objects open.
+  */
+-export const previewPoolConnections = 10;
++export const previewPoolConnections = databaseBackendBudget;
+ 
+ /** Preview provider selection is shared by database allocation and Worker transport. */
+ export const previewDatabaseProvider = Config.Literals(
+@@ -75,10 +77,18 @@ export const previewDatabase = (stage: TestStage) =>
+               branch,
+               inheritedRoles: ["postgres"],
+             });
++      const budget =
++        database === undefined
++          ? undefined
++          : yield* databasePoolBudget("PreviewPoolSize", database, branch.name);
++      const pooled =
++        budget === undefined
++          ? runtime.pooledOrigin
++          : Output.all(runtime.pooledOrigin, budget.hash).pipe(Output.map(([origin]) => origin));
+       const connection: PreviewConnection = {
+         // Workers use the branch's PgBouncer; migrations keep the direct schema-owner connection.
+-        runtimeUrl: runtime.pooledOrigin.pipe(Output.map(postgresUrl)),
+-        hyperdriveOrigin: Option.some(runtime.pooledOrigin),
++        runtimeUrl: pooled.pipe(Output.map(postgresUrl)),
++        hyperdriveOrigin: Option.some(pooled),
+         migrationUrl: migration.origin.pipe(
+           Output.map((origin) => {
+             const url = new URL(Redacted.value(postgresUrl(origin)));
+@@ -152,13 +162,9 @@ export const previewPoolSize = Effect.gen(function* () {
+   const stage = yield* testStage;
+   if (Option.isNone(stage) || (yield* previewDatabaseProvider) !== "planetscale") return;
+   const preview = yield* previewDatabase(stage.value);
+-  yield* Command.Exec("PreviewPoolSize", {
+-    command: "node scripts/preview-pool-size.ts",
+-    env: {
+-      TEST_STAGE_DATABASE: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
+-      TEST_STAGE_DATABASE_BRANCH: preview.branchName,
+-      POOL_SIZE: String(previewPoolConnections),
+-    },
+-    timeout: "7 minutes",
+-  });
++  yield* databasePoolBudget(
++    "PreviewPoolSize",
++    yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
++    preview.branchName,
++  );
+ }).pipe(Effect.orDie);

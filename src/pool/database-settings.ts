@@ -11,11 +11,16 @@ export function previewPoolDatabaseBranch(stage: string): string {
 
 export function poolDatabaseUrl(connectionUrl: string): string {
   const url = new URL(connectionUrl);
-  if (url.port !== "5432" || url.searchParams.get("sslmode") !== "verify-full") {
-    throw new Error("The pool requires a direct Postgres connection with verified TLS");
+  if (
+    url.port !== "6432" ||
+    url.searchParams.get("sslmode") !== "verify-full" ||
+    url.searchParams.has("options")
+  ) {
+    throw new Error(
+      "The pool requires a pooled Postgres connection with verified TLS and no session options",
+    );
   }
   url.pathname = `/${poolDatabase.name}`;
-  url.searchParams.set("options", `-c role=${poolDatabase.owner}`);
   return url.toString();
 }
 
@@ -26,6 +31,7 @@ export function poolDatabaseUrl(connectionUrl: string): string {
  */
 export function postgresRoleName(login: string): string {
   const dot = login.indexOf(".");
-  if (!login || dot === 0 || dot === login.length - 1) throw new Error("The pool runtime login is malformed");
+  if (!login || dot === 0 || dot === login.length - 1)
+    throw new Error("The pool runtime login is malformed");
   return dot === -1 ? login : login.slice(0, dot);
 }

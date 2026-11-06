@@ -13,7 +13,11 @@ if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname
 
 function provision(runtimeRole: string, migrationUrl: string): void {
   const result = spawnSync(process.execPath, ["scripts/ensure-pool-database.ts"], {
-    env: { ...process.env, POOL_DATABASE_ADMIN_URL: migrationUrl, POOL_DATABASE_RUNTIME_ROLE: runtimeRole },
+    env: {
+      ...process.env,
+      POOL_DATABASE_ADMIN_URL: migrationUrl,
+      POOL_DATABASE_RUNTIME_ROLE: runtimeRole,
+    },
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
@@ -23,6 +27,7 @@ test("logical database persists across runtime-role rotation and excludes unrela
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   try {
+    await admin.query("CREATE ROLE basalt_pool_owner NOLOGIN");
     const migrationUrl = await managedMigrationUrl(admin, adminUrl!);
     for (const name of ["pool_test_first", "pool_test_second", "pool_test_outsider"]) {
       await admin.query(`CREATE ROLE ${name} LOGIN PASSWORD 'fixture-only'`);
@@ -40,7 +45,9 @@ test("logical database persists across runtime-role rotation and excludes unrela
     await first.connect();
     await first.query("CREATE TABLE pool_proof (value text NOT NULL)");
     await first.query("INSERT INTO pool_proof VALUES ('retained')");
-    await first.query("CREATE TABLE api_key (api_key text NOT NULL UNIQUE, deleted_at timestamptz)");
+    await first.query(
+      "CREATE TABLE api_key (api_key text NOT NULL UNIQUE, deleted_at timestamptz)",
+    );
     await first.query("INSERT INTO api_key VALUES ('active-key', NULL), ('revoked-key', now())");
     await first.end();
 
@@ -48,10 +55,14 @@ test("logical database persists across runtime-role rotation and excludes unrela
     provision("pool_test_second.fixturebranch", migrationUrl);
     const second = connection("pool_test_second");
     await second.connect();
-    assert.deepEqual((await second.query("SELECT * FROM pool_proof")).rows, [{ value: "retained" }]);
+    assert.deepEqual((await second.query("SELECT * FROM pool_proof")).rows, [
+      { value: "retained" },
+    ]);
     // Home's migrations must retain ownership across managed login rotation.
     await second.query("ALTER TABLE pool_proof ADD COLUMN migrated boolean DEFAULT true");
-    await assert.rejects(second.query("CREATE DATABASE forbidden_pool_database"), { code: "42501" });
+    await assert.rejects(second.query("CREATE DATABASE forbidden_pool_database"), {
+      code: "42501",
+    });
     await second.end();
 
     // Hyperdrive supplies the login and database without the container's SET ROLE option.
@@ -60,9 +71,14 @@ test("logical database persists across runtime-role rotation and excludes unrela
     workerUrl.password = "fixture-only";
     workerUrl.pathname = `/${poolDatabase.name}`;
     workerUrl.search = "";
-    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["unknown-key", "active-key"]), true);
+    assert.equal(
+      await hasActiveHomeApiKey(workerUrl.toString(), ["unknown-key", "active-key"]),
+      true,
+    );
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["active-key", "\0"]), true);
-    await assert.rejects(hasActiveHomeApiKey(workerUrl.toString(), ["\0", "active-key"]), { code: "22021" });
+    await assert.rejects(hasActiveHomeApiKey(workerUrl.toString(), ["\0", "active-key"]), {
+      code: "22021",
+    });
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["revoked-key"]), false);
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["' OR TRUE --"]), false);
 

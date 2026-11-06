@@ -1,6 +1,48 @@
 {
-  "scenarios": {},
-  "runs": {},
+  "scenarios": {
+    "hostedAppAccountsFirstEntryDesktop": {
+      "fixtures": "actors",
+      "title": "App Accounts first entry keeps the app shell and is never blank at 1280px",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app accounts wrapper."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    },
+    "hostedAppAccountsFirstEntryPhone": {
+      "fixtures": "actors",
+      "title": "App Accounts first entry keeps the app shell and is never blank at 390px",
+      "targets": {
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted app accounts wrapper."
+        },
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        }
+      }
+    }
+  },
+  "runs": {
+    "hostedAppAccountsFirstEntryDesktop": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ],
+    "hostedAppAccountsFirstEntryPhone": [
+      "human-in-the-loop:workflow-requests-and-scheduled-approvals-in-the-human-in-the-loop-tab",
+      "human-in-the-loop:the-human-in-the-loop-route-while-cloud-code-and-data-load"
+    ]
+  },
   "inherited": [
     "hostedAppAccountsManagerBrowser",
     "hostedAppAccountsMemberBrowser",
@@ -8,6 +50,8 @@
     "hostedAppAccountReconnectBrowser"
   ],
   "inputs": [
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx",
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/mcp-connections.ts",
@@ -80,6 +124,7 @@
     ".upstream/packages/ui/src/implementation/dashboard/common.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/loading.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/mcp-consent.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/schedules.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/workflow-input.tsx",
     ".upstream/packages/utils/package.json",
