@@ -302,11 +302,7 @@ function Answers({
         href="#cost"
         question="API cost"
         answer={
-          !usage
-            ? "Reading…"
-            : billed !== null
-              ? `${usd(billed)} API price est.`
-              : "Unpriced"
+          !usage ? "Reading…" : billed !== null ? `${usd(billed)} API price est.` : "Unpriced"
         }
       >
         {sum && (
