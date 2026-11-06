@@ -33,7 +33,7 @@ export async function removalIntentErrors(checked) {
     for await (const chunk of incoming) chunks.push(chunk);
     try {
       const response = await handleRemovalIntent(
-        new Request(`http://receiver.test${incoming.url}`, {
+        new Request(new URL(incoming.url, "http://127.0.0.1"), {
           method: incoming.method,
           body: Buffer.concat(chunks),
         }),
@@ -60,7 +60,8 @@ export async function removalIntentErrors(checked) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(server.address().port);
   const envelope = await signEnvelope(key, removalIntentPrefix, {
     audience: removalIntentPath,
     pool: "pool",
@@ -88,7 +89,7 @@ export async function removalIntentErrors(checked) {
       ["unexpected defect", JSON.stringify({ envelope }), "defect", 500],
     ]) {
       failure = fault;
-      const response = await fetch(origin + removalIntentPath, { method: "POST", body });
+      const response = await fetch(new URL(removalIntentPath, origin), { method: "POST", body });
       try {
         checked(`${name} has the correct HTTP refusal`, response.status, status);
         checked(`${name} writes no receipt`, writes, 0);
@@ -103,7 +104,7 @@ export async function removalIntentErrors(checked) {
       }
     }
     failure = undefined;
-    const response = await fetch(origin + removalIntentPath, {
+    const response = await fetch(new URL(removalIntentPath, origin), {
       method: "POST",
       body: JSON.stringify({ envelope }),
     });
