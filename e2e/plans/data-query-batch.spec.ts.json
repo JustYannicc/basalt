@@ -1,0 +1,80 @@
+{
+  "scenarios": {
+    "dataQueryBatch": {
+      "fixtures": "actors",
+      "title": "public data queries send snapshot, selected accounts and authority in one batch",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+        }
+      }
+    },
+    "dataQueryBatchSelections": {
+      "fixtures": "actors",
+      "title": "public data query batches use replaced and relinked accounts and isolate concurrent callers",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+        }
+      }
+    },
+    "dataQueryBatchRefusals": {
+      "fixtures": "actors",
+      "title": "public data queries refuse a missing version and current app access revocation",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+        }
+      }
+    }
+  },
+  "runs": {
+    "dataQueryBatch": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dataQueryBatchSelections": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dataQueryBatchRefusals": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/contracts/app-data.ts",
+    ".upstream/packages/sdk/src/contracts/tools.ts",
+    ".upstream/packages/sdk/src/implementation/app-storage.ts",
+    ".upstream/packages/sdk/src/implementation/tools.ts",
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-data.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui-phase-timing.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui-query-timing.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/product-services.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/executor-services.ts"
+  ]
+}

@@ -1,0 +1,342 @@
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index e53560f..f29c273 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -63,6 +63,13 @@ const singulars: Readonly<Record<string, string>> = {
+   tokens: "token",
+ };
+ 
++/** The nouns are English, so English decides "one", at the displayed precision, in every locale. */
++const english = new Intl.PluralRules("en", { maximumFractionDigits: 2 });
++
++/** How `unit` reads after `value`: "1 request", "2 requests"; any other unit keeps its spelling. */
++export const countedUnit = (value: number, unit: string) =>
++  singulars[unit] !== undefined && english.select(value) === "one" ? singulars[unit] : unit;
++
+ export const amount = (value: number, unit: string, format: DisplayFormat, withUnit = false) => {
+   if (isCurrency(unit))
+     return new Intl.NumberFormat(format.locale, { style: "currency", currency: unit }).format(
+@@ -71,10 +78,7 @@ export const amount = (value: number, unit: string, format: DisplayFormat, withU
+   const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
+   if (isPercent(unit)) return `${number}%`;
+   if (!withUnit) return number;
+-  const one =
+-    singulars[unit] !== undefined &&
+-    new Intl.PluralRules(format.locale, { maximumFractionDigits: 2 }).select(value) === "one";
+-  return `${number} ${one ? singulars[unit] : unit}`;
++  return `${number} ${countedUnit(value, unit)}`;
+ };
+ 
+ const toneOf = (ratio: number): ObservationMeterState =>
+diff --git a/packages/ui/src/implementation/dashboard/account-traffic-text.ts b/packages/ui/src/implementation/dashboard/account-traffic-text.ts
+new file mode 100644
+index 0000000..696c3be
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-traffic-text.ts
+@@ -0,0 +1,118 @@
++/**
++ * The words of an account's traffic: the Requests 7d cell's tooltip and screen-reader label, the
++ * Health column's tooltip, the Details line, and the token footer's unit and note. A count names
++ * one thing in the singular.
++ */
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { age, amount, countedUnit } from "./account-observation-format.ts";
++
++/** One recent bucket: any failure is bad, requests without one are good, no requests is none. */
++export type TrafficTick = "good" | "bad" | "none";
++
++/** An account's requests as its gateways counted them. */
++export interface AccountRowTraffic {
++  /** Requests in the last 7 days. */
++  readonly requests: number;
++  readonly failed: number;
++  /** The last hours, oldest first; the newest is the current, partial hour. */
++  readonly ticks: readonly TrafficTick[];
++  /** The latest successful request; null when none is recorded, undefined when unread. */
++  readonly lastSuccessAt: string | null | undefined;
++  /** The gateways that counted, such as the pool's name. */
++  readonly gateways: readonly string[];
++}
++
++/** Tokens a gateway counted in one usage window. `missing` requests reported no token count. */
++export interface WindowTokens {
++  readonly total: number | null;
++  readonly known: number;
++  readonly missing: number;
++  readonly gateways: readonly string[];
++}
++
++/** "1 request", "2 requests", by the same singular rule as an account's reported amounts. */
++const requestCount = (count: number, format: DisplayFormat) =>
++  amount(count, "requests", format, true);
++
++/** The 7-day success share, or null without requests. */
++export const successShare = (traffic: AccountRowTraffic) =>
++  traffic.requests === 0 ? null : (traffic.requests - traffic.failed) / traffic.requests;
++
++/** Truncated, never rounded up: one failure in thousands never reads as 100%. */
++export const percent = (share: number, format: DisplayFormat) =>
++  `${new Intl.NumberFormat(format.locale, { maximumFractionDigits: 1 }).format(
++    Math.floor(share * 1000) / 10,
++  )}%`;
++
++const via = (gateways: readonly string[]) =>
++  gateways.length === 0 ? "" : `, counted by ${gateways.join(" and ")}`;
++
++const lastSuccess = (traffic: AccountRowTraffic, now: number) =>
++  traffic.lastSuccessAt === undefined
++    ? undefined
++    : traffic.lastSuccessAt === null
++      ? "no successful request recorded"
++      : `last success ${age(traffic.lastSuccessAt, now)}`;
++
++/** What a screen reader hears after the Requests 7d cell's count. */
++export const requestsLabel = (requests: number) =>
++  ` ${countedUnit(requests, "requests")} in the last 7 days`;
++
++/** The token footer's unit after its figure: "1 token", "1.2M tokens". */
++export const tokensUnit = (total: number) => ` ${countedUnit(total, "tokens")}`;
++
++/** The Requests 7d cell's tooltip. */
++export const requestsTitle = (traffic: AccountRowTraffic, now: number, format: DisplayFormat) => {
++  const success = lastSuccess(traffic, now);
++  return traffic.requests === 0
++    ? `No requests in the last 7 days${via(traffic.gateways)}${success === undefined ? "" : ` · ${success}`}`
++    : `${requestCount(traffic.requests, format)} in the last 7 days${via(traffic.gateways)}`;
++};
++
++/** The Health column's tooltip while the account has requests; `check` follows on its own line. */
++export const healthTitle = (
++  traffic: AccountRowTraffic,
++  check: string | undefined,
++  now: number,
++  format: DisplayFormat,
++) =>
++  `${[
++    `${requestCount(traffic.requests, format)} in 7 days`,
++    `${percent(successShare(traffic) ?? 1, format)} succeeded`,
++    lastSuccess(traffic, now),
++  ]
++    .filter((part) => part !== undefined)
++    .join(" · ")}${via(traffic.gateways)}${check === undefined ? "" : `\n${check}`}`;
++
++/** Details' Requests line, in the same words as the cells' tooltips. */
++export const trafficSummary = (traffic: AccountRowTraffic, now: number, format: DisplayFormat) => {
++  const share = successShare(traffic);
++  return [
++    traffic.requests === 0
++      ? "None in 7 days"
++      : `${new Intl.NumberFormat(format.locale).format(traffic.requests)} in 7 days`,
++    share === null ? undefined : `${percent(share, format)} succeeded`,
++    lastSuccess(traffic, now),
++    traffic.gateways.length === 0 ? undefined : `counted by ${traffic.gateways.join(" and ")}`,
++  ]
++    .filter((part) => part !== undefined)
++    .join(" · ");
++};
++
++/** The token footer's tooltip: who counted, and how many requests left the total a minimum. */
++export const tokensTitle = (
++  tokens: WindowTokens,
++  provider: string | undefined,
++  format: DisplayFormat,
++) => {
++  const requests = tokens.known + tokens.missing;
++  return [
++    `Counted by ${tokens.gateways.join(" and ") || "the gateway"} from its own requests in this window${provider === undefined ? "" : `, not reported by ${provider}`}.`,
++    tokens.missing > 0
++      ? `${new Intl.NumberFormat(format.locale).format(tokens.missing)} of ${requestCount(requests, format)} didn't report tokens, so this is a minimum.`
++      : undefined,
++    "API-equivalent cost isn't available yet.",
++  ]
++    .filter((part) => part !== undefined)
++    .join("\n");
++};
+diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+index 85b1a37..f35ee0a 100644
+--- a/packages/ui/src/implementation/dashboard/account-traffic.tsx
++++ b/packages/ui/src/implementation/dashboard/account-traffic.tsx
+@@ -10,35 +10,25 @@ import { useAtomValue } from "@effect/atom-react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+-import { age, observationClock } from "./account-observation-format.ts";
++import { observationClock } from "./account-observation-format.ts";
+ import { AccountRowDetails } from "./account-row.tsx";
++import {
++  type AccountRowTraffic,
++  type WindowTokens,
++  healthTitle,
++  percent,
++  requestsLabel,
++  requestsTitle,
++  successShare,
++  tokensTitle,
++  tokensUnit,
++  trafficSummary,
++} from "./account-traffic-text.ts";
++
++export type { AccountRowTraffic, TrafficTick, WindowTokens } from "./account-traffic-text.ts";
+ 
+ type Window = NonNullable<AccountObservationRecord["result"]>["observation"]["windows"][number];
+ 
+-/** One recent bucket: any failure is bad, requests without one are good, no requests is none. */
+-export type TrafficTick = "good" | "bad" | "none";
+-
+-/** An account's requests as its gateways counted them. */
+-export interface AccountRowTraffic {
+-  /** Requests in the last 7 days. */
+-  readonly requests: number;
+-  readonly failed: number;
+-  /** The last hours, oldest first; the newest is the current, partial hour. */
+-  readonly ticks: readonly TrafficTick[];
+-  /** The latest successful request; null when none is recorded, undefined when unread. */
+-  readonly lastSuccessAt: string | null | undefined;
+-  /** The gateways that counted, such as the pool's name. */
+-  readonly gateways: readonly string[];
+-}
+-
+-/** Tokens a gateway counted in one usage window. `missing` requests reported no token count. */
+-export interface WindowTokens {
+-  readonly total: number | null;
+-  readonly known: number;
+-  readonly missing: number;
+-  readonly gateways: readonly string[];
+-}
+-
+ /** Several accounts or gateways as one: counts add up, a bad tick wins, the latest success wins. */
+ export const mergeTraffic = (
+   entries: readonly (AccountRowTraffic | undefined)[],
+@@ -105,29 +95,9 @@ export const windowStart = (entry: Window, now: number): string | undefined => {
+     : new Date(start).toISOString();
+ };
+ 
+-/** The 7-day success share, or null without requests. */
+-export const successShare = (traffic: AccountRowTraffic) =>
+-  traffic.requests === 0 ? null : (traffic.requests - traffic.failed) / traffic.requests;
+-
+ /** Below this share the percentage turns amber. */
+ const healthyShare = 0.95;
+ 
+-/** Truncated, never rounded up: one failure in thousands never reads as 100%. */
+-const percent = (share: number, format: DisplayFormat) =>
+-  `${new Intl.NumberFormat(format.locale, { maximumFractionDigits: 1 }).format(
+-    Math.floor(share * 1000) / 10,
+-  )}%`;
+-
+-const via = (gateways: readonly string[]) =>
+-  gateways.length === 0 ? "" : `, counted by ${gateways.join(" and ")}`;
+-
+-const lastSuccess = (traffic: AccountRowTraffic, now: number) =>
+-  traffic.lastSuccessAt === undefined
+-    ? undefined
+-    : traffic.lastSuccessAt === null
+-      ? "no successful request recorded"
+-      : `last success ${age(traffic.lastSuccessAt, now)}`;
+-
+ /**
+  * The Requests 7d cell: the count, muted at zero, with " req" where the column header is hidden.
+  * `unit` shows " req" at every width, for lists without a column header.
+@@ -144,18 +114,13 @@ export function AccountRequestsCell({
+   readonly unit?: boolean;
+ }) {
+   const count = new Intl.NumberFormat(format.locale).format(traffic.requests);
+-  const success = lastSuccess(traffic, now);
+-  const title =
+-    traffic.requests === 0
+-      ? `No requests in the last 7 days${via(traffic.gateways)}${success === undefined ? "" : ` · ${success}`}`
+-      : `${count} requests in the last 7 days${via(traffic.gateways)}`;
+   return (
+     <span
+       className={cn(
+         "text-[13px] whitespace-nowrap tabular-nums @max-[880px]/account-rows:text-[12px]",
+         traffic.requests === 0 && "text-muted-foreground",
+       )}
+-      title={title}
++      title={requestsTitle(traffic, now, format)}
+       data-account-requests={traffic.requests}
+       suppressHydrationWarning
+     >
+@@ -167,7 +132,7 @@ export function AccountRequestsCell({
+       >
+         {" req"}
+       </span>
+-      <span className="sr-only"> requests in the last 7 days</span>
++      <span className="sr-only">{requestsLabel(traffic.requests)}</span>
+     </span>
+   );
+ }
+@@ -191,18 +156,10 @@ export function TrafficHealth({
+ }) {
+   const share = successShare(traffic) ?? 1;
+   const shown = percent(share, format);
+-  const success = lastSuccess(traffic, now);
+-  const title = [
+-    `${new Intl.NumberFormat(format.locale).format(traffic.requests)} requests in 7 days`,
+-    `${shown} succeeded`,
+-    success,
+-  ]
+-    .filter((part) => part !== undefined)
+-    .join(" · ");
+   return (
+     <span
+       className="inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground @max-[880px]/account-rows:text-[12px]"
+-      title={`${title}${via(traffic.gateways)}${check === undefined ? "" : `\n${check}`}`}
++      title={healthTitle(traffic, check, now, format)}
+       data-account-health-cell
+       data-health-state="traffic"
+       data-ticks={traffic.ticks.map((tick) => tick[0]).join("")}
+@@ -232,22 +189,6 @@ export function TrafficHealth({
+   );
+ }
+ 
+-/** Details' Requests line, in the same words as the cells' tooltips. */
+-export const trafficSummary = (traffic: AccountRowTraffic, now: number, format: DisplayFormat) => {
+-  const share = successShare(traffic);
+-  const success = lastSuccess(traffic, now);
+-  return [
+-    traffic.requests === 0
+-      ? "None in 7 days"
+-      : `${new Intl.NumberFormat(format.locale).format(traffic.requests)} in 7 days`,
+-    share === null ? undefined : `${percent(share, format)} succeeded`,
+-    success,
+-    traffic.gateways.length === 0 ? undefined : `counted by ${traffic.gateways.join(" and ")}`,
+-  ]
+-    .filter((part) => part !== undefined)
+-    .join(" · ");
+-};
+-
+ /** The row's Requests line in Details, under the line and shown from the row menu. */
+ export function AccountTrafficDetails({
+   traffic,
+@@ -293,27 +234,17 @@ export function WindowTokensFooter({
+     notation: "compact",
+     maximumFractionDigits: 1,
+   }).format(total);
+-  const requests = tokens.known + tokens.missing;
+-  const title = [
+-    `Counted by ${tokens.gateways.join(" and ") || "the gateway"} from its own requests in this window${provider === undefined ? "" : `, not reported by ${provider}`}.`,
+-    floor
+-      ? `${tokens.missing} of ${requests} requests didn't report tokens, so this is a minimum.`
+-      : undefined,
+-    "API-equivalent cost isn't available yet.",
+-  ]
+-    .filter((part) => part !== undefined)
+-    .join("\n");
+   return (
+     <span
+       className={cn("min-w-0 truncate", total === 0 && "text-muted-foreground")}
+-      title={title}
++      title={tokensTitle(tokens, provider, format)}
+       data-window-tokens={total}
+       {...(floor ? { "data-tokens-floor": "" } : {})}
+     >
+       <span className={total === 0 ? undefined : "font-medium text-foreground"}>
+         {floor ? `≥ ${figure}` : figure}
+-      </span>{" "}
+-      tokens
++      </span>
++      {tokensUnit(total)}
+     </span>
+   );
+ }

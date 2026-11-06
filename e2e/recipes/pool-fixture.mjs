@@ -1,3 +1,4 @@
+import { unavailable } from "../../src/pool/json.ts";
 import { handleRemovalIntent, removalIntentPath } from "../../src/pool/removal-intent.ts";
 import { resetProvider } from "./reset-provider.mjs";
 import { createServer } from "node:http";
@@ -264,7 +265,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
             refresh: (pool) => memberships.refresh(pool),
             selected: async (pool) => {
               const policy = await memberships.authority(pool);
-              if (!policy) throw new Error("Native pool membership is unavailable");
+              if (!policy) return unavailable();
               return policy.accounts;
             },
             record: (pool, references, actor, operation, issuedAt) =>
