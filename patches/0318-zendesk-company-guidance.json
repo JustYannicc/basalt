@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-zendesk-company-guidance",
+  "file": "0318-zendesk-company-guidance.patch",
+  "content_sha256": "8e9ffd233b914309893899fcb589734bda3cf2b5a9113df23346dba65da4e620",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

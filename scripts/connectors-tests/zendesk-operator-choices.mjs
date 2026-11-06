@@ -75,10 +75,14 @@ export function proveOperatorChoices({
     assert.equal(hosted.redirectUri, callback);
     assert.equal(
       hosted.setupInstructions,
-      "A Zendesk admin adds this callback URL to the public OAuth client site-a_zendesk with read and write access.",
+      "In Zendesk Admin Center, open Apps and integrations > APIs > OAuth clients. " +
+        "Add this callback URL to the public OAuth client site-a_zendesk with read and write access; no client secret is needed.",
     );
     assert.equal(paste.available, true);
     assert.equal(paste.redirectUri, loopback);
+    assert.equal(hosted.clientId, "site-a_zendesk");
+    assert.equal(paste.clientId, "site-a_zendesk");
+    assert.equal(paste.setupInstructions, hosted.setupInstructions);
     assert.equal(setup.firstParty.label, global ? "Synthetic global Zendesk" : paste.label);
     const automatic = checked(
       yield* start(path),
