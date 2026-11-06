@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 
 export const releaseDatabasePolicy = {
+  // A provider-side limit change cannot silently expand the approved release envelope.
+  maxConnections: 25,
   // The metrics API exposes max_connections, but no verified reserved-slot gauge.
   superuserReservedConnections: 3,
   reservedConnections: 0,
@@ -58,6 +60,12 @@ export function primaryHeadroom(value: unknown, branch: string, policy = release
   const ordinarySlots =
     primary[1]!.value - policy.superuserReservedConnections - policy.reservedConnections;
   const envelope = Object.values(policy.connections).reduce((sum, cap) => sum + cap, 0);
+  if (primary[1]!.value !== policy.maxConnections)
+    throw new Error(
+      `Database preflight refused: primary total ${observed}, release envelope ${envelope}, ordinary slots ${ordinarySlots} ` +
+        `(max ${primary[1]!.value}, configured max ${policy.maxConnections}). No deployment has started. ` +
+        "The connection limits need an explicit configuration review before retrying.",
+    );
   if (ordinarySlots <= 0 || envelope <= 0 || observed + envelope > ordinarySlots)
     throw new Error(
       `Database preflight refused: primary total ${observed}, release envelope ${envelope}, ordinary slots ${ordinarySlots} ` +

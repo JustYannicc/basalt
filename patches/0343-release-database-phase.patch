@@ -53,7 +53,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
 +    timeout: "7 minutes",
 +  });
 +  return { settings, database, budget, migrations };
-+});
++}).pipe(Effect.orDie);
 +
 +/** Production runtime bindings consume the successfully migrated database. */
  const productionDatabase = Effect.gen(function* () {
