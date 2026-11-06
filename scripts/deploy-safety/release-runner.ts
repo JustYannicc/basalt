@@ -47,7 +47,6 @@ export type ReleaseDependencies = {
   deploy(): Promise<CommandResult>;
   assertImages(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
-  rollback(report: ClassificationReport): Promise<void>;
   /** Where the runner notes a deploy retry; stderr by default. */
   log?(text: string): void;
 };
@@ -67,9 +66,8 @@ export type ManualRollbackDependencies = {
 };
 
 export type ReleaseResult = {
-  state: "deployed" | "rolled-back";
+  state: "deployed";
   deploymentId: number;
-  rollbackDeploymentId?: number;
 };
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -107,27 +105,14 @@ export async function executeRelease(
     );
   }
   if (deploy.exitCode !== 0) {
-    await assertDeployedImages(deploymentId, dependencies);
-    return recoverAfterAttempt(
-      report,
-      mode,
-      dependencies,
-      deploymentId,
-      "deployment command failed",
-    );
+    return failReleaseAttempt(dependencies, deploymentId, "deployment command failed");
   }
 
   await assertDeployedImages(deploymentId, dependencies);
   const smoke = await dependencies.smoke();
   if (!smoke.started || smoke.exitCode !== 0) {
     await assertDeployedImages(deploymentId, dependencies);
-    return recoverAfterAttempt(
-      report,
-      mode,
-      dependencies,
-      deploymentId,
-      "production smoke check failed",
-    );
+    return failReleaseAttempt(dependencies, deploymentId, "production smoke check failed");
   }
 
   await dependencies.mark(deploymentId, "success");
@@ -284,7 +269,6 @@ export function productionReleaseDependencies(
       );
     },
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
-    rollback: (report) => deployPreviousRelease(report, github),
   };
 }
 
@@ -399,93 +383,15 @@ async function prepareRollbackSource(sourceRoot: string): Promise<void> {
   }
 }
 
-async function recoverAfterAttempt(
-  report: ClassificationReport,
-  mode: ReleaseMode,
-  dependencies: ReleaseDependencies,
+async function failReleaseAttempt(
+  dependencies: Pick<ReleaseDependencies, "mark">,
   deploymentId: number,
   reason: string,
-): Promise<ReleaseResult> {
+): Promise<never> {
   await dependencies.mark(deploymentId, "failure");
-  if (mode !== "automatic" || report.databaseChanged || report.workflowChanged)
-    throw new SafetyGateError(
-      `Production ${reason}; this release requires the manual rollback path`,
-    );
-  if (report.base.gitCommit === report.candidate.gitCommit)
-    throw new SafetyGateError(
-      `Initial production ${reason}; no previous successful release exists for automatic rollback`,
-    );
-  await dependencies.rollback(report);
   throw new SafetyGateError(
-    `Production ${reason}; the previous safe release was redeployed successfully`,
+    `Production ${reason}; inspect the barrier receipts and use explicit recorded-version recovery. No automatic rollback was attempted`,
   );
-}
-
-async function deployPreviousRelease(
-  report: ClassificationReport,
-  github: ReturnType<typeof readLedgerEnvironment>,
-): Promise<void> {
-  const parent = mkdtempSync(join(tmpdir(), "basalt-release-recovery-"));
-  const worktree = join(parent, "source");
-  let added = false;
-  let rollbackId: number | undefined;
-  try {
-    const fetched = await runCommand(
-      "git",
-      ["fetch", "--no-tags", "origin", report.base.gitCommit],
-      repositoryRoot,
-    );
-    if (!fetched.started || fetched.exitCode !== 0)
-      throw new SafetyGateError("Could not fetch the previous release source");
-    const checkout = await runCommand(
-      "git",
-      ["worktree", "add", "--detach", worktree, report.base.gitCommit],
-      repositoryRoot,
-    );
-    if (!checkout.started || checkout.exitCode !== 0)
-      throw new SafetyGateError("Could not prepare the previous release source");
-    added = true;
-    assertBarrierSource(worktree);
-
-    const setup = [
-      ["node", ["scripts/prepare-upstream.ts"]],
-      ["npm", ["run", "check:upstream"]],
-      ["npm", ["run", "build"]],
-      ["npm", ["run", "check:build"]],
-      ["npm", ["run", "typecheck"]],
-    ] as const;
-    for (const [command, args] of setup) {
-      const result = await runCommand(command, [...args], worktree);
-      if (!result.started || result.exitCode !== 0)
-        throw new SafetyGateError(
-          "Previous release preparation or build failed; rollback deployment was not started",
-        );
-    }
-
-    rollbackId = await beginRollbackDeployment(report, github);
-    const deploy = await runCommand("npm", ["run", "deploy"], worktree, {
-      ...process.env,
-      GITHUB_SHA: report.base.gitCommit,
-    });
-    if (!deploy.started) {
-      await finishDeployment(rollbackId, "failure", github);
-      throw new SafetyGateError("Previous release deployment process did not start");
-    }
-    if (deploy.exitCode !== 0) {
-      await finishDeployment(rollbackId, "failure", github);
-      throw new SafetyGateError("Previous release deployment failed");
-    }
-
-    const smoke = await runCommand("node", ["scripts/smoke.ts"], worktree);
-    if (!smoke.started || smoke.exitCode !== 0) {
-      await finishDeployment(rollbackId, "failure", github);
-      throw new SafetyGateError("Previous release smoke check failed");
-    }
-    await finishDeployment(rollbackId, "success", github);
-  } finally {
-    if (added) await runCommand("git", ["worktree", "remove", "--force", worktree], repositoryRoot);
-    rmSync(parent, { recursive: true, force: true });
-  }
 }
 
 export function runCommand(

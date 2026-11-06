@@ -1,8 +1,8 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
-index 51ae883fd..2d8ee9c34 100644
+index 51ae883fd..e44a19b9d 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -4930,3 +4930,837 @@ index 690f7a48..eafe3c34 100644
+@@ -4930,3 +4930,760 @@ index 690f7a48..eafe3c34 100644
                   const configuration = desiredConfiguration(news, env, deploymentImageRef);
                   const configurationHash = yield* applicationConfigurationHash(scalingDefaults(news), news.affinities, configuration);
                   yield* Effect.logInfo(`Cloudflare Container reconcile: recreating ${name} to attach durable object binding`);
@@ -118,94 +118,17 @@ index 51ae883fd..2d8ee9c34 100644
 + 
 +       // Compare the desired assets against the deployed asset-content hash.
 +diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
-+index 21a340b39..35e0153d1 100644
++index 21a340b39..51b655938 100644
 +--- a/lib/Cloudflare/Workers/WorkerProvider.js
 ++++ b/lib/Cloudflare/Workers/WorkerProvider.js
-+@@ -8,43 +8,44 @@ import * as Effect from "effect/Effect";
-+ import * as Layer from "effect/Layer";
-+ import * as Option from "effect/Option";
-+ import * as Path from "effect/Path";
-+-import { dotAlchemyDirectory } from "../../AlchemyContext.js";
-++import { dotAlchemyDirectory } from "../../AlchemyContext.ts";
-+ import * as Predicate from "effect/Predicate";
-+ import * as Redacted from "effect/Redacted";
-+ import * as Schedule from "effect/Schedule";
-+ import * as Stream from "effect/Stream";
-+ import { isHttpClientError } from "effect/http/HttpClientError";
-+ import * as crypto from "node:crypto";
-+-import { Unowned } from "../../AdoptPolicy.js";
-+-import * as Artifacts from "../../Artifacts.js";
-+-import { havePropsChanged, isResolved, stripEffects } from "../../Diff.js";
-+-import * as ProviderLayer from "../../Local/ProviderLayer.js";
-+-import * as Provider from "../../Provider.js";
-+-import {} from "../../Resource.js";
-+-import { Stack } from "../../Stack.js";
-+-import { cachedFunction } from "../../Util/cached-function.js";
-+-import { initialCwd } from "../../Util/Node.js";
-+-import { isRedactedMarker } from "../../RuntimeContext.js";
-+-import { sha256Object } from "../../Util/sha256.js";
-+-import { CloudflareEnvironment } from "../CloudflareEnvironment.js";
-+-import { localRuntimeServices } from "../LocalRuntime.js";
-+-import { detachQueueConsumersOfScript } from "../Queues/Consumer.js";
-+-import { CloudflareLogs } from "../Logs.js";
-+-import { resolveZoneId, } from "../Zone/lookup.js";
-+-import { getAssetsPathPrefix, mergeAssetsConfigFiles, readAssets, readAssetsConfigFiles, uploadAssets, } from "./Assets.js";
-+-import { getCompatibility } from "./Compatibility.js";
-+-import { isDurableObjectExport } from "./DurableObject.js";
-+-import { LocalWorkerProvider } from "./LocalWorkerProvider.js";
-+-import { makeSourceContext, resolveSource } from "./Source.js";
-+-import { assertCloudflareTelemetryCompatibility } from "./Telemetry.js";
-+-import { isSelfUrl, Worker, } from "./Worker.js";
-+-import { getCacheBinding, getCronBindings, isContainerDecl, resolveObservability, } from "./WorkerAsyncBindings.js";
-+-import { withoutDevOnlyBindings, } from "./WorkerBinding.js";
-+-import { readPrebuiltWorkerBundle } from "./Sources/Prebuilt.js";
-+-import { isPythonMain, readPythonWorkerBundle } from "./Sources/Python.js";
-+-import { WorkerBundle } from "./Sources/Rolldown.js";
-+-import { isWorkerLoader } from "./WorkerLoader.js";
-+-import { createWorkerName } from "./WorkerName.js";
-++import { Unowned } from "../../AdoptPolicy.ts";
-++import * as Artifacts from "../../Artifacts.ts";
-++import { havePropsChanged, isResolved, stripEffects } from "../../Diff.ts";
-++import * as ProviderLayer from "../../Local/ProviderLayer.ts";
-++import * as Provider from "../../Provider.ts";
-++import {} from "../../Resource.ts";
-++import { Stack } from "../../Stack.ts";
-++import { cachedFunction } from "../../Util/cached-function.ts";
-++import { initialCwd } from "../../Util/Node.ts";
-++import { isRedactedMarker } from "../../RuntimeContext.ts";
-++import { sha256Object } from "../../Util/sha256.ts";
-++import { CloudflareEnvironment } from "../CloudflareEnvironment.ts";
-++import { localRuntimeServices } from "../LocalRuntime.ts";
-++import { detachQueueConsumersOfScript } from "../Queues/Consumer.ts";
-++import { CloudflareLogs } from "../Logs.ts";
-++import { resolveZoneId, } from "../Zone/lookup.ts";
-++import { getAssetsPathPrefix, mergeAssetsConfigFiles, readAssets, readAssetsConfigFiles, uploadAssets, } from "./Assets.ts";
-++import { getCompatibility } from "./Compatibility.ts";
-++import { isDurableObjectExport } from "./DurableObject.ts";
-++import { LocalWorkerProvider } from "./LocalWorkerProvider.ts";
-++import { WorkerUploadHook } from "./WorkerUploadHook.ts";
-++import { makeSourceContext, resolveSource } from "./Source.ts";
-++import { assertCloudflareTelemetryCompatibility } from "./Telemetry.ts";
-++import { isSelfUrl, Worker, } from "./Worker.ts";
-++import { getCacheBinding, getCronBindings, isContainerDecl, resolveObservability, } from "./WorkerAsyncBindings.ts";
-++import { withoutDevOnlyBindings, } from "./WorkerBinding.ts";
-++import { readPrebuiltWorkerBundle } from "./Sources/Prebuilt.ts";
-++import { isPythonMain, readPythonWorkerBundle } from "./Sources/Python.ts";
-++import { WorkerBundle } from "./Sources/Rolldown.ts";
-++import { isWorkerLoader } from "./WorkerLoader.ts";
-++import { createWorkerName } from "./WorkerName.ts";
-+ class MissingDurableObjects extends Data.TaggedError("MissingDurableObjects") {
-+ }
-+ /**
-+@@ -1736,7 +1737,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
-+     // `@alchemy.run/cloudflare-runtime/vite` (~0.5s), which is only
-+     // needed for vite-based workers at build time — not for every Worker
-+     // definition at module-load time.
-+-    const loadVite = Effect.promise(() => import("./Sources/Vite.js"));
-++    const loadVite = Effect.promise(() => import("./Sources/Vite.ts"));
-+     const prepareAssetsAndBundle = (id, fqn, workerName, props, opts = {}) => Effect.gen(function* () {
-+         // External source provider (`props.source`): the provider is
-+         // self-contained — it supplies the bundle, optionally its own
++@@ -35,6 +35,7 @@ import { getAssetsPathPrefix, mergeAssetsConfigFiles, readAssets, readAssetsConf
++ import { getCompatibility } from "./Compatibility.js";
++ import { isDurableObjectExport } from "./DurableObject.js";
++ import { LocalWorkerProvider } from "./LocalWorkerProvider.js";
+++import { WorkerUploadHook } from "./WorkerUploadHook.js";
++ import { makeSourceContext, resolveSource } from "./Source.js";
++ import { assertCloudflareTelemetryCompatibility } from "./Telemetry.js";
++ import { isSelfUrl, Worker, } from "./Worker.js";
 +@@ -2628,7 +2629,11 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
 +         // entirely and tell Cloudflare to keep the assets it already
 +         // has bound to this script. The disk read is the expensive

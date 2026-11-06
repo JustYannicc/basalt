@@ -91,9 +91,6 @@ function dependencies(
       calls.push("smoke");
       return { started: true, exitCode: 0 };
     },
-    rollback: async () => {
-      calls.push("rollback");
-    },
     ...overrides,
   };
 }
@@ -128,7 +125,7 @@ test("automatic release runs deploy, smoke and records success in order", async 
   }
 });
 
-test("safe release deploy failure rolls back only after the deploy process started", async () => {
+test("failed releases stop without image reads or automatic source redeployment", async () => {
   const oldEvent = process.env.GITHUB_EVENT_NAME;
   const oldRef = process.env.GITHUB_REF;
   process.env.GITHUB_EVENT_NAME = "push";
@@ -142,16 +139,9 @@ test("safe release deploy failure rolls back only after the deploy process start
     });
     await assert.rejects(
       executeRelease(report(), "automatic", deps),
-      /previous safe release was redeployed successfully/,
+      /explicit recorded-version recovery/,
     );
-    assert.deepEqual(deps.calls, [
-      "validate",
-      "begin",
-      "deploy",
-      "image",
-      "mark:failure",
-      "rollback",
-    ]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure"]);
 
     const firstDeploy = dependencies({
       deploy: async () => {
@@ -164,6 +154,36 @@ test("safe release deploy failure rolls back only after the deploy process start
       /did not start; no rollback was attempted/,
     );
     assert.deepEqual(firstDeploy.calls, ["validate", "begin", "deploy", "mark:failure"]);
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});
+
+test("a smoke failure keeps the failed attempt and requires recorded-version recovery", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME,
+    oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "push";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    const deps = dependencies();
+    deps.smoke = async () => {
+      deps.calls.push("smoke");
+      return { started: true, exitCode: 1 };
+    };
+    await assert.rejects(
+      executeRelease(report(), "automatic", deps),
+      /explicit recorded-version recovery/,
+    );
+    assert.deepEqual(deps.calls, [
+      "validate",
+      "begin",
+      "deploy",
+      "image",
+      "smoke",
+      "image",
+      "mark:failure",
+    ]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -192,8 +212,11 @@ test("missing publication evidence or image drift stops before smoke and never a
       deps.calls.push("image");
       throw new Error("Missing receipt");
     };
-    await assert.rejects(executeRelease(report(), "automatic", deps), /without automatic rollback/);
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
+    await assert.rejects(
+      executeRelease(report(), "automatic", deps),
+      /explicit recorded-version recovery/,
+    );
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure"]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -214,9 +237,9 @@ test("initial release failure never redeploys the candidate as a pretend rollbac
     });
     await assert.rejects(
       executeRelease(report({ candidate: { gitCommit: sha("1"), pins } }), "automatic", deps),
-      /Initial production deployment command failed/,
+      /explicit recorded-version recovery/,
     );
-    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "image", "mark:failure"]);
+    assert.deepEqual(deps.calls, ["validate", "begin", "deploy", "mark:failure"]);
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);
@@ -236,15 +259,11 @@ test("manual release failures do not trigger automatic rollback", async () => {
       },
     });
     const value = report({ databaseChanged: true });
-    await assert.rejects(executeRelease(value, "manual", deps), /manual rollback path/);
-    assert.deepEqual(deps.calls, [
-      "validate",
-      "backup",
-      "begin",
-      "deploy",
-      "image",
-      "mark:failure",
-    ]);
+    await assert.rejects(
+      executeRelease(value, "manual", deps),
+      /explicit recorded-version recovery/,
+    );
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
     assert.deepEqual(
       deps.begun,
       [fixtureBackup(value)],
@@ -688,7 +707,7 @@ test("provider startup refusal never repeats the complete release or rollback", 
       );
       await assert.rejects(
         executeRelease(report({ databaseChanged: true }), "manual", deps),
-        /manual rollback path/,
+        /explicit recorded-version recovery/,
       );
       assert.equal(deps.calls.filter((call) => call === "deploy").length, 1);
     }

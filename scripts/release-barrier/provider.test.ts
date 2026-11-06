@@ -48,3 +48,15 @@ test("actual Alchemy provider defers all writes to exact-version activation and 
   assert.deepEqual(proof.version.metadata.assets.config.run_worker_first, ["/api/*"]);
   assert.equal(proof.version.inherit, "strict");
 });
+
+test("the package's default compiled provider entry imports without source-resolution conditions", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", 'await import("alchemy/Cloudflare/Workers")'],
+    {
+      env: { PATH: process.env.PATH },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});

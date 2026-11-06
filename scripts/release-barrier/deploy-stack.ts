@@ -8,18 +8,13 @@ import { Effect } from "effect";
 import { preparePlan, finishPlan } from "./alchemy-plan.ts";
 import { readBaseline, uploadVersion } from "./cloudflare.ts";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
-import { BarrierRefusal, describeWorker, type ReleaseManifest } from "./manifest.ts";
+import { BarrierRefusal, type ReleaseManifest } from "./manifest.ts";
 import { freezeUpload } from "./version-request.ts";
 
 export interface DeployStackOptions {
   candidate: string;
   record(receipt: BarrierReceipt): Promise<void>;
-  manifest(value: {
-    candidate: string;
-    stack: string;
-    stage: string;
-    workers: ReturnType<typeof describeWorker>[];
-  }): Promise<void>;
+  manifest(value: ReleaseManifest): Promise<void>;
   io?: { baseline: typeof readBaseline; upload: typeof uploadVersion };
 }
 
@@ -46,14 +41,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         ),
       ),
     };
-    yield* Effect.promise(() =>
-      options.manifest({
-        candidate: manifest.candidate,
-        stack: manifest.stack,
-        stage: manifest.stage,
-        workers: manifest.workers.map(describeWorker),
-      }),
-    );
+    yield* Effect.promise(() => options.manifest(manifest));
     const activated = new Map<string, Worker["Attributes"]>();
     const databaseFqns = new Set<string>();
     const database = Effect.gen(function* () {

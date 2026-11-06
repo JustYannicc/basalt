@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { State } from "alchemy/State/State";
@@ -8,7 +8,7 @@ import { recoverStack } from "./recover-stack.ts";
 import { readRecoveryManifest } from "./recovery.ts";
 import { deployStack } from "./deploy-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { releaseEvidence } from "./evidence.ts";
 
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
@@ -33,12 +33,7 @@ if (
   throw new Error("Recovery candidate does not match its frozen manifest");
 process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
 const directory = fileURLToPath(new URL("../../.local/release-barrier/", import.meta.url));
-await mkdir(directory, { recursive: true, mode: 0o700 });
-const record = async (name: string, value: unknown) => {
-  const path = resolve(directory, name);
-  await writeFile(`${path}.tmp`, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
-  await rename(`${path}.tmp`, path);
-};
+const evidence = releaseEvidence(directory, process.env.BASALT_RELEASE_CANDIDATE!);
 const result = await Effect.runPromiseExit(
   Effect.suspend(() =>
     Effect.promise(
@@ -51,12 +46,12 @@ const result = await Effect.runPromiseExit(
         (compiled) =>
           (recovery
             ? recoverStack(compiled, recovery.manifest, recovery.receipt, (value) =>
-                record("recovery.json", value),
+                evidence.recovery(value),
               )
             : deployStack(compiled, {
                 candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                record: (value) => record("receipt.json", value),
-                manifest: (value) => record("manifest.json", value),
+                record: evidence.record,
+                manifest: evidence.manifest,
               })
           ).pipe(
             Effect.provideContext(compiled.services),
@@ -70,11 +65,7 @@ const result = await Effect.runPromiseExit(
 );
 if (Exit.isFailure(result)) {
   const error = Cause.squash(result.cause);
-  const failure =
-    error instanceof BarrierRefusal
-      ? { reason: error.reason, worker: error.worker }
-      : { reason: "preparation-or-provider-failed" };
-  await record("failure.json", failure);
+  const failure = await evidence.failure(error);
   console.error(
     `Release barrier refused: ${failure.reason}${failure.worker ? ` (${failure.worker})` : ""}. See release-barrier receipts.`,
   );
