@@ -34,19 +34,20 @@ diff --git a/e2e/support/frame-deadline.ts b/e2e/support/frame-deadline.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/frame-deadline.ts
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,30 @@
 +import type { Page } from "playwright";
 +
 +/** Observe the real browser timer after the held location has supplied the frame's URL. */
 +export const observeFrameDeadline = (page: Page, url: string) =>
 +  page.evaluate((url) => {
++    const frameUrl = new URL(url).href;
 +    const original = window.setTimeout;
 +    const armed = new Promise<void>((resolve) => {
 +      Reflect.set(window, "setTimeout", (...args: Parameters<Window["setTimeout"]>) => {
 +        const timer = Reflect.apply(original, window, args);
 +        if (
 +          args[1] === 30000 &&
-+          [...document.querySelectorAll("iframe")].some((frame) => frame.src === url)
++          [...document.querySelectorAll("iframe")].some((frame) => frame.src === frameUrl)
 +        ) {
 +          Reflect.set(window, "setTimeout", original);
 +          resolve();
