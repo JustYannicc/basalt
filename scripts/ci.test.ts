@@ -405,8 +405,7 @@ test("batch pushes compare with main even when a force push removes the previous
     }
     assert.equal(
       workflow.jobs.fast.steps.find(
-        (entry: { name?: string }) =>
-          entry.name === "Format and lint changed source and carry targets",
+        (entry: { run?: string }) => entry.run === "node scripts/batch-preflight.ts",
       ).env.BASE_SHA,
       "${{ needs.select.outputs.base_sha }}",
     );
