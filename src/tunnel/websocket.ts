@@ -60,7 +60,8 @@ export class TunnelWebSocket {
       void this.flush();
     });
     socket.addEventListener("error", (event) => {
-      if (!this.stopped)
+      // workerd can report a disconnect after Close while received output still waits for credit.
+      if (!this.stopped && !this.upstreamClosed)
         fail(tunnelFailure("error" in event ? event.error : undefined, "socket", "error"));
     });
     socket.accept();

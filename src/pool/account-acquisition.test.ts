@@ -32,6 +32,12 @@ function fixture(existing: readonly string[] = []) {
     },
   };
   const calls: { path: string; method: string }[] = [];
+  const acknowledgements: {
+    pool: string;
+    references: readonly string[];
+    actor: string;
+    operation: string;
+  }[] = [];
   const credentials = new Set(existing);
   const members = new Set<string>();
   let status: Record<string, unknown> = { status: "wait" };
@@ -73,11 +79,18 @@ function fixture(existing: readonly string[] = []) {
           channel_group_id: 1,
         })),
       });
+    if (url.pathname.startsWith("/v8/management/channel-group-details/") && method === "DELETE") {
+      members.clear();
+      return Response.json(null);
+    }
     throw new Error(`Unexpected Home request: ${method} ${url.pathname}`);
   });
   const markers = new Set<string>();
   const excluded = new Set<string>();
   const attribution = {
+    async removalAcknowledged(value: (typeof acknowledgements)[number]) {
+      acknowledgements.push(value);
+    },
     async begin() {
       const id = crypto.randomUUID();
       markers.add(id);
@@ -92,6 +105,7 @@ function fixture(existing: readonly string[] = []) {
   let controller = make();
   return {
     calls,
+    acknowledgements,
     credentials,
     members,
     markers,
@@ -257,4 +271,25 @@ test("a status outage returns a closed receipt and keeps the same attempt recove
     (await body(await f.send("status", { session: started.session }))).state,
     "connected",
   );
+});
+
+test("saved removal needs a host acting person and never borrows its organization owner", async () => {
+  for (const actor of [undefined, "organization:fixture", "person"]) {
+    const f = fixture(["saved"]);
+    f.members.add("saved");
+    const response = await f.send(
+      "remove",
+      { reference: "saved", ...(actor === undefined ? {} : { actor }) },
+      owner,
+      "remove-operation",
+    );
+    assert.equal(response.status, 200);
+    assert.equal(f.credentials.has("saved"), false);
+    assert.deepEqual(
+      f.acknowledgements,
+      actor === "person"
+        ? [{ pool: "pool", references: ["saved"], actor: "person", operation: "remove-operation" }]
+        : [],
+    );
+  }
 });
