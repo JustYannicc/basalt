@@ -201,9 +201,7 @@ export async function proveAwsPasteUi({
       0,
       "Reconnect must not reopen account naming",
     );
-    await page
-      .getByRole("button", { name: `Manage ${accountName}`, exact: true })
-      .waitFor({ state: "visible" });
+    await manageAccount.waitFor({ state: "visible" });
     await capture("aws-reconnect-preserved-name.png", page);
     equal(outsideRequests, 0, "The hosted paste flow must not make outside network requests");
 
