@@ -587,6 +587,7 @@ diff --git a/e2e/tests/app-ui-phase-headers.spec.ts b/e2e/tests/app-ui-phase-hea
  
  layer(HostedLive, { excludeTestServices: true })("App UI phase headers", (it) => {
 diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+new file mode 100644
 --- /dev/null
 +++ b/e2e/support/data-query-batch.ts
 @@ -0,0 +1,165 @@
@@ -756,6 +757,7 @@ diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
 +    ).toHaveLength(0);
 +  });
 diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/data-query-batch.spec.ts
 @@ -0,0 +1,177 @@
