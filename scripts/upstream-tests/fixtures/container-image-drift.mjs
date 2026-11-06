@@ -76,6 +76,19 @@ const http = HttpClient.make((request, url) => {
     applicationExists = false;
   } else if (request.method === "GET" && url.pathname.endsWith("/applications")) {
     value = applicationExists ? [app] : [];
+  } else if (request.method === "GET" && !applicationExists) {
+    return Effect.succeed(
+      Response.fromWeb(
+        request,
+        globalThis.Response.json(
+          {
+            success: false,
+            errors: [{ code: 1609, message: "Container application not found" }],
+          },
+          { status: 404 },
+        ),
+      ),
+    );
   } else if (request.method !== "GET") {
     writes++;
     applicationExists = true;
@@ -169,6 +182,48 @@ const program = Effect.gen(function* () {
   expected = yield* reconcile(yield* read());
   assert.equal(writes, afterResize, "expanded resource readback remains unchanged after resizing");
 
+  const beforeSettingsChange = writes;
+  const beforeSettingsRollout = rollouts;
+  props = {
+    ...props,
+    instances: 1,
+    maxInstances: 3,
+    constraints: { tier: 1 },
+    affinities: { colocation: "datacenter" },
+  };
+  expected = yield* reconcile(yield* read());
+  assert.equal(
+    writes,
+    beforeSettingsChange + 1,
+    "declared scaling and placement changes update the application",
+  );
+  assert.equal(
+    rollouts,
+    beforeSettingsRollout,
+    "application settings do not roll out unchanged container resources",
+  );
+  for (const [key, drift, desired] of [
+    ["max_instances", 30, 3],
+    ["instances", 4, 1],
+    ["scheduling_policy", "unexpected", "default"],
+    ["constraints", { tier: 2 }, { tier: 1 }],
+    ["affinities", {}, { colocation: "datacenter" }],
+  ]) {
+    app[key] = drift;
+    const before = writes;
+    expected = yield* reconcile(yield* read());
+    assert.equal(writes, before + 1, `${key} drift updates despite a matching desired hash`);
+    assert.deepEqual(app[key], desired, `${key} returns to the declared value`);
+    assert.equal(
+      rollouts,
+      beforeSettingsRollout,
+      `${key} repair does not roll out unchanged resources`,
+    );
+  }
+  const afterSettingsRecovery = writes;
+  expected = yield* reconcile(yield* read());
+  assert.equal(writes, afterSettingsRecovery, "repaired application settings remain unchanged");
+
   app.configuration.vcpu = 1;
   const beforeResourceDrift = rollouts;
   expected = yield* reconcile(yield* read());
@@ -239,7 +294,17 @@ const program = Effect.gen(function* () {
     image(publishedDigest),
     "attachment recovery also selects the publication digest",
   );
-  return { scenarios: 12, rollouts, inputHash: expected.hash.image, digest: expected.hash.digest };
+  applicationExists = false;
+  const beforeMissingApplication = writes;
+  assert.equal(yield* read(), undefined, "a missing application is observed as absent");
+  assert.equal((yield* diff(expected))?.action, "update", "a deleted application needs recovery");
+  expected = yield* reconcile(expected, props, bindings);
+  assert.ok(writes > beforeMissingApplication, "a missing application is recreated");
+  assert.equal(applicationExists, true);
+  assert.equal(expected.configuration.image, image(publishedDigest));
+  assert.equal(app.durable_objects.namespace_id, "fixture-namespace");
+  assert.equal(expected.maxInstances, 3);
+  return { scenarios: 20, rollouts, inputHash: expected.hash.image, digest: expected.hash.digest };
 }).pipe(
   Effect.provide(LiveContainerProvider()),
   Effect.provide(NodeServices.layer),

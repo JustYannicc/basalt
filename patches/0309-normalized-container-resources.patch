@@ -1,14 +1,14 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
-index d36fee8..f54066d 100644
+index d36fee8..a5cb070 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -1,3 +1,87 @@
+@@ -1,3 +1,115 @@
 +diff --git a/src/Cloudflare/Containers/ContainerConfiguration.ts b/src/Cloudflare/Containers/ContainerConfiguration.ts
 +new file mode 100644
-+index 0000000..2518827
++index 0000000..82bcbe6
 +--- /dev/null
 ++++ b/src/Cloudflare/Containers/ContainerConfiguration.ts
-+@@ -0,0 +1,37 @@
++@@ -0,0 +1,57 @@
 ++import { deepEqual } from "../../Diff.ts";
 ++import { normalizeNulls } from "../../Util/stable.ts";
 ++
@@ -46,12 +46,32 @@ index d36fee8..f54066d 100644
 ++// Attachment and development-image values retain exact comparison.
 ++export const equalContainerValues = (left: unknown, right: unknown) =>
 ++  deepEqual(comparableValue(left), comparableValue(right));
+++
+++
+++type ApplicationSettings = {
+++  instances?: number;
+++  maxInstances?: number;
+++  schedulingPolicy?: string;
+++  constraints?: unknown;
+++  affinities?: unknown;
+++};
+++
+++const comparableSettings = (value: ApplicationSettings) => normalizeNulls({
+++  instances: value.instances ?? 0,
+++  maxInstances: value.maxInstances ?? 20,
+++  schedulingPolicy: value.schedulingPolicy ?? "default",
+++  constraints: value.constraints ?? {},
+++  affinities: value.affinities,
+++});
+++
+++export const equalApplicationSettings = (left: ApplicationSettings, right: ApplicationSettings) =>
+++  deepEqual(comparableSettings(left), comparableSettings(right));
 +diff --git a/lib/Cloudflare/Containers/ContainerConfiguration.js b/lib/Cloudflare/Containers/ContainerConfiguration.js
 +new file mode 100644
-+index 0000000..16f9e90
++index 0000000..6b67e16
 +--- /dev/null
 ++++ b/lib/Cloudflare/Containers/ContainerConfiguration.js
-+@@ -0,0 +1,35 @@
++@@ -0,0 +1,43 @@
 ++import { deepEqual } from "../../Diff.js";
 ++import { normalizeNulls } from "../../Util/stable.js";
 ++// Cloudflare expands named sizes into these resources on readback.
@@ -87,10 +107,18 @@ index d36fee8..f54066d 100644
 ++};
 ++// Attachment and development-image values retain exact comparison.
 ++export const equalContainerValues = (left, right) => deepEqual(comparableValue(left), comparableValue(right));
+++const comparableSettings = (value) => normalizeNulls({
+++    instances: value.instances ?? 0,
+++    maxInstances: value.maxInstances ?? 20,
+++    schedulingPolicy: value.schedulingPolicy ?? "default",
+++    constraints: value.constraints ?? {},
+++    affinities: value.affinities,
+++});
+++export const equalApplicationSettings = (left, right) => deepEqual(comparableSettings(left), comparableSettings(right));
  diff --git a/lib/Cloudflare/Workflows/Workflow.js b/lib/Cloudflare/Workflows/Workflow.js
  index 73840af..9d455f5 100644
  --- a/lib/Cloudflare/Workflows/Workflow.js
-@@ -4476,6 +4560,29 @@ diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Con
+@@ -4476,6 +4588,29 @@ diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Con
  index 41dc9d18..00539245 100644
  --- a/src/Cloudflare/Containers/ContainerProvider.ts
  +++ b/src/Cloudflare/Containers/ContainerProvider.ts
@@ -100,7 +128,7 @@ index d36fee8..f54066d 100644
 + import { hashDockerBuildInputs } from "../../Docker/BuildHash.ts";
 +-import { deepEqual, isResolved } from "../../Diff.ts";
 ++import { isResolved } from "../../Diff.ts";
-++import { equalContainerValues as deepEqual } from "./ContainerConfiguration.ts";
+++import { equalContainerValues as deepEqual, equalApplicationSettings } from "./ContainerConfiguration.ts";
 + import { Docker } from "../../Docker/Docker.ts";
 + import { repositoryFromImageRef } from "../../Docker/Registry.ts";
 + import * as Provider from "../../Provider.ts";
@@ -120,7 +148,16 @@ index d36fee8..f54066d 100644
  @@ -959,29 +959,25 @@ export const LiveContainerProvider = () =>
             news,
             env,
-@@ -4604,6 +4711,20 @@ diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Con
+@@ -4532,7 +4667,7 @@ index 41dc9d18..00539245 100644
+ -        if (existing.hash?.configuration === configurationHash) {
+ +        if (
+ +          existing.hash?.configuration === configurationHash &&
+-+          deepEqual(existing.configuration, configuration)
+++          deepEqual(existing.configuration, configuration) && equalApplicationSettings(existing, { ...scaling, affinities: news.affinities })
+ +        ) {
+            yield* Effect.logInfo(
+              `Cloudflare Container update: ${existing.applicationName} has no effective changes`,
+@@ -4604,6 +4739,20 @@ diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Con
  index 690f7a48..eafe3c34 100644
  --- a/lib/Cloudflare/Containers/ContainerProvider.js
  +++ b/lib/Cloudflare/Containers/ContainerProvider.js
@@ -130,7 +167,7 @@ index d36fee8..f54066d 100644
 + import { hashDockerBuildInputs } from "../../Docker/BuildHash.js";
 +-import { deepEqual, isResolved } from "../../Diff.js";
 ++import { isResolved } from "../../Diff.js";
-++import { equalContainerValues as deepEqual } from "./ContainerConfiguration.js";
+++import { equalContainerValues as deepEqual, equalApplicationSettings } from "./ContainerConfiguration.js";
 + import { Docker } from "../../Docker/Docker.js";
 + import { repositoryFromImageRef } from "../../Docker/Registry.js";
 + import * as Provider from "../../Provider.js";
@@ -141,3 +178,12 @@ index d36fee8..f54066d 100644
  @@ -621,24 +621,32 @@ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Ef
           yield* Effect.logInfo(`Cloudflare Container update: preparing ${existing.applicationName}`);
           const env = makeContainerEnv(news, accountId, bindings);
+@@ -4647,7 +4796,7 @@ index 690f7a48..eafe3c34 100644
+ -        if (existing.hash?.configuration === configurationHash) {
+ +        if (
+ +          existing.hash?.configuration === configurationHash &&
+-+          deepEqual(existing.configuration, configuration)
+++          deepEqual(existing.configuration, configuration) && equalApplicationSettings(existing, { ...scaling, affinities: news.affinities })
+ +        ) {
+              yield* Effect.logInfo(`Cloudflare Container update: ${existing.applicationName} has no effective changes`);
+              yield* session.note(`Container application ${existing.applicationName} is unchanged.`);

@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-normalized-container-resources",
   "file": "0309-normalized-container-resources.patch",
-  "content_sha256": "cc92d3b37bec0c41451052d58c5f524d92e5cdbfd741c4e30dac622991f05816",
+  "content_sha256": "ab735a6c86b38b4658af4ee3ee3ad994c4ee5c06ae657aa2cfeaf72331550560",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
