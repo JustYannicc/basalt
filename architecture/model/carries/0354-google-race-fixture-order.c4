@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The duplicate-registration race waits for the primary account's automatic webhook source to be ready before making synthetic legacy Google credentials selectable. Automatic registration therefore captures usable accounts while the explicitly reconciled subscription still races signed duplicate retirement. The public unlink, removal, stopped-state assertions and existing deadlines remain unchanged."
+    }
+  }
+}
