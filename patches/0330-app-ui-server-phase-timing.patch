@@ -1,0 +1,768 @@
+diff --git a/apps/hosted/server/src/implementation/app-ui-phase-timing.ts b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-ui-phase-timing.ts
+@@ -0,0 +1,75 @@
++import { Clock, Context, Effect } from "effect";
++import { HttpEffect, HttpServerResponse } from "effect/http";
++
++type Phase =
++  | "document-authorize"
++  | "document-version"
++  | "document-file"
++  | "document-caller-accounts"
++  | "document-account-notice"
++  | "document-asset"
++  | "document-usage"
++  | "query-session-access"
++  | "query-caller-accounts"
++  | "query-dispatch"
++  | "overview-authorize"
++  | "overview-policy"
++  | "overview-transaction"
++  | "overview-directory"
++  | "overview-membership"
++  | "overview-history-membership"
++  | "overview-history-inspect"
++  | "overview-history-references"
++  | "overview-offerings"
++  | "overview-backend";
++
++const Timings = Context.Reference<Map<Phase, number> | undefined>("hosted/AppUiPhaseTimings", {
++  defaultValue: () => undefined,
++});
++const maximumDuration = 60_000;
++
++/** The closed names and aggregated durations cannot grow with accounts or repeated reads. */
++export const appUiPhase = <A, E, R>(phase: Phase, operation: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const timings = yield* Timings;
++    if (timings === undefined) return yield* operation;
++    const start = yield* Clock.currentTimeNanos;
++    return yield* operation.pipe(
++      Effect.onExit(() =>
++        Effect.gen(function* () {
++          const elapsed = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
++          if (!Number.isFinite(elapsed)) return;
++          timings.set(
++            phase,
++            Math.min(maximumDuration, (timings.get(phase) ?? 0) + Math.max(0, elapsed)),
++          );
++        }),
++      ),
++    );
++  });
++
++/**
++ * Capture per request without a trace/exporter. Nested phases are not additive wall time.
++ * Workers advance their clock on I/O; native invocation CPU/wall evidence still bounds CPU work.
++ */
++export const appUiPhaseHeaders = <E, R>(
++  handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
++) =>
++  Effect.gen(function* () {
++    const timings = new Map<Phase, number>();
++    yield* HttpEffect.appendPreResponseHandler((_request, response) => {
++      if (timings.size === 0) return Effect.succeed(response);
++      const phases = [...timings]
++        .map(([phase, duration]) => `app-ui-${phase};dur=${duration.toFixed(3)}`)
++        .join(", ");
++      const existing = response.headers["server-timing"];
++      return Effect.succeed(
++        HttpServerResponse.setHeader(
++          response,
++          "server-timing",
++          existing === undefined ? phases : `${existing}, ${phases}`,
++        ),
++      );
++    });
++    return yield* handler.pipe(Effect.provideService(Timings, timings));
++  });
+diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+--- a/apps/hosted/server/src/implementation/app-ui-query-timing.ts
++++ b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+@@ -1,6 +1,12 @@
+ import { Clock, Effect, Option } from "effect";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ type QueryPhase = "session_access" | "caller_accounts" | "dispatch";
++const headerPhase = {
++  session_access: "query-session-access",
++  caller_accounts: "query-caller-accounts",
++  dispatch: "query-dispatch",
++} as const;
+ 
+ /** Annotate the request span captured before the operation opens any child spans. */
+ export const queryPhase = <A, E, R>(phase: QueryPhase, operation: Effect.Effect<A, E, R>) =>
+@@ -31,4 +37,4 @@
+         }),
+       ),
+     );
+-  });
++  }).pipe((timed) => appUiPhase(headerPhase[phase], timed));
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -7,6 +7,7 @@
+   poolAppUsagePath,
+ } from "./pool-app-ui.ts";
+ import { queryPhase } from "./app-ui-query-timing.ts";
++import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -380,6 +381,7 @@
+     response: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+   ) =>
+     response.pipe(
++      appUiPhaseHeaders,
+       Effect.map((value) =>
+         addresses.embedded
+           ? HttpServerResponse.setHeader(
+@@ -642,7 +644,7 @@
+       request.method === "GET" &&
+       (request.headers["sec-fetch-mode"] === "navigate" ||
+         request.headers.accept?.includes("text/html"));
+-    const authorized = yield* authorizeTarget(resolved).pipe(
++    const authorized = yield* appUiPhase("document-authorize", authorizeTarget(resolved)).pipe(
+       Effect.map(Option.some),
+       // Only a browser navigation starts sign-in; other requests keep the plain 401.
+       Effect.catchTag("UiUnauthorized", (error) =>
+@@ -651,12 +653,15 @@
+     );
+     if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
+     const current = authorized.value;
+-    const version = yield* readVersion(current.app);
++    const version = yield* appUiPhase("document-version", readVersion(current.app));
+     // A file needs no accounts, and fetching one is no app view.
+-    const file = yield* appFile({
+-      origin: current.target.origin,
+-      asset: (path) => assets(version, path),
+-    });
++    const file = yield* appUiPhase(
++      "document-file",
++      appFile({
++        origin: current.target.origin,
++        asset: (path) => assets(version, path),
++      }),
++    );
+     if (Option.isSome(file)) return file.value;
+     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+     const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+@@ -672,7 +677,10 @@
+     fix.searchParams.set("view", "accounts");
+     // The page runs with the app's linked accounts and the caller's linked accounts; a plain
+     // requirement with none shows what to link.
+-    const resolution = yield* callerAccounts(current.app).pipe(
++    const resolution = yield* appUiPhase(
++      "document-caller-accounts",
++      callerAccounts(current.app),
++    ).pipe(
+       asCaller,
+       Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+       Effect.catchTag("AccountRequired", (error) =>
+@@ -726,15 +734,21 @@
+       if (problems.length === 0) return undefined;
+       return { app: current.app.name, problems, fix: fix.href };
+     });
+-    const document = yield* appDocument({
+-      // The page names the caller's own accounts; the app's are not theirs to see.
+-      accountIds: accounts?.user,
+-      accounts: yield* accountNotice,
+-      parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+-      version: version.id,
+-      asset: (path) => assets(version, path),
+-    });
+-    yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
++    const document = yield* appUiPhase(
++      "document-asset",
++      appDocument({
++        // The page names the caller's own accounts; the app's are not theirs to see.
++        accountIds: accounts?.user,
++        accounts: yield* appUiPhase("document-account-notice", accountNotice),
++        parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
++        version: version.id,
++        asset: (path) => assets(version, path),
++      }),
++    );
++    yield* appUiPhase(
++      "document-usage",
++      recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }),
++    ).pipe(
+       Effect.provideService(CurrentUserId, current.access.userId),
+       Effect.provideService(CurrentOrganization, current.access),
+       Effect.provideService(CurrentUsage, { source: "app_ui" }),
+diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+--- a/apps/hosted/server/src/implementation/pool-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
+@@ -16,6 +16,7 @@
+ import { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+ import { PoolUsageSeriesInput } from "../contracts/pool-usage-series.ts";
+ import { poolPersonalUsageOverview, poolUsageOverview, poolUsageSeries } from "./pool-usage.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ export const poolAppUsagePath = "/_executor/api/pool-usage/series";
+ export const poolAppUsageOverviewPath = "/_executor/api/pool-usage/overview";
+@@ -79,7 +80,7 @@
+   read: typeof poolUsageOverview | typeof poolPersonalUsageOverview,
+ ) =>
+   Effect.gen(function* () {
+-    const current = yield* authorize;
++    const current = yield* appUiPhase("overview-authorize", authorize);
+     if (typeof current.access.userId !== "string" || !current.access.userId)
+       return json({ _tag: "UiUnauthorized" }, 401);
+     const payload = yield* HttpServerRequest.schemaBodyJson(OverviewRequest).pipe(
+diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-overview.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+@@ -13,6 +13,7 @@
+ import { policyDatabase } from "./resource-policy.ts";
+ import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
+ import { providers } from "./pool-provider-definitions.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ const DirectoryPerson = Schema.Struct({
+   user: Principal.fields.userId,
+@@ -74,9 +75,10 @@
+   Effect.gen(function* () {
+     const sql = yield* policyDatabase;
+     const executor = yield* Effect.flatten(HostedExecutor);
+-    const membership = yield* nativePoolMembership(pool.organization, pool.pool, executor).pipe(
+-      Effect.provideService(SqlClient.SqlClient, sql),
+-    );
++    const membership = yield* appUiPhase(
++      "overview-membership",
++      nativePoolMembership(pool.organization, pool.pool, executor),
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+     const history = yield* usageSeriesAccounts(pool, undefined);
+     const bindingByAccount = new Map<
+       string,
+@@ -104,7 +106,7 @@
+       history.length === nativeAccounts.size &&
+       new Set(namedAccounts).size === namedAccounts.length &&
+       namedAccounts.every((account) => nativeAccounts.has(account));
+-    const offerings = yield* providerOfferings;
++    const offerings = yield* appUiPhase("overview-offerings", providerOfferings);
+     const accounts = history.map((entry) => {
+       if (entry.account === null) return { ...entry, offering: "unknown" as const };
+       const binding = bindingByAccount.get(entry.account);
+@@ -144,24 +146,29 @@
+     const users = [...new Set(pool.users)].sort();
+     if (users.length > 500) return yield* new StorageError();
+     const sql = yield* policyDatabase;
+-    const rows =
+-      users.length === 0
+-        ? []
+-        : yield* sql`select m."userId" as "user", coalesce(u.name, '') as "displayName"
++    const members = yield* appUiPhase(
++      "overview-directory",
++      Effect.gen(function* () {
++        const rows =
++          users.length === 0
++            ? []
++            : yield* sql`select m."userId" as "user", coalesce(u.name, '') as "displayName"
+             from member m join "user" u on u.id = m."userId"
+             where m."organizationId" = ${pool.organization}
+               and ${sql.in("m.userId", users)}
+             order by m."userId"`;
+-    const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
+-    const members = yield* Effect.forEach(people, (person) =>
+-      Effect.tryPromise(() => digest(person.user)).pipe(
+-        Effect.mapError(() => new StorageError()),
+-        Effect.map((personHash) => ({
+-          person: personHash,
+-          displayName: person.displayName,
+-          active: true as const,
+-        })),
+-      ),
++        const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
++        return yield* Effect.forEach(people, (person) =>
++          Effect.tryPromise(() => digest(person.user)).pipe(
++            Effect.mapError(() => new StorageError()),
++            Effect.map((personHash) => ({
++              person: personHash,
++              displayName: person.displayName,
++              active: true as const,
++            })),
++          ),
++        );
++      }),
+     );
+ 
+     const { accounts, mappingProven } = yield* accountOfferings(pool);
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -7,12 +7,16 @@
+ import { AccountGrants } from "./proofs/account-access.ts";
+ import { nativePoolMembership } from "./pool-membership.ts";
+ import { policyDatabase } from "./resource-policy.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ const inspect = (account: AccountId) =>
+-  AccountGrants.inspect.pipe(
+-    Effect.provideService(AccountTargets.inspect, { account }),
+-    Effect.as(true),
+-    Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
++  appUiPhase(
++    "overview-history-inspect",
++    AccountGrants.inspect.pipe(
++      Effect.provideService(AccountTargets.inspect, { account }),
++      Effect.as(true),
++      Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
++    ),
+   );
+ 
+ const digest = async (value: string) => {
+@@ -52,9 +56,10 @@
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const sql = yield* policyDatabase;
+     // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
+-    const membership = yield* nativePoolMembership(pool.organization, pool.pool, executor).pipe(
+-      Effect.provideService(SqlClient.SqlClient, sql),
+-    );
++    const membership = yield* appUiPhase(
++      "overview-history-membership",
++      nativePoolMembership(pool.organization, pool.pool, executor),
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+     const accounts = [
+       ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
+     ];
+@@ -64,20 +69,23 @@
+     const source = yield* Effect.tryPromise(() => digest("home-local-v1")).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
+-    return yield* Effect.forEach(accounts, (account) =>
+-      Effect.gen(function* () {
+-        const allowed = yield* inspect(account.account);
+-        const history =
+-          account.homeReference === null
+-            ? []
+-            : yield* Effect.tryPromise(async () =>
+-                Promise.all(
+-                  references(account.homeReference!).map((id) =>
+-                    digest(JSON.stringify([source, "account", id])),
++    return yield* appUiPhase(
++      "overview-history-references",
++      Effect.forEach(accounts, (account) =>
++        Effect.gen(function* () {
++          const allowed = yield* inspect(account.account);
++          const history =
++            account.homeReference === null
++              ? []
++              : yield* Effect.tryPromise(async () =>
++                  Promise.all(
++                    references(account.homeReference!).map((id) =>
++                      digest(JSON.stringify([source, "account", id])),
++                    ),
+                   ),
+-                ),
+-              ).pipe(Effect.mapError(() => new StorageError()));
+-        return { account: allowed ? account.account : null, history };
+-      }),
++                ).pipe(Effect.mapError(() => new StorageError()));
++          return { account: allowed ? account.account : null, history };
++        }),
++      ),
+     );
+   });
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -24,6 +24,7 @@
+ import type { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+ import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-usage-overview.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ const Pool = Schema.Struct({
+   owner: Principal.fields.userId,
+@@ -103,49 +104,58 @@
+ ) =>
+   Effect.gen(function* () {
+     const sql = yield* policyDatabase;
+-    return yield* sql.withTransaction(
+-      Effect.gen(function* () {
+-        const actor = yield* lockCurrentActor;
+-        yield* requireAppAccessAs(actor, app, "manage");
+-        const rows =
+-          yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
++    return yield* appUiPhase(
++      "overview-transaction",
++      sql.withTransaction(
++        Effect.gen(function* () {
++          const pool = yield* appUiPhase(
++            "overview-policy",
++            Effect.gen(function* () {
++              const actor = yield* lockCurrentActor;
++              yield* requireAppAccessAs(actor, app, "manage");
++              const rows =
++                yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
+         from organization o
+         cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+         join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+         where o.id = ${actor.organization} and app.id = ${app}`;
+-        if (rows.length === 0) return null;
+-        const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
+-        if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
+-        const saved = found[0];
+-        const native = saved.authorization === "executor-app-v1";
+-        const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
+-        const delegated =
+-          yield* sql`select distinct app_id as app, authorizer from hosted_model_bindings
++              if (rows.length === 0) return null;
++              const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++              if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
++              const saved = found[0];
++              const native = saved.authorization === "executor-app-v1";
++              const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
++              const delegated =
++                yield* sql`select distinct app_id as app, authorizer from hosted_model_bindings
+           where pool_id = ${app} and subject = ''`;
+-        const appIds = yield* Schema.decodeUnknownEffect(Schema.Array(AppId))(
+-          delegated.map((row) => row.app),
+-        );
+-        const audiences = yield* applicationAudiences(actor.organization, appIds);
+-        const authors = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(
+-          delegated.map((row) => row.authorizer),
+-        );
+-        const users = [
+-          ...new Set([
+-            ...(native ? [] : [saved.owner]),
+-            ...(audience?.users ?? []),
+-            ...authors,
+-            ...audiences.flatMap((entry) => entry.users),
+-          ]),
+-        ].sort();
+-        return yield* work({
+-          pool: app,
+-          organization: actor.organization,
+-          owner: saved.owner,
+-          user: actor.user,
+-          native,
+-          users,
+-        });
+-      }),
++              const appIds = yield* Schema.decodeUnknownEffect(Schema.Array(AppId))(
++                delegated.map((row) => row.app),
++              );
++              const audiences = yield* applicationAudiences(actor.organization, appIds);
++              const authors = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(
++                delegated.map((row) => row.authorizer),
++              );
++              const users = [
++                ...new Set([
++                  ...(native ? [] : [saved.owner]),
++                  ...(audience?.users ?? []),
++                  ...authors,
++                  ...audiences.flatMap((entry) => entry.users),
++                ]),
++              ].sort();
++              return {
++                pool: app,
++                organization: actor.organization,
++                owner: saved.owner,
++                user: actor.user,
++                native,
++                users,
++              };
++            }),
++          );
++          return pool === null ? null : yield* work(pool);
++        }),
++      ),
+     );
+   });
+ 
+@@ -289,15 +299,18 @@
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+       const signedInput = yield* poolOverviewSignedInput(pool, input);
+-      return yield* send(
+-        "poolOverview",
+-        {
+-          pool: pool.pool,
+-          organization: pool.organization,
+-          user: pool.user,
+-          input: signedInput,
+-        },
+-        Schema.Unknown,
++      return yield* appUiPhase(
++        "overview-backend",
++        send(
++          "poolOverview",
++          {
++            pool: pool.pool,
++            organization: pool.organization,
++            user: pool.user,
++            input: signedInput,
++          },
++          Schema.Unknown,
++        ),
+       );
+     }),
+   ).pipe(
+diff --git a/e2e/support/app-phase-timings.ts b/e2e/support/app-phase-timings.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-phase-timings.ts
+@@ -0,0 +1,22 @@
++import { expect } from "@effect/vitest";
++
++/** Only the closed phase fields, never the header's existing correlation identifiers. */
++export const appPhaseTimings = (header: string | null | undefined) => {
++  const fields = (header ?? "").split(/,\s*/u).filter((field) => field.startsWith("app-ui-"));
++  expect(fields.length).toBeGreaterThan(0);
++  expect(fields.length).toBeLessThanOrEqual(24);
++  expect(fields.join(", ").length).toBeLessThan(2048);
++  const result: Record<string, number> = {};
++  for (const field of fields) {
++    const parsed = /^app-ui-([a-z-]+);dur=([0-9]+\.[0-9]{3})$/u.exec(field);
++    if (parsed === null) throw new Error("A phase must contain only its fixed name and duration");
++    const name = parsed[1]!;
++    expect(Object.hasOwn(result, name), "a phase appears once per request").toBe(false);
++    const duration = Number(parsed[2]);
++    expect(Number.isFinite(duration)).toBe(true);
++    expect(duration).toBeGreaterThanOrEqual(0);
++    expect(duration).toBeLessThanOrEqual(60_000);
++    result[name] = duration;
++  }
++  return result;
++};
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6866,6 +6866,24 @@
+       ),
+     },
+   },
++  appUiPhaseHeaders: {
++    file: "app-ui-phase-headers.spec.ts",
++    fixtures: "actors",
++    appOrigin: true,
++    title: "app UI phase headers separate concurrent requests without a telemetry lookup",
++    targets: {
++      "self-host": {
++        status: "scheduled",
++      },
++      cloud: {
++        status: "scheduled",
++      },
++      local: {
++        status: "not-applicable",
++        reason: "This scenario uses hosted app authentication.",
++      },
++    },
++  },
+   appQueryTiming: {
+     fixtures: "actors",
+     file: "app-query-timing.spec.ts",
+diff --git a/e2e/tests/app-ui-phase-headers.spec.ts b/e2e/tests/app-ui-phase-headers.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-ui-phase-headers.spec.ts
+@@ -0,0 +1,130 @@
++/** Phase headers are public response evidence without a telemetry lookup. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appPhaseTimings } from "../support/app-phase-timings.ts";
++import { waitForAppUrl } from "../support/app-pages.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++const documentPhases = [
++  "document-authorize",
++  "document-version",
++  "document-file",
++  "document-caller-accounts",
++  "document-account-notice",
++  "document-asset",
++  "document-usage",
++].sort();
++const queryPhases = ["query-session-access", "query-caller-accounts", "query-dispatch"].sort();
++const Deployment = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
++
++layer(HostedLive, { excludeTestServices: true })("App UI phase headers", (it) => {
++  it.effect(scenarios.appUiPhaseHeaders.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Phase headers ${randomUUID().slice(0, 8)}`,
++          files: [
++            appsManifest,
++            {
++              path: "index.ts",
++              content: `import {defineApp,query,object,string,router} from "apps";
++export default defineApp({}, {tools:router({read:query({input:object({}),output:string()},async()=>"Query is ready")})});`,
++            },
++            {
++              path: "ui/index.html",
++              content: "<!doctype html><title>Phase headers</title><p>Document is ready</p>",
++            },
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(Deployment, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++        yield* browser.login(actors.owner);
++        const traceparent = `00-${randomUUID().replaceAll("-", "")}-${randomUUID().replaceAll("-", "").slice(0, 16)}-00`;
++        yield* browser.use("Send an unsampled trace", (page) =>
++          page.setExtraHTTPHeaders({ traceparent }),
++        );
++        const document = yield* browser.use("Open a normal unsampled app document", (page) =>
++          page.goto(url).then((response) => {
++            if (response === null) throw new Error("Missing app document response");
++            return response
++              .headerValue("server-timing")
++              .then((timing) => ({ status: response.status(), timing }));
++          }),
++        );
++        expect(document.status).toBe(200);
++        yield* browser.use("The normal document is unchanged", (page) =>
++          page.getByText("Document is ready", { exact: true }).waitFor(),
++        );
++        const first = appPhaseTimings(document.timing);
++        expect(Object.keys(first).sort()).toEqual(documentPhases);
++        // Concurrent document/query requests must each own a collector, even in one Worker isolate.
++        const responses = yield* browser.use("Read concurrent unsampled app requests", (page) =>
++          page.evaluate(
++            ({ version, traceparent }) => {
++              const read = (kind: "document" | "query" | "stale") => {
++                const response =
++                  kind === "document"
++                    ? fetch(location.href, { headers: { traceparent } })
++                    : fetch("/_executor/api/query", {
++                        method: "POST",
++                        headers: { "content-type": "application/json", traceparent },
++                        body: JSON.stringify({
++                          version: kind === "stale" ? "dpl_stale" : version,
++                          name: "read",
++                          input: {},
++                        }),
++                      });
++                return response.then((response) =>
++                  response.text().then((text) => ({
++                    kind,
++                    status: response.status,
++                    timing: response.headers.get("server-timing"),
++                    result: kind === "query" ? JSON.parse(text) : undefined,
++                  })),
++                );
++              };
++              return Promise.all([read("document"), read("query"), read("query"), read("stale")]);
++            },
++            { version: app.activeVersion, traceparent },
++          ),
++        );
++        const safe = responses.map((response) => {
++          const phases = appPhaseTimings(response.timing);
++          const expected =
++            response.kind === "document"
++              ? documentPhases
++              : response.kind === "query"
++                ? queryPhases
++                : ["query-session-access"];
++          expect(Object.keys(phases).sort()).toEqual(expected);
++          expect(response.status).toBe(response.kind === "stale" ? 409 : 200);
++          expect(response.timing).toContain("executor;dur=");
++          // The product records all requests, including incoming 00. Keep its correlation fields.
++          expect(response.timing).toContain(`executor-trace;desc="${traceparent.slice(3, 35)}"`);
++          expect(response.timing).toContain('executor-sampled;desc="1"');
++          if (response.kind === "query") expect(response.result).toBe("Query is ready");
++          return { kind: response.kind, status: response.status, phases, unsampledInput: true };
++        });
++        yield* evidence.json("app-ui-phase-headers.json", { document: first, requests: safe });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -14,6 +14,8 @@
+ import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
++import { appPhaseTimings } from "../support/app-phase-timings.ts";
++import { Evidence } from "../support/evidence.ts";
+ 
+ const source = `import {defineApp,query,object,router} from "apps";
+ export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
+@@ -198,6 +200,7 @@
+                 response.text.pipe(
+                   Effect.map((text) => ({
+                     status: response.status,
++                    timing: response.headers["server-timing"],
+                     location: response.headers.location,
+                     cookies: response.cookies,
+                     text,
+@@ -275,6 +278,7 @@
+         const memberPerson = personHash(memberIdentity.userId);
+         expect(memberPerson).not.toBe(ownerPerson);
+         yield* backend.respond((assertion) => {
++          if (assertion.action === "poolOverview") return { result: "Overview is ready" };
+           if (assertion.action !== "poolPersonalOverview") return {};
+           return {
+             person: Schema.decodeUnknownSync(PersonalInput)(assertion.input).person,
+@@ -303,6 +307,27 @@
+           },
+         });
+ 
++        const manager = yield* postApp(ownerApp, managerPath, {
++          version: app.activeVersion,
++          input: range,
++        });
++        expect(manager.status).toBe(200);
++        expect(JSON.parse(manager.text)).toEqual({ result: "Overview is ready" });
++        const managerPhases = appPhaseTimings(manager.timing);
++        expect(Object.keys(managerPhases).sort()).toEqual(
++          [
++            "overview-authorize",
++            "overview-policy",
++            "overview-transaction",
++            "overview-directory",
++            "overview-membership",
++            "overview-history-membership",
++            "overview-history-references",
++            "overview-offerings",
++            "overview-backend",
++          ].sort(),
++        );
++
+         const memberResponse = yield* postApp(memberApp, personalPath, attack(ownerIdentity));
+         expect(memberResponse.status).toBe(200);
+         expect(
+@@ -385,6 +410,17 @@
+         });
+         expect(managerOverview.status).toBe(403);
+         expect((yield* backend.calls).length).toBe(beforeRejected);
++        const deniedPhases = appPhaseTimings(managerOverview.timing);
++        expect(Object.keys(deniedPhases).sort()).toEqual([
++          "overview-authorize",
++          "overview-policy",
++          "overview-transaction",
++        ]);
++        const evidence = yield* Evidence;
++        yield* evidence.json("pool-overview-phase-headers.json", {
++          manager: { status: manager.status, phases: managerPhases },
++          denied: { status: managerOverview.status, phases: deniedPhases },
++        });
+       }),
+     ),
+   );
