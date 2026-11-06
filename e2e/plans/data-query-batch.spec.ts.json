@@ -2,7 +2,7 @@
   "scenarios": {
     "dataQueryBatch": {
       "fixtures": "actors",
-      "title": "public data queries send snapshot, selected accounts and authority in one batch",
+      "title": "public data queries read current snapshot, selected accounts and authority without a batch",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -12,13 +12,13 @@
         },
         "local": {
           "status": "not-applicable",
-          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+          "reason": "This scenario exercises hosted app authorization and ordinary SDK data reads."
         }
       }
     },
     "dataQueryBatchSelections": {
       "fixtures": "actors",
-      "title": "public data query batches use replaced and relinked accounts and isolate concurrent callers",
+      "title": "public data queries use replaced and relinked accounts and isolate concurrent callers",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -28,7 +28,7 @@
         },
         "local": {
           "status": "not-applicable",
-          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+          "reason": "This scenario exercises hosted app authorization and ordinary SDK data reads."
         }
       }
     },
@@ -44,7 +44,7 @@
         },
         "local": {
           "status": "not-applicable",
-          "reason": "This scenario exercises hosted app authorization and its StatementBatch capability."
+          "reason": "This scenario exercises hosted app authorization and ordinary SDK data reads."
         }
       }
     }

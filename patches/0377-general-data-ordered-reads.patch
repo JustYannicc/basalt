@@ -1,0 +1,174 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -5,7 +5,6 @@
+ /** The executor and the services every cloud Worker shares, including app pages. */
+ import {
+   HostedExecutor,
+-  StatementBatch,
+   withDeploySetupWake,
+   withExecutorAnalytics,
+ } from "@executor-js/hosted-server";
+@@ -28,8 +27,6 @@
+ import type * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Layer, Option } from "effect";
+ import { SqlClient } from "effect/sql";
+-import { PgPool } from "@effect/sql-pg";
+-import * as PgConnection from "@effect/sql-pg/PgConnection";
+ import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
+ import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+ import { cloudBlobs } from "./blobs.ts";
+@@ -79,14 +76,6 @@
+   const services = Layer.mergeAll(
+     wire,
+     Layer.succeed(HostedRoutesConfiguration, routes.configuration),
+-    Layer.succeed(StatementBatch, (leaves, { outside }) =>
+-      PgPool.held(
+-        PgConnection.pipelined(leaves, {
+-          outside,
+-          begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+-        }),
+-      ),
+-    ),
+     Layer.succeed(AccountAcquisitionConfiguration, acquisition),
+     Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -47,7 +47,6 @@
+           cloudDatabasePool({
+             url,
+             maxConnections: invocationConnectionLimit,
+-            statementGroups: true,
+           }),
+         );
+         return Context.add(sql, ConnectionReservations, {
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -25,7 +25,6 @@
+ } from "@executor-js/sdk/core";
+ import {
+   HostedExecutor,
+-  StatementBatch,
+   ScheduledAuthority,
+   makeScheduledAuthority,
+   OrganizationIcons,
+@@ -63,7 +62,6 @@
+ import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
+ import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
+ import { SqlClient } from "effect/sql";
+-import { PgliteClient } from "@effect/sql-pglite";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Native resources supplied at the self-host composition boundary. */
+@@ -243,10 +241,6 @@
+             ? { key: modelSigningKey.value, origin: modelOrigin }
+             : undefined,
+         ),
+-        // Prequeued PGlite writes may share the lock, so this snapshot is not read-only.
+-        Layer.succeed(StatementBatch, (leaves, { outside }) =>
+-          PgliteClient.pipelined(leaves, { outside, begin: "ISOLATION LEVEL REPEATABLE READ" }),
+-        ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+         Layer.succeed(SelfHostAuth, auth),
+         Layer.succeed(ScheduledAuthority, scheduleAuthority),
+diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+--- a/e2e/support/data-query-batch.ts
++++ b/e2e/support/data-query-batch.ts
+@@ -57,4 +57,4 @@
+ 
+-/** Assert the batch only after the completed request and SDK span have actually been delivered. */
+-export const assertDataQueryBatch = (
++/** Assert the ordered reads only after the completed request and SDK span have actually been delivered. */
++export const assertDataQueryReads = (
+   query: QueryTrace,
+@@ -123,20 +123,3 @@
+     yield* evidence.json(`data-query-${label}.json`, { request: made.request, sql, delivered });
+-    // The unoptimized route emits zero pipelines. This is the required RED assertion.
+-    expect(
+-      pipelines,
+-      "One batch for the SDK snapshot, selected accounts and authority",
+-    ).toHaveLength(1);
+-    const pipeline = pipelines[0];
+-    if (pipeline === undefined) return yield* Effect.die("The data query batch is missing");
+-    expect(Number(pipeline.tags["db.pipeline.leaves"])).toBe(3);
+-    const target = yield* Target;
+-    // PgConnection counts BEGIN and COMMIT; PGlite counts the captured reads only.
+-    expect(Number(pipeline.tags["db.pipeline.statements"])).toBe(
+-      target.metadata.target === "cloud" ? 5 : 3,
+-    );
+-    if (target.metadata.target === "cloud") {
+-      expect(Number(pipeline.tags["db.pipeline.writes"])).toBe(1);
+-      expect(Number(pipeline.tags["db.pipeline.apart"])).toBe(0);
+-    }
+-    // SQL spans open while leaves queue, before the pipeline span opens. They are siblings.
++    expect(pipelines, "General data dispatch uses ordinary SDK reads").toHaveLength(0);
+     const reads = sql.filter((span) => span.operation === "sql.execute");
+@@ -149,3 +132,3 @@
+       ),
+-      "The batched snapshot reads the app and its active version once",
++      "The SDK reads the app and its active version once",
+     ).toHaveLength(1);
+@@ -160,3 +143,3 @@
+           text.includes("as access") &&
+-          under.some(({ name }) => name === "sdk.accounts.recheck"),
++          under.some(({ name }) => name === "sdk.data.query"),
+       ),
+@@ -170,4 +153,4 @@
+       ),
+-      "The SDK consumes the prefetched reads instead of reading again",
+-    ).toHaveLength(0);
++      "The SDK performs the live reads during data dispatch",
++    ).not.toHaveLength(0);
+   });
+diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+--- a/e2e/tests/data-query-batch.spec.ts
++++ b/e2e/tests/data-query-batch.spec.ts
+@@ -1,4 +1,4 @@
+-/** Public data queries batch independent reads and retain live, scope-specific account selection. */
++/** Public data queries use ordinary SDK reads and retain live, scope-specific account selection. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
+@@ -6,7 +6,7 @@
+ import { appLinksFixture } from "../support/app-links.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import {
+-  assertDataQueryBatch,
++  assertDataQueryReads,
+   tracedDataQuery,
+   withDataQueryTelemetry,
+ } from "../support/data-query-batch.ts";
+@@ -24,7 +24,7 @@
+ }));
+ export default defineApp(requirements, async () => ({ tools: router({ read }) }));`;
+ 
+-layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
++layer(HostedLive, { excludeTestServices: true })("Data query reads", (it) => {
+   it.effect(scenarios.dataQueryBatch.title, (context) =>
+     withHostedCase(
+       context,
+@@ -51,7 +51,7 @@
+             team: { id: team, token: "synthetic-team" },
+             personal: { id: personal, token: "synthetic-personal" },
+           });
+-          yield* assertDataQueryBatch(query, made, "first");
++          yield* assertDataQueryReads(query, made, "first");
+         }),
+       ),
+     ),
+@@ -114,9 +114,9 @@
+           // The result checks run before collector waits, so one missing trace cannot hide a wrong selection.
+           yield* Effect.all(
+             [
+-              assertDataQueryBatch(query, after, "replacement"),
+-              assertDataQueryBatch(query, member, "member-concurrent"),
+-              assertDataQueryBatch(query, owner, "owner-concurrent"),
++              assertDataQueryReads(query, after, "replacement"),
++              assertDataQueryReads(query, member, "member-concurrent"),
++              assertDataQueryReads(query, owner, "owner-concurrent"),
+             ],
+             { concurrency: 3, discard: true },
+           );
