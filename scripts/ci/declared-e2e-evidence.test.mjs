@@ -34,7 +34,6 @@ test("declared jobs upload reports retained after a forced failure prunes the or
     const upload = job.steps[uploadIndex];
     assert.equal(job.steps[collectIndex].if, "always()", name);
     assert.equal(upload.if, "always()", name);
-    assert.equal(upload.with["include-hidden-files"], true, name);
     const directory = join(root, name);
     const run = join(directory, ".upstream/.local/e2e/forced-failure");
     const report = join(run, target, "report/diagnostics");

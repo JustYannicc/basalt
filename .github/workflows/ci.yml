@@ -1420,7 +1420,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          include-hidden-files: true
           name: declared-self-host-${{ matrix.file }}-${{ matrix.key }}
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
@@ -1458,7 +1457,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          include-hidden-files: true
           name: declared-local-${{ matrix.file }}-${{ matrix.key }}
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
@@ -1496,7 +1494,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          include-hidden-files: true
           name: declared-cloud-${{ matrix.file }}-${{ matrix.key }}
           path: |
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
