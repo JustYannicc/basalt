@@ -20,7 +20,7 @@ const steps = {
   "telemetry:build": "packages/telemetry/dist/motel/index.js",
   "e2e:runtime": ".local/test-runtime/host.json",
   "e2e:apps": ".local/test-runtime/apps.tgz",
-  "hosted:self-host:web:build": "apps/hosted/self-host/web/dist/index.html",
+  "hosted:self-host:web:build": "apps/hosted/self-host/web/dist/server/server.js",
   "web:build": "apps/local/web/dist/index.html",
   "e2e:npm": ".local/test-runtime/npm/package.tgz",
 };
@@ -177,6 +177,10 @@ test("fresh builds and cache restores carry a matching stamp; missing or malform
     rmSync(dist, { recursive: true });
     assert.match(prepare(command), /hosted:self-host:web:build: cached/);
     assert.equal(command("e2e-check-web").status, 0);
+    rmSync(join(dist, "server/server.js"));
+    assert.match(output(command("e2e-check-web")), /bun run e2e:prepare/);
+    rmSync(dist, { recursive: true });
+    prepare(command);
     rmSync(stamp);
     assert.match(output(command("e2e-check-web")), /bun run e2e:prepare/);
     writeFileSync(stamp, "not JSON");

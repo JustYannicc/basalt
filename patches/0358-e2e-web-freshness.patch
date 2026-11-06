@@ -38,7 +38,7 @@ diff --git a/scripts/e2e-prepare.ts b/scripts/e2e-prepare.ts
 +    typeof stamp !== "object" ||
 +    !("inputs" in stamp) ||
 +    stamp.inputs !== inputs ||
-+    !fs.existsSync(path.join(selfHostWeb.outputs[0]!, "index.html"))
++    !fs.existsSync(path.join(selfHostWeb.outputs[0]!, "server/server.js"))
 +  ) {
 +    throw new Error(
 +      "Self-host web build is stale or missing. Run bun run e2e:prepare before starting the suite.",
