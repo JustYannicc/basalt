@@ -43,8 +43,8 @@ func TestHomeDBPoolTransactionOwnerReset(t *testing.T) {
 	for _, abort := range []bool{false, true, false} {
 		err := schemaTransaction(db, func(tx *gorm.DB) error {
 			var owner string
-			if err := tx.Raw("SELECT current_user").Scan(&owner).Error; err != nil {
-				return err
+			if errScan := tx.Raw("SELECT current_user").Scan(&owner).Error; errScan != nil {
+				return errScan
 			}
 			if owner != "basalt_pool_owner" {
 				t.Fatalf("transaction owner = %s", owner)
