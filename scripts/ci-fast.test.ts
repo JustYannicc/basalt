@@ -44,7 +44,7 @@ test("the local plan preserves every real CI shell command, in its original orde
       )
       .map((step: { run: string }) => step.run),
   );
-  assert.ok(plan.steps.some((step) => step.command === "node scripts/ci/style.ts"));
+  assert.ok(plan.steps.some((step) => step.command === "node scripts/batch-preflight.ts"));
   const upstream = actual.jobs.fast.steps.find(
     (step: { name?: string }) =>
       step.name === "Typecheck the patched upstream the way upstream checks itself",
