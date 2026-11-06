@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { collectConnectorEvidence } from "./collect-connector-evidence.mjs";
 import { connectorDiagnostic } from "./connector-diagnostics.mjs";
+import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.ts";
 
 const credential = "private-credential-sentinel";
 const tenant = "private-tenant-sentinel";
@@ -183,4 +184,74 @@ test("run collection is bounded and missing evidence is explicit", async (t) => 
   assert.equal(output.runs.length, 8);
   assert.equal(output.truncated, true);
   assert.ok(Buffer.byteLength(JSON.stringify(output)) < 64 * 1024);
+});
+
+test("guidance launch failures retain their closed class in the collected artifact", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/connectors-proof/run-guidance");
+  for (const [detail, marker] of [
+    ["Executable doesn't exist", "missing-executable"],
+    ["No usable sandbox!", "sandbox"],
+    ["error while loading shared libraries: libfixture.so", "missing-library"],
+    ["Timeout 30000ms exceeded", "timeout"],
+    ["--no-sandbox SingletonSocket path is too long", "other"],
+  ]) {
+    const error = new Error(`${detail} ${credential} ${tenant} https://private.invalid`);
+    error.stack +=
+      "\n    at proveCompanyGuidance (/private/scripts/connectors-tests/zendesk-company-guidance.mjs:31:8)";
+    const failure = describeGuidanceFailure(error, "company-guidance");
+    await put(
+      join(run, "zendesk-company-guidance.json"),
+      JSON.stringify({
+        code: 1,
+        stdout: "Zendesk tenant proof: company-guidance",
+        stderr: failure.publicLine,
+      }),
+    );
+    await put(join(run, "home/session.json"), JSON.stringify({ credential, tenant }));
+    const result = await collectConnectorEvidence(root, "gitlab-connectors");
+    assert.deepEqual(result.runs[0].records, [
+      {
+        stage: "company-guidance",
+        outcome: "failed",
+        phase: "company-guidance",
+        kind:
+          marker === "timeout"
+            ? "timeout"
+            : marker === "missing-executable"
+              ? "browser-launch"
+              : "runtime",
+        errorName: "Error",
+        marker,
+        code: 1,
+        location: "zendesk-company-guidance.mjs:31",
+      },
+    ]);
+    const serialized = JSON.stringify(result);
+    assert.ok(!serialized.includes(credential) && !serialized.includes(tenant));
+    assert.ok(!serialized.includes("https://") && !serialized.includes("/private/"));
+  }
+});
+
+test("unknown error names and markers cannot enter connector artifacts", () => {
+  for (const suffix of [
+    `error=${tenant} marker=other`,
+    `error=Error marker=${credential}`,
+    `error=Error marker=other https://private.invalid`,
+  ]) {
+    const result = connectorDiagnostic("company-guidance", {
+      code: 1,
+      stderr: `CONNECTORS_PROOF_FAILURE phase=company-guidance kind=browser-launch at=zendesk-company-guidance.mjs:31 ${suffix}`,
+    });
+    assert.equal(result.errorName, undefined);
+    assert.equal(result.marker, undefined);
+    assert.ok(
+      !JSON.stringify(result).includes(tenant) && !JSON.stringify(result).includes(credential),
+    );
+  }
+  const error = new Error(`${credential} ${tenant}`);
+  error.name = tenant;
+  const failure = describeGuidanceFailure(error, tenant);
+  assert.match(failure.publicLine, /phase=initialization .* error=UnknownError marker=other$/);
+  assert.ok(!failure.publicLine.includes(tenant) && !failure.publicLine.includes(credential));
 });

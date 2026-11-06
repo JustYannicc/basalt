@@ -21,9 +21,15 @@ import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 import { startZendeskCatalogWorker } from "./zendesk-catalog.mjs";
 import { proveTenantPublic } from "./zendesk-tenant-public.mjs";
 import { proveOperatorChoices } from "./zendesk-operator-choices.mjs";
+import { proveCompanyGuidance } from "./zendesk-company-guidance.mjs";
+import { describeGuidanceFailure } from "./guidance-failure.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");
+const guidance = process.argv.includes("--guidance");
+const browserExecutable = guidance ? process.argv[3] : undefined;
+if (guidance)
+  assert.ok(browserExecutable, "Guidance proof requires the installed browser executable");
 await mkdir(join(root, ".generated/connectors-proof"), { recursive: true, mode: 0o700 });
 const directory = await mkdtemp(join(root, ".generated/connectors-proof/zendesk-tenant-"));
 await writeFile(
@@ -67,7 +73,7 @@ const exactReplace = (text, before, after) => {
 const program = Effect.gen(function* () {
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
-  for (const global of [false, true]) {
+  for (const global of guidance ? [false] : [false, true]) {
     step(global ? "global-client-preference" : "tenant-public-client");
     const fixtures = yield* Effect.acquireRelease(
       Effect.promise(() => startZendeskFixtures({ tenantPublicClients: true, expiresIn: 0 })),
@@ -209,6 +215,33 @@ const program = Effect.gen(function* () {
       200,
       "Share the synthetic app",
     );
+    if (guidance) {
+      const connection = checked(
+        yield* request(actors.owner, "POST", `${app.path}/accounts/user/zendesk/connections`, {
+          destination: { kind: "personal" },
+          site: fixtures.sites[0].origin,
+        }),
+        200,
+        "Create the synthetic guidance connection",
+      );
+      step("company-guidance");
+      const result = yield* Effect.promise(() =>
+        proveCompanyGuidance({
+          upstream,
+          browserExecutable,
+          directory,
+          origin: target.metadata.origin,
+          cookies: cliActors.owner.cookies,
+          connection,
+          callback,
+          fixtures,
+        }),
+      );
+      yield* Effect.promise(() =>
+        writeFile(join(directory, "guidance.json"), JSON.stringify(result, null, 2)),
+      );
+      continue;
+    }
     const result = yield* proveTenantPublic({
       Effect,
       request,
@@ -264,14 +297,13 @@ try {
     ),
   );
   console.log(
-    "Zendesk tenant proof passed: method order, callback paste, state/redirect/expiry/replay refusal, per-user PKCE, refresh and revocation.",
+    guidance
+      ? "Zendesk company guidance passed: both callbacks at 1280 and 390, exact clipboard values, custom client unchanged, no authorization."
+      : "Zendesk tenant proof passed: method order, callback paste, state/redirect/expiry/replay refusal, per-user PKCE, refresh and revocation.",
   );
 } catch (error) {
-  await writeFile(
-    join(directory, "failure.txt"),
-    error instanceof Error ? error.stack : String(error),
-    { mode: 0o600 },
-  );
-  console.error(`Zendesk tenant proof failed during ${phase}; private evidence retained.`);
+  const failure = describeGuidanceFailure(error, phase);
+  await writeFile(join(directory, "failure.txt"), failure.privateDetail, { mode: 0o600 });
+  console.error(failure.publicLine);
   process.exitCode = 1;
 }

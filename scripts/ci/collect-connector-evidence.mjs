@@ -15,6 +15,8 @@ const files = {
   "upstream-head.json": "source-check",
   "install.json": "install",
   "zendesk-tenant-runtime.json": "zendesk-tenant",
+  "zendesk-company-guidance.json": "company-guidance",
+  "guidance-launch.json": "guidance-launch",
   "runtime.json": "runtime",
   "report.json": "report",
   "result.json": "report",
