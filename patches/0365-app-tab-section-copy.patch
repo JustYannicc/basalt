@@ -1,8 +1,8 @@
 diff --git a/apps/docs/content/connect-an-account.mdx b/apps/docs/content/connect-an-account.mdx
-index 2b91421..998c9fe 100644
+index 2b91421..f50dbc5 100644
 --- a/apps/docs/content/connect-an-account.mdx
 +++ b/apps/docs/content/connect-an-account.mdx
-@@ -56,10 +56,12 @@ Completing a connection saves the account and links it to this app. There is
+@@ -56,10 +56,10 @@ Completing a connection saves the account and links it to this app. There is
  no separate step. Browser sign-in returns to the app's Accounts tab;
  cancelling or failing sign-in offers a direct way back to the app.
  
@@ -13,17 +13,15 @@ index 2b91421..998c9fe 100644
 +The Accounts tab has two sections. **Your accounts** is where you pick the
 +accounts the app uses for your own calls. **App accounts** is where you pick the
 +accounts the app uses for every caller and its background work; it appears only
-+when the app requires accounts of its own. Both list accounts you could link as
-+well as the linked ones: a checked radio button or checkbox marks a linked
-+account.
++when the app requires accounts of its own.
  
  Each requirement lists every saved account of its provider you can use. A
  single-account requirement shows a radio button per account: selecting one
 diff --git a/e2e/support/account-choices.ts b/e2e/support/account-choices.ts
-index 1f73efe..0b861fb 100644
+index 1f73efe..1f476c2 100644
 --- a/e2e/support/account-choices.ts
 +++ b/e2e/support/account-choices.ts
-@@ -1,10 +1,16 @@
+@@ -1,10 +1,20 @@
  /**
   * The app Accounts tab's choices for one requirement: a list named `<Provider> accounts` with
   * every account the caller could link, each with a radio (plain requirement) or a checkbox
@@ -35,13 +33,17 @@ index 1f73efe..0b861fb 100644
 +/** The accessible name of the radio or checkbox that links the account titled `label`. */
 +export const choiceName = (label: string) => `Use ${label} for this app`;
 +
-+/** The account title inside a control name from `choiceName`. */
-+export const choiceLabel = (name: string) => /^Use (.*) for this app$/.exec(name)?.[1] ?? name;
++/** The account title inside a control name from `choiceName`; any other name fails the read. */
++export const choiceLabel = (name: string) => {
++  const label = /^Use (.*) for this app$/.exec(name)?.[1];
++  if (label === undefined) throw new Error(`Not an account link control name: ${name}`);
++  return label;
++};
 +
  /** One requirement's list of choices, named after its provider. */
  export const accountChoices = (
    root: Page | Locator,
-@@ -16,8 +22,8 @@ export const accountChoices = (
+@@ -16,8 +26,8 @@ export const accountChoices = (
  export const linkedChoice = (root: Page | Locator, provider: string, label: string) => {
    const list = accountChoices(root, provider);
    return list
@@ -52,7 +54,7 @@ index 1f73efe..0b861fb 100644
  };
  
  /** The controls of every linked account in one requirement's choices. */
-@@ -30,15 +36,15 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
+@@ -30,15 +40,15 @@ export const linkedChoices = (root: Page | Locator, provider: string) => {
  
  /** The labels of the linked accounts in one requirement's choices, in the order shown. */
  export const linkedLabels = (root: Page | Locator, provider: string) =>
@@ -73,6 +75,30 @@ index 1f73efe..0b861fb 100644
 +    .or(list.getByRole("checkbox", { name: choiceName(label), exact: true }))
      .click();
  };
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index df7afa5..7aa0562 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8918,7 +8918,8 @@ export const scenarios = plan({
+   hostedAppAccountsFirstEntryDesktop: {
+     fixtures: "actors",
+     file: "app-accounts-tab.spec.ts",
+-    title: "App Accounts first entry keeps the app shell and is never blank at 1280px",
++    title:
++      "App Accounts first entry keeps the app shell, is never blank, and says what each section and account control is for at 1280px",
+     targets: {
+       local: na("Hosted app accounts wrapper."),
+       "self-host": scheduled,
+@@ -8928,7 +8929,8 @@ export const scenarios = plan({
+   hostedAppAccountsFirstEntryPhone: {
+     fixtures: "actors",
+     file: "app-accounts-tab.spec.ts",
+-    title: "App Accounts first entry keeps the app shell and is never blank at 390px",
++    title:
++      "App Accounts first entry keeps the app shell, is never blank, and says what each section and account control is for at 390px",
+     targets: {
+       local: na("Hosted app accounts wrapper."),
+       "self-host": scheduled,
 diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
 index 756ad35..2e218b6 100644
 --- a/e2e/tests/account-connection-query.spec.ts
@@ -148,7 +174,7 @@ index 10053e7..0af79e4 100644
          );
          expect(
 diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
-index ab55068..41c440f 100644
+index ab55068..2d0a2ea 100644
 --- a/e2e/tests/app-account-picker.spec.ts
 +++ b/e2e/tests/app-account-picker.spec.ts
 @@ -19,6 +19,7 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
@@ -167,16 +193,18 @@ index ab55068..41c440f 100644
              const read = (args: {
                readonly selector: string;
                readonly expected: ReadonlyArray<readonly [string, boolean]>;
-@@ -129,7 +131,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -127,20 +129,22 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+                   control.getAttribute("aria-checked") === "true",
+                 ]),
                ) === JSON.stringify(args.expected);
-             // A timeout falls through so the assertion reports the controls actually shown.
+-            // A timeout falls through so the assertion reports the controls actually shown.
              return page
 -              .waitForFunction(read, { selector, expected: [...expected] }, { timeout: 10_000 })
+-              .catch((error: unknown) => {
+-                if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
+-              })
 +              .waitForFunction(read, { selector, expected: named }, { timeout: 10_000 })
-               .catch((error: unknown) => {
-                 if (!(error instanceof Error && error.name === "TimeoutError")) throw error;
-               })
-@@ -137,10 +139,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+               .then(() =>
                  page
                    .locator(selector)
                    .evaluateAll((controls) =>
@@ -197,7 +225,7 @@ index ab55068..41c440f 100644
                    ),
                );
            });
-@@ -281,12 +289,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -281,12 +285,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
          // A failed link keeps the current links and can be retried in place.
          const linkFailure = yield* holdLink("PUT", "mailboxes", third);
          yield* browser.use("Check the third mailbox", () =>
@@ -216,7 +244,7 @@ index ab55068..41c440f 100644
            ),
          ).toBe(true);
          yield* linkFailure.release;
-@@ -307,7 +319,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -307,7 +315,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
                  response.request().method() === "PUT" &&
                  new URL(response.url()).pathname.endsWith(`/mailboxes/${third}`),
              ),
@@ -227,7 +255,7 @@ index ab55068..41c440f 100644
            ]).then(([response]) => response.status()),
          );
          expect(linked).toBe(200);
-@@ -371,7 +385,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -371,7 +381,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
          // A failed unlink keeps the account linked.
          const unlinkFailure = yield* holdLink("DELETE", "mailboxes", second);
          yield* browser.use("Clear the second mailbox", () =>
@@ -238,7 +266,7 @@ index ab55068..41c440f 100644
          );
          yield* unlinkFailure.requested;
          yield* unlinkFailure.release;
-@@ -406,7 +422,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -406,7 +418,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
                  response.request().method() === "DELETE" &&
                  new URL(response.url()).pathname.endsWith(`/mailboxes/${second}`),
              ),
@@ -249,7 +277,7 @@ index ab55068..41c440f 100644
            ]).then(([response]) => response.status()),
          );
          expect(unlinked).toBe(200);
-@@ -503,7 +521,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -503,7 +517,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
          ]);
          yield* browser.checkpoint("New account connected and linked");
          yield* browser.use("Clear the new mailbox", () =>
@@ -260,7 +288,7 @@ index ab55068..41c440f 100644
          );
          yield* browser.use("Unlinking its last use offers deletion", () =>
            unused.waitFor({ state: "visible" }),
-@@ -568,7 +588,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+@@ -568,7 +584,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
                  response.request().method() === "PUT" &&
                  new URL(response.url()).pathname.endsWith(`/calendar/${workCalendar}`),
              ),
@@ -270,7 +298,7 @@ index ab55068..41c440f 100644
          );
          expect(replaced).toBe(200);
 diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
-index 27109ab..0b29f0c 100644
+index 27109ab..129f809 100644
 --- a/e2e/tests/app-accounts-tab.spec.ts
 +++ b/e2e/tests/app-accounts-tab.spec.ts
 @@ -10,7 +10,7 @@ import { expect, layer } from "@effect/vitest";
@@ -507,15 +535,25 @@ index 27109ab..0b29f0c 100644
              .waitFor(),
          );
          expect(yield* links("user")).toEqual([
-@@ -569,7 +643,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+@@ -566,6 +640,18 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) =>
+         );
+         // The member sees the requirement, the linked account's name and its selection, greyed
+         // out and read-only.
++        expect(
++          yield* browser.use("Each section says what it is for", (page) =>
++            Promise.all([
++              appSection(page).locator("h2 + p").innerText(),
++              yourSection(page).locator("h2 + p").innerText(),
++            ]),
++          ),
++        ).toEqual([
++          "Accounts this app uses for everyone",
++          "Pick which accounts this app uses for you",
++        ]);
++        // A read-only indicator names only the account, since the member can't change it.
          yield* browser.use("Team Datadog is shown selected and disabled", (page) =>
            datadogSection(page)
              .getByRole("radio", {
--              name: "Team Datadog",
-+              name: choiceName("Team Datadog"),
-               checked: true,
-               disabled: true,
-               exact: true,
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
 index 7420f1c..035a5e3 100644
 --- a/e2e/tests/contributed-app-accounts.spec.ts
@@ -593,7 +631,7 @@ index 7420f1c..035a5e3 100644
          );
        }),
 diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
-index 60b793c..885f7ba 100644
+index 60b793c..25855c5 100644
 --- a/e2e/tests/executor-key-account.spec.ts
 +++ b/e2e/tests/executor-key-account.spec.ts
 @@ -22,6 +22,7 @@ import { saveAndDeploy } from "../support/app-authoring.ts";
@@ -621,7 +659,7 @@ index 60b793c..885f7ba 100644
 -                  .getByRole("region", { name: "Executor", exact: true })
 -                  .getByRole("radio", { name: "Set up automatically", exact: true });
 +                page.getByRole("region", { name: "Executor", exact: true }).getByRole("radio", {
-+                  name: "Use the account set up automatically for this app",
++                  name: choiceName("the account set up automatically"),
 +                  exact: true,
 +                });
                yield* browser.use("The unlinked key is offered as Set up automatically", (page) =>
@@ -885,6 +923,52 @@ index 46f97d1..155ac2a 100644
              .waitFor(),
          );
          expect(yield* localAccountLinks(agent, app.id, "user")).toEqual([
+diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
+index de6436b..549f1a8 100644
+--- a/e2e/tests/pool-select-only-ui.spec.ts
++++ b/e2e/tests/pool-select-only-ui.spec.ts
+@@ -4,6 +4,7 @@ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { Browser } from "../support/browser.ts";
++import { choiceName } from "../support/account-choices.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
+@@ -140,21 +141,29 @@ export default defineApp({ app: { accounts: { openai: providers.openai.many() }
+           `/org/${actors.organization.slug}/apps/${pool}?view=accounts`,
+         );
+         yield* browser.use("Pick the saved key", (page) =>
+-          page.getByRole("checkbox", { name: "Work key", checked: false }).click(),
++          page
++            .getByRole("checkbox", { name: choiceName("Work key"), checked: false, exact: true })
++            .click(),
+         );
+         yield* browser.use("The key is linked without a sign-in", (page) =>
+-          page.getByRole("checkbox", { name: "Work key", checked: true }).waitFor(),
++          page
++            .getByRole("checkbox", { name: choiceName("Work key"), checked: true, exact: true })
++            .waitFor(),
+         );
+         yield* browser.checkpoint("Pool picks a key saved on the provider app");
+         yield* browser.use("Untick the key", (page) =>
+-          page.getByRole("checkbox", { name: "Work key", checked: true }).click(),
++          page
++            .getByRole("checkbox", { name: choiceName("Work key"), checked: true, exact: true })
++            .click(),
+         );
+         yield* browser.use("Unticking says the key stays saved", (page) =>
+           page.getByText(`Removed from ${poolName}`, { exact: true }).waitFor(),
+         );
+         // A retiring unlink would ask first; a saved key goes straight back to an unticked row.
+         yield* browser.use("Unticking a saved key asks for no deletion", (page) =>
+-          page.getByRole("checkbox", { name: "Work key", checked: false }).waitFor(),
++          page
++            .getByRole("checkbox", { name: choiceName("Work key"), checked: false, exact: true })
++            .waitFor(),
+         );
+         expect((yield* api.request(actors.owner, "GET", `${prefix}/accounts/${key}`)).status).toBe(
+           200,
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
 index 87ea0d5..5f2f55c 100644
 --- a/e2e/tests/product-brand.spec.ts
@@ -960,8 +1044,38 @@ index 72557bc..fd52097 100644
                .waitFor(),
            );
            for (const id of yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`))
+diff --git a/packages/ui/src/implementation/components/checkbox.tsx b/packages/ui/src/implementation/components/checkbox.tsx
+index e0fe4e0..a410c18 100644
+--- a/packages/ui/src/implementation/components/checkbox.tsx
++++ b/packages/ui/src/implementation/components/checkbox.tsx
+@@ -6,13 +6,23 @@ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Tick02Icon } from "@hugeicons/core-free-icons";
+ import { Checkbox as CheckboxPrimitive } from "radix-ui";
+ 
+-/** Checkbox primitive; accepts native props and composes caller styles. */
+-function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
++/**
++ * Checkbox primitive; accepts native props and composes caller styles. `strong` gives the
++ * unchecked box an outline that stands out from its background, for a control people must find.
++ */
++function Checkbox({
++  className,
++  variant = "default",
++  ...props
++}: React.ComponentProps<typeof CheckboxPrimitive.Root> & {
++  readonly variant?: "default" | "strong";
++}) {
+   return (
+     <CheckboxPrimitive.Root
+       data-slot="checkbox"
+       className={cn(
+         "peer size-4 shrink-0 rounded-[4px] border border-input shadow-xs transition-shadow outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground dark:bg-input/30 dark:aria-invalid:ring-destructive/40 dark:data-[state=checked]:bg-primary",
++        variant === "strong" && "border-muted-foreground",
+         className,
+       )}
+       {...props}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index e50fafe..965b5af 100644
+index e50fafe..58b8c81 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -124,6 +124,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
@@ -1044,23 +1158,26 @@ index e50fafe..965b5af 100644
        </div>
        {readOnly && data.readOnly !== undefined && (
          <p className="text-xs text-muted-foreground">{data.readOnly}</p>
-@@ -1035,13 +1047,13 @@ function ReadOnlyChoices<E>({
+@@ -920,8 +932,9 @@ const rowClass = "group/account min-w-0 px-3.5 py-1.5 transition-colors";
+ const lineClass = (requests: boolean) => cn(accountRowGrid(true, requests), "min-h-9 gap-y-1.5");
+ const bandClass = "col-start-3 col-end-[-1] min-w-0 empty:hidden";
+ const usageClass = "min-w-0 pt-2 pl-16 empty:hidden";
++// An unselected radio is how people link an account, so its ring contrasts with the row.
+ const radioClass =
+-  "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
++  "grid size-4 shrink-0 place-items-center rounded-full border border-muted-foreground shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
+ const radioDot = "size-2 rounded-full bg-primary";
+ 
+ /** The row's logo and two-line name; clicking either picks the row's choice. */
+@@ -1032,6 +1045,7 @@ function ReadOnlyChoices<E>({
+       <AccountRowProvider key={account.id}>
+         <li className={rowClass}>
+           <div className={lineClass(data.accountTraffic !== undefined)} data-account-row-header>
++            {/* The viewer can't change this link, so the indicator names only the account. */}
              {plain ? (
                <RadioGroup.Item
                  value={account.id}
--                aria-label={accountName(account, kind)}
-+                aria-label={linkControlName(accountName(account, kind))}
-                 className={radioClass}
-               >
-                 <RadioGroup.Indicator className={radioDot} />
-               </RadioGroup.Item>
-             ) : (
--              <Checkbox checked disabled aria-label={accountName(account, kind)} />
-+              <Checkbox checked disabled aria-label={linkControlName(accountName(account, kind))} />
-             )}
-             <AccountRowIdentity
-               account={account}
-@@ -1412,6 +1424,8 @@ function ChoiceRow<E>({
+@@ -1412,6 +1426,8 @@ function ChoiceRow<E>({
    const id = useId();
    const kind = accountMethodKindLabel(requirement.definition, account.method, requirement.provider);
    const name = accountName(account, kind);
@@ -1069,7 +1186,7 @@ index e50fafe..965b5af 100644
    const row = appAccountRow(app, account, data.accountRow);
    const traffic = data.accountTraffic?.(account);
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
-@@ -1460,7 +1474,7 @@ function ChoiceRow<E>({
+@@ -1460,7 +1476,7 @@ function ChoiceRow<E>({
              <RadioGroup.Item
                id={id}
                value={account.id}
@@ -1078,28 +1195,13 @@ index e50fafe..965b5af 100644
                disabled={!ready || pending || hostProvisioned || unusable}
                className={radioClass}
                onClick={() => {
-@@ -1475,7 +1489,7 @@ function ChoiceRow<E>({
+@@ -1475,7 +1491,8 @@ function ChoiceRow<E>({
              <Checkbox
                id={id}
                checked={linked}
 -              aria-label={name}
++              variant="strong"
 +              aria-label={control}
                disabled={!ready || pending || hostProvisioned || fixed || unusable}
                onCheckedChange={(checked) =>
                  checked !== true && appBound ? setConfirming(true) : void change(checked === true)
-diff --git a/plans/app-and-user-accounts.md b/plans/app-and-user-accounts.md
-index c584e35..618552d 100644
---- a/plans/app-and-user-accounts.md
-+++ b/plans/app-and-user-accounts.md
-@@ -166,8 +166,9 @@ without `linked_by`, `subject` null or `local`, and no access policy.
- MCP `$accounts` and discovery describe user requirements only.
- 
- UI: one discovery cache per app page, refreshed after the caller's own link,
--unlink or connect. The Accounts tab has "App accounts" ("Linked for everyone")
--and "Your accounts" ("Linked for you"), built from the same component: each
-+unlink or connect. The Accounts tab has "App accounts" ("Pick which accounts
-+this app uses for everyone") and "Your accounts" ("Pick which accounts this app
-+uses for you"), built from the same component: each
- requirement lists the accounts the caller could use, a radio for a plain
- requirement and checkboxes for `.many()`, with "Connect new account" last.
- People who cannot edit the app see the app section greyed out and read-only.

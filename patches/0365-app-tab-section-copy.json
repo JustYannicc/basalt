@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-tab-section-copy",
   "file": "0365-app-tab-section-copy.patch",
-  "content_sha256": "a89500f0ad37c3424af1030bf3da338b5bf56c47cf3bc57ecd422e185309b79e",
+  "content_sha256": "2ba0b8d6e71e16df0cc916d467489dee840ca3d19f3d03e23ce1978627a6a2d7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

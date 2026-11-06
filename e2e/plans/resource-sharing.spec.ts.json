@@ -1,5 +1,15 @@
 {
   "scenarios": {},
   "runs": {},
-  "inherited": ["resourceSharing"]
+  "inherited": ["resourceSharing"],
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/app-accounts.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/account-actions.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/resource-settings.tsx",
+    ".upstream/e2e/tests/resource-sharing.spec.ts",
+    ".upstream/packages/ui/src/implementation/components/checkbox.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+  ]
 }
