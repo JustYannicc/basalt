@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "The opt-in Alchemy upload hook freezes the actual root provider request before activation; callers own whole-release admission and may activate only provider-accepted immutable versions. The ordinary provider path remains unchanged without the hook."
+    }
+  }
+}

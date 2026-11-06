@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-worker-upload-hook",
+  "file": "0370-alchemy-worker-upload-hook.patch",
+  "content_sha256": "568546db90a878617063f93f904b4a3c88b81da0259384297d6edb751c94b1d3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The pinned Alchemy provider exposes an opt-in complete Worker upload request and exact-version activation continuation; remove after the release barrier and no-hook regressions pass."
+}
