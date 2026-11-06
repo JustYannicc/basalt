@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Configured global OAuth clients precede tenant public clients. A tenant public client derives its identifier only from the validated single-label account site, uses S256 PKCE without a secret, and retains the same client and exact site for renewal. Anonymous authorization checks follow no redirects or consent and return admin setup guidance on refusal. Public fallback grants request read and write only. Existing tenant callbacks must retain their registrations when the hosted callback is added."
+      constraint "Configured global OAuth clients precede tenant public clients. A tenant public client derives its identifier only from the validated single-label account site, uses S256 PKCE without a secret, and retains the same client and exact site for renewal. Anonymous authorization checks follow no redirects or consent and return admin setup guidance on refusal. Public fallback grants request read and write only. Existing tenant callbacks must retain their registrations when the hosted callback is added. Embedded MCP Apps assets and their path manifest must match the carried OAuth contracts."
     }
   }
 }
