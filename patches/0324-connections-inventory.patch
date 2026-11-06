@@ -1,0 +1,92 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index 30e249a..f068a96 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -55,6 +55,22 @@ export const inventoryQueries = {
+     where entry.owner = 'organization:' || $1
+     and exists (select 1 from executor_accounts a where a.id = entry.account and a.owner = 'organization:' || $1)
+     order by id limit 2001`,
++  // Account connections as metadata only: their status, never the rest of their state, their
++  // sign-in attempt or their account. A pending connection past its expiry reads `expired`.
++  // `produced_account` is any completed sign-in: a new, reconnected or reused account.
++  connections: `select c.id, c.provider, c.target ->> 'app' as app,
++    c.target ->> 'requirement' as requirement, c.state ->> 'status' as status,
++    c.expires_at <= now() as expired,
++    coalesce(c.state ->> 'status' = 'completed', false) as produced_account,
++    c.created_at::text, c.expires_at::text from executor_account_connections c
++    where c.owner = 'organization:' || $1 order by c.id limit 2001`,
++  // The same connections as counts, so an organization with more than the row bound still gets
++  // its numbers.
++  "connections-summary": `select c.state ->> 'status' as status, c.expires_at <= now() as expired,
++    c.target ->> 'app' as app, c.provider, count(*)::int as connections,
++    min(c.created_at)::text as first_created_at, max(c.created_at)::text as last_created_at
++    from executor_account_connections c where c.owner = 'organization:' || $1
++    group by 1, 2, 3, 4 order by 3, 4, 1, 2 limit 2001`,
+ } as const;
+ 
+ export const inventory = (selection: string, organization: string) =>
+diff --git a/e2e/support/production-ops-inventory-rows.ts b/e2e/support/production-ops-inventory-rows.ts
+index 89ba6e6..4024187 100644
+--- a/e2e/support/production-ops-inventory-rows.ts
++++ b/e2e/support/production-ops-inventory-rows.ts
+@@ -14,6 +14,7 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+     workflow: randomUUID(),
+     schedule: randomUUID(),
+     reporter: randomUUID(),
++    connection: randomUUID(),
+     receipt: randomUUID(),
+   });
+   const own = decorate(fixture.own),
+@@ -33,6 +34,10 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+           sql: "delete from executor_account_observations where id = $1",
+           params: [row.reporter],
+         });
++        yield* database.run({
++          sql: "delete from executor_account_connections where id = $1",
++          params: [row.connection],
++        });
+         yield* database.run({
+           sql: "delete from hosted_contributed_departure_jobs where id = $1",
+           params: [row.job],
+@@ -108,6 +113,11 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+       sql: `insert into executor_account_observations (id, account, owner, source, generation, next_allowed_at) select $1, id, owner, 'scope-proof', credential_generation, now() + interval '1 day' from executor_accounts where id = $2`,
+       params: [row.reporter, row.account],
+     });
++    // A pending connection for the organization's app, as an opened Connect form leaves one.
++    yield* database.run({
++      sql: `insert into executor_account_connections (id, owner, provider, reconnect_account, state, revision, oauth_attempt, created_at, expires_at, target) select $1, $2::text, provider, null, '{"status":"pending"}', 'fixture', null, now(), now() + interval '30 minutes', jsonb_build_object('app', $3::text, 'requirement', 'service', 'name', 'Scope proof', 'owner', $2::text, 'scope', 'user') from executor_accounts where id = $4`,
++      params: [row.connection, owner, row.app, row.account],
++    });
+     yield* database.run({
+       sql: `insert into private_production_ops_receipts (plan_sha256, organization_id, migration, revision, release, backup_sha256, verification) values ($1, $2, 'inventory-proof', 'fixture', 'fixture', 'fixture', '{"ok":true}')`,
+       params: [row.receipt, row.organization],
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index 10c8097..b288f8b 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -69,6 +69,8 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+           "schedules",
+           "reporters",
+           "receipts",
++          "connections",
++          "connections-summary",
+         ] as const) {
+           const response = yield* request(read(selection));
+           expect(response.status).toBe(200);
+@@ -230,6 +232,8 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+             schedules: ["id", wanted.schedule],
+             reporters: ["id", wanted.reporter],
+             receipts: ["plan_sha256", wanted.receipt],
++            connections: ["id", wanted.connection],
++            "connections-summary": ["app", wanted.app],
+           } as const;
+           for (const [selection, match] of Object.entries(expected)) {
+             const response = yield* request(read(selection, wanted.organization));
+@@ -255,6 +259,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+               excluded.schedule,
+               excluded.reporter,
+               excluded.receipt,
++              excluded.connection,
+             ])
+               expect(JSON.stringify(rows)).not.toContain(forbidden);
+             if (selection === "pools")
