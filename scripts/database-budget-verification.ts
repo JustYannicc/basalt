@@ -68,6 +68,7 @@ export async function verifyDatabaseBudget(options: {
     checkOverall();
     if (!options.ready) return false;
     stage = "readiness";
+    publish();
     const next = await options.ready();
     checkOverall();
     const changed =
@@ -83,6 +84,7 @@ export async function verifyDatabaseBudget(options: {
       options.signal?.throwIfAborted();
       await adopt();
       stage = "read";
+      publish();
       const rows = await options.read();
       const seen = new Set<string>();
       if (

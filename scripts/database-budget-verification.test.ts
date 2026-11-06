@@ -96,8 +96,10 @@ test("a replacement invalidates the in-flight sample and re-establishes target r
   });
   assert.equal(reads, 4);
   assert.equal(clock, 140_000);
-  assert.equal(snapshots[0]?.successfulSamples, 1);
-  assert.equal(snapshots[0]?.runtime?.bootId, "new");
+  assert.equal(
+    snapshots.find((snapshot) => snapshot.successfulSamples === 1)?.runtime?.bootId,
+    "new",
+  );
   assert.deepEqual(counts, [{ database: "pool", connections: 5 }]);
 });
 

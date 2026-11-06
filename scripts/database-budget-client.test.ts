@@ -186,3 +186,75 @@ test("a stalled end is bounded by one second after retaining the outcome", async
   t.mock.timers.tick(1000);
   assert.deepEqual(await work, [{ database: "pool", connections: 5 }]);
 });
+
+for (const stage of ["readiness", "read"] as const) {
+  test(`abort during a pending ${stage} retains its current stage and prior successful counts`, async () => {
+    const abort = new AbortController();
+    let reads = 0,
+      readyCalls = 0;
+    const actions: string[] = [];
+    let retained: BudgetReceipt | undefined;
+    const runtime = {
+      candidate: "a".repeat(40),
+      workerInput: "b".repeat(64),
+      imageHash: "1234abcd",
+      desiredRevisionMatch: true as const,
+      instanceId: "c".repeat(64),
+      bootId: "boot",
+      readyAt: 0,
+    };
+    const client: DatabaseClient = {
+      on() {},
+      async connect() {},
+      async end() {
+        actions.push("end");
+      },
+      connection: {
+        stream: {
+          destroy() {
+            actions.push("destroy");
+          },
+        },
+      },
+      async query(sql) {
+        if (sql === backendVisibilitySql) return { rows: [{ visible: true }] };
+        if (sql !== backendCountSql) return { rows: [] };
+        if (++reads === 2 && stage === "read") {
+          abort.abort();
+          return new Promise(() => {});
+        }
+        return { rows: [{ database: "pool", connections: 6 }] };
+      },
+    };
+    const work = checkDatabaseBackends({
+      adminUrl: "fixture",
+      runtimeLogins: ["runtime"],
+      databases: ["pool"],
+      client,
+      signal: abort.signal,
+      now: () => 0,
+      wait: async () => {},
+      ready: async () => {
+        if (++readyCalls === 4 && stage === "readiness") {
+          abort.abort();
+          return new Promise(() => {});
+        }
+        return runtime;
+      },
+      retain: async (value) => {
+        retained = value;
+        actions.push("retain");
+      },
+    });
+    await assert.rejects(work, (error) => {
+      assert.ok(error instanceof DatabaseBudgetFailure);
+      assert.equal(error.receipt.outcome, "abort");
+      assert.equal(error.receipt.stage, stage);
+      assert.deepEqual(error.receipt.counts, [{ database: "pool", connections: 6 }]);
+      assert.equal(error.receipt.sampleRuntime?.bootId, "boot");
+      return true;
+    });
+    assert.equal(retained?.stage, stage);
+    assert.ok(actions.indexOf("retain") < actions.indexOf("end"));
+  });
+}
