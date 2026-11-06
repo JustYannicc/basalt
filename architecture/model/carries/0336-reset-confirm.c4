@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "A pool owner's banked reset count opens a confirm step that reads the pool's current credits; Cancel spends nothing and only Use reset spends exactly one, the soonest-expiring. A confirmed reset keeps the count disabled until a reading newer than the reset arrives, also after a reload or on another device."
+    }
+  }
+}
