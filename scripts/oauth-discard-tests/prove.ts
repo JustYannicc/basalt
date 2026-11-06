@@ -17,7 +17,7 @@ const originals = new Map(
   ),
 );
 const poolMarker = "      return Context.add(sql, OpenedConnections, { count: () => opened });";
-const backgroundMarker = "      const background = (work: Effect.Effect<void>) =>";
+const backgroundMarker = "      const background = yield* makeHostedBackgroundWork;";
 const lifecycleMarker = "      const lifecycle = yield* hostedResourceLifecycle.pipe(";
 const environmentMarker = '                          PATH: process.env.PATH ?? "",';
 for (const [path, marker] of [
@@ -47,7 +47,10 @@ ${poolMarker}`,
     'import { observeDiscardWork } from "./oauth-discard-fixture.ts";\n' +
       originals
         .get(executor)!
-        .replace(backgroundMarker, "      const nativeBackground = (work: Effect.Effect<void>) =>")
+        .replace(
+          backgroundMarker,
+          "      const nativeBackground = yield* makeHostedBackgroundWork;",
+        )
         .replace(
           lifecycleMarker,
           `      const background = (work: Effect.Effect<void>) => observeDiscardWork(nativeBackground, work);\n${lifecycleMarker}`,
