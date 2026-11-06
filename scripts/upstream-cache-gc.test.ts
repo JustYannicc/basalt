@@ -211,7 +211,7 @@ test("interrupted eviction retires the key before deletion and prepare rebuilds 
   for (let index = 2; index <= 4; index++) key(index);
   let retired: string | undefined;
   const remove = fs.rmSync;
-  const mocked = t.mock.method(fs, "rmSync", (path, options) => {
+  const interrupt: typeof fs.rmSync = (path, options) => {
     if (String(path).startsWith(join(cache, "prepared/current/.gc-"))) {
       retired = String(path);
       assert.equal(existsSync(entry), false, "the canonical key is already unavailable");
@@ -219,7 +219,8 @@ test("interrupted eviction retires the key before deletion and prepare rebuilds 
       throw Object.assign(new Error("Interrupted removal"), { code: "EIO" });
     }
     return remove(path, options);
-  });
+  };
+  const mocked = t.mock.method(fs, "rmSync", interrupt);
   syncBuiltinESMExports();
   try {
     await collectUpstreamDependencies("current");
