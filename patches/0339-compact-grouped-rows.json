@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compact-grouped-rows",
+  "file": "0339-compact-grouped-rows.patch",
+  "content_sha256": "13910945c658ff856942e8356ad5e84ab745a935bcfb652b6fcab809ff29d913",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
