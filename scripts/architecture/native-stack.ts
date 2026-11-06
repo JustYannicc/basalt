@@ -14,7 +14,6 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   validateInventory,
-  type NativeInventory,
   type WorkerMetadata,
 } from "./native-stack-fixtures.ts";
 
