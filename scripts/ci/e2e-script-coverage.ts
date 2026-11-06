@@ -1,15 +1,18 @@
-import type TypeScript from "../../.upstream/node_modules/typescript-5/lib/typescript.d.ts";
+import ts from "../architecture/typescript.ts";
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join, matchesGlob, relative, resolve } from "node:path";
 import { codeFiles } from "./e2e-inventory.ts";
 
-import { activeSteps, shellCommands, type Workflow } from "./e2e-workflow.ts";
+import {
+  activeSteps,
+  shellCommands,
+  commandWords,
+  executedPaths,
+  executedArgv,
+  type Workflow,
+} from "./e2e-workflow.ts";
 
 export function scriptCoverage(root: string, workflow: Workflow) {
-  const ts = createRequire(join(root, ".upstream/package.json"))(
-    "typescript-5",
-  ) as typeof TypeScript;
   const scripts = codeFiles(join(root, "e2e")).map((file) => relative(root, file));
   const reached = new Set<string>();
   const commands = Object.entries(workflow.jobs).flatMap(([job, value]) =>
@@ -32,15 +35,34 @@ export function scriptCoverage(root: string, workflow: Workflow) {
       ts.ScriptTarget.Latest,
       true,
     );
-    const module = (node: TypeScript.Node | undefined) => {
+    const module = (node: ts.Node | undefined) => {
       if (!node || !ts.isStringLiteralLike(node)) return;
       const path = node.text;
       if (!path.startsWith(".")) return;
       const target = relative(root, resolve(root, dirname(file), path));
       if (/\.[cm]?[jt]sx?$/.test(target)) visit(target);
     };
-    const walk = (node: TypeScript.Node) => {
-      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+    const walk = (node: ts.Node) => {
+      if (
+        ts.isImportDeclaration(node) &&
+        !node.importClause?.isTypeOnly &&
+        !(
+          node.importClause?.namedBindings &&
+          ts.isNamedImports(node.importClause.namedBindings) &&
+          !node.importClause.name &&
+          node.importClause.namedBindings.elements.every((item) => item.isTypeOnly)
+        )
+      )
+        module(node.moduleSpecifier);
+      if (
+        ts.isExportDeclaration(node) &&
+        !node.isTypeOnly &&
+        !(
+          node.exportClause &&
+          ts.isNamedExports(node.exportClause) &&
+          node.exportClause.elements.every((item) => item.isTypeOnly)
+        )
+      )
         module(node.moduleSpecifier);
       if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)
         module(node.arguments[0]);
@@ -51,19 +73,38 @@ export function scriptCoverage(root: string, workflow: Workflow) {
           node.expression.getText(source),
         )
       ) {
+        const executable = node.arguments[0];
+        const runner =
+          executable && ts.isStringLiteralLike(executable)
+            ? executable.text
+            : executable?.getText(source) === "process.execPath"
+              ? "node"
+              : "";
         const argumentsList = node.arguments[1];
-        if (argumentsList && ts.isArrayLiteralExpression(argumentsList))
-          for (const argument of argumentsList.elements) {
-            const scan = (child: TypeScript.Node) => {
-              if (
-                ts.isStringLiteralLike(child) &&
-                /^(?:\.\/)?(?:e2e|scripts)\/[^\s]+\.[cm]?[jt]sx?$/.test(child.text)
-              )
-                visit(child.text.replace(/^\.\//, ""));
-              ts.forEachChild(child, scan);
-            };
-            scan(argument);
-          }
+        if (
+          ["node", "bun"].includes(runner) &&
+          argumentsList &&
+          ts.isArrayLiteralExpression(argumentsList)
+        ) {
+          const argv = argumentsList.elements.map((argument) => {
+            if (ts.isStringLiteralLike(argument)) return argument.text;
+            if (
+              ts.isCallExpression(argument) &&
+              ["join", "resolve"].includes(argument.expression.getText(source))
+            ) {
+              return (
+                argument.arguments
+                  .find(
+                    (part) => ts.isStringLiteralLike(part) && /^(?:e2e|scripts)\//.test(part.text),
+                  )
+                  ?.getText(source)
+                  .slice(1, -1) ?? "<dynamic>"
+              );
+            }
+            return "<dynamic>";
+          });
+          for (const path of executedArgv(runner, argv)) visit(path.replace(/^\.\//, ""));
+        }
       }
       ts.forEachChild(node, walk);
     };
@@ -73,26 +114,19 @@ export function scriptCoverage(root: string, workflow: Workflow) {
     .scripts as Record<string, string>;
   for (let i = 0; i < commands.length; i++) {
     const { command, cwd } = commands[i]!;
-    if (cwd === ".")
-      for (const match of command.matchAll(/(?:npm|bun) run ([\w:-]+)/g))
-        if (
-          packageScripts[match[1]!]! &&
-          !commands.some((item) => item.command === packageScripts[match[1]!]!)
-        )
-          commands.push(
-            ...shellCommands(packageScripts[match[1]!]!).map((command) => ({
-              job: commands[i]!.job,
-              command,
-              cwd,
-            })),
-          );
-    for (const line of shellCommands(command)) {
-      for (const match of line.matchAll(/(?:^|[\s"'])([.\w/*-]+\.[cm]?[jt]sx?)(?=$|[\s"'])/g)) {
-        const path = relative(root, resolve(root, cwd, match[1]!));
-        if (path.startsWith(".upstream/")) continue;
-        if (path.includes("*")) scripts.filter((file) => matchesGlob(file, path)).forEach(visit);
-        else visit(path);
-      }
+    const words = commandWords(command);
+    if (cwd === "." && ["npm", "bun"].includes(words[0] ?? "") && words[1] === "run") {
+      const body = packageScripts[words[2] ?? ""];
+      if (body && !commands.some((item) => item.command === body))
+        commands.push(
+          ...shellCommands(body).map((command) => ({ job: commands[i]!.job, command, cwd })),
+        );
+    }
+    for (const argument of executedPaths(command)) {
+      const path = relative(root, resolve(root, cwd, argument));
+      if (path.startsWith(".upstream/")) continue;
+      if (path.includes("*")) scripts.filter((file) => matchesGlob(file, path)).forEach(visit);
+      else visit(path);
     }
   }
   return { scripts, reached };

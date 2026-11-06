@@ -100,6 +100,11 @@ test("a new literal, aliased, parameterized or unknown dynamic test in a selecte
       'test("New ungated case", () => {});',
       'import { test as check } from "vitest"; check("New ungated case", () => {});',
       'test.each([1,2])("New ungated case", () => {});',
+      'import * as v from "vitest"; v.test("New ungated case", () => {});',
+      'const check = test; check("New ungated case", () => {});',
+      'import * as v from "vitest"; const check = v.test; check("New ungated case", () => {});',
+      'import * as v from "vitest"; const { test: check } = v; check("New ungated case", () => {});',
+      'const custom = { ...scenarios.first, title: "New ungated case" }; test(custom.title, () => {});',
       "test(`New ${value}`, () => {});",
       'test(scenarios.first.title + " suffix", () => {});',
     ]) {
@@ -134,6 +139,11 @@ test("deleted runner steps, disabled steps and disconnected matrices lose covera
     step.run = 'echo \'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"\'';
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
     step.run = 'bun scripts/ci/run-declared.ts "${{ matrix.group }}" "${{ matrix.file }}"';
+    for (const condition of [false, "false", "${{ false }}", "${{ 1 == 2 }}"]) {
+      job.if = condition;
+      assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+    }
+    delete job.if;
     job.strategy!.matrix = { include: [] };
     assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
   }));
@@ -152,6 +162,39 @@ test("recipe checks require an executed runner; an unused string or comment cann
     assert.match(coverageErrors(inventory(), [])[0]!, /e2e\/new-recipe-checks.mjs/);
     workflow.jobs.recipe.steps!.push({ run: "node e2e/new-recipe-checks.mjs" });
     assert.deepEqual(coverageErrors(inventory(), []), []);
+  }));
+
+test("a skipped suite cannot claim its planned children executed", () =>
+  fixture((root, _workflow, inventory) => {
+    for (const prefix of ["describe.skip", "suite.skip", "describe.skipIf(true)"]) {
+      writeFileSync(
+        join(root, ".upstream/e2e/tests/first.spec.ts"),
+        `${prefix}("Skipped suite", () => { test(scenarios.first.title, () => {}); });`,
+      );
+      assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
+    }
+  }));
+
+test("syntax checks, argv data, comments and type-only imports do not execute a recipe", () =>
+  fixture((root, workflow, inventory) => {
+    writeFileSync(join(root, "e2e/new-recipe-checks.mjs"), 'console.log("proof");');
+    writeFileSync(
+      join(root, "scripts/wrapper.ts"),
+      'import { spawn } from "node:child_process"; spawn("echo", ["e2e/new-recipe-checks.mjs"]);',
+    );
+    writeFileSync(
+      join(root, "scripts/type-only.ts"),
+      'import type { Proof } from "../e2e/new-recipe-checks.mjs";',
+    );
+    for (const run of [
+      "node --check e2e/new-recipe-checks.mjs",
+      "node scripts/wrapper.ts e2e/new-recipe-checks.mjs",
+      "node scripts/wrapper.ts # e2e/new-recipe-checks.mjs",
+      "node scripts/type-only.ts",
+    ]) {
+      workflow.jobs.recipe = { steps: [{ run }] };
+      assert.match(coverageErrors(inventory(), [])[0]!, /Ungated E2E: e2e\/new-recipe-checks.mjs/);
+    }
   }));
 
 test("reviewed exceptions bind source changes and expire as soon as their runner is wired", () =>
