@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-shared-database-budget",
+  "file": "0314-shared-database-budget.patch",
+  "content_sha256": "674ebe8ae168d19d9019e7935fca27c02618cb972d2f379c891841358f8b69ef",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

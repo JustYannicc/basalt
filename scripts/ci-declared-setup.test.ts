@@ -64,11 +64,32 @@ test("HITL partitions retain every target scenario exactly once behind required 
       }
     }
   }
-  assert.equal(counts.size, 42);
+  assert.equal(counts.size, 62);
   assert.ok([...counts.values()].every((count) => count === 1));
+  for (const target of ["self-host", "cloud"])
+    for (const scenario of [
+      "hitlIntentPrefetchDesktop",
+      "hitlIntentPrefetchPhone",
+      "hitlIntentScopeDesktop",
+      "hitlIntentScopePhone",
+      "settingsIntentPrefetchDesktop",
+      "settingsIntentPrefetchPhone",
+      "settingsIntentPrefetchMember",
+      "settingsLoading",
+      "hostedAppAccountsFirstEntryDesktop",
+      "hostedAppAccountsFirstEntryPhone",
+    ])
+      assert.equal(counts.get(`${target}:${scenario}`), 1, `${target}:${scenario}`);
   for (const path of [
     ".upstream/e2e/tests/first-entry-reveal.spec.ts",
     ".upstream/e2e/tests/hidden-section-reads.spec.ts",
+    ".upstream/e2e/tests/hitl-intent-prefetch.spec.ts",
+    ".upstream/e2e/tests/hitl-intent-scope.spec.ts",
+    ".upstream/e2e/support/hitl-touch-intent.ts",
+    ".upstream/e2e/tests/settings-intent-prefetch.spec.ts",
+    ".upstream/e2e/tests/settings-loading.spec.ts",
+    ".upstream/e2e/tests/app-accounts-tab.spec.ts",
+    ".upstream/e2e/support/settings-touch-intent.ts",
     ".upstream/packages/ui/src/implementation/dashboard/review-lazy.tsx",
   ])
     assert.ok(selectPaths([path]).jobs.includes("human-in-the-loop-cloud"), path);

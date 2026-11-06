@@ -12,6 +12,7 @@ PRIVACY_AUDIT_MARKER = "POOL_PRIVACY_AUDIT "
 PRIVACY_PROGRESS_MARKER = "POOL_PRIVACY_PROGRESS "
 PRIVACY_RETRY_MARKER = "POOL_PRIVACY_RETRY "
 HOME_INIT_FAILURE_MARKER = "POOL_HOME_INIT_FAILURE "
+HOME_SCHEMA_OWNER_FAILURE_MARKER = "POOL_HOME_SCHEMA_OWNER_UNAVAILABLE "
 HOME_MAINTENANCE_FAILURE_MARKER = "POOL_HOME_MAINTENANCE_FAILURE "
 APP_LOG_PRIVACY_AUDIT_MARKER = "POOL_APP_LOG_PRIVACY_AUDIT "
 APP_LOG_WRITE_FAILURE_MARKER = "POOL_APP_LOG_WRITE_FAILURE "
@@ -300,6 +301,14 @@ def safe_child_output_line(name: str, line: str) -> str | None:
     category = _home_init_failure_category(message)
     if category is None:
         return None
+    if category == "database" and message is not None:
+        missing = re.search(r'role "[^"\r\n]{1,128}" does not exist', message) is not None
+        denied = re.search(r'permission denied to set role "[^"\r\n]{1,128}"', message) is not None
+        if missing or denied:
+            return HOME_SCHEMA_OWNER_FAILURE_MARKER + json.dumps(
+                {"missing_role": int(missing), "denied_role": int(denied)},
+                sort_keys=True, separators=(",", ":"),
+            )
     counts = {field: int(field == category) for field in HOME_INIT_FAILURE_CATEGORIES}
     return HOME_INIT_FAILURE_MARKER + json.dumps(
         counts, sort_keys=True, separators=(",", ":")

@@ -1,12 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AccountsNeeded, DayUsage, ModelUsage } from "../contract.ts";
-import { advice, columns, cost, dayRange, series, tokens } from "./usage-format.ts";
+import {
+  advice,
+  columns,
+  cost,
+  credits,
+  format,
+  dayRange,
+  series,
+  tokens,
+} from "./usage-format.ts";
 
 const slice = (total: number, spend: number) => ({
-  requests: 1, tokens: { input: total, cacheRead: 0, cacheWrite: 0, output: 0, total }, cost: spend, unpriced: 0,
+  requests: 1,
+  tokens: { input: total, cacheRead: 0, cacheWrite: 0, output: 0, total },
+  cost: spend,
+  unpriced: 0,
 });
-const model = (name: string, total: number, spend: number): ModelUsage => ({ provider: "claude", model: name, ...slice(total, spend) });
+const model = (name: string, total: number, spend: number): ModelUsage => ({
+  provider: "claude",
+  model: name,
+  ...slice(total, spend),
+});
 
 test("formats tokens and API-equivalent cost without hiding tiny spend", () => {
   assert.equal(tokens(12_400_000), "12.4M");
@@ -18,7 +34,12 @@ test("formats tokens and API-equivalent cost without hiding tiny spend", () => {
 });
 
 test("keeps empty days in the chart range", () => {
-  assert.deepEqual(dayRange("2026-10-01T10:00:00.000Z", "2026-10-04T09:00:00.000Z"), ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"]);
+  assert.deepEqual(dayRange("2026-10-01T10:00:00.000Z", "2026-10-04T09:00:00.000Z"), [
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-03",
+    "2026-10-04",
+  ]);
   assert.deepEqual(dayRange("nope", "2026-10-04T00:00:00.000Z"), []);
 });
 
@@ -31,18 +52,47 @@ test("folds smaller models into Other so a column still adds up", () => {
   const models = [model("a", 50, 5), model("b", 30, 3), model("c", 20, 2)];
   assert.deepEqual(series(models, "tokens", 2), { keys: ["claude:a", "claude:b"], other: true });
   const day: DayUsage = { day: "2026-10-02", models, ...slice(100, 10) };
-  const [empty, full] = columns([day], ["2026-10-01", "2026-10-02"], ["claude:a", "claude:b"], "cost");
+  const [empty, full] = columns(
+    [day],
+    ["2026-10-01", "2026-10-02"],
+    ["claude:a", "claude:b"],
+    "cost",
+  );
   assert.deepEqual(empty, { day: "2026-10-01", total: 0, parts: [] });
   assert.equal(full!.total, 10);
-  assert.deepEqual(full!.parts, [{ key: "claude:a", amount: 5 }, { key: "claude:b", amount: 3 }, { key: "", amount: 2 }]);
+  assert.deepEqual(full!.parts, [
+    { key: "claude:a", amount: 5 },
+    { key: "claude:b", amount: 3 },
+    { key: "", amount: 2 },
+  ]);
 });
 
 test("says plainly whether to add or remove an account", () => {
-  const entry = (advice: AccountsNeeded["advice"], accounts = 2, limitHits = 0): AccountsNeeded =>
-    ({ provider: "claude", advice, accounts, limitHits, exhausted: 0, hoursRead: 168 });
+  const entry = (
+    advice: AccountsNeeded["advice"],
+    accounts = 2,
+    limitHits = 0,
+  ): AccountsNeeded => ({
+    provider: "claude",
+    advice,
+    accounts,
+    limitHits,
+    exhausted: 0,
+    hoursRead: 168,
+  });
   assert.match(advice(entry("add", 2, 4), "Claude"), /^Add a Claude account\./);
   assert.match(advice(entry("remove", 3), "Claude"), /^You could remove a Claude account\./);
   assert.equal(advice(entry("remove", 1), "Claude"), "Claude has room to spare.");
   assert.match(advice(entry("enough", 2, 1), "Claude"), /hit a limit 1 time this week/);
   assert.match(advice(entry("unknown"), "Claude"), /Not enough readings yet/);
+});
+
+test("unknown API prices are unpriced rather than zero dollars", () => {
+  assert.equal(format(0, "cost", { requests: 1, unpriced: 1 }), "Unpriced");
+  assert.equal(format(0, "cost", { requests: 1, unpriced: 0 }), "$0.00");
+});
+
+test("weekly caps retain their credit unit", () => {
+  assert.equal(credits(999), "999 credits");
+  assert.equal(credits(0.1), "0.1 credits");
 });

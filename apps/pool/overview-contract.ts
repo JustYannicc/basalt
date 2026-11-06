@@ -178,6 +178,7 @@ export interface PoolPersonalOverviewResult {
   readonly series: PoolUsageSeriesResult;
   readonly metrics: {
     readonly requestTokens: OverviewTokenPercentiles;
+    /** API-equivalent USD estimate at current official prices, including subscription requests. Never Home credits. */
     readonly apiBilled: OverviewMoneyMetric;
     readonly subscriptionValue: OverviewMoneyMetric;
     readonly usageSlices: readonly OverviewUsageSlice[];
@@ -208,6 +209,7 @@ export interface PoolOverviewResult {
   }[];
   readonly metrics: {
     readonly requestTokens: OverviewTokenPercentiles;
+    /** API-equivalent USD estimate at current official prices, including subscription requests. Never Home credits. */
     readonly apiBilled: OverviewMoneyMetric;
     readonly subscriptionValue: OverviewMoneyMetric;
     readonly perActivePersonPerDay: OverviewPerPersonDailyValue;

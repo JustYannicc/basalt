@@ -1,0 +1,82 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
+	"gopkg.in/yaml.v3"
+)
+
+type command struct {
+	ID        string `json:"id"`
+	Operation string `json:"operation"`
+}
+
+func main() {
+	var output sync.Mutex
+	emit := func(value any) {
+		output.Lock()
+		defer output.Unlock()
+		data, _ := json.Marshal(value)
+		fmt.Printf("HOME_BUDGET %s\n", data)
+	}
+	dsn, _ := json.Marshal(os.Getenv("HOME_BUDGET_DATABASE_URL"))
+	var cfg cluster.Config
+	if err := yaml.Unmarshal([]byte("pgsql:\n  postgres_uri: "+string(dsn)+"\n  schema-owner: basalt_pool_owner\n"), &cfg); err != nil {
+		panic(err)
+	}
+	db, errOpen := cluster.Open(context.Background(), cfg.PGSQL)
+	if errOpen != nil {
+		panic(errOpen)
+	}
+	sqlDB, errDB := db.DB()
+	if errDB != nil {
+		panic(errDB)
+	}
+	defer func() {
+		if errClose := sqlDB.Close(); errClose != nil {
+			fmt.Fprintln(os.Stderr, "Home proof database close failed")
+		}
+	}()
+	repository := cluster.NewRepository(db)
+	emit(map[string]any{"event": "ready", "pid": os.Getpid()})
+	var work sync.WaitGroup
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var request command
+		if errDecode := json.Unmarshal(scanner.Bytes(), &request); errDecode != nil {
+			panic(errDecode)
+		}
+		work.Add(1)
+		go func(request command) {
+			defer work.Done()
+			started := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+			defer cancel()
+			var err error
+			switch request.Operation {
+			case "migrate":
+				err = cluster.AutoMigrateContext(ctx, db)
+			case "initialize":
+				_, err = repository.EnsureLifecycleConfig(ctx, 20*time.Second)
+			case "update":
+				_, err = repository.UpdateLifecycleConfig(ctx, 20*time.Second, config.DefaultCredentialConcurrencyConfig())
+			default:
+				err = fmt.Errorf("unknown operation")
+			}
+			result := map[string]any{"event": "complete", "id": request.ID, "elapsedMs": time.Since(started).Milliseconds(), "ok": err == nil}
+			if err != nil {
+				result["error"] = err.Error()
+			}
+			emit(result)
+		}(request)
+	}
+	work.Wait()
+}

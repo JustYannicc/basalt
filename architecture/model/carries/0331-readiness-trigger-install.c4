@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The physical provisioning readiness wait installs and removes its statement triggers one statement per transaction, so it holds at most the one table lock it waits on and cannot deadlock with provisioning jobs that write the same tables in other orders. Readiness still listens before installing and reads only after every trigger exists; assertions and deadlines stay unchanged."
+    }
+  }
+}

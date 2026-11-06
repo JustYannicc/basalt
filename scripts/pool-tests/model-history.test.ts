@@ -1,3 +1,4 @@
+import { historySchemaFixture } from "./history-fixture.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -21,17 +22,23 @@ test("request history backfills explicitly, survives restarts and late commits, 
   await db.connect();
   await late.connect();
   try {
-    await db.query(`CREATE SCHEMA ${schema}`);
+    await historySchemaFixture(db, schema);
     await db.query(`SET search_path TO ${schema}`);
     await late.query(`SET search_path TO ${schema}`);
     await homeMetadataFixture(db);
     await db.query("UPDATE home_data_migration SET completed=false");
-    await db.query('INSERT INTO "user" VALUES (1,$1)', [await backendUserName("fixture-owner", "fixture-pool")]);
-    await db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
+    await db.query('INSERT INTO "user" VALUES (1,$1)', [
+      await backendUserName("fixture-owner", "fixture-pool"),
+    ]);
+    await db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (1,$1,1)", [
+      `sha256:${"a".repeat(64)}`,
+    ]);
     const add = async (client: pg.Client, request: string, at = "2020-01-01T12:00:00.123456Z") => {
-      await client.query(`INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
+      await client.query(
+        `INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
         VALUES ($1,$2,'fixture-account','fixture-provider','fixture-model','/v1/responses',$3)`,
-      [at, request, `sha256:${"a".repeat(64)}`]);
+        [at, request, `sha256:${"a".repeat(64)}`],
+      );
     };
     await add(db, randomUUID());
     await db.query("UPDATE usage SET model=NULL WHERE id=1");
@@ -40,11 +47,17 @@ test("request history backfills explicitly, survives restarts and late commits, 
         '{"input_price_per_million":2,"output_price_per_million":8,"cache_read_price_per_million":0.5,"cache_write_price_per_million":2.5,"request_price":0,"matched_service_tier":"*","min_input_tokens":0,"provider":"fixture-provider","model":"fixture-priced-model","requested_service_tier":"priority","response_service_tier":"flex","service_tier_source":"response","effective_service_tier":"flex","response_tier_fallback":false}',1,1)`);
     const before = await planHomeBackfill(db);
     assert.equal(before.rows, "1");
-    assert.equal((await db.query("SELECT to_regclass('basalt_model_requests') AS relation")).rows[0].relation, null);
+    assert.equal(
+      (await db.query("SELECT to_regclass('basalt_model_requests') AS relation")).rows[0].relation,
+      null,
+    );
     await migrateModelHistory(db);
     await migrateModelHistory(db);
     assert.equal((await captureHomeRequests(db)).state, "inactive");
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "0");
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n,
+      "0",
+    );
     assert.equal(before.privacyReady, false);
     await assert.rejects(activateHomeBackfill(db, before));
     await db.query("UPDATE home_data_migration SET completed=true");
@@ -52,7 +65,10 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(approved.privacyReady, true);
     await db.query("UPDATE home_data_migration SET completed=false");
     await assert.rejects(activateHomeBackfill(db, approved));
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_history_cursor")).rows[0].n, "0");
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_history_cursor")).rows[0].n,
+      "0",
+    );
     await db.query("UPDATE home_data_migration SET completed=true");
     await activateHomeBackfill(db, approved);
     const first = await captureHomeRequests(db);
@@ -69,10 +85,19 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(result.records[0]!.attribution, "charge-snapshot");
     assert.equal(result.records[0]!.original_price_rule, "fixture-price");
     assert.deepEqual(historyObject(result.records[0]!.price_snapshot).billing, {
-      matchedRule: "fixture-price", provider: "fixture-provider", model: "fixture-priced-model",
-      requestedTier: "priority", responseTier: "flex", tierSource: "response", effectiveTier: "flex", responseFallback: false,
+      matchedRule: "fixture-price",
+      provider: "fixture-provider",
+      model: "fixture-priced-model",
+      requestedTier: "priority",
+      responseTier: "flex",
+      tierSource: "response",
+      effectiveTier: "flex",
+      responseFallback: false,
     });
-    assert.equal((await readRequests(db, { ...query, person: await digest("other-member") })).records.length, 0);
+    assert.equal(
+      (await readRequests(db, { ...query, person: await digest("other-member") })).records.length,
+      0,
+    );
 
     await late.query("BEGIN");
     await add(late, randomUUID());
@@ -81,19 +106,34 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await late.query("COMMIT");
     // Another connection models the next process; only the database cursor carries progress.
     await captureHomeRequests(late);
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
-    await db.query('INSERT INTO "user" VALUES (2,$1)', [await backendUserName("fixture-other", "other-pool")]);
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n,
+      "3",
+    );
+    await db.query('INSERT INTO "user" VALUES (2,$1)', [
+      await backendUserName("fixture-other", "other-pool"),
+    ]);
     await db.query("UPDATE api_key SET user_id=2");
     await captureHomeRequests(late);
-    assert.equal((await readRequests(db, query)).records.length, 3, "a moved key cannot rewrite old attribution or poison the sweep");
+    assert.equal(
+      (await readRequests(db, query)).records.length,
+      3,
+      "a moved key cannot rewrite old attribution or poison the sweep",
+    );
     await captureHomeRequests(late);
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n,
+      "3",
+    );
     await assert.rejects(db.query("DELETE FROM basalt_model_requests"), { code: "55000" });
     await assert.rejects(db.query("UPDATE basalt_model_requests SET cost=0"), { code: "55000" });
     await assert.rejects(db.query("TRUNCATE basalt_model_requests"), { code: "55000" });
     await assert.rejects(db.query("TRUNCATE basalt_model_requests_0"), { code: "55000" });
     await migrateModelHistory(db);
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n,
+      "3",
+    );
     await db.query("UPDATE api_key SET user_id=1");
     const sharedTrace = randomUUID();
     await add(db, sharedTrace);
@@ -106,10 +146,19 @@ test("request history backfills explicitly, survives restarts and late commits, 
         '{"response_service_tier":"priority","effective_service_tier":"priority","response_tier_fallback":true}'::jsonb,1,1
       FROM billing_charge WHERE usage_id=1`);
     await captureHomeRequests(db);
-    const attempts = (await db.query("SELECT id,price_version,failed FROM basalt_model_requests WHERE request_id=$1", [sharedTrace])).rows;
+    const attempts = (
+      await db.query(
+        "SELECT id,price_version,failed FROM basalt_model_requests WHERE request_id=$1",
+        [sharedTrace],
+      )
+    ).rows;
     assert.equal(attempts.length, 2, "shared HTTP traces cannot collapse distinct usage IDs");
     assert.equal(new Set(attempts.map((row) => row.id)).size, 2);
-    assert.equal(new Set(attempts.map((row) => row.price_version)).size, 2, "billing rule and effective tier are part of price identity");
+    assert.equal(
+      new Set(attempts.map((row) => row.price_version)).size,
+      2,
+      "billing rule and effective tier are part of price identity",
+    );
     assert.equal(attempts.filter((row) => row.failed === true).length, 1);
     const withoutSavedOwner = randomUUID();
     await add(db, withoutSavedOwner);
@@ -117,26 +166,42 @@ test("request history backfills explicitly, survives restarts and late commits, 
       SELECT 'ownerless-charge',6,amount,matched_price_rule,price_snapshot,1,NULL FROM billing_charge WHERE usage_id=1`);
     await db.query("UPDATE api_key SET user_id=2");
     await captureHomeRequests(db);
-    const fallback = await readRequests(db, { ...query, pool: (await digest("other-pool")).slice(0, 16),
-      person: await digest("fixture-other") });
+    const fallback = await readRequests(db, {
+      ...query,
+      pool: (await digest("other-pool")).slice(0, 16),
+      person: await digest("fixture-other"),
+    });
     assert.equal(fallback.records.length, 1);
     assert.equal(fallback.records[0]!.request_id, withoutSavedOwner);
-    assert.equal(fallback.records[0]!.attribution, "key-at-capture",
-      "a current key owner cannot become a historical charge owner when its saved user ID is null");
+    assert.equal(
+      fallback.records[0]!.attribution,
+      "key-at-capture",
+      "a current key owner cannot become a historical charge owner when its saved user ID is null",
+    );
     await db.query("UPDATE api_key SET user_id=1");
     const delayedRequest = randomUUID();
     await late.query("BEGIN");
     await add(late, delayedRequest);
     for (let cycle = 0; cycle < 4; cycle++) {
-      await db.query(`INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
+      await db.query(
+        `INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
         SELECT '2020-01-01T12:00:00Z'::timestamptz,'sweep-fixture-' || $1::text || '-' || n,
           'fixture-account','fixture-provider','fixture-model','/v1/responses',$2 FROM generate_series(1,400) n`,
-      [cycle, `sha256:${"a".repeat(64)}`]);
+        [cycle, `sha256:${"a".repeat(64)}`],
+      );
       await captureHomeRequests(db);
       if (cycle === 0) await late.query("COMMIT");
     }
-    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests WHERE request_id=$1", [delayedRequest])).rows[0].n, "1",
-      "a fixed sweep horizon wraps despite sustained traffic above its page rate");
+    assert.equal(
+      (
+        await db.query(
+          "SELECT count(*)::text AS n FROM basalt_model_requests WHERE request_id=$1",
+          [delayedRequest],
+        )
+      ).rows[0].n,
+      "1",
+      "a fixed sweep horizon wraps despite sustained traffic above its page rate",
+    );
   } finally {
     await late.query("ROLLBACK").catch(() => {});
     await late.end();

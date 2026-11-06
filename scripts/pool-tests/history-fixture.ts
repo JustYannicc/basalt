@@ -15,8 +15,30 @@ export async function homeMetadataFixture(db: HistoryDatabase) {
     upstream_status_code int DEFAULT 200,api_key text)`);
   await db.query(`CREATE TABLE billing_charge (id text,usage_id bigint,amount numeric,matched_price_rule text,
     price_snapshot jsonb,api_key_id bigint,user_id bigint)`);
-  await db.query("CREATE TABLE api_key (id bigint,diagnostic_fingerprint text,user_id bigint,display_name text)");
+  await db.query(
+    "CREATE TABLE api_key (id bigint,diagnostic_fingerprint text,user_id bigint,display_name text)",
+  );
   await db.query('CREATE TABLE "user" (id bigint,username text)');
-  await db.query("CREATE TABLE home_data_migration (name text PRIMARY KEY,completed boolean NOT NULL)");
-  await db.query("INSERT INTO home_data_migration VALUES ('diagnostics_metadata_only_v1_1_6',true)");
+  await db.query(
+    "CREATE TABLE home_data_migration (name text PRIMARY KEY,completed boolean NOT NULL)",
+  );
+  await db.query(
+    "INSERT INTO home_data_migration VALUES ('diagnostics_metadata_only_v1_1_6',true)",
+  );
+}
+
+/** Match the stable schema owner used by production, independently of the rotating test login. */
+export async function historySchemaFixture(db: HistoryDatabase, schema: string) {
+  if (!/^[a-z][a-z0-9_]+$/.test(schema)) throw new Error("Invalid fixture schema");
+  await db.query(
+    "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+  );
+  await db.query(`CREATE SCHEMA ${schema} AUTHORIZATION basalt_pool_owner`);
+}
+
+/** The in-memory database has the same provisioned owner as the real Postgres fixtures. */
+export async function historyMemoryOwnerFixture(db: HistoryDatabase) {
+  await db.query("CREATE ROLE basalt_pool_owner NOLOGIN");
+  await db.query("ALTER SCHEMA public OWNER TO basalt_pool_owner");
+  await db.query("SET ROLE basalt_pool_owner");
 }

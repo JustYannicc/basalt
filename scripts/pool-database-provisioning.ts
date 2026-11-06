@@ -20,12 +20,16 @@ const attempts = limits.backoffMs.length + 1;
 
 /** 3 × (40s attempt + 2s close) + 2s + 4s backoff = 132s. src/pool/database.ts allows 3 minutes. */
 export const worstCaseMs =
-  attempts * (limits.attemptMs + limits.closeMs) + limits.backoffMs.reduce((sum, ms) => sum + ms, 0);
+  attempts * (limits.attemptMs + limits.closeMs) +
+  limits.backoffMs.reduce((sum, ms) => sum + ms, 0);
 
 export type Database = "cluster" | "pool";
 
 export interface Session {
-  query(text: string, values?: unknown[]): Promise<{ rowCount: number | null; rows: Record<string, unknown>[] }>;
+  query(
+    text: string,
+    values?: unknown[],
+  ): Promise<{ rowCount: number | null; rows: Record<string, unknown>[] }>;
   end(): Promise<void>;
 }
 
@@ -56,7 +60,15 @@ const retryableStates: Record<string, string> = {
   "57P02": "server crashed",
   "57P03": "server not accepting connections",
 };
-const networkCodes = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN"]);
+const networkCodes = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+]);
 // node-postgres's own messages carry no connection details.
 const clientMessages: Record<string, string> = {
   "timeout expired": "connect timeout",
@@ -68,11 +80,15 @@ const clientMessages: Record<string, string> = {
 /** A log-safe reason, and whether a fresh attempt could succeed. Driver messages can contain hosts or logins. */
 export function classify(error: unknown): { reason: string; retryable: boolean } {
   if (error instanceof ProvisioningError) return { reason: error.message, retryable: false };
-  if (error instanceof AttemptExpired) return { reason: "attempt deadline exceeded", retryable: true };
+  if (error instanceof AttemptExpired)
+    return { reason: "attempt deadline exceeded", retryable: true };
   const code = error instanceof Error && "code" in error ? String(error.code) : "";
   if (/^[A-Z0-9]{5}$/.test(code)) {
-    const label = retryableStates[code] ?? (code.startsWith("08") ? "connection failure" : undefined);
-    return label ? { reason: `${label} (${code})`, retryable: true } : { reason: `Postgres error ${code}`, retryable: false };
+    const label =
+      retryableStates[code] ?? (code.startsWith("08") ? "connection failure" : undefined);
+    return label
+      ? { reason: `${label} (${code})`, retryable: true }
+      : { reason: `Postgres error ${code}`, retryable: false };
   }
   if (networkCodes.has(code)) return { reason: `network error (${code})`, retryable: true };
   const message = error instanceof Error ? clientMessages[error.message] : undefined;
@@ -103,7 +119,9 @@ async function provisionOnce(
   );
   if (!existingOwner.rowCount) {
     step("create the owner role");
-    await admin.query(`CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
+    await admin.query(
+      `CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
+    );
   } else if (Object.values(existingOwner.rows[0] ?? {}).some(Boolean)) {
     throw new ProvisioningError("The pool database owner has unexpected privileges");
   }
@@ -125,9 +143,10 @@ async function provisionOnce(
   await admin.query(`REVOKE ALL ON DATABASE ${database} FROM PUBLIC`);
   step("check the runtime role");
   const runtime = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [runtimeRole]);
-  if (!runtime.rowCount) throw new ProvisioningError("The pool runtime role does not exist on the cluster");
+  if (!runtime.rowCount)
+    throw new ProvisioningError("The pool runtime role does not exist on the cluster");
   step("grant the owner role to the runtime role");
-  await admin.query(`GRANT ${owner} TO ${identifier(runtimeRole)}`);
+  await admin.query(`GRANT ${owner} TO ${identifier(runtimeRole)} WITH INHERIT TRUE, SET TRUE`);
   step("connect to the pool database");
   const scoped = await open("pool");
   step("revoke public access to the public schema");
@@ -176,7 +195,10 @@ export async function provisionPoolDatabase(options: ProvisionOptions): Promise<
     const open = async (database: Database) => {
       const session = await options.connect(database);
       if (expired) {
-        void within(session.end().catch(() => {}), limits.closeMs);
+        void within(
+          session.end().catch(() => {}),
+          limits.closeMs,
+        );
         throw new AttemptExpired();
       }
       sessions.push(session);
@@ -206,7 +228,9 @@ export async function provisionPoolDatabase(options: ProvisionOptions): Promise<
       const where = `Pool database provisioning failed at "${current}"`;
       if (!retryable) throw new Error(`${where}: ${reason}`);
       if (attempt >= attempts) throw new Error(`${where} after ${attempt} attempts: ${reason}`);
-      log(`${where} (attempt ${attempt} of ${attempts}): ${reason}; retrying in ${limits.backoffMs[attempt - 1]! / 1000}s`);
+      log(
+        `${where} (attempt ${attempt} of ${attempts}): ${reason}; retrying in ${limits.backoffMs[attempt - 1]! / 1000}s`,
+      );
     } finally {
       clearTimeout(timer);
       // Ending a session releases its advisory lock; a session that cannot end in time is abandoned.
@@ -216,5 +240,12 @@ export async function provisionPoolDatabase(options: ProvisionOptions): Promise<
 }
 
 async function closeAll(sessions: Session[]): Promise<void> {
-  await Promise.all(sessions.splice(0).map((session) => within(session.end().catch(() => {}), limits.closeMs)));
+  await Promise.all(
+    sessions.splice(0).map((session) =>
+      within(
+        session.end().catch(() => {}),
+        limits.closeMs,
+      ),
+    ),
+  );
 }
