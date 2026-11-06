@@ -34,6 +34,11 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
 - `connections-summary`: the same connections counted by status, expiry, target
   app and provider, with the first and last creation times. Use it when the
   organization may have more connections than the row bound.
+- `tool-call-traffic`: each of the organization's accounts with every hour of
+  tool calls still stored for it: hours with a count, requests, failures, and
+  the latest counted hour and success. Hours past retention that no later call
+  pruned are included. Counts only, never a call's input or result. A missing
+  counts table fails the run with SQL state class `42`.
 
 `retired-tokens` uses the same recorded pool-app, personal placement and exact
 provider provenance as host-managed pool-access rows. Labels do not identify

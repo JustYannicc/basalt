@@ -1,0 +1,155 @@
+diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
+--- a/e2e/support/native-tunnel.ts
++++ b/e2e/support/native-tunnel.ts
+@@ -7,8 +7,11 @@
+   Response as RuntimeResponse,
+   Request as RuntimeRequest,
+   WebSocketPair,
++  type RuntimeOptions,
++  type WorkerdStructuredLog,
+ } from "miniflare";
+ import { Effect, Path } from "effect";
++import { Evidence } from "./evidence.ts";
+ import { driver } from "./platform.ts";
+ import { syntheticTunnelModel } from "./native-tunnel-model.ts";
+ import type { nativePool } from "./native-pool.ts";
+@@ -21,6 +24,17 @@
+ export const nativeTunnel = (toolsOrigin: string, pool: Pool, offset = 0) =>
+   Effect.gen(function* () {
+     const path = yield* Path.Path;
++    const evidence = yield* Evidence;
++    const failures: unknown[] = [];
++    yield* Effect.addFinalizer(() =>
++      evidence.json(
++        offset === 0 ? "tunnel-failures.json" : "tunnel-expiry-failures.json",
++        failures,
++      ),
++    );
++    let disposal: Promise<void> | undefined;
++    const dispose = (runtime: Miniflare) =>
++      driver("dispose tunnel worker", () => (disposal ??= runtime.dispose()));
+     const root = path.resolve("..");
+     const bundle = yield* driver("bundle production tunnel worker", () =>
+       build({
+@@ -97,6 +111,17 @@
+       Effect.sync(
+         () =>
+           new Miniflare({
++            handleRuntimeStdio: ((stdout, stderr) => {
++              stdout.pipe(process.stdout, { end: false });
++              stderr.pipe(process.stderr, { end: false });
++            }) satisfies NonNullable<RuntimeOptions["handleRuntimeStdio"]>,
++            handleStructuredLogs: ({ message }: WorkerdStructuredLog) => {
++              const prefix = "NATIVE_TUNNEL_FAILURE ";
++              if (message.startsWith(prefix)) {
++                const value: unknown = JSON.parse(message.slice(prefix.length));
++                failures.push(value);
++              }
++            },
+             workers: [
+               {
+                 name: "router",
+@@ -113,7 +138,7 @@
+                       method: request.method,
+                       headers: Object.fromEntries(request.headers),
+                       body: request.body,
+-                      ...{ duplex: "half" },
++                      duplex: "half",
+                       redirect: "manual",
+                       signal: request.signal,
+                     }).then(
+@@ -156,12 +181,13 @@
+       ),
+       (runtime) => {
+         for (const release of holds) release();
+-        return driver("dispose tunnel worker", () => runtime.dispose()).pipe(Effect.orDie);
++        return dispose(runtime).pipe(Effect.orDie);
+       },
+     );
+     yield* driver("start tunnel worker", () => runtime.ready);
+     return {
+       runtime,
++      finish: dispose(runtime).pipe(Effect.map(() => failures)),
+       calls: () => calls,
+       cancelled: () => cancelled,
+       complete: () =>
+diff --git a/e2e/support/native-tunnel-model.ts b/e2e/support/native-tunnel-model.ts
+--- a/e2e/support/native-tunnel-model.ts
++++ b/e2e/support/native-tunnel-model.ts
+@@ -10,6 +10,8 @@
+     pair[1].addEventListener("message", event => {
+       if (event.data === "close-with-output") {
+         pair[1].send("retained-after-close"); pair[1].close(1000, "Done");
++      } else if (event.data === "force-buffer-failure") {
++        pair[1].send("x".repeat(65537));
+       } else pair[1].send(event.data);
+     });
+     return new Response(null, { status: 101, webSocket: pair[0] });
+diff --git a/e2e/tests/native-tunnel-failure.spec.ts b/e2e/tests/native-tunnel-failure.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/native-tunnel-failure.spec.ts
+@@ -0,0 +1,63 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Redacted } from "effect";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { approveNative, startNativeProtocol } from "../support/native-grants.ts";
++import { nativeTunnel } from "../support/native-tunnel.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Native tunnel failure evidence", (it) => {
++  it.effect(scenarios.nativeTunnelFailure.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const p = yield* startNativeProtocol(actors.owner);
++        const tokens = yield* approveNative(p);
++        const worker = yield* nativeTunnel(targetHosts(yield* Target).browser, p.upstream);
++        const connected = yield* worker.connect(Redacted.value(tokens.access_token));
++        expect(connected.status).toBe(101);
++        const channel = connected.channel!;
++        yield* Effect.addFinalizer(() => Effect.sync(() => channel.close()));
++        yield* channel.next("ready");
++        channel.send({
++          type: "open",
++          id: 1,
++          operation: {
++            service: "models",
++            method: "GET",
++            path: "/v1/responses",
++            transport: "websocket",
++          },
++          headers: {},
++        });
++        expect((yield* channel.next("response", 1)).status).toBe(101);
++        yield* channel.next("credit", 1);
++        channel.send({
++          type: "data",
++          id: 1,
++          text: true,
++          bytes: Buffer.from("force-buffer-failure").toString("base64"),
++        });
++        const refused = yield* channel.next("error", 1);
++        expect(refused).toEqual({ v: 1, type: "error", id: 1, code: "limit", outcome: "unknown" });
++        const failures = yield* worker.finish;
++        expect(failures).toEqual([
++          {
++            id: 1,
++            class: "Error",
++            name: "Error",
++            code: null,
++            phase: "message",
++            event: "message",
++          },
++        ]);
++        const evidence = yield* Evidence;
++        yield* evidence.json("tunnel-forced-failure.json", failures);
++      }),
++    ),
++  );
++});

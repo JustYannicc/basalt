@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "deletedOrganizationPoolToken": {
+      "fixtures": "actors",
+      "title": "Deleted organizations immediately revoke existing pool tokens for history and usage",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Organization deletion is owned by managed Cloud."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Organization deletion is owned by managed Cloud."
+        }
+      }
+    }
+  },
+  "runs": {
+    "deletedOrganizationPoolToken": ["declared:cloud"]
+  },
+  "inputs": [
+    "src/pool/**",
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-organization.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/organization-removal.ts"
+  ],
+  "fixture": "pool-setup"
+}

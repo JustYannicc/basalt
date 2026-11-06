@@ -1,0 +1,7 @@
+model {
+  extend basalt.nativeTunnel {
+    metadata {
+      constraint "Tunnel WebSocket failure logs retain only allow-listed exception class and name, a bounded code, phase and event kind. The private E2E artifact captures the production log after disposal, including failed scenarios; messages, URLs, stacks and causes are never retained. Public refusal frames, close-drain behavior and flow limits remain unchanged."
+    }
+  }
+}

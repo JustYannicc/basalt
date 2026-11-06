@@ -243,7 +243,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       }
       if (request.method === "POST" && request.url === "/pool/v1/membership") {
         await memberships.reserve(
-          new Request(`http://127.0.0.1${request.url}`, {
+          new Request(new URL(request.url, "http://127.0.0.1"), {
             method: "POST",
             headers: request.headers,
             body,
@@ -254,7 +254,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       }
       if (request.url === removalIntentPath) {
         const result = await handleRemovalIntent(
-          new Request(`http://127.0.0.1${request.url}`, {
+          new Request(new URL(request.url, "http://127.0.0.1"), {
             method: request.method,
             headers: request.headers,
             body,
@@ -283,7 +283,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
           ? (request) => control.acquire(request)
           : (request) => control.handle(request);
       const result = await handler(
-        new Request(`http://127.0.0.1${request.url}`, {
+        new Request(new URL(request.url, "http://127.0.0.1"), {
           method: request.method,
           headers: request.headers,
           ...(body.length ? { body } : {}),
@@ -312,11 +312,13 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(server.address().port);
   const fixture = {
     prepareAcquisition(pool, id, provider = "codex", resetCount = 2) {
       acquisition = { pool, id, provider, resetCount };
     },
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: origin.origin,
     async reconcile(pool) {
       await memberships.refresh(pool);
       console.error(
